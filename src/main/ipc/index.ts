@@ -11,6 +11,7 @@ import {
   getSession,
   listProjectChanges,
   listProjects,
+  listSessionToolCalls,
   listSessionUsage,
   listSessions,
   upsertProject,
@@ -120,6 +121,8 @@ export function registerIpcHandlers(): void {
   handle("changes.list", (request) => listProjectChanges(request.projectId));
 
   handle("usage.list", (request) => listSessionUsage(request.sessionId));
+
+  handle("toolCalls.list", (request) => listSessionToolCalls(request.sessionId));
 
   handle("providers.list", () => listProviders());
 

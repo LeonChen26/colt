@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import type { ConversationView, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
-import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, listSessionFileChanges } from "./db/repo";
+import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, recordToolCall, listSessionFileChanges } from "./db/repo";
 
 /** 进程池上限，超出时回收最久未活动的空闲会话 */
 const MAX_WORKERS = 6;
@@ -184,6 +184,18 @@ export class SessionManager {
             cacheRead: message.cacheRead,
             cacheWrite: message.cacheWrite,
             costUsd: message.costUsd,
+            timestamp: message.timestamp,
+          });
+          break;
+
+        case "toolCall":
+          recordToolCall({
+            toolCallId: message.toolCallId,
+            sessionId: options.sessionId,
+            toolName: message.toolName,
+            inputJson: message.inputJson,
+            isError: message.isError,
+            durationMs: message.durationMs,
             timestamp: message.timestamp,
           });
           break;
