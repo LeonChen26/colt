@@ -125,6 +125,19 @@ export type WorkerMessage =
     }
   | { type: "view"; view: ConversationView }
   | { type: "fileChange"; change: ViewFileChange }
+  | {
+      type: "usage";
+      /** 本次记录对应的 provider/model（"providerId/modelId" 拆分后的两段） */
+      provider: string;
+      model: string;
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      costUsd: number;
+      /** 该条 usage 对应的时间戳（毫秒） */
+      timestamp: number;
+    }
   | { type: "branches"; nodes: WorkerBranchNode[] }
   | { type: "modelChanged"; providerId: string; modelId: string }
   | { type: "error"; message: string; fatal: boolean }

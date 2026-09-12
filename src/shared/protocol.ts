@@ -117,6 +117,11 @@ export interface IpcInvokeMap {
     request: { projectId: string };
     response: ProjectFileChange[];
   };
+  /** 会话用量历史与汇总 */
+  "usage.list": {
+    request: { sessionId: string };
+    response: SessionUsage;
+  };
   /** 列出全部 provider */
   "providers.list": {
     request: void;
@@ -194,6 +199,33 @@ export interface BranchNode {
   isTip: boolean;
 }
 
+/** 一条用量记录 */
+export interface UsageRecord {
+  id: number;
+  provider: string | null;
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+  createdAt: number;
+}
+
+/** 会话用量历史与累计汇总 */
+export interface SessionUsage {
+  records: UsageRecord[];
+  totals: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    costUsd: number;
+    /** 记录条数，即模型调用轮次 */
+    calls: number;
+  };
+}
+
 /** 项目级文件改动（带会话归属） */
 export interface ProjectFileChange {
   id: number;
@@ -248,6 +280,7 @@ export const IPC_CHANNELS = [
   "secrets.status",
   "secrets.set",
   "changes.list",
+  "usage.list",
   "providers.list",
   "providers.save",
   "providers.remove",
