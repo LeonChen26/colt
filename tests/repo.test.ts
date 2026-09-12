@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { openDatabase, closeDatabase } from "../src/main/db/index.ts";
 import {
   createSession,
+  deleteSession,
   getSession,
   listProjectChanges,
   listProjects,
@@ -51,6 +52,16 @@ describe("projects", () => {
     const first = upsertProject("E:/demo");
     const second = upsertProject("E:/demo");
     assert.equal(first.id, second.id);
+    assert.equal(listProjects().length, 1);
+  });
+
+  test("同一目录的不同路径写法视为同一项目", () => {
+    const first = upsertProject("E:/code/demo");
+    // 盘符大小写、分隔符差异都应命中同一条
+    const second = upsertProject("e:\\code\\demo");
+    const third = upsertProject("E:\\code\\demo\\");
+    assert.equal(first.id, second.id);
+    assert.equal(first.id, third.id);
     assert.equal(listProjects().length, 1);
   });
 });
@@ -102,6 +113,31 @@ describe("sessions", () => {
     const reloaded = getSession(session.id);
     assert.equal(reloaded?.title, "命名");
     assert.equal(reloaded?.messageCount, 5);
+  });
+});
+
+describe("deleteSession", () => {
+  test("删除会话及其派生数据（用量/工具/改动）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordUsage({ sessionId: session.id, kernelUsageId: "u1", provider: "p", model: "m", input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0, timestamp: 1 });
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, toolName: "bash", inputJson: null, isError: false, durationMs: 1, timestamp: 1 });
+    recordFileChange(session.id, { id: "ch1", path: "a.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 1 });
+
+    const removed = deleteSession(session.id);
+    assert.equal(removed?.id, session.id, "应返回被删会话快照");
+    assert.equal(removed?.kernelSessionId, null);
+    assert.equal(getSession(session.id), undefined);
+    assert.equal(listSessionUsage(session.id).records.length, 0);
+    assert.equal(listSessionToolCalls(session.id).length, 0);
+    assert.equal(listSessionFileChanges(session.id).length, 0);
+    // 项目与其他会话不受影响
+    assert.equal(listSessions(project.id).length, 0);
+    assert.equal(listProjects().length, 1);
+  });
+
+  test("删除不存在的会话返回 undefined", () => {
+    assert.equal(deleteSession("nope"), undefined);
   });
 });
 

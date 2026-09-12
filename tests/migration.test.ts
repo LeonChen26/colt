@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 4;
+const LATEST = 5;
 
 let root: string;
 
@@ -195,5 +195,56 @@ describe("openDatabase 迁移", () => {
     // 建表成功即可查
     const row = db.prepare("SELECT COUNT(*) AS c FROM sessions").get() as { c: number };
     assert.equal(row.c, 0);
+  });
+
+  test("新库 projects 含 root_key 且唯一索引生效", () => {
+    const db = openDatabase(root);
+    assert.ok(columns(db, "projects").includes("root_key"));
+    const index = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_projects_root_key'")
+      .get();
+    assert.ok(index, "root_key 唯一索引应已建立");
+  });
+
+  test("v5 迁移合并同一目录的不同路径写法，并迁移其会话", () => {
+    seedLegacy(
+      root,
+      [
+        `CREATE TABLE projects (
+           id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE,
+           created_at INTEGER NOT NULL, last_opened_at INTEGER NOT NULL)`,
+        `CREATE TABLE sessions (
+           id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, jsonl_path TEXT NOT NULL,
+           kernel_session_id TEXT, preset_id TEXT, model_ref TEXT, created_at INTEGER NOT NULL,
+           updated_at INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0,
+           status TEXT NOT NULL DEFAULT 'active')`,
+        // 同一目录的三种写法
+        `INSERT INTO projects VALUES ('p1','banyan','E:/code/banyan',100,100)`,
+        `INSERT INTO projects VALUES ('p2','banyan','e:\\code\\banyan',200,300)`,
+        `INSERT INTO projects VALUES ('p3','banyan','E:\\code\\banyan',150,150)`,
+        `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status)
+           VALUES ('s2','p2','会话2','x',1,1,0,'active')`,
+        `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status)
+           VALUES ('s3','p3','会话3','y',1,1,0,'active')`,
+      ],
+      4,
+    );
+
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+
+    const projects = db.prepare("SELECT id, root_key FROM projects").all() as unknown as {
+      id: string;
+      root_key: string;
+    }[];
+    assert.equal(projects.length, 1, "三处写法应合并为一条项目");
+    // 保留 last_opened_at 最新的 p2
+    assert.equal(projects[0]?.id, "p2");
+    assert.equal(projects[0]?.root_key, "e:/code/banyan");
+
+    const sessions = db.prepare("SELECT project_id FROM sessions ORDER BY id").all() as unknown as {
+      project_id: string;
+    }[];
+    assert.deepEqual(sessions.map((s) => s.project_id), ["p2", "p2"], "被合并项目的会话应改挂到保留项目");
   });
 });

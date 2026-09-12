@@ -5,12 +5,13 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { Project, ProjectFileChange, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
-import { getDatabase } from "./index";
+import { getDatabase, normalizeRootKey } from "./index";
 
 interface ProjectRow {
   id: string;
   name: string;
   root_path: string;
+  root_key: string;
   created_at: number;
   last_opened_at: number;
 }
@@ -55,11 +56,12 @@ function toSession(row: SessionRow): SessionInfo {
   };
 }
 
-/** 按根路径登记项目；已存在则更新最近打开时间 */
+/** 按根路径登记项目；已存在（规范化后同一目录）则更新最近打开时间 */
 export function upsertProject(rootPath: string): Project {
   const db = getDatabase();
   const now = Date.now();
-  const existing = db.prepare("SELECT * FROM projects WHERE root_path = ?").get(rootPath) as
+  const rootKey = normalizeRootKey(rootPath);
+  const existing = db.prepare("SELECT * FROM projects WHERE root_key = ?").get(rootKey) as
     | unknown as ProjectRow | undefined;
 
   if (existing) {
@@ -71,12 +73,13 @@ export function upsertProject(rootPath: string): Project {
     id: randomUUID(),
     name: basename(rootPath) || rootPath,
     root_path: rootPath,
+    root_key: rootKey,
     created_at: now,
     last_opened_at: now,
   };
   db.prepare(
-    "INSERT INTO projects (id, name, root_path, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?)",
-  ).run(row.id, row.name, row.root_path, row.created_at, row.last_opened_at);
+    "INSERT INTO projects (id, name, root_path, root_key, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(row.id, row.name, row.root_path, row.root_key, row.created_at, row.last_opened_at);
   return toProject(row);
 }
 
@@ -419,6 +422,30 @@ export function getSession(sessionId: string): SessionInfo | undefined {
     .prepare("SELECT * FROM sessions WHERE id = ?")
     .get(sessionId) as unknown as SessionRow | undefined;
   return row ? toSession(row) : undefined;
+}
+
+/**
+ * 永久删除会话及其派生数据。
+ * 子表（usage/tool_calls/file_changes）无 FK CASCADE，须与之同事务手动删除；
+ * 返回被删会话的快照（含 jsonlPath / kernelSessionId），供调用方清理历史文件。
+ */
+export function deleteSession(sessionId: string): SessionInfo | undefined {
+  const db = getDatabase();
+  const existing = getSession(sessionId);
+  if (!existing) return undefined;
+
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM file_changes WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return existing;
 }
 
 /** 更新会话标题与消息数 */
