@@ -99,32 +99,109 @@ CREATE TABLE IF NOT EXISTS presets (
 );
 `;
 
+/**
+ * 迁移版本号，存储于 PRAGMA user_version。
+ * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
+ */
+const SCHEMA_VERSION = 3;
+
+/** 判断某表是否已含某列 */
+function hasColumn(instance: DatabaseSync, table: string, column: string): boolean {
+  const rows = instance.prepare(`PRAGMA table_info(${table})`).all() as unknown as {
+    name: string;
+  }[];
+  return rows.some((row) => row.name === column);
+}
+
+/** 幂等加列：旧库可能已通过历史 try/catch 补过列，且 user_version 仍为 0 */
+function addColumnIfMissing(
+  instance: DatabaseSync,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  if (hasColumn(instance, table, column)) return;
+  instance.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+/**
+ * 有序迁移列表。只针对「已存在的旧库」补跑，
+ * 每个条目负责把它之前的版本升到 version。
+ * 迁移须幂等：旧库的 user_version 可能为 0 而列已补。
+ */
+const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
+  {
+    version: 1,
+    up: (instance) => addColumnIfMissing(instance, "sessions", "kernel_session_id", "TEXT"),
+  },
+  {
+    version: 2,
+    up: (instance) => addColumnIfMissing(instance, "sessions", "model_ref", "TEXT"),
+  },
+  {
+    version: 3,
+    up: (instance) =>
+      addColumnIfMissing(instance, "file_changes", "client_change_id", "TEXT"),
+  },
+];
+
 let db: DatabaseSync | undefined;
 
-/** 打开（并按需建表）工作台数据库 */
+/** 判断工作台库是否已初始化（以 sessions 表是否存在为标志） */
+function hasExistingSchema(instance: DatabaseSync): boolean {
+  const row = instance
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
+    .get();
+  return row !== undefined;
+}
+
+function readUserVersion(instance: DatabaseSync): number {
+  const row = instance.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
+  return row?.user_version ?? 0;
+}
+
+/** 依次执行未应用的迁移，迁移过程整体包在事务里 */
+function migrate(instance: DatabaseSync, from: number): void {
+  const pending = MIGRATIONS.filter((item) => item.version > from).sort(
+    (a, b) => a.version - b.version,
+  );
+  if (pending.length === 0) return;
+
+  instance.exec("BEGIN");
+  try {
+    for (const item of pending) item.up(instance);
+    instance.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    instance.exec("COMMIT");
+  } catch (error) {
+    instance.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** 打开（并按需建表、迁移）工作台数据库 */
 export function openDatabase(userDataPath: string): DatabaseSync {
   if (db) return db;
   const dir = join(userDataPath, "data");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "banyan.db");
   const instance = new DatabaseSync(file);
+
+  const existing = hasExistingSchema(instance);
+  const currentVersion = readUserVersion(instance);
+
+  // 迁移先行：先把旧库的列补齐，
+  // 否则 SCHEMA 里的索引语句会依赖尚未存在的列而失败
+  if (existing) {
+    migrate(instance, currentVersion);
+  }
+
   instance.exec(SCHEMA);
-  // 旧库补列（M1 新增）
-  try {
-    instance.exec("ALTER TABLE sessions ADD COLUMN kernel_session_id TEXT");
-  } catch {
-    // 列已存在
+
+  // 新库由 SCHEMA 建到最新形态，直接置版本号
+  if (!existing) {
+    instance.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
-  try {
-    instance.exec("ALTER TABLE sessions ADD COLUMN model_ref TEXT");
-  } catch {
-    // 列已存在
-  }
-  try {
-    instance.exec("ALTER TABLE file_changes ADD COLUMN client_change_id TEXT");
-  } catch {
-    // 列已存在
-  }
+
   db = instance;
   return instance;
 }
