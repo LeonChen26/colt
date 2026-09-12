@@ -1,11 +1,12 @@
 /**
  * IPC 路由：所有渲染进程调用的落点
- * 作者：陕耀云栈WorkMate
  */
 import { app, dialog, ipcMain } from "electron";
 import { join } from "node:path";
 import type { IpcChannel, IpcInvokeMap } from "@shared/protocol";
 import { runEnvCheck } from "../env-check";
+import { applyFirstRunChoice, inspectUserData } from "../first-run";
+import type { FirstRunReport } from "@shared/protocol";
 import {
   createSession,
   getSession,
@@ -17,6 +18,7 @@ import {
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
+import { closeDatabase, openDatabase } from "../db";
 import { deleteSecret, hasSecret, maskSecret, setSecret } from "../secrets";
 import {
   BUILTIN_DEEPSEEK,
@@ -28,6 +30,14 @@ import {
 
 /** 默认模型 */
 const DEFAULT_MODEL = "deepseek-v4-flash";
+
+/** app.whenReady 阶段采集的首启报告，供渲染层首屏查询（需早于 openDatabase） */
+let firstRunReport: FirstRunReport | null = null;
+
+/** 主进程启动时写入首启报告 */
+export function setFirstRunReport(report: FirstRunReport): void {
+  firstRunReport = report;
+}
 
 type Handler<C extends IpcChannel> = (
   request: IpcInvokeMap[C]["request"],
@@ -45,6 +55,21 @@ export function registerIpcHandlers(): void {
     version: app.getVersion(),
     userDataPath: app.getPath("userData"),
   }));
+
+  // 首启报告在 app.whenReady 时就已采集（需早于 openDatabase）
+  handle("firstRun.check", () => firstRunReport ?? inspectUserData(app.getPath("userData")));
+
+  /**
+   * 处理用户对历史数据的选择。
+   * fresh 需要先关闭数据库连接再删文件，删完重新建库；import 直接沿用现有库。
+   */
+  handle("firstRun.resolve", (request) => {
+    // 先关连接再删文件，随后重建空白库供本次会话使用
+    if (request.choice === "fresh") closeDatabase();
+    const result = applyFirstRunChoice(app.getPath("userData"), request.choice);
+    if (request.choice === "fresh") openDatabase(app.getPath("userData"));
+    return result;
+  });
 
   handle("project.pick", async () => {
     const result = await dialog.showOpenDialog({
@@ -123,6 +148,29 @@ export function registerIpcHandlers(): void {
   handle("usage.list", (request) => listSessionUsage(request.sessionId));
 
   handle("toolCalls.list", (request) => listSessionToolCalls(request.sessionId));
+
+  handle("approval.list", (request) => sessionManager.approvals.listPending(request.sessionId));
+
+  handle("approval.resolve", (request) => {
+    sessionManager.resolveApproval({
+      sessionId: request.sessionId,
+      toolCallId: request.toolCallId,
+      approved: request.approved,
+      reason: request.reason,
+      remember: request.remember,
+      deny: request.deny,
+    });
+    return { ok: true } as const;
+  });
+
+  handle("approval.mode.get", (request) => ({
+    mode: sessionManager.approvals.getMode(request?.sessionId),
+  }));
+
+  handle("approval.mode.set", (request) => {
+    sessionManager.approvals.setMode(request.mode, request.sessionId);
+    return { mode: sessionManager.approvals.getMode(request.sessionId) };
+  });
 
   handle("providers.list", () => listProviders());
 
