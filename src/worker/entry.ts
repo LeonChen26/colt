@@ -363,6 +363,26 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     return undefined;
   });
 
+  // 用量落库：内核每产生一条 usage 行就上报一次，不做差值推算
+  harness.events.on("usage", (event) => {
+    const currentModel = state?.meta.model ?? `${providerConfig.id}/${modelId}`;
+    const slash = currentModel.indexOf("/");
+    const usingProvider = slash === -1 ? providerConfig.id : currentModel.slice(0, slash);
+    const usingModel = slash === -1 ? currentModel : currentModel.slice(slash + 1);
+    const usage = event.row.usage;
+    send({
+      type: "usage",
+      provider: usingProvider,
+      model: usingModel,
+      input: usage.input,
+      output: usage.output,
+      cacheRead: usage.cacheRead,
+      cacheWrite: usage.cacheWrite,
+      costUsd: usage.cost.total,
+      timestamp: Date.now(),
+    });
+  });
+
   const lane = await harness.lane("main", context);
   const watch = await lane.watch(context);
   // 投影一律使用 Banyan 的会话 ID，渲染层才能正确匹配
