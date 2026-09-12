@@ -383,6 +383,32 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     });
   });
 
+  // 工具调用落库：配对 tool_start/tool_end 得到耗时与入参，在 end 时上报一条
+  // args 只在 tool_start 上，故一并缓存
+  const toolMeta = new Map<string, { startedAt: number; argsJson: string | null }>();
+  harness.events.on("tool_start", (event) => {
+    let argsJson: string | null = null;
+    try {
+      argsJson = JSON.stringify(event.args ?? null);
+    } catch {
+      argsJson = null;
+    }
+    toolMeta.set(event.toolCallId, { startedAt: Date.now(), argsJson });
+  });
+  harness.events.on("tool_end", (event) => {
+    const meta = toolMeta.get(event.toolCallId);
+    toolMeta.delete(event.toolCallId);
+    send({
+      type: "toolCall",
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      inputJson: meta?.argsJson ?? null,
+      isError: event.isError,
+      durationMs: meta === undefined ? null : Date.now() - meta.startedAt,
+      timestamp: Date.now(),
+    });
+  });
+
   const lane = await harness.lane("main", context);
   const watch = await lane.watch(context);
   // 投影一律使用 Banyan 的会话 ID，渲染层才能正确匹配
