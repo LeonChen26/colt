@@ -19,8 +19,7 @@ import {
   type Session,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { createModels, createProvider, envApiKeyAuth, lazyApi } from "@earendil-works/pi-ai";
-import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import { createModels } from "@earendil-works/pi-ai";
 import type {
   ConversationView,
   ViewFileChange,
@@ -30,8 +29,9 @@ import type {
   WorkerBranchNode,
   WorkerCommand,
   WorkerMessage,
-  WorkerProviderConfig,
 } from "@shared/worker-protocol";
+import { buildProvider } from "@shared/provider-factory";
+import { READONLY_TOOLS } from "@shared/readonly-tools";
 
 import { randomUUID } from "node:crypto";
 import {
@@ -62,8 +62,6 @@ function trace(message: string): void {
   }
 }
 
-/** 与 policy 的 READONLY_TOOLS 对应：这些工具不产生副作用，不参与闸门告警 */
-const RO_SAFE_TOOLS = new Set(["read", "grep", "glob", "ls", "list", "search", "todo"]);
 const pendingApprovals = new Map<
   string,
   { resolve: (value: { approved: boolean; reason: string }) => void; timer: NodeJS.Timeout }
@@ -287,39 +285,6 @@ interface WorkerState {
   unsubscribe: () => void;
 }
 
-/**
- * 根据配置装配 provider。
- * 内置 DeepSeek 走官方工厂，因为它自带 compat（thinkingFormat 等）与计价元数据；
- * 自定义 endpoint 用 createProvider 现搭，API 层复用 openai-completions。
- */
-function buildProvider(config: WorkerProviderConfig): ReturnType<typeof deepseekProvider> {
-  if (config.kind === "deepseek") return deepseekProvider();
-
-  const openAICompletionsApi = lazyApi(
-    () => import("@earendil-works/pi-ai/api/openai-completions"),
-  );
-
-  return createProvider({
-    id: config.id,
-    name: config.name,
-    baseUrl: config.baseUrl,
-    auth: { apiKey: envApiKeyAuth(`${config.name} API key`, ["BANYAN_PROVIDER_KEY"]) },
-    models: config.models.map((option) => ({
-      id: option.id,
-      name: option.name,
-      api: "openai-completions" as const,
-      baseUrl: config.baseUrl,
-      provider: config.id,
-      reasoning: false,
-      input: ["text" as const],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: option.contextWindow,
-      maxTokens: Math.min(option.contextWindow, 8192),
-    })),
-    api: openAICompletionsApi,
-  }) as ReturnType<typeof deepseekProvider>;
-}
-
 /** 把全部条目投影成分支树（session 级扫描，含所有分支） */
 async function projectBranches(current: WorkerState): Promise<WorkerBranchNode[]> {
   const entries = await current.session.findEntries({ order: "asc" }, context);
@@ -409,7 +374,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 纵深防御：若有影响性工具执行完却没经过闸门，说明拦截链路漏了。
   // 宁可吐一个显眼告警，也不能静默地把它放过去。
   harness.hooks.on("after_tool", (event) => {
-    if (RO_SAFE_TOOLS.has(event.toolName)) return undefined;
+    if (READONLY_TOOLS.has(event.toolName)) return undefined;
     if (gatedToolCalls.has(event.toolCallId)) return undefined;
     trace(`安全告警：${event.toolName} 未经闸门即执行`);
     send({

@@ -11,7 +11,7 @@
  *   - **独立超时**：分析器超时不会拖住 worker 的审批等待（两者时限独立）。
  *   - **不落盘、不记忆**：分析结果只服务当前这一次调用。
  *
- * 装配 provider 的方式与 worker 保持一致（见 worker/entry.ts 的 buildProvider）：
+ * 装配 provider 的方式与 worker 共用同一实现（见 shared/provider-factory.ts）：
  * 审批要面向用户配置的任意 endpoint（内置 DeepSeek + 自定义 openai-compatible），
  * 各家协议差异由 pi-ai 的 API 层吸收，自绘 HTTP 会把多 provider 适配重写一遍。
  * 主进程只需要一次性文本回复，故走 pi-ai 的 complete() 而非流式接口。
@@ -19,8 +19,8 @@
  * 本模块无状态：每次分析现装现用。装配本身只是对象构造，真正的 SDK client
  * 在每次请求内部创建，缓存装配结果省不到热路径上的开销（故不做缓存）。
  */
-import { createModels, createProvider, envApiKeyAuth, lazyApi, contentText } from "@earendil-works/pi-ai";
-import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import { createModels, contentText } from "@earendil-works/pi-ai";
+import { buildProvider, type ProviderBuildConfig } from "@shared/provider-factory";
 
 /** 分析器的输入：一次待判定的工具调用 */
 export interface AnalyzeInput {
@@ -32,20 +32,11 @@ export interface AnalyzeInput {
   /** policy 给出的启发式理由，作为模型的先验提示 */
   policyReason: string;
   /** 当前会话选定的 provider 配置 */
-  provider: AnalyzerProviderConfig;
+  provider: ProviderBuildConfig;
   /** 当前会话选定的模型 id */
   modelId: string;
   /** provider 的 API key，由调用方从 secrets 取出后传入（本模块不碰密钥存储） */
   apiKey: string | undefined;
-}
-
-/** 分析器需要的 provider 配置（与 WorkerProviderConfig 同形，避免反向依赖 shared 之外的类型） */
-export interface AnalyzerProviderConfig {
-  id: string;
-  name: string;
-  kind: "deepseek" | "openai-compatible";
-  baseUrl: string;
-  models: { id: string; name: string; contextWindow: number }[];
 }
 
 /** 分析结论 */
@@ -191,35 +182,6 @@ export async function analyzeToolCall(input: AnalyzeInput): Promise<AnalyzeResul
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** 装配 provider（与 worker/entry.ts 的 buildProvider 同构，保证行为一致） */
-function buildProvider(config: AnalyzerProviderConfig): ReturnType<typeof deepseekProvider> {
-  if (config.kind === "deepseek") return deepseekProvider();
-
-  const openAICompletionsApi = lazyApi(
-    () => import("@earendil-works/pi-ai/api/openai-completions"),
-  );
-
-  return createProvider({
-    id: config.id,
-    name: config.name,
-    baseUrl: config.baseUrl,
-    auth: { apiKey: envApiKeyAuth(`${config.name} API key`, ["BANYAN_PROVIDER_KEY"]) },
-    models: config.models.map((option) => ({
-      id: option.id,
-      name: option.name,
-      api: "openai-completions" as const,
-      baseUrl: config.baseUrl,
-      provider: config.id,
-      reasoning: false,
-      input: ["text" as const],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: option.contextWindow,
-      maxTokens: Math.min(option.contextWindow, 8192),
-    })),
-    api: openAICompletionsApi,
-  }) as ReturnType<typeof deepseekProvider>;
 }
 
 function errorText(error: unknown): string {

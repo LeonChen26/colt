@@ -4,6 +4,7 @@
  * 故与 worker 的事件订阅解耦，便于单测覆盖。
  */
 import type { WorkerMessage } from "@shared/worker-protocol";
+import { splitModelRef } from "@shared/model-ref";
 
 type UsageUpload = Extract<WorkerMessage, { type: "usage" }>;
 type ToolCallUpload = Extract<WorkerMessage, { type: "toolCall" }>;
@@ -53,19 +54,6 @@ export interface KernelToolEndEvent {
 export interface ToolMetaEntry {
   startedAt: number;
   argsJson: string | null;
-}
-
-/**
- * 把 "providerId/modelId" 拆成两段；无斜杠时整体视作 modelId。
- * 模型标识只在第一个斜杠处切分，模型名本身含斜杠时不会被截断。
- */
-export function splitModelRef(
-  modelRef: string,
-  fallbackProvider: string,
-): { provider: string; model: string } {
-  const slash = modelRef.indexOf("/");
-  if (slash === -1) return { provider: fallbackProvider, model: modelRef };
-  return { provider: modelRef.slice(0, slash), model: modelRef.slice(slash + 1) };
 }
 
 /**

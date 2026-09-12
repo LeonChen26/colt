@@ -11,7 +11,6 @@ import {
   buildUsageUpload,
   contextUsedFromUsage,
   serializeArgs,
-  splitModelRef,
   type KernelToolEndEvent,
   type KernelUsageEvent,
 } from "../src/worker/lib/telemetry.ts";
@@ -39,29 +38,6 @@ function endEvent(overrides: Partial<KernelToolEndEvent> = {}): KernelToolEndEve
     ...overrides,
   };
 }
-
-describe("splitModelRef", () => {
-  test("拆分 provider 与 model", () => {
-    assert.deepEqual(splitModelRef("deepseek/deepseek-v4", "fallback"), {
-      provider: "deepseek",
-      model: "deepseek-v4",
-    });
-  });
-
-  test("无斜杠时整体作为 model，provider 用回落值", () => {
-    assert.deepEqual(splitModelRef("solo-model", "fallback"), {
-      provider: "fallback",
-      model: "solo-model",
-    });
-  });
-
-  test("只在首个斜杠处切分，模型名内含斜杠不被截断", () => {
-    assert.deepEqual(splitModelRef("openai/org/model-x", "fallback"), {
-      provider: "openai",
-      model: "org/model-x",
-    });
-  });
-});
 
 describe("contextUsedFromUsage", () => {
   test("占用取 prompt tokens（input + cacheRead + cacheWrite）", () => {

@@ -12,6 +12,8 @@
  * 纯函数，不碰 IO，便于单测覆盖。
  */
 
+import { READONLY_TOOLS } from "@shared/readonly-tools";
+
 /** 风险档位 */
 export type RiskLevel = "safe" | "moderate" | "dangerous";
 
@@ -60,9 +62,6 @@ export interface PolicyVerdict {
   /** 一行可读摘要，如 `bash: rm -rf build` */
   summary: string;
 }
-
-/** 只读类工具：不改磁盘、不执行命令 */
-const READONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "list", "search", "todo"]);
 
 /** 写入类工具及其路径参数名 */
 const WRITE_TOOLS: Record<string, string> = {

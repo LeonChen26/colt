@@ -3,6 +3,8 @@
  * worker 侧持有 harness/lane，向 main 投影稳定 DTO（渲染层零 pi 依赖）
  */
 
+import type { ProviderBuildConfig } from "./provider-factory";
+
 /** 对话中的一条消息（投影后） */
 export interface ViewMessage {
   id: string;
@@ -86,22 +88,6 @@ export interface ConversationView {
   };
 }
 
-/** 模型选项（与 protocol 保持一致，避免 worker 反向依赖） */
-export interface WorkerModelOption {
-  id: string;
-  name: string;
-  contextWindow: number;
-}
-
-/** worker 启动所需的 provider 配置 */
-export interface WorkerProviderConfig {
-  id: string;
-  name: string;
-  kind: "deepseek" | "openai-compatible";
-  baseUrl: string;
-  models: WorkerModelOption[];
-}
-
 /** main → worker */
 export type WorkerCommand =
   | {
@@ -112,13 +98,13 @@ export type WorkerCommand =
       externalSessionId: string;
       /** 内核 JSONL 会话 ID，有则续接历史，无则新建 */
       kernelSessionId?: string;
-      provider: WorkerProviderConfig;
+      provider: ProviderBuildConfig;
       model: string;
     }
   | { type: "prompt"; text: string }
   | { type: "steer"; text: string }
   | { type: "abort" }
-  | { type: "setModel"; provider: WorkerProviderConfig; modelId: string }
+  | { type: "setModel"; provider: ProviderBuildConfig; modelId: string }
   | { type: "compact" }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }

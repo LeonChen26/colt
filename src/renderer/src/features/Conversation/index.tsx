@@ -17,6 +17,7 @@ import {
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, ProviderConfig } from "@shared/protocol";
+import { splitModelRef } from "@shared/model-ref";
 import { cn } from "../../lib/utils";
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
@@ -204,10 +205,8 @@ export function Conversation({
   const switchModel = useCallback(
     async (value: string) => {
       // 下拉值形如 "providerId/modelId"，需拆开分别下发
-      const slash = value.indexOf("/");
-      if (slash === -1) return;
-      const providerId = value.slice(0, slash);
-      const modelId = value.slice(slash + 1);
+      const { provider: providerId, model: modelId } = splitModelRef(value);
+      if (!providerId || !modelId) return;
       setError(null);
       try {
         await window.banyan.invoke("session.setModel", { sessionId, providerId, modelId });
@@ -246,8 +245,7 @@ export function Conversation({
   const changes = view?.fileChanges ?? [];
 
   // 当前会话所用 provider 与模型
-  const currentProviderId = view?.model.split("/")[0] ?? "";
-  const currentModelId = view?.model.split("/").slice(1).join("/") ?? "";
+  const { provider: currentProviderId, model: currentModelId } = splitModelRef(view?.model ?? "");
   // 跨 provider 选择：列出所有已配置密钥的 provider 的模型，值带上 provider 前缀
   const modelOptions = providers.flatMap((provider) =>
     provider.models.map((model) => ({ value: `${provider.id}/${model.id}`, label: model.name })),

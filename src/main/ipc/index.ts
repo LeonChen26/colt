@@ -5,6 +5,7 @@ import { app, dialog, ipcMain } from "electron";
 import { join } from "node:path";
 import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap } from "@shared/protocol";
+import { splitModelRef } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
@@ -133,9 +134,7 @@ export function registerIpcHandlers(): void {
     // 形如 "providerId/modelId"
     const raw =
       request.model ?? getSession(request.sessionId)?.modelRef ?? `${BUILTIN_DEEPSEEK.id}/${DEFAULT_MODEL}`;
-    const slash = raw.indexOf("/");
-    let providerId = slash === -1 ? BUILTIN_DEEPSEEK.id : raw.slice(0, slash);
-    let modelId = slash === -1 ? raw : raw.slice(slash + 1);
+    let { provider: providerId, model: modelId } = splitModelRef(raw, BUILTIN_DEEPSEEK.id);
 
     // 持久化的 modelRef 可能已失效（provider 被删、模型下线），退回内置默认，
     // 否则会话将因 provider 找不到而永久打不开
