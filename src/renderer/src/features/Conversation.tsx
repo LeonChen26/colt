@@ -1,23 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
+  Coins,
   FileDiff,
   GitBranch,
   Loader2,
+  RefreshCw,
   Send,
   Shrink,
   Square,
   Terminal,
 } from "lucide-react";
 import type { ConversationView, ViewFileChange, ViewMessage } from "@shared/worker-protocol";
-import type { ProviderConfig } from "@shared/protocol";
+import type { ProviderConfig, SessionUsage } from "@shared/protocol";
 import { TerminalOutput } from "../components/TerminalOutput";
 import { DiffView } from "../components/DiffView";
 import { BranchTree } from "./BranchTree";
 import { cn } from "../lib/utils";
 
-/** 右侧面板二选一 */
-type SidePanel = "none" | "changes" | "branches";
+/** 右侧面板多选一 */
+type SidePanel = "none" | "changes" | "branches" | "usage";
 
 /** 对话面板：消息流 + 流式文本 + 工具实时输出 + 文件改动
  *  作者：陕耀云栈WorkMate */
@@ -230,6 +232,20 @@ export function Conversation({
               改动 {changes.length}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setPanel((value) => (value === "usage" ? "none" : "usage"))}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition",
+              panel === "usage"
+                ? "border-[--color-accent] text-[--color-accent]"
+                : "border-[--color-border-subtle] text-[--color-text-secondary] hover:text-[--color-text-primary]",
+            )}
+            title="查看本次会话的用量历史"
+          >
+            <Coins size={12} />
+            用量
+          </button>
           {running && (
             <button
               type="button"
@@ -295,6 +311,7 @@ export function Conversation({
           <ChangePanel changes={changes} onClose={() => setPanel("none")} />
         )}
         {panel === "branches" && <BranchTree sessionId={sessionId} />}
+        {panel === "usage" && <UsagePanel sessionId={sessionId} onClose={() => setPanel("none")} />}
       </div>
 
       <div className="shrink-0 border-t border-[--color-border-subtle] p-3">
@@ -328,6 +345,120 @@ export function Conversation({
         )}
       </div>
     </div>
+  );
+}
+
+/** 右侧用量历史面板：每次模型调用的 token 与费用，数据来自数据库 */
+function UsagePanel({
+  sessionId,
+  onClose,
+}: {
+  sessionId: string;
+  onClose: () => void;
+}): React.JSX.Element {
+  const [usage, setUsage] = useState<SessionUsage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setUsage(await window.banyan.invoke("usage.list", { sessionId }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <aside className="flex w-[360px] shrink-0 flex-col border-l border-[--color-border-subtle] bg-[--color-surface-raised]">
+      <div className="flex shrink-0 items-center justify-between border-b border-[--color-border-subtle] px-3 py-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-[--color-text-secondary]">
+          <Coins size={12} />
+          用量历史
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+            title="刷新"
+          >
+            <RefreshCw size={12} className={cn(loading && "animate-spin")} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+          >
+            收起
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="m-2 rounded-md border border-[--color-danger]/50 bg-[--color-danger]/10 px-2 py-1.5 text-xs text-[--color-danger]">
+          {error}
+        </div>
+      )}
+
+      {usage && usage.totals.calls > 0 && (
+        <div className="shrink-0 border-b border-[--color-border-subtle] px-3 py-2 text-xs text-[--color-text-secondary]">
+          <div>
+            {usage.totals.calls} 次调用 · {(
+              usage.totals.inputTokens + usage.totals.outputTokens
+            ).toLocaleString("zh-CN")}{" "}
+            tokens
+          </div>
+          <div className="text-[--color-text-muted]">
+            输入 {usage.totals.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
+            {usage.totals.outputTokens.toLocaleString("zh-CN")}
+            {usage.totals.cacheReadTokens + usage.totals.cacheWriteTokens > 0 &&
+              ` · 缓存 ${(
+                usage.totals.cacheReadTokens + usage.totals.cacheWriteTokens
+              ).toLocaleString("zh-CN")}`}
+          </div>
+          <div className="mt-0.5 font-mono">${usage.totals.costUsd.toFixed(6)}</div>
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {loading && !usage ? (
+          <p className="px-2 py-6 text-center text-xs text-[--color-text-muted]">加载中…</p>
+        ) : !usage || usage.records.length === 0 ? (
+          <p className="px-2 py-6 text-center text-xs leading-relaxed text-[--color-text-muted]">
+            还没有用量记录。发起对话后，每次模型调用都会记录在此。
+          </p>
+        ) : (
+          usage.records.map((record) => (
+            <div
+              key={record.id}
+              className="mb-1 rounded-md bg-[--color-surface-overlay] px-2 py-1.5"
+            >
+              <div className="flex items-center justify-between">
+                <span className="truncate font-mono text-xs text-[--color-text-primary]">
+                  {record.model ?? "—"}
+                </span>
+                <span className="shrink-0 text-[10px] text-[--color-text-muted]">
+                  {new Date(record.createdAt).toLocaleTimeString("zh-CN")}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center gap-2 text-xs text-[--color-text-muted]">
+                <span>入 {record.inputTokens.toLocaleString("zh-CN")}</span>
+                <span>出 {record.outputTokens.toLocaleString("zh-CN")}</span>
+                <span className="ml-auto font-mono">${record.costUsd.toFixed(6)}</span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </aside>
   );
 }
 
