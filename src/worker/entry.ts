@@ -35,7 +35,13 @@ import type {
 } from "@shared/worker-protocol";
 
 import { randomUUID } from "node:crypto";
-import { relative, isAbsolute } from "node:path";
+import {
+  countPatchLines,
+  extractText,
+  extractToolCalls,
+  extractToolText,
+  toRelative,
+} from "./lib/project";
 
 const context: Context = BACKGROUND_CONTEXT;
 
@@ -52,62 +58,6 @@ function systemPrompt(cwd: string): string {
     "【输出语言】始终用中文回复。即使用户消息、文件内容或命令输出含有英文，你的叙述部分也必须是中文；",
     "代码、路径、命令、报错原文保持原样不要翻译。",
   ].join("\n");
-}
-
-/** 从消息内容块中抽取纯文本 */
-function extractText(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block): block is { type: "text"; text: string } => {
-      return typeof block === "object" && block !== null && (block as { type?: string }).type === "text";
-    })
-    .map((block) => block.text)
-    .join("");
-}
-
-/** 从助手消息中抽取工具调用 */
-function extractToolCalls(content: unknown): ViewMessage["toolCalls"] {
-  if (!Array.isArray(content)) return [];
-  return content
-    .filter((block): block is { type: "toolCall"; id: string; name: string; arguments?: unknown } => {
-      return typeof block === "object" && block !== null && (block as { type?: string }).type === "toolCall";
-    })
-    .map((block) => ({
-      id: block.id,
-      name: block.name,
-      args: (() => {
-        try {
-          return JSON.stringify(block.arguments ?? {});
-        } catch {
-          return "{}";
-        }
-      })(),
-    }));
-}
-
-/** 从工具结果的 content 块中抽取文本（与消息 content 结构一致） */
-function extractToolText(result: unknown): string {
-  if (typeof result !== "object" || result === null) return "";
-  return extractText((result as { content?: unknown }).content);
-}
-
-/** 统计 unified patch 的增删行数 */
-function countPatchLines(patch: string): { added: number; removed: number } {
-  let added = 0;
-  let removed = 0;
-  for (const line of patch.split("\n")) {
-    // 排除 --- / +++ 文件头
-    if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
-    else if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
-  }
-  return { added, removed };
-}
-
-/** 把绝对路径收敛为相对工作目录的路径，便于 UI 展示 */
-function toRelative(cwd: string, path: string): string {
-  if (!isAbsolute(path)) return path.replaceAll("\\", "/");
-  const rel = relative(cwd, path);
-  return (rel.startsWith("..") ? path : rel).replaceAll("\\", "/");
 }
 
 /** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
