@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import type { ConversationView, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
-import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, listSessionFileChanges } from "./db/repo";
+import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, listSessionFileChanges } from "./db/repo";
 
 /** 进程池上限，超出时回收最久未活动的空闲会话 */
 const MAX_WORKERS = 6;
@@ -171,6 +171,21 @@ export class SessionManager {
           // 落库后回填：worker 只负责上报，改动的投影始终以 DB 为准
           recordFileChange(options.sessionId, message.change);
           this.#emitView(entry);
+          break;
+
+        case "usage":
+          // 用量历史只增不改，直接落库；视图里的累计值仍以内核快照为准
+          recordUsage({
+            sessionId: options.sessionId,
+            provider: message.provider,
+            model: message.model,
+            input: message.input,
+            output: message.output,
+            cacheRead: message.cacheRead,
+            cacheWrite: message.cacheWrite,
+            costUsd: message.costUsd,
+            timestamp: message.timestamp,
+          });
           break;
 
         case "branches":

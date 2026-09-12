@@ -11,6 +11,7 @@ import {
   getSession,
   listProjectChanges,
   listProjects,
+  listSessionUsage,
   listSessions,
   upsertProject,
 } from "../db/repo";
@@ -117,6 +118,8 @@ export function registerIpcHandlers(): void {
   });
 
   handle("changes.list", (request) => listProjectChanges(request.projectId));
+
+  handle("usage.list", (request) => listSessionUsage(request.sessionId));
 
   handle("providers.list", () => listProviders());
 
