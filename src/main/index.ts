@@ -1,11 +1,11 @@
 /**
  * Banyan 主进程入口（server host 角色）
- * 作者：陕耀云栈WorkMate
  */
 import { app, BrowserWindow, shell } from "electron";
 import { join } from "node:path";
-import { registerIpcHandlers, importKeyFromEnvIfMissing } from "./ipc";
+import { registerIpcHandlers, importKeyFromEnvIfMissing, setFirstRunReport } from "./ipc";
 import { openDatabase, closeDatabase } from "./db";
+import { inspectUserData } from "./first-run";
 import { sessionManager } from "./session-manager";
 
 /** reload 会再次触发 ready-to-show，防止冒烟流程重入 */
@@ -66,6 +66,8 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  // 首启检测必须在 openDatabase 之前：后者会创建 data 目录，掩盖“全新环境”的判断
+  setFirstRunReport(inspectUserData(app.getPath("userData")));
   openDatabase(app.getPath("userData"));
   importKeyFromEnvIfMissing();
   registerIpcHandlers();

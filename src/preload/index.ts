@@ -1,7 +1,6 @@
 /**
  * 预加载：按白名单向渲染进程暴露最小 API 面
  * 渲染进程无 Node 能力，只能经由这里与主进程通信。
- * 作者：陕耀云栈WorkMate
  */
 import { contextBridge, ipcRenderer } from "electron";
 import {
