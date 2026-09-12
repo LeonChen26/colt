@@ -72,6 +72,19 @@ async function runBasic(
   })()`);
   await sleep(800);
 
+  // 可选：打开右侧某个面板（用量 / 工具），便于验收截图覆盖该面板
+  const panel = process.env.BANYAN_SMOKE_PANEL;
+  if (panel) {
+    await run(`(() => {
+      const target = ${JSON.stringify(panel)};
+      const buttons = [...document.querySelectorAll("button")];
+      const hit = buttons.find((b) => b.textContent.trim() === target);
+      if (hit) hit.click();
+      return hit !== undefined;
+    })()`);
+    await sleep(1200);
+  }
+
   await report(session.id, log, run);
 }
 
