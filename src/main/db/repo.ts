@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import type { Project, ProjectFileChange, SessionInfo, SessionUsage, UsageRecord } from "@shared/protocol";
+import type { Project, ProjectFileChange, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import { getDatabase } from "./index";
 
@@ -164,6 +164,67 @@ export function recordFileChange(
       change.removedLines,
       change.timestamp,
     );
+}
+
+/**
+ * 记录一次工具调用。以内核 toolCallId 为主键，
+ * 重复上报（如重试）用 UPSERT 覆盖而非报错。
+ */
+export function recordToolCall(input: {
+  toolCallId: string;
+  sessionId: string;
+  toolName: string;
+  inputJson: string | null;
+  isError: boolean;
+  durationMs: number | null;
+  timestamp: number;
+}): void {
+  getDatabase()
+    .prepare(
+      `INSERT INTO tool_calls
+         (id, session_id, tool_name, input_json, is_error, duration_ms, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         is_error = excluded.is_error,
+         duration_ms = excluded.duration_ms`,
+    )
+    .run(
+      input.toolCallId,
+      input.sessionId,
+      input.toolName,
+      input.inputJson,
+      input.isError ? 1 : 0,
+      input.durationMs,
+      input.timestamp,
+    );
+}
+
+/** 会话工具调用历史，按时间倒序 */
+export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
+  const rows = getDatabase()
+    .prepare(
+      `SELECT id, tool_name, input_json, is_error, duration_ms, created_at
+       FROM tool_calls
+       WHERE session_id = ?
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all(sessionId) as unknown as {
+    id: string;
+    tool_name: string;
+    input_json: string | null;
+    is_error: number;
+    duration_ms: number | null;
+    created_at: number;
+  }[];
+
+  return rows.map((row) => ({
+    id: row.id,
+    toolName: row.tool_name,
+    inputJson: row.input_json,
+    isError: row.is_error === 1,
+    durationMs: row.duration_ms,
+    createdAt: row.created_at,
+  }));
 }
 
 /**
