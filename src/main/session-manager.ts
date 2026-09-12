@@ -5,7 +5,7 @@
 import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { ConversationView, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
+import type { ConversationView, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
@@ -57,6 +57,12 @@ export class SessionManager {
   readonly approvals = new ApprovalStore();
   /** 主进程侧的审批超时定时器，key 为 toolCallId；与 worker 的超时保持同步 */
   readonly #approvalTimers = new Map<string, NodeJS.Timeout>();
+  /**
+   * 会话改动列表缓存（key 为 sessionId）。
+   * 投影出口每次 flush 都要这份列表，而流式期间 flush 约 50ms 一次，逐次查库
+   * 会造成读放大；主进程是 file_changes 的唯一写入方，故写入点失效即安全。
+   */
+  readonly #fileChangesCache = new Map<string, ViewFileChange[]>();
   #window: BrowserWindow | undefined;
   #reaper?: NodeJS.Timeout;
 
@@ -234,16 +240,32 @@ export class SessionManager {
    * 用数据库里的完整改动列表覆盖 worker 自报的 fileChanges。
    * 改动的真源是 DB，这样 worker 被回收重启后仍能完整重建，不会丢历史。
    * 上下文占用同理：worker 重启后内存值为 0，用 DB 里最近一轮的值回填；
-   * worker 正在运行且已有实时值时以其为准（DB 写入略滞后于内存）。
+   * worker 已有实时值时以其为准（DB 写入略滞后于内存）。
    */
   #withDbChanges(view: ConversationView): ConversationView {
-    const dbContextUsed = latestContextUsed(view.sessionId);
-    const contextUsed = view.stats.contextUsed > 0 ? view.stats.contextUsed : dbContextUsed;
+    // 只在 worker 还没有实时值时才查库。本方法是 view 投影的必经出口，流式期间
+    // 每次 flush（约 50ms）都会走到，无条件查库等于每个运行中会话每秒打约 20 次
+    // 全表扫描，而算出来的值在 worker 有实时值时根本不会被采用。
+    const contextUsed =
+      view.stats.contextUsed > 0 ? view.stats.contextUsed : latestContextUsed(view.sessionId);
     return {
       ...view,
-      fileChanges: listSessionFileChanges(view.sessionId),
+      fileChanges: this.#fileChanges(view.sessionId),
       stats: { ...view.stats, contextUsed },
     };
+  }
+
+  /**
+   * 会话改动列表（DB 为真源），按会话缓存。
+   * 主进程是 file_changes 的唯一写入方，故只需在写入点失效即可保证不返回陈旧数据；
+   * 缓存与 worker 同寿命，避免为所有打开过的会话常驻内存。
+   */
+  #fileChanges(sessionId: string): ViewFileChange[] {
+    const cached = this.#fileChangesCache.get(sessionId);
+    if (cached) return cached;
+    const list = listSessionFileChanges(sessionId);
+    this.#fileChangesCache.set(sessionId, list);
+    return list;
   }
 
   /** 统一出口：基于当前 entry.view 经 DB 回填后推送 */
@@ -373,6 +395,8 @@ export class SessionManager {
         case "fileChange":
           // 落库后回填：worker 只负责上报，改动的投影始终以 DB 为准
           recordFileChange(options.sessionId, message.change);
+          // 唯一的写入点：缓存必须在此失效，否则后续投影会一直停在旧列表
+          this.#fileChangesCache.delete(options.sessionId);
           this.#emitView(entry);
           break;
 
@@ -459,6 +483,8 @@ export class SessionManager {
 
     child.on("exit", () => {
       this.#workers.delete(options.sessionId);
+      // 与 #disposeWorker 对齐：worker 没了，改动列表缓存也一并丢弃
+      this.#fileChangesCache.delete(options.sessionId);
       clearTimeout(readyTimer);
       // 尚未 ready 就退出：掐断等待方，否则 session.open 永久挂起，
       // 渲染层会一直停在「正在启动会话进程…」。已 ready 时这里是空操作。
@@ -595,6 +621,8 @@ export class SessionManager {
   /** 发送 dispose 并从池中移除（不处理 exit 回调的幂等删） */
   #disposeWorker(entry: WorkerEntry): void {
     this.#workers.delete(entry.sessionId);
+    // 缓存与 worker 同寿命：进程没了就丢弃，避免为打开过的历史会话常驻内存
+    this.#fileChangesCache.delete(entry.sessionId);
     // worker 没了就无人能响应审批，待审条目必须清掉，否则界面残留幽灵卡片
     const dropped = this.approvals.clearPending(entry.sessionId);
     for (const item of dropped) this.#clearApprovalTimer(item.toolCallId);
@@ -647,6 +675,7 @@ export class SessionManager {
       }
     }
     this.#workers.clear();
+    this.#fileChangesCache.clear();
   }
 }
 
