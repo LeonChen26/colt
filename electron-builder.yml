@@ -1,8 +1,7 @@
 # electron-builder 配置：仅 Windows 目标
-# 作者：陕耀云栈WorkMate
-appId: com.shiningstack.banyan
+appId: com.banyan.app
 productName: Banyan
-copyright: Copyright © 2026 ShiningStack
+copyright: Copyright © 2026 Banyan
 
 directories:
   output: release
@@ -34,6 +33,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Banyan
+  # 自定义 NSIS 脚本：安装前检测历史安装（见 build/installer.nsh）
+  include: build/installer.nsh
   installerLanguages:
     - zh_CN
   language: "2052"

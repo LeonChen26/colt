@@ -4,7 +4,6 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 // Banyan 构建配置：main / preload / renderer 三端
-// 作者：陕耀云栈WorkMate
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
