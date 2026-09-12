@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+/* Banyan 主题：开发者工具观感的暗色基调
+   作者：陕耀云栈WorkMate */
+@theme {
+  --color-surface: #0b0d10;
+  --color-surface-raised: #12151a;
+  --color-surface-overlay: #171b22;
+  --color-border-subtle: #232931;
+  --color-text-primary: #e6e9ef;
+  --color-text-secondary: #98a2b3;
+  --color-text-muted: #6b7480;
+  --color-accent: #4f9cf9;
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-danger: #f85149;
+
+  --font-sans: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* 滚动条贴合暗色主题 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-subtle);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
