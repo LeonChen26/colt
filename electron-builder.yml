@@ -1,0 +1,42 @@
+# electron-builder 配置：仅 Windows 目标
+# 作者：陕耀云栈WorkMate
+appId: com.shiningstack.banyan
+productName: Banyan
+copyright: Copyright © 2026 ShiningStack
+
+directories:
+  output: release
+  buildResources: build
+
+# 只打包构建产物与运行时依赖；devDependencies 不会进包
+files:
+  - out/**/*
+  - package.json
+
+# pi 内核被 externalize，必须随包分发
+asar: true
+asarUnpack:
+  - node_modules/@earendil-works/**
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Banyan
+  installerLanguages:
+    - zh_CN
+  language: "2052"
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}

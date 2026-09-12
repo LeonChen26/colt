@@ -1,0 +1,44 @@
+{
+  "name": "banyan",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Banyan 桌面 Agent 工作台 - 基于 pi-agent-core 的编码 Agent 工作台",
+  "author": "ShiningStack WorkMate",
+  "license": "MIT",
+  "type": "module",
+  "main": "out/main/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "probe": "electron scripts/probe-runtime.cjs",
+    "dist": "npm run build && electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.85.1",
+    "@earendil-works/pi-ai": "^0.85.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^5.1.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^4.0.1",
+    "lucide-react": "^0.554.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.4.1",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  }
+}
