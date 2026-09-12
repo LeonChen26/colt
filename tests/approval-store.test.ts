@@ -40,6 +40,65 @@ describe("ApprovalStore 模式", () => {
     assert.equal(instance.getMode(), "full-access");
   });
 
+  test("会话级模式：只改该会话，不影响其他会话", () => {
+    const instance = new ApprovalStore();
+    instance.register("s1", ROOT);
+    instance.register("s2", ROOT);
+
+    instance.setMode("auto", "s1");
+
+    assert.equal(instance.getMode("s1"), "auto");
+    assert.equal(instance.getMode("s2"), "approval", "s2 应仍为全局默认");
+    assert.equal(instance.getMode(), "approval", "全局默认不应被改动");
+  });
+
+  test("会话级模式独立于全局默认", () => {
+    const instance = store();
+    instance.setMode("full-access"); // 改全局
+    assert.equal(instance.getMode(SESSION), "full-access", "未单独设定时回退全局");
+
+    instance.setMode("auto", SESSION); // 单独设定会话
+    instance.setMode("approval"); // 再改全局
+    assert.equal(instance.getMode(SESSION), "auto", "会话设定应压过新的全局默认");
+  });
+
+  test("重登记会话（worker 重启）保留会话级模式", () => {
+    const instance = store();
+    instance.setMode("auto", SESSION);
+
+    // 模拟 worker 回收后重开：重新登记同一会话
+    instance.register(SESSION, ROOT);
+
+    assert.equal(instance.getMode(SESSION), "auto", "重登记不应丢失会话模式");
+  });
+
+  test("重登记仍会重置记忆规则", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
+
+    instance.register(SESSION, ROOT);
+    askWrite(instance, "c2");
+    assert.equal(instance.listPending(SESSION).length, 1, "记忆规则仍应在重登记时失效");
+  });
+
+  test("未登记会话设定模式不污染全局默认", () => {
+    const instance = new ApprovalStore();
+    // 会话尚未 register（worker 未起）就设模式
+    instance.setMode("auto", "not-registered-yet");
+
+    assert.equal(instance.getMode("not-registered-yet"), "auto");
+    assert.equal(instance.getMode(), "approval", "全局默认不应被会话级设定改写");
+    assert.equal(instance.getMode("another-session"), "approval");
+  });
+
+  test("未登记会话预设的模式在首次 register 后保留", () => {
+    const instance = new ApprovalStore();
+    instance.setMode("full-access", "s1");
+    instance.register("s1", ROOT);
+    assert.equal(instance.getMode("s1"), "full-access");
+  });
+
   test("自动审批模式：普通操作交给分析，高风险仍入待审", () => {
     const instance = store();
     instance.setMode("auto");
@@ -353,6 +412,27 @@ describe("ApprovalStore 生命周期", () => {
     askWrite(instance, "c1");
     instance.unregister(SESSION);
     assert.equal(instance.listPending(SESSION).length, 0);
+  });
+
+  test("注销会话后会话级模式也被清除", () => {
+    const instance = store();
+    instance.setMode("auto", SESSION);
+    assert.equal(instance.getMode(SESSION), "auto");
+
+    instance.unregister(SESSION);
+
+    // state 已彻底移除，回退全局默认
+    assert.equal(instance.getMode(SESSION), "approval");
+  });
+
+  test("注销后再登记不继承旧模式", () => {
+    const instance = store();
+    instance.setMode("auto", SESSION);
+    instance.unregister(SESSION);
+
+    // 同一 id 重新登记（视为全新会话）
+    instance.register(SESSION, ROOT);
+    assert.equal(instance.getMode(SESSION), "approval");
   });
 
   test("不同会话的记忆互相隔离", () => {

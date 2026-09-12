@@ -43,25 +43,45 @@ export class ApprovalStore {
     return this.mode;
   }
 
-  /** 设定审批模式：传入 sessionId 时只改该会话，否则改全局默认 */
+  /**
+   * 设定审批模式。
+   * 传入 sessionId：只改该会话的设定；会话尚未登记时先建一个占位 state，
+   *   避免把「会话级」误写成全局默认（否则会污染其他会话）。
+   * 不传 sessionId：改全局默认，作为未单独设定会话的回退值。
+   */
   setMode(mode: ApprovalMode, sessionId?: string): void {
     if (sessionId !== undefined) {
       const state = this.sessions.get(sessionId);
       if (state) {
         state.mode = mode;
-        return;
+      } else {
+        // 会话未登记（worker 未起）：建占位 state，register 时会保留这里的 mode
+        this.sessions.set(sessionId, {
+          projectRoot: "",
+          rules: [],
+          denyRules: [],
+          pending: new Map(),
+          mode,
+        });
       }
+      return;
     }
     this.mode = mode;
   }
 
-  /** 会话建立时登记项目根目录；重复登记会重置该会话的记忆规则 */
+  /**
+   * 会话建立时登记项目根目录；重复登记会重置该会话的记忆规则。
+   * 但**保留会话级审批模式**：会话级的设定应独立于 worker 生命周期，
+   * worker 回收后重开不应把用户设过的模式抹掉。
+   */
   register(sessionId: string, projectRoot: string): void {
+    const previous = this.sessions.get(sessionId);
     this.sessions.set(sessionId, {
       projectRoot,
       rules: [],
       denyRules: [],
       pending: new Map(),
+      mode: previous?.mode,
     });
   }
 

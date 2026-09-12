@@ -181,6 +181,8 @@ export function registerIpcHandlers(): void {
     sessionManager.close(request.sessionId);
     deleteSession(request.sessionId);
     removeSessionJsonl(session.kernelSessionId);
+    // 会话已永久删除：清掉审批状态，否则会话级模式/记忆规则会滞留在内存
+    sessionManager.approvals.unregister(request.sessionId);
     return { ok: true } as const;
   });
 
