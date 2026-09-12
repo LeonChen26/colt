@@ -77,7 +77,47 @@ export interface SessionInfo {
 /** 会话运行态 */
 export type SessionRunState = "idle" | "running";
 
-/** 渲染进程 → 主进程的调用通道 */
+/**
+ * 运行时调用通道白名单：preload 据此拒绝未授权通道。
+ * 通道的类型真源是下面的 IpcInvokeMap；本数组与它的键由紧随其后的断言在
+ * 编译期强制对齐（漏登记会让渲染层调用被白名单拒绝并崩溃，类型检查却无感），
+ * 故不再需要「正则解析本文件源码比对白名单」的测试。
+ */
+export const IPC_CHANNELS = [
+  "env.check",
+  "app.info",
+  "firstRun.check",
+  "firstRun.resolve",
+  "project.pick",
+  "project.list",
+  "session.create",
+  "session.list",
+  "session.open",
+  "session.prompt",
+  "session.abort",
+  "session.close",
+  "session.delete",
+  "session.view",
+  "secrets.status",
+  "secrets.set",
+  "changes.list",
+  "usage.list",
+  "toolCalls.list",
+  "providers.list",
+  "providers.save",
+  "providers.remove",
+  "session.setModel",
+  "session.steer",
+  "session.compact",
+  "approval.list",
+  "approval.resolve",
+  "approval.mode.get",
+  "approval.mode.set",
+  "session.branches",
+  "session.navigate",
+] as const;
+
+/** 渲染进程 → 主进程的调用通道契约（类型真源） */
 export interface IpcInvokeMap {
   "env.check": {
     request: void;
@@ -315,7 +355,27 @@ export type IpcChannel = keyof IpcInvokeMap;
 export type IpcRequest<C extends IpcChannel> = IpcInvokeMap[C]["request"];
 export type IpcResponse<C extends IpcChannel> = IpcInvokeMap[C]["response"];
 
-/** 主进程 → 渲染进程的推送通道 */
+/**
+ * 键对齐断言：IPC_CHANNELS（运行时白名单）与契约表必须双向一致。
+ * 两个方向任一不匹配都会报
+ * 「Type '"xxx"' does not satisfy the constraint 'never'」，直接指名通道。
+ */
+type MustBeNever<T extends never> = T;
+export type ChannelParityChecked = [
+  MustBeNever<Exclude<IpcChannel, (typeof IPC_CHANNELS)[number]>>,
+  MustBeNever<Exclude<(typeof IPC_CHANNELS)[number], IpcChannel>>,
+];
+
+/** 运行时事件白名单（同 IPC_CHANNELS：类型真源是下面的 IpcEventMap） */
+export const IPC_EVENTS = [
+  "session.view",
+  "session.status",
+  "session.error",
+  "file.changed",
+  "approval.pending",
+] as const;
+
+/** 主进程 → 渲染进程的推送通道（类型真源） */
 export interface IpcEventMap {
   /** 会话视图更新（由 worker 投影而来） */
   "session.view": ConversationView;
@@ -328,6 +388,15 @@ export interface IpcEventMap {
   /** 待审批的工具调用（新增或清空时推送全量） */
   "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
 }
+
+export type IpcEventName = keyof IpcEventMap;
+export type IpcEventPayload<E extends IpcEventName> = IpcEventMap[E];
+
+/** 事件名的键对齐断言（同通道） */
+export type EventParityChecked = [
+  MustBeNever<Exclude<IpcEventName, (typeof IPC_EVENTS)[number]>>,
+  MustBeNever<Exclude<(typeof IPC_EVENTS)[number], IpcEventName>>,
+];
 
 /**
  * 审批模式：
@@ -372,55 +441,8 @@ export interface ApprovalResolution {
   deny?: "signature" | "tool";
 }
 
-export type IpcEventName = keyof IpcEventMap;
-export type IpcEventPayload<E extends IpcEventName> = IpcEventMap[E];
-
 /** 预加载脚本暴露给渲染进程的 API 形状 */
 export interface BanyanApi {
   invoke<C extends IpcChannel>(channel: C, request: IpcRequest<C>): Promise<IpcResponse<C>>;
   on<E extends IpcEventName>(event: E, handler: (payload: IpcEventPayload<E>) => void): () => void;
 }
-
-/** 全部合法的调用通道名，用于预加载白名单校验 */
-export const IPC_CHANNELS = [
-  "env.check",
-  "app.info",
-  "firstRun.check",
-  "firstRun.resolve",
-  "project.pick",
-  "project.list",
-  "session.create",
-  "session.list",
-  "session.open",
-  "session.prompt",
-  "session.abort",
-  "session.close",
-  "session.delete",
-  "session.view",
-  "secrets.status",
-  "secrets.set",
-  "changes.list",
-  "usage.list",
-  "toolCalls.list",
-  "providers.list",
-  "providers.save",
-  "providers.remove",
-  "session.setModel",
-  "session.steer",
-  "session.compact",
-  "approval.list",
-  "approval.resolve",
-  "approval.mode.get",
-  "approval.mode.set",
-  "session.branches",
-  "session.navigate",
-] as const satisfies readonly IpcChannel[];
-
-/** 全部合法的事件名 */
-export const IPC_EVENTS = [
-  "session.view",
-  "session.status",
-  "session.error",
-  "file.changed",
-  "approval.pending",
-] as const satisfies readonly IpcEventName[];
