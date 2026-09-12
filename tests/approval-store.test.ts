@@ -72,14 +72,23 @@ describe("ApprovalStore 模式", () => {
     assert.equal(instance.getMode(SESSION), "auto", "重登记不应丢失会话模式");
   });
 
-  test("重登记仍会重置记忆规则", () => {
+  test("重登记保留记忆规则：与会话级模式同寿命", () => {
     const instance = store();
     askWrite(instance, "c1");
     instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
 
+    // 模拟 worker 回收后重开：重新登记同一会话
     instance.register(SESSION, ROOT);
-    askWrite(instance, "c2");
-    assert.equal(instance.listPending(SESSION).length, 1, "记忆规则仍应在重登记时失效");
+
+    const next = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c2",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 2,
+    });
+    assert.ok("decision" in next, "记忆规则不应随 worker 重登记失效");
+    assert.equal(instance.listPending(SESSION).length, 0);
   });
 
   test("未登记会话设定模式不污染全局默认", () => {
@@ -397,14 +406,32 @@ describe("ApprovalStore 生命周期", () => {
     assert.equal(instance.listPending(SESSION).length, 0);
   });
 
-  test("重新登记会话会重置记忆规则", () => {
+  test("重登记保留拒绝规则：同类调用仍自动拒绝", () => {
     const instance = store();
     askWrite(instance, "c1");
-    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: false, deny: "tool" });
+
     instance.register(SESSION, ROOT);
 
-    askWrite(instance, "c2");
-    assert.equal(instance.listPending(SESSION).length, 1, "重新登记后记忆应失效");
+    const next = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c2",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 2,
+    });
+    assert.ok("decision" in next, "拒绝规则不应随 worker 重登记失效");
+    assert.equal(next.decision.approved, false);
+    assert.equal(instance.listPending(SESSION).length, 0, "自动拒绝不应产生待审条目");
+  });
+
+  test("重登记清空待审队列（阻塞方随进程消失）", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    assert.equal(instance.listPending(SESSION).length, 1);
+
+    instance.register(SESSION, ROOT);
+    assert.equal(instance.listPending(SESSION).length, 0, "待审条目不应跨 worker 存活");
   });
 
   test("注销会话后不再持有待审", () => {

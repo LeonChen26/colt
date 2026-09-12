@@ -6,7 +6,9 @@
  *   2. 需要问的挂进待审队列并通知渲染层
  *   3. 用户处置后回传 worker，并按需记忆放行规则
  *
- * 记忆规则只在会话生命周期内有效，不落盘——权限决定不应悄悄长期生效。
+ * 记忆规则与审批模式只存在于内存、以 Banyan 会话为单位存活：不落盘，也不随
+ * worker 进程启停重置；删除会话（unregister）或退出应用即失效——权限决定不应
+ * 悄悄长期生效。待审队列则与 worker 同寿命，进程没了即清空。
  */
 import type { ApprovalMode, ApprovalRequest, ApprovalRisk } from "@shared/protocol";
 import { buildSignature, evaluateTool, type AllowRule, type ToolInvocation } from "./policy";
@@ -22,11 +24,13 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface SessionState {
   projectRoot: string;
+  /** 会话内记住的放行规则：与 mode 同寿命，跨 worker 启停保留 */
   rules: AllowRule[];
   /** 会话内记住的拒绝规则：命中即自动拒绝，不再打扰用户 */
   denyRules: AllowRule[];
   /** 该会话显式设定的审批模式；未设定时回退全局默认 */
   mode?: ApprovalMode;
+  /** 待审队列：与 worker 同寿命，进程没了即清空（阻塞在 before_tool 的调用方已消失） */
   pending: Map<string, ApprovalRequest>;
 }
 
@@ -70,16 +74,18 @@ export class ApprovalStore {
   }
 
   /**
-   * 会话建立时登记项目根目录；重复登记会重置该会话的记忆规则。
-   * 但**保留会话级审批模式**：会话级的设定应独立于 worker 生命周期，
-   * worker 回收后重开不应把用户设过的模式抹掉。
+   * 会话建立时登记项目根目录。
+   * 重复登记（worker 回收后重开）**保留会话级状态**：审批模式与记忆规则都以
+   * Banyan 会话为单位存活，不随 worker 进程重置——否则用户点过「本会话内始终
+   * 允许」后，只要切走一次会话（卸载会 dispose worker）就会再次被询问。
+   * 只有待审队列随进程清空：阻塞在 before_tool 的调用方已随该进程消失。
    */
   register(sessionId: string, projectRoot: string): void {
     const previous = this.sessions.get(sessionId);
     this.sessions.set(sessionId, {
       projectRoot,
-      rules: [],
-      denyRules: [],
+      rules: previous?.rules ?? [],
+      denyRules: previous?.denyRules ?? [],
       pending: new Map(),
       mode: previous?.mode,
     });
