@@ -42,7 +42,12 @@ import {
   extractToolText,
   toRelative,
 } from "./lib/project";
-import { ToolCallTracker, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
+import {
+  ToolCallTracker,
+  buildUsageUpload,
+  contextUsedFromUsage,
+  serializeArgs,
+} from "./lib/telemetry";
 
 const context: Context = BACKGROUND_CONTEXT;
 
@@ -206,6 +211,7 @@ function project(
       id?: string;
       toolName?: string;
       name?: string;
+      args?: unknown;
       startedAt?: number;
       result?: unknown;
     };
@@ -213,6 +219,8 @@ function project(
     return {
       id: record.toolCallId ?? record.id ?? "",
       name: record.toolName ?? record.name ?? "",
+      // 内核在 runningTools 上已经带上了入参，序列化后供渲染层实时展示命令
+      args: serializeArgs(record.args) ?? "{}",
       // bash 等工具在运行中会不断把全量输出快照写回 result
       output: extractToolText(record.result),
       fullOutputPath: details?.fullOutputPath,

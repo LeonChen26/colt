@@ -27,6 +27,8 @@ export interface ViewToolResult {
 export interface ViewRunningTool {
   id: string;
   name: string;
+  /** 工具入参的 JSON 字符串；渲染层据此展示运行中的命令、路径等 */
+  args: string;
   /** 已产生的输出（内核推的是全量快照，非增量） */
   output: string;
   /** 输出被截断时的完整日志落盘路径 */
