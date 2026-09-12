@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Check,
   ChevronDown,
+  Copy,
   FolderOpen,
   Monitor,
   Moon,
   Plus,
   Settings as SettingsIcon,
   Sun,
+  Trash2,
   Trees,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
@@ -174,6 +177,24 @@ export default function App(): React.JSX.Element {
     }
   }, [activeProject, loadProjectSessions]);
 
+  /** 删除会话：确认 → 调后端 → 刷新列表并适时清空选中 */
+  const deleteSession = useCallback(
+    async (session: SessionInfo) => {
+      if (!window.confirm(`确定删除会话「${session.title}」？此操作不可恢复。`)) return;
+      try {
+        await window.banyan.invoke("session.delete", { sessionId: session.id });
+        const list = await loadProjectSessions(session.projectId);
+        setActiveSession((current) => {
+          if (current?.id !== session.id) return current;
+          return list[0] ?? null;
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [loadProjectSessions],
+  );
+
   return (
     <div className="flex h-full flex-col">
       {firstRun && (
@@ -294,6 +315,7 @@ export default function App(): React.JSX.Element {
                                 if (project.id !== activeProject?.id) setActiveProject(project);
                                 setActiveSession(session);
                               }}
+                              onDelete={() => void deleteSession(session)}
                             />
                           ))
                         )}
@@ -486,54 +508,85 @@ function ProjectRow({
   );
 }
 
-/** 会话行：状态点 + 标题 / 副标题（运行中带计时） */
+/** 会话行：状态点 + 标题 / 副标题（运行中带计时），悬停显示复制/删除 */
 function SessionRow({
   session,
   active,
   startedAt,
   now,
   onClick,
+  onDelete,
 }: {
   session: SessionInfo;
   active: boolean;
   startedAt?: number;
   now: number;
   onClick: () => void;
+  onDelete: () => void;
 }): React.JSX.Element {
   const running = startedAt !== undefined;
+  const [copied, setCopied] = useState(false);
+
+  const copyId = (): void => {
+    void navigator.clipboard.writeText(session.id).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       className={cn(
-        "flex w-full items-center gap-2 rounded-[6px] px-1.5 py-1.5 text-left transition",
+        "group/session flex w-full items-center gap-2 rounded-[6px] px-1.5 py-1.5 transition",
         active ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",
       )}
     >
-      <span
-        className={cn(
-          "h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px]",
-          running
-            ? "pulse-dot border-success bg-success"
-            : active
-              ? "border-accent bg-accent"
-              : "border-text-muted",
-        )}
-      />
-      <span className="min-w-0 flex-1">
+      <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <span
           className={cn(
-            "block truncate text-[12.5px]",
-            active ? "text-text-primary" : "text-text-secondary",
+            "h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px]",
+            running
+              ? "pulse-dot border-success bg-success"
+              : active
+                ? "border-accent bg-accent"
+                : "border-text-muted",
           )}
-        >
-          {session.title}
+        />
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              "block truncate text-[12.5px]",
+              active ? "text-text-primary" : "text-text-secondary",
+            )}
+          >
+            {session.title}
+          </span>
+          <span className="block truncate text-[10.5px] text-text-muted">
+            {running ? `运行中 · ${formatElapsed(startedAt, now)}` : formatAgo(session.updatedAt)}
+          </span>
         </span>
-        <span className="block truncate text-[10.5px] text-text-muted">
-          {running ? `运行中 · ${formatElapsed(startedAt, now)}` : formatAgo(session.updatedAt)}
-        </span>
-      </span>
-    </button>
+      </button>
+      <button
+        type="button"
+        onClick={copyId}
+        title={copied ? "已复制" : "复制会话 ID"}
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted transition hover:bg-surface-raised hover:text-text-primary focus:opacity-100",
+          copied ? "text-success-fg opacity-100" : "opacity-0 group-hover/session:opacity-100",
+        )}
+      >
+        {copied ? <Check {...ICON.xs} /> : <Copy {...ICON.xs} />}
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={running}
+        title={running ? "运行中的会话不可删除" : "删除会话"}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover/session:opacity-100 hover:bg-surface-raised hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+      >
+        <Trash2 {...ICON.xs} />
+      </button>
+    </div>
   );
 }
 

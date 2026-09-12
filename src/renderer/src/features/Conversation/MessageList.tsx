@@ -25,6 +25,20 @@ import { cn } from "../../lib/utils";
 
 type ToolResult = { output: string; isError: boolean };
 
+/**
+ * 助手行级骨架：左侧固定角色列 + 右侧正文列。
+ * 流式态与完成态共用它，保证同一轮助手内容在不同生命周期下左边缘与宽度一致，
+ * 避免“流式时没对齐、结束后才对齐”的跳动。
+ */
+export function AssistantRow({ children }: { children: ReactNode }): React.JSX.Element {
+  return (
+    <div className="flex gap-2.5">
+      <span className="w-[46px] shrink-0 pt-[3px] text-[11px] text-text-muted">Agent</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">{children}</div>
+    </div>
+  );
+}
+
 /** 一条消息：正文 + 其发起的工具调用卡片 */
 export function MessageBubble({
   message,
@@ -54,24 +68,21 @@ export function MessageBubble({
   }
 
   return (
-    <div className="flex gap-2.5">
-      <span className="w-[46px] shrink-0 pt-[3px] text-[11px] text-text-muted">Agent</span>
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        {message.thought && <ThoughtBlock text={message.thought} />}
-        {message.text && <Markdown>{message.text}</Markdown>}
-        {message.toolCalls.map((call) => (
-          <ToolCard
-            key={call.id}
-            name={call.name}
-            args={call.args}
-            durationMs={call.durationMs}
-            result={resultMap.get(call.id)}
-            change={matchChangeByPath(changes, parseArgsJson(call.args).path)}
-            onHoverFile={onHoverFile}
-          />
-        ))}
-      </div>
-    </div>
+    <AssistantRow>
+      {message.thought && <ThoughtBlock text={message.thought} />}
+      {message.text && <Markdown>{message.text}</Markdown>}
+      {message.toolCalls.map((call) => (
+        <ToolCard
+          key={call.id}
+          name={call.name}
+          args={call.args}
+          durationMs={call.durationMs}
+          result={resultMap.get(call.id)}
+          change={matchChangeByPath(changes, parseArgsJson(call.args).path)}
+          onHoverFile={onHoverFile}
+        />
+      ))}
+    </AssistantRow>
   );
 }
 
@@ -97,15 +108,27 @@ function ThoughtBlock({ text }: { text: string }): React.JSX.Element {
   );
 }
 
-/** 运行中的思考轨：流式追加，斜体弱化 */
+/**
+ * 运行中的思考轨：默认折叠成与完成态 ThoughtBlock 等高的单行标题，
+ * 避免流式结束后从“展开”塌缩为“已思考”时的高度跳变。展开可看实时推理。
+ */
 export function ThinkingRail({ text }: { text: string }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="thought">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] not-italic text-text-muted">
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-1.5 text-[12px] text-text-muted transition hover:text-text-secondary"
+      >
+        <ChevronRight
+          {...ICON.sm}
+          className={cn("shrink-0 transition-transform", open && "rotate-90")}
+        />
         <Brain {...ICON.sm} />
         思考中…
-      </div>
-      {text}
+      </button>
+      {open && <div className="thought mt-1.5">{text}</div>}
     </div>
   );
 }
@@ -270,29 +293,3 @@ export function ToolCard({
   );
 }
 
-/** 消息气泡；streaming 时尾部带一个闪烁光标 */
-export function Bubble({
-  role,
-  children,
-  streaming,
-}: {
-  role: "user" | "assistant";
-  children: React.ReactNode;
-  streaming?: boolean;
-}): React.JSX.Element {
-  return (
-    <div
-      className={cn(
-        "max-w-[85%] rounded-[10px] border px-3.5 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-wrap",
-        role === "user"
-          ? "border-line bg-surface-overlay text-text-primary"
-          : "border-line bg-surface-raised text-text-primary",
-      )}
-    >
-      {children}
-      {streaming && (
-        <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle" />
-      )}
-    </div>
-  );
-}

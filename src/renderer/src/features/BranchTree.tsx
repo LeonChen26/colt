@@ -2,7 +2,7 @@
  * 分支树：自绘 SVG，展示会话的全部分支与当前活跃路径
  * 点击任一节点可 navigateTree 跳回该处，之后的对话会形成新分支
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { BranchNode } from "@shared/protocol";
@@ -65,24 +65,39 @@ export function BranchTree({
   const [collapsed, setCollapsed] = useState(false);
 
   const load = useMemo(
-    () => async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        // 会话未打开时后端返回空数组（非异常）；有新的对话后刷新即可看到分支
-        setNodes(await window.banyan.invoke("session.branches", { sessionId }));
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setLoading(false);
-      }
-    },
+    () =>
+      async (silent = false): Promise<void> => {
+        if (!silent) setLoading(true);
+        setError(null);
+        try {
+          // 会话未打开时后端返回空数组（非异常）；有新的对话后刷新即可看到分支
+          setNodes(await window.banyan.invoke("session.branches", { sessionId }));
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          if (!silent) setLoading(false);
+        }
+      },
     [sessionId],
   );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 会话产生新内容时自动刷新分支树。
+  // 以「消息条数 + 是否运行中」为签名，仅在树结构可能变化时静默刷新，
+  // 避免流式期间每个 token 都打一次 IPC / 闪烁加载态。
+  const signatureRef = useRef<string>("");
+  useEffect(() => {
+    return window.banyan.on("session.view", (view) => {
+      if (view.sessionId !== sessionId) return;
+      const signature = `${view.messages.length}:${view.running ? 1 : 0}`;
+      if (signature === signatureRef.current) return;
+      signatureRef.current = signature;
+      void load(true);
+    });
+  }, [sessionId, load]);
 
   const laid = useMemo(() => layout(nodes), [nodes]);
   const maxDepth = laid.reduce((max, node) => Math.max(max, node.depth), 0);

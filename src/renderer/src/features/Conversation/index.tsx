@@ -18,7 +18,8 @@ import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, ProviderConfig } from "@shared/protocol";
 import { cn } from "../../lib/utils";
-import { Bubble, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
+import { Markdown } from "../../components/Markdown";
+import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
 import { ChangesPanel } from "./panels/ChangesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { ToolsPanel } from "./panels/ToolsPanel";
@@ -32,10 +33,17 @@ type SidePanel = "none" | "changes" | "usage" | "tools";
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
 const STALE_IDLE_SEC = 30;
 
-const MODE_OPTIONS: { value: ApprovalMode; label: string }[] = [
-  { value: "approval", label: "审批模式" },
-  { value: "full-access", label: "全权执行模式" },
+const MODE_OPTIONS: { value: ApprovalMode; label: string; hint: string }[] = [
+  { value: "approval", label: "审批模式", hint: "只读命令放行，其余逐条确认" },
+  { value: "auto", label: "自动审批模式", hint: "普通操作由大模型判定，仅高风险确认" },
+  { value: "full-access", label: "全权执行模式", hint: "一律放行，不做拦截" },
 ];
+
+const MODE_LABEL: Record<ApprovalMode, string> = {
+  approval: "审批模式",
+  auto: "自动审批模式",
+  "full-access": "全权执行模式",
+};
 
 export function Conversation({
   sessionId,
@@ -383,24 +391,28 @@ export function Conversation({
               />
             ))}
 
-            {/* 思考轨：正在推理的流式文本，弱化呈现 */}
-            {view?.thought && <ThinkingRail text={view.thought} />}
-
-            {view?.streamingText && (
-              <Bubble role="assistant" streaming>
-                {view.streamingText}
-              </Bubble>
+            {/* 流式中的助手内容：思考轨 + 流式文本 + 运行中工具，
+                与完成态 MessageBubble 共用 AssistantRow 骨架，保证左边缘一致 */}
+            {(view?.thought || view?.streamingText || (view?.runningTools.length ?? 0) > 0) && (
+              <AssistantRow>
+                {view?.thought && <ThinkingRail text={view.thought} />}
+                {view?.streamingText && (
+                  <div className="relative">
+                    <Markdown>{view.streamingText}</Markdown>
+                    <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle" />
+                  </div>
+                )}
+                {view?.runningTools.map((tool) => (
+                  <ToolCard
+                    key={tool.id}
+                    name={tool.name}
+                    args={tool.args}
+                    running
+                    result={{ output: tool.output, isError: false }}
+                  />
+                ))}
+              </AssistantRow>
             )}
-
-            {view?.runningTools.map((tool) => (
-              <ToolCard
-                key={tool.id}
-                name={tool.name}
-                args="{}"
-                running
-                result={{ output: tool.output, isError: false }}
-              />
-            ))}
 
             {/* 审批卡片放在消息流末尾：lane 正阻塞在这里，不处理就不会往下走 */}
             {approvals.map((request) => (
@@ -446,7 +458,7 @@ export function Conversation({
             <Picker
               title="会话级模式"
               value={mode}
-              label={mode === "approval" ? "审批模式" : "全权执行模式"}
+              label={MODE_LABEL[mode]}
               options={MODE_OPTIONS}
               onChange={(value) => void switchMode(value as ApprovalMode)}
             />
@@ -567,7 +579,7 @@ function Picker({
   title: string;
   value: string;
   label: string;
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; hint?: string }[];
   onChange: (value: string) => void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
@@ -607,11 +619,16 @@ function Picker({
                 setOpen(false);
               }}
               className={cn(
-                "block w-full truncate px-2.5 py-1 text-left text-[11.5px] transition hover:bg-surface-raised",
+                "block w-full px-2.5 py-1 text-left text-[11.5px] transition hover:bg-surface-raised",
                 option.value === value ? "text-text-primary" : "text-text-secondary",
               )}
             >
-              {option.label}
+              <span className="block truncate">{option.label}</span>
+              {option.hint && (
+                <span className="mt-0.5 block truncate text-[10.5px] text-text-muted">
+                  {option.hint}
+                </span>
+              )}
             </button>
           ))}
         </div>

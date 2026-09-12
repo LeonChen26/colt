@@ -35,6 +35,18 @@ function samePath(path: string, highlight: string | null): boolean {
   );
 }
 
+/** 从工具入参里取一句最能说明「它在干什么」的摘要：命令 / 路径 */
+function runningToolSummary(argsJson: string): string {
+  try {
+    const parsed = JSON.parse(argsJson) as Record<string, unknown>;
+    const command = typeof parsed.command === "string" ? parsed.command : undefined;
+    const path = typeof parsed.path === "string" ? parsed.path : undefined;
+    return command ?? path ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** 可折叠分段头：caret + 标题 + 右侧元信息（对齐 .fsec-head） */
 function SectionHead({
   title,
@@ -115,17 +127,30 @@ export function FollowPanel({
         {!collapsed.agent && (
           <div className="max-h-[260px] overflow-y-auto px-2 pb-1.5">
             {/* 运行中的工具 */}
-            {runningTools.map((tool) => (
-              <div key={tool.id} className="flex items-center gap-1.5 rounded-[6px] px-2 py-1.5">
-                <span className="live-dot shrink-0" />
-                <span className="truncate font-mono text-[11px] text-text-secondary">
-                  {tool.name}
-                </span>
-                <span className="ml-auto shrink-0 text-[10.5px] text-text-muted">
-                  {ago(tool.startedAt)}
-                </span>
-              </div>
-            ))}
+            {runningTools.map((tool) => {
+              const summary = runningToolSummary(tool.args);
+              return (
+                <div key={tool.id} className="rounded-[6px] px-2 py-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="live-dot shrink-0" />
+                    <span className="truncate font-mono text-[11px] text-text-secondary">
+                      {tool.name}
+                    </span>
+                    <span className="ml-auto shrink-0 text-[10.5px] text-text-muted">
+                      {ago(tool.startedAt)}
+                    </span>
+                  </div>
+                  {summary.length > 0 && (
+                    <div
+                      title={summary}
+                      className="truncate pl-3.5 font-mono text-[10.5px] text-text-muted"
+                    >
+                      {summary}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             {/* 最近改动的文件 */}
             {files.length === 0 && runningTools.length === 0 ? (
