@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Banyan · Logo 方案</title>
+<style>
+  :root {
+    --surface: #0a0c0f; --surface-raised: #11141a; --surface-overlay: #161a21;
+    --border: #20262f; --border-strong: #2c333d;
+    --text-primary: #e8ebf0; --text-secondary: #98a2b3; --text-muted: #666f7a;
+    --accent: #c9ced6;
+  }
+  [data-theme="light"] {
+    --surface: #ffffff; --surface-raised: #f7f8f9; --surface-overlay: #eef0f2;
+    --border: #e3e6ea; --border-strong: #cdd2d9;
+    --text-primary: #1a1d21; --text-secondary: #565f6b; --text-muted: #8b929c;
+    --accent: #2b3138;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface); color: var(--text-primary);
+    font-family: "Inter", "Microsoft YaHei UI", system-ui, sans-serif; font-size: 14px;
+    -webkit-font-smoothing: antialiased; padding: 40px;
+  }
+  h1 { font-size: 20px; margin: 0 0 6px; font-weight: 650; }
+  .sub { color: var(--text-muted); font-size: 13px; margin-bottom: 32px; }
+
+  .section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-muted); margin: 40px 0 16px; font-weight: 600;
+    border-bottom: 1px solid var(--border); padding-bottom: 8px;
+  }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+
+  .card {
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; display: flex; flex-direction: column;
+    align-items: center; gap: 16px;
+  }
+  .card .name { font-weight: 650; font-size: 14px; }
+  .card .desc { color: var(--text-muted); font-size: 12px; text-align: center; line-height: 1.6; }
+
+  /* 应用预览：模拟顶栏 */
+  .bar {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 16px; font-weight: 650; font-size: 15px;
+  }
+  .bar svg { width: 20px; height: 20px; }
+
+  /* 尺寸矩阵 */
+  .sizes { display: flex; align-items: flex-end; gap: 28px; }
+  .sizes .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .sizes .item span { font-size: 10px; color: var(--text-muted); }
+
+  /* 明暗对比 */
+  .contrast { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .contrast .pane { border-radius: 12px; border: 1px solid var(--border); padding: 32px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+  .contrast .dark-pane { background: #0a0c0f; color: #e8ebf0; }
+  .contrast .light-pane { background: #ffffff; color: #1a1d21; }
+
+  svg.logo { display: block; }
+  .logo-mono { stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+  .toggle-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface-raised); color: var(--text-secondary);
+    cursor: pointer; font-size: 12px; }
+</style>
+</head>
+<body>
+<button class="toggle-btn" onclick="document.documentElement.setAttribute('data-theme', document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark')">切换明暗</button>
+
+<h1>Banyan · Logo 方案</h1>
+<div class="sub">榕树 / 分支 / 本地扎根 —— 三个方向，尺寸自适应，明暗通用</div>
+
+<!-- ============ 三个方案 ============ -->
+<div class="section-title">方案对比</div>
+<div class="grid">
+
+  <!-- 方案 A：分叉树 -->
+  <div class="card">
+    <svg class="logo logo-mono" width="72" height="72" viewBox="0 0 24 24">
+      <path d="M12 21V9"/>
+      <path d="M12 9c0-3 1.5-5 4-5"/>
+      <path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/>
+      <path d="M12 16c1.5 0 3-1 3.5-2.5"/>
+      <path d="M12 11c-1 0-2-.5-2.5-1.5"/>
+    </svg>
+    <div class="name">A · 生长</div>
+    <div class="desc">右侧主干 + 向左上扬的枝——有“生长”动态，<br>枝杈天然对应“分支”。</div>
+  </div>
+
+  <!-- 方案 B：榕树气根 -->
+  <div class="card">
+    <svg class="logo logo-mono" width="72" height="72" viewBox="0 0 24 24">
+      <!-- 宽阔的云状树冠：多个交叠弧，不规则 -->
+      <path d="M4 8.5c0-2.5 2-4 4.5-4 1 0 1.8.3 2.5.8"/>
+      <path d="M20 8.5c0-2.5-2-4-4.5-4-1.6 0-2.8.7-3.5 1.8-1-.8-2.2-1.3-3.5-1.3"/>
+      <path d="M4 8.5c0 2 1.5 3.5 3.5 3.5h9c2 0 3.5-1.5 3.5-3.5"/>
+      <!-- 主干 -->
+      <path d="M12 12v9"/>
+      <!-- 气根：不等长、不等距的垂落 -->
+      <path d="M7.5 12c0 3 .3 5.5 1.2 8"/>
+      <path d="M9.8 12.5c0 3.5-.2 6-.8 8.2"/>
+      <path d="M14.2 12.5c0 3.5.2 6 .8 8.2"/>
+      <path d="M16.5 12c0 3-.3 5.5-1.2 8"/>
+    </svg>
+    <div class="name">B · 榕树</div>
+    <div class="desc">宽冠 + 丛生气根——榕树的标志性形态，<br>从枝干垂下、入土成干。</div>
+  </div>
+
+  <!-- 方案 C：同心枝干 -->
+  <div class="card">
+    <svg class="logo logo-mono" width="72" height="72" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 21V8" />
+      <path d="M12 12 7 7" />
+      <path d="M12 16 16 11" />
+    </svg>
+    <div class="name">C · 环抱</div>
+    <div class="desc">树形置于圆环内——更像"徽章 / 应用图标"，<br>有容器感，独立使用时也更完整。</div>
+  </div>
+
+</div>
+
+<!-- ============ 顶栏应用 ============ -->
+<div class="section-title">顶栏应用（16px 图标 + 字标）</div>
+<div style="display:flex; gap:20px; flex-wrap:wrap;">
+  <div class="bar">
+    <svg class="logo-mono" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg>
+    Banyan
+  </div>
+  <div class="bar">
+    <svg class="logo-mono" viewBox="0 0 24 24"><path d="M4 8.5c0-2.5 2-4 4.5-4 1 0 1.8.3 2.5.8"/><path d="M20 8.5c0-2.5-2-4-4.5-4-1.6 0-2.8.7-3.5 1.8-1-.8-2.2-1.3-3.5-1.3"/><path d="M4 8.5c0 2 1.5 3.5 3.5 3.5h9c2 0 3.5-1.5 3.5-3.5"/><path d="M12 12v9"/><path d="M7.5 12c0 3 .3 5.5 1.2 8"/><path d="M9.8 12.5c0 3.5-.2 6-.8 8.2"/><path d="M14.2 12.5c0 3.5.2 6 .8 8.2"/><path d="M16.5 12c0 3-.3 5.5-1.2 8"/></svg>
+    Banyan
+  </div>
+  <div class="bar">
+    <svg class="logo-mono" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 21V8"/><path d="M12 12 7 7"/><path d="M12 16 16 11"/></svg>
+    Banyan
+  </div>
+</div>
+
+<!-- ============ 尺寸矩阵 ============ -->
+<div class="section-title">尺寸自适应（方案 A）</div>
+<div class="sizes">
+  <div class="item"><svg class="logo-mono" width="48" height="48" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg><span>48</span></div>
+  <div class="item"><svg class="logo-mono" width="32" height="32" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg><span>32</span></div>
+  <div class="item"><svg class="logo-mono" width="24" height="24" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg><span>24</span></div>
+  <div class="item"><svg class="logo-mono" width="16" height="16" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg><span>16</span></div>
+</div>
+
+<!-- ============ 明暗对比 ============ -->
+<div class="section-title">明暗通用</div>
+<div class="contrast">
+  <div class="pane dark-pane">
+    <svg class="logo-mono" width="40" height="40" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg>
+    <span style="font-weight:650;font-size:18px">Banyan</span>
+  </div>
+  <div class="pane light-pane">
+    <svg class="logo-mono" width="40" height="40" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M12 9c0-3 1.5-5 4-5"/><path d="M12 13c-2.5 0-4-1.5-4-4 0-1.5.5-2.5 1-3"/><path d="M12 16c1.5 0 3-1 3.5-2.5"/><path d="M12 11c-1 0-2-.5-2.5-1.5"/></svg>
+    <span style="font-weight:650;font-size:18px">Banyan</span>
+  </div>
+</div>
+
+</body>
+</html>

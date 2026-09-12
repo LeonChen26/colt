@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Banyan v3 · 低保真原型</title>
+<style>
+  /* ============================================================
+     低保真原型：只验证信息结构与布局，故意用灰阶、系统字体、粗边框。
+     刻意不上品牌色 / 不上精修视觉，避免被"好不好看"干扰判断。
+     作者：Banyan
+     ============================================================ */
+  :root {
+    --bg: #f4f4f5;
+    --panel: #ffffff;
+    --panel-2: #fafafa;
+    --ink: #18181b;
+    --ink-2: #52525b;
+    --ink-3: #a1a1aa;
+    --line: #d4d4d8;
+    --line-strong: #71717a;
+    --fill: #e4e4e7;
+    --fill-2: #d4d4d8;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+  /* ---------- 顶栏 ---------- */
+  .topbar {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 12px;
+    background: var(--panel);
+    border-bottom: 2px solid var(--line-strong);
+  }
+  .logo { font-weight: 700; letter-spacing: .3px; }
+  .logo small { font-weight: 400; color: var(--ink-3); margin-left: 6px; }
+  .seg { display: flex; gap: 4px; }
+  .seg button, .btn {
+    font: inherit; cursor: pointer;
+    background: var(--panel); color: var(--ink);
+    border: 1.5px solid var(--line-strong);
+    padding: 3px 9px;
+  }
+  .seg button.on { background: var(--ink); color: #fff; }
+  .spacer { flex: 1; }
+  .btn.sm { padding: 2px 8px; font-size: 12px; }
+  .btn:active { transform: translateY(1px); }
+
+  /* ---------- 三栏骨架 ---------- */
+  .shell { display: flex; height: calc(100% - 40px); }
+  .col { display: flex; flex-direction: column; min-height: 0; }
+  .sidebar { width: 224px; background: var(--panel-2); border-right: 2px solid var(--line-strong); }
+  .main { flex: 1; min-width: 0; background: var(--bg); display: flex; flex-direction: column; }
+  .follow { width: 264px; background: var(--panel-2); border-left: 2px solid var(--line-strong); }
+
+  /* 会话树（侧边栏下半区）：git graph + 节点文字 */
+  .sidetree { flex: 1 1 0; min-height: 100px; display: flex; flex-direction: column; overflow: hidden; }
+  .sidetree .tree-body { flex: 1; min-height: 0; }
+  .sidetree.collapsed { flex: none; min-height: 0; }
+  .sidetree.collapsed .tree-body { display: none; }
+  /* 两个区之间用分隔线（非拖拽） */
+
+  /* 侧栏上区：项目（可整个折叠） */
+  .proj-zone { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .proj-zone .scroll { flex: 1; min-height: 0; }
+  .proj-zone.collapsed .scroll { display: none; }
+  /* 可点折叠的标题头 */
+  .zone-head {
+    display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+    padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--ink-3); border-bottom: 1px solid var(--line);
+  }
+  .zone-head:hover { background: var(--fill); }
+  .zone-head .zcaret { font-size: 10px; width: 10px; }
+  .zone-head .zact { margin-left: auto; display: flex; gap: 4px; }
+
+  /* 上下区之间：静态分隔线（不可拖拽） */
+  .sidetree .tree-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; }
+  .tree-row { display: flex; align-items: center; gap: 8px; height: 26px; padding-right: 8px; cursor: pointer; }
+  .tree-row:hover { background: var(--fill); }
+  .tree-row.active { background: var(--fill); }
+  .tree-row .graph { flex: none; }
+  .tree-row .tlbl { flex: 1; min-width: 0; font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tree-row.off-path .tlbl { color: var(--ink-3); }
+  .tree-row .tlbl b { font-weight: 600; color: var(--ink); }
+
+  /* 对话流容器 */
+  .main-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  .sec-title {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .6px; color: var(--ink-3);
+    border-bottom: 1px solid var(--line);
+  }
+  .scroll { overflow-y: auto; flex: 1; min-height: 0; }
+  .pad { padding: 8px; }
+
+  /* ---------- 侧栏：项目（可展开）→ 会话 树形 ---------- */
+  .proj {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 8px; cursor: pointer; border-left: 3px solid transparent;
+  }
+  .proj:hover { background: var(--fill); }
+  .proj.expanded { border-left-color: var(--ink); }
+  .proj .caret { width: 12px; color: var(--ink-3); font-size: 10px; }
+  .proj .pname { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .proj .pnew { color: var(--ink-3); font-size: 11px; display: none; }
+  .proj:hover .pnew { display: inline; }
+  .proj-path {
+    padding: 0 8px 6px 26px; color: var(--ink-3); font-size: 10px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 项目下的会话：缩进一层 */
+  .sess.child { padding-left: 26px; }
+  .sess.child .dot { width: 7px; height: 7px; }
+
+  /* 项目块：每个项目及其会话包在一个容器里，便于展开/收起 */
+  .proj-group.collapsed .proj-body { display: none; }
+
+  /* ---------- 会话列表 ---------- */
+  .group-label {
+    padding: 8px 12px 4px; font-size: 11px; color: var(--ink-3);
+    font-weight: 600;
+  }
+  .sess {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-left: 3px solid transparent; cursor: pointer;
+  }
+  .sess:hover { background: var(--fill); }
+  .sess.on { background: var(--fill); border-left-color: var(--ink); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1.5px solid var(--line-strong); }
+  .dot.live { background: #71717a; animation: pulse 1.4s infinite; }
+  .dot.ok { background: var(--ink-3); border-color: var(--ink-3); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+  .sess .t { flex: 1; min-width: 0; }
+  .sess .t b { font-weight: 600; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .t span { color: var(--ink-3); font-size: 11px; }
+
+  /* ---------- 现场观测已下沉到输入区上方状态条，见 .statusbar ---------- */
+
+  .chip {
+    border: 1.5px solid var(--line-strong); padding: 2px 8px;
+    display: inline-flex; align-items: center; gap: 6px; background: var(--panel-2);
+  }
+  /* 上下文进度条 */
+  .ctx { display: inline-flex; align-items: center; gap: 6px; }
+  .ctx .track {
+    width: 90px; height: 10px; border: 1.5px solid var(--line-strong);
+    background: repeating-linear-gradient(90deg, var(--fill-2) 0 6px, transparent 6px 9px);
+  }
+  .ctx .track i { display: block; height: 100%; background: var(--fill-2); }
+
+  .heartbeat { display: inline-flex; align-items: center; gap: 6px; }
+  .beat-dot { width: 8px; height: 8px; border-radius: 50%; background: #52525b; animation: pulse 1s infinite; }
+  .stale .beat-dot { background: var(--fill-2); animation: none; }
+  .btn.warn { border-color: var(--ink); border-style: dashed; }
+  .small-muted { color: var(--ink-3); font-size: 11px; }
+
+  /* ---------- 主区 ---------- */
+  .stream-wrap { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; position: relative; }
+
+  /* 空态 / 会话现场：由数据驱动。低保真下用按键 E 切换对照，见页面底部提示。 */
+
+  /* 流式自动滚底：用户上滑后暂停跟随，右下浮出「回到底部」 */
+  .jump-bottom {
+    position: absolute; right: 16px; bottom: 16px; display: none;
+    background: var(--panel); border: 1.5px solid var(--line-strong);
+    padding: 4px 10px; font-size: 11px; cursor: pointer;
+  }
+  .jump-bottom.show { display: block; }
+  .follow-paused { color: var(--ink-3); font-size: 11px; }
+  .stream { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+
+  /* 思考轨 */
+  .thought {
+    border: 1.5px dashed var(--line); background: var(--panel-2);
+    padding: 8px 10px; color: var(--ink-2); font-style: italic;
+  }
+  .thought .h { display: flex; justify-content: space-between; font-style: normal; font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
+
+  /* 消息条 */
+  .msg { display: flex; gap: 8px; }
+  .msg .who { width: 44px; flex: none; font-size: 11px; color: var(--ink-3); padding-top: 2px; }
+  .msg .body { flex: 1; }
+
+  /* 用户消息：整体靠右，气泡自适应宽度，贴着「你」标签左缘 */
+  .msg.user { justify-content: flex-end; }   /* 整块推向右 */
+  .msg.user .body {
+    order: 1;
+    flex: 0 1 auto;        /* 自适应宽度 */
+    margin-left: auto;     /* 靠右：吸到 who 左侧 */
+    max-width: 70%;        /* 过长时仍不拉满整行 */
+    background: var(--fill); padding: 6px 10px; border-right: 3px solid var(--ink);
+  }
+  .msg.user .who {
+    order: 2;              /* 标签在最右 */
+    width: auto; margin-left: 8px;
+  }
+  .msg.user .acts { left: auto; right: 52px; }
+
+  /* 工具卡 */
+  .tool {
+    border: 1.5px solid var(--line-strong); background: var(--panel);
+  }
+  .tool .head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer;
+  }
+  .tool .head .ic { width: 22px; text-align: center; }
+  .tool .head .name { font-weight: 600; }
+  .tool .head .path { color: var(--ink-2); }
+  .tool .head .stat { margin-left: auto; display: flex; gap: 10px; color: var(--ink-3); font-size: 11px; }
+  .tool .detail { border-top: 1.5px dashed var(--line); padding: 8px 10px; display: none; background: var(--panel-2); }
+  .tool.open .detail { display: block; }
+  .tool .caret { color: var(--ink-3); }
+
+  /* diff 灰阶 */
+  .diff { border: 1px solid var(--line); }
+  .diff .ln { display: flex; gap: 8px; padding: 1px 8px; white-space: pre-wrap; }
+  .diff .ln.add { background: #e8e8e8; }
+  .diff .ln.del { background: #d6d6d6; text-decoration: line-through; } /* 低保真用灰阶区分增删 */
+
+  /* 终端 */
+  .term { background: var(--panel); border: 1px solid var(--line); padding: 6px 8px; font-size: 12px; }
+  .term .out { color: var(--ink-2); white-space: pre-wrap; }
+
+  /* 授权卡 */
+  .grant {
+    border: 2px solid var(--ink); background: var(--panel); padding: 10px;
+  }
+  .grant .h { display: flex; align-items: center; justify-content: space-between; font-weight: 700; margin-bottom: 6px; }
+  .grant .reason { color: var(--ink-2); margin: 4px 0 8px; }
+  .grant .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .grant .acts .sep { flex: 1; }
+  .btn.strong { background: var(--ink); color: #fff; }
+
+  /* 输入区 */
+  /* ---------- 输入区（现为全部状态与操作的汇聚点）---------- */
+  .composer { border-top: 2px solid var(--line-strong); background: var(--panel); padding: 10px 12px; }
+
+  /* 状态条：观测（左）+ 输入意图（右）同一行 */
+  .statusbar {
+    max-width: 720px; margin: 0 auto 8px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1.5px solid var(--line-strong); background: var(--panel-2);
+    padding: 5px 10px;
+  }
+  .statusbar .heartbeat { display: inline-flex; align-items: center; gap: 6px; }
+  .statusbar .beat-dot { width: 8px; height: 8px; border-radius: 50%; background: #52525b; animation: pulse 1s infinite; }
+  .statusbar.stale .beat-dot { background: var(--fill-2); animation: none; }
+  .statusbar .sep-v { width: 1px; height: 14px; background: var(--line); }
+  /* 状态条里的模型/模式：比独立时更紧凑 */
+  .statusbar .model-pick { background: var(--panel); padding: 1px 6px; }
+
+  .composer .inner { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+  .composer textarea {
+    flex: 1; resize: none; font: inherit; padding: 8px 10px;
+    border: 1.5px solid var(--line-strong); background: var(--panel-2); outline: none;
+    max-height: 180px; overflow-y: auto;   /* 自适应增高，超高后滚 */
+  }
+  .send-btn { height: 38px; min-width: 68px; flex: none; }
+
+  /* 消息操作：悬浮在消息旁，默认隐藏（ChatGPT 范式） */
+  .msg { position: relative; }
+  .msg .acts {
+    position: absolute; right: 0; top: -2px; display: none; gap: 4px;
+  }
+  .msg:hover .acts { display: flex; }
+  .msg .acts button {
+    font: inherit; font-size: 11px; background: var(--panel); color: var(--ink-2);
+    border: 1px solid var(--line); padding: 1px 6px; cursor: pointer;
+  }
+
+  /* 助手回复折叠（思考摘要 / 长内容） */
+  .fold-head {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    color: var(--ink-2); font-size: 12px; padding: 4px 0;
+  }
+  .fold-head .caret { color: var(--ink-3); }
+
+  /* 空态：一句话输入引导（ChatGPT 范式） */
+  .empty {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; color: var(--ink-3);
+  }
+  .empty h2 { color: var(--ink); font-size: 18px; margin: 0; }
+  .empty .chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .empty .chips span {
+    border: 1.5px solid var(--line-strong); padding: 4px 10px; background: var(--panel);
+    color: var(--ink-2); cursor: pointer;
+  }
+  .hidden { display: none !important; }
+  /* 输入框底部工具条已并入状态条，故移除 .composer-tools */
+  .model-pick {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1.5px solid var(--line-strong); background: var(--panel);
+    padding: 2px 8px; cursor: pointer;
+  }
+  .model-pick .caret { color: var(--ink-3); }
+  .model-pick .badge {
+    font-size: 10px; border: 1px solid var(--line); color: var(--ink-3);
+    padding: 0 4px;
+  }
+  /* ---------- 跟随线 Follow Line ---------- */
+  .follow-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-bottom: 1px solid var(--line);
+  }
+  .follow-item .ic { width: 16px; text-align: center; }
+  .follow-item .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .follow-item .ago { color: var(--ink-3); font-size: 11px; }
+  .follow-item.fresh { background: var(--fill); }
+  .follow-sum { padding: 10px 12px; border-top: 2px solid var(--line-strong); }
+  .follow-sum .big { font-weight: 700; }
+
+  /* 右栏可折叠分区：标题头可点，收起时隐藏正文 */
+  .fold-sec { border-top: 1px solid var(--line); }
+  .fold-sec > .fold-sec-head {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 8px 12px; user-select: none;
+  }
+  .fold-sec > .fold-sec-head:hover { background: var(--fill); }
+  .fold-sec .caret { color: var(--ink-3); font-size: 10px; width: 10px; }
+  .fold-sec .ttl { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-3); }
+  .fold-sec .meta { margin-left: auto; font-size: 11px; color: var(--ink-3); }
+  .fold-sec.collapsed .fold-sec-body { display: none; }
+
+  .timeline { padding: 10px 12px; }
+  .tl-node { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--ink-2); }
+  .tl-node.cur { color: var(--ink); font-weight: 600; }
+
+  /* 标注（低保真说明用） */
+  .annot {
+    position: absolute; background: #fff; border: 1px dashed var(--line-strong);
+    color: var(--ink-3); font-size: 10px; padding: 1px 5px; pointer-events: none;
+  }
+  .tag {
+    display: inline-block; font-size: 10px; border: 1px dashed var(--line-strong);
+    color: var(--ink-3); padding: 0 4px; margin-left: 6px; vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<!-- ========================= 顶栏 ========================= -->
+<div class="topbar">
+  <div class="logo">🌳 Banyan<small>v3 低保真 · 按 <b>E</b> 切换空态</small></div>
+  <div class="spacer"></div>
+  <button class="btn sm">⚙ 设置</button>
+</div>
+
+<div class="shell">
+
+  <!-- ===================== 侧栏：项目（可折叠）→ 会话分支 ===================== -->
+  <aside class="col sidebar">
+
+    <!-- 上区：项目（标题可折叠，收起则不显示内容） -->
+    <div class="proj-zone" id="projZone">
+      <div class="zone-head" onclick="toggleProjZone(this)">
+        <span class="zcaret">▾</span>
+        <span>项目</span>
+        <span class="zact"><button class="btn sm" onclick="event.stopPropagation()">＋ 打开</button></span>
+      </div>
+      <div class="scroll">
+
+      <!-- 项目块：每个项目及其会话包在一个容器里，便于展开/收起 -->
+      <div class="proj-group">
+        <div class="proj expanded" onclick="toggleProj(this)">
+          <span class="caret">▾</span>
+          <span class="pname">banyan</span>
+          <span class="pnew">＋</span>
+        </div>
+        <div class="proj-body">
+          <div class="proj-path mono">E:\code\opensource\banyan</div>
+          <div class="sess child on" onclick="openSess(this)">
+            <span class="dot live"></span>
+            <div class="t"><b>修复登录超时 bug</b><span>运行中 · 2:14</span></div>
+          </div>
+          <div class="sess child" onclick="openSess(this)">
+            <span class="dot live"></span>
+            <div class="t"><b>接入 DeepSeek 流式</b><span>运行中 · 0:31</span></div>
+          </div>
+          <div class="sess child" onclick="openSess(this)">
+            <span class="dot ok"></span>
+            <div class="t"><b>重构日志模块</b><span>昨天</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 项目块：收起态 -->
+      <div class="proj-group collapsed">
+        <div class="proj" onclick="toggleProj(this)">
+          <span class="caret">▸</span>
+          <span class="pname">workmate-api</span>
+          <span class="pnew">＋</span>
+        </div>
+        <div class="proj-body">
+          <div class="proj-path mono">D:\work\workmate-api</div>
+          <div class="sess child" onclick="openSess(this)">
+            <span class="dot ok"></span>
+            <div class="t"><b>接入支付回调</b><span>9月8日</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 项目块：收起态 -->
+      <div class="proj-group collapsed">
+        <div class="proj" onclick="toggleProj(this)">
+          <span class="caret">▸</span>
+          <span class="pname">docs-site</span>
+          <span class="pnew">＋</span>
+        </div>
+        <div class="proj-body">
+          <div class="proj-path mono">E:\code\docs-site</div>
+        </div>
+      </div>
+
+      </div>
+    </div>
+
+    <!-- 下区：当前会话的分支树（可折叠） -->
+    <div class="sidetree" id="treeZone">
+        <div class="zone-head" onclick="toggleTreeZone(this)">
+          <span class="zcaret">▾</span>
+          <span>会话分支</span>
+        </div>
+        <div class="tree-body">
+          <div class="tree-row" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><circle cx="13" cy="13" r="4" fill="#fafafa" stroke="#71717a" stroke-width="1.5"/></svg>
+            <span class="tlbl">起点 · 初始对话</span>
+          </div>
+          <div class="tree-row" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><line x1="13" y1="0" x2="13" y2="26" stroke="#71717a" stroke-width="1.5"/><circle cx="13" cy="13" r="4" fill="#18181b" stroke="#18181b" stroke-width="1.5"/></svg>
+            <span class="tlbl"><b>你：修复登录超时</b></span>
+          </div>
+          <div class="tree-row off-path" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><path d="M13 0 C 22 4, 22 9, 22 13" stroke="#a1a1aa" stroke-width="1.5" stroke-dasharray="3 2" fill="none"/><circle cx="22" cy="13" r="4" fill="#fafafa" stroke="#a1a1aa" stroke-width="1.5" stroke-dasharray="2 2"/></svg>
+            <span class="tlbl">助手A：直接加超时（已放弃）</span>
+          </div>
+          <div class="tree-row" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><line x1="13" y1="0" x2="13" y2="26" stroke="#71717a" stroke-width="1.5"/><line x1="22" y1="0" x2="22" y2="5" stroke="#a1a1aa" stroke-width="1.5" stroke-dasharray="3 2"/><circle cx="13" cy="13" r="4" fill="#18181b" stroke="#18181b" stroke-width="1.5"/></svg>
+            <span class="tlbl"><b>助手B：定位到竞态</b></span>
+          </div>
+          <div class="tree-row" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><line x1="13" y1="0" x2="13" y2="26" stroke="#71717a" stroke-width="1.5"/><circle cx="13" cy="13" r="4" fill="#18181b" stroke="#18181b" stroke-width="1.5"/></svg>
+            <span class="tlbl">tool：edit token.ts</span>
+          </div>
+          <div class="tree-row" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><line x1="13" y1="0" x2="13" y2="26" stroke="#71717a" stroke-width="1.5"/><circle cx="13" cy="13" r="4" fill="#18181b" stroke="#18181b" stroke-width="1.5"/></svg>
+            <span class="tlbl">tool：bash npm test</span>
+          </div>
+          <div class="tree-row" onclick="jumpNode(this)">
+            <svg class="graph" width="26" height="26"><line x1="13" y1="0" x2="13" y2="26" stroke="#71717a" stroke-width="1.5"/><circle cx="13" cy="13" r="4.5" fill="#18181b" stroke="#fafafa" stroke-width="2"/></svg>
+            <span class="tlbl">当前</span>
+          </div>
+        </div>
+      </div>
+  </aside>
+
+  <!-- ===================== 主区 ===================== -->
+  <main class="col main">
+
+    <!-- 对话流 -->
+    <div class="main-body">
+
+    <!-- ③ 行动流（有内容会话） -->
+    <div class="stream-wrap" id="view-live">
+      <div class="stream">
+
+        <!-- ② 思考轨 -->
+        <div class="thought" id="thought">
+          <div class="h"><span>💭 思考中… <span class="tag">agent_thought_chunk</span></span><span>▾ 可折叠</span></div>
+          我先确认 token 刷新逻辑是否有竞态：如果多个请求同时检测到过期，会同时发起刷新，
+          后发的响应覆盖先发的，导致一部分请求拿到已失效的 token……
+        </div>
+
+        <!-- 用户（标签靠右，正文仍左对齐） -->
+        <div class="msg user">
+          <div class="who">你</div>
+          <div class="body">修复登录超时，session 20 分钟就掉线。</div>
+          <div class="acts"><button>复制</button><button>编辑</button></div>
+        </div>
+
+        <!-- Agent 文本（带折叠思考摘要 + 悬浮操作） -->
+        <div class="msg">
+          <div class="who">Agent</div>
+          <div class="body">
+            <div class="fold-head" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+              <span class="caret">▸</span> 已思考 6 秒
+            </div>
+            <div style="display:none" class="small-muted">
+              我先确认 token 刷新逻辑是否有竞态……
+            </div>
+            根因是 token 刷新存在竞态，我来加锁重试。
+          </div>
+          <div class="acts"><button>复制</button><button>重试</button></div>
+        </div>
+
+        <!-- 工具卡：edit（内嵌 diff） -->
+        <div class="tool" onclick="this.classList.toggle('open')">
+          <div class="head">
+            <span class="ic">✎</span>
+            <span class="name mono">edit</span>
+            <span class="path mono">src/auth/token.ts</span>
+            <span class="stat"><span>+12 −4</span><span>✓ 0.4s</span><span class="caret">▾</span></span>
+          </div>
+          <div class="detail">
+            <div class="diff mono">
+              <div class="ln del">-  const token = await refresh(userId);</div>
+              <div class="ln del">-  setToken(token);</div>
+              <div class="ln add">+  const token = await withLock(userId, () =&gt; refresh(userId));</div>
+              <div class="ln add">+  setToken(token);</div>
+            </div>
+            <div class="small-muted" style="margin-top:6px">↑ 工具内容内嵌 diff（ToolCallContent.Diff），无需跳转</div>
+          </div>
+        </div>
+
+        <!-- 工具卡：grep -->
+        <div class="tool" onclick="this.classList.toggle('open')">
+          <div class="head">
+            <span class="ic">👁</span>
+            <span class="name mono">grep</span>
+            <span class="path mono">refreshToken</span>
+            <span class="stat"><span>✓ 0.1s</span><span class="caret">▾</span></span>
+          </div>
+          <div class="detail mono small-muted">
+            src/auth/token.ts:42:  await refreshToken(userId)<br>
+            src/auth/middleware.ts:18:  if (!isValid(t)) refreshToken(...)
+          </div>
+        </div>
+
+        <!-- 工具卡：bash 运行中 -->
+        <div class="tool open">
+          <div class="head">
+            <span class="ic">▶</span>
+            <span class="name mono">bash</span>
+            <span class="path mono">npm test -- auth</span>
+            <span class="stat"><span class="mono">● 运行中 1.0s</span></span>
+          </div>
+          <div class="detail">
+            <div class="term mono">
+              <div class="out">PASS src/auth/token.test.ts
+PASS src/auth/session.test.ts
+2 passed · 1.2s</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑤ 授权卡 -->
+        <div class="grant">
+          <div class="h">
+            <span>⚠ 需要你的许可 <span class="tag">ACP: RequestPermission</span></span>
+            <span class="mono small-muted">⏱ 45s 后超时</span>
+          </div>
+          <div>操作：覆盖写入 <span class="mono">src/auth/token.ts</span></div>
+          <div class="reason">原因：检测到该文件有未提交改动，覆盖可能丢失。</div>
+          <button class="btn sm">展开查看 diff</button>
+          <div class="acts" style="margin-top:8px">
+            <button class="btn sm">允许一次</button>
+            <button class="btn sm">本会话内始终允许</button>
+            <span class="sep"></span>
+            <button class="btn sm">拒绝一次</button>
+            <button class="btn sm">始终拒绝</button>
+          </div>
+          <div class="small-muted" style="margin-top:6px">
+            选项由 Agent 下发（allow_once / allow_always / reject_once / reject_always）；超时自动拒绝且不静默
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 流式自动滚底：上滑后暂停跟随，右下浮出此按钮 -->
+      <button class="jump-bottom" id="jumpBtn" onclick="jumpToBottom()">↓ 回到底部</button>
+    </div>
+
+    <!-- 空态：新会话（ChatGPT 范式：居中一句话引导 + 示例芯片） -->
+    <div class="stream-wrap hidden" id="view-empty">
+      <div class="empty">
+        <h2>今天要修哪个 bug？</h2>
+        <p>描述你想做的事，Banyan 会先给你一份计划。</p>
+        <div class="chips" id="emptyChips">
+          <span>修复登录超时</span>
+          <span>给 utils 补单测</span>
+          <span>把日志换成 pino</span>
+          <span>解释这段代码</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入区（全部状态与操作的汇聚点） -->
+    <div class="composer">
+
+      <!-- 状态条：输入意图（左，每轮都要碰）+ 观测信息（右） -->
+      <div class="statusbar" id="hb">
+        <!-- 左：输入意图（模型 / 模式） -->
+        <span class="model-pick mono" title="每轮对话都要选，贴着输入框">
+          deepseek-chat <span class="caret">▾</span>
+        </span>
+        <span class="model-pick" title="会话级模式">
+          审批模式 <span class="caret">▾</span> <span class="badge">会话级</span>
+        </span>
+
+        <span class="sep-v"></span>
+
+        <!-- 右：观测 -->
+        <span class="ctx" title="上下文占用 used/size">
+          <span class="track"><i style="width:38%"></i></span>
+          <span class="mono">38% <span class="small-muted">12.3k/32k</span></span>
+        </span>
+        <span class="mono small-muted">$0.0021</span>
+        <span class="sep-v"></span>
+        <span class="heartbeat">
+          <span class="beat-dot"></span>
+          <span class="mono">运行中 <b id="elapsed">02:14</b></span>
+          <span class="mono small-muted">最后活动 <b id="idle">3</b>s 前</span>
+        </span>
+
+        <span class="spacer" style="flex:1"></span>
+      </div>
+
+      <div class="inner">
+        <textarea rows="1" placeholder="空闲：输入消息，Enter 发送 · Shift+Enter 换行"></textarea>
+        <!-- 双态按钮：空闲=发送 / 运行=停止（互斥，同一按钮位承载） -->
+        <button class="btn strong send-btn" id="sendbtn">发送</button>
+      </div>
+    </div>
+
+    </div><!-- /.main-body -->
+  </main>
+
+  <!-- ===================== ④ 跟随线（三段均可折叠） ===================== -->
+  <aside class="col follow">
+
+    <!-- 段 1：正在处理的文件 -->
+    <div class="fold-sec">
+      <div class="fold-sec-head" onclick="toggleSec(this)">
+        <span class="caret">▾</span>
+        <span class="ttl">Agent 正在处理</span>
+        <span class="meta">4 个文件</span>
+      </div>
+      <div class="fold-sec-body">
+        <div class="follow-item fresh">
+          <span class="ic">✎</span>
+          <span class="nm mono">src/auth/token.ts</span>
+          <span class="ago">● 刚刚</span>
+        </div>
+        <div class="follow-item">
+          <span class="ic">👁</span>
+          <span class="nm mono">src/auth/middleware.ts</span>
+          <span class="ago">2s 前</span>
+        </div>
+        <div class="follow-item">
+          <span class="ic">✎</span>
+          <span class="nm mono">tests/auth.test.ts</span>
+          <span class="ago">12s 前</span>
+        </div>
+        <div class="follow-item">
+          <span class="ic">👁</span>
+          <span class="nm mono">package.json</span>
+          <span class="ago">30s 前</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 段 2：本次改动 -->
+    <div class="fold-sec">
+      <div class="fold-sec-head" onclick="toggleSec(this)">
+        <span class="caret">▾</span>
+        <span class="ttl">本次改动</span>
+        <span class="meta">3 文件 +28 −12</span>
+      </div>
+      <div class="fold-sec-body">
+        <div class="follow-sum">
+          <div class="big">3 文件 · +28 −12</div>
+          <button class="btn sm" style="margin-top:8px">查看全部改动</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 段 3：会话时间线 -->
+    <div class="fold-sec">
+      <div class="fold-sec-head" onclick="toggleSec(this)">
+        <span class="caret">▾</span>
+        <span class="ttl">会话时间线</span>
+        <span class="meta">2 节点</span>
+      </div>
+      <div class="fold-sec-body">
+        <div class="timeline">
+          <div class="tl-node cur">● 当前 · 修复 token 竞态</div>
+          <div class="tl-node">○ 起点 · 初始对话</div>
+          <button class="btn sm" style="margin-top:6px">分支树 →</button>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+</div>
+
+<script>
+  /* 低保真交互：只做两件能验证判断的事——心跳数字 + 真折叠。
+     故意不写复杂逻辑。 */
+  let t = 2 * 60 + 14;      // 已运行秒数
+  let idle = 3;             // 距上次事件秒数
+  let running = true;       // 会话运行态：驱动双态按钮与心跳
+  const elElapsed = document.getElementById('elapsed');
+  const elIdle = document.getElementById('idle');
+  const hb = document.getElementById('hb');
+
+  function fmt(s) {
+    const m = String(Math.floor(s / 60)).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    return `${m}:${ss}`;
+  }
+
+  setInterval(() => {
+    // 仅「运行中」计时；停止后冻结
+    if (running) {
+      t++; idle++;
+      elElapsed.textContent = fmt(t);
+      elIdle.textContent = idle;
+      // 超过 30s 无事件 → 转「似乎卡住」态（验证痛点 A 的正面解法）
+      hb.classList.toggle('stale', idle > 30);
+    }
+  }, 1000);
+
+  /* 双态按钮：空闲 = 发送 / 运行 = 停止。
+     验证的核心判断：两种语义互斥，同一按钮位即可承载，无需独立停止按钮。 */
+  const sendBtn = document.getElementById('sendbtn');
+  const ta = document.querySelector('.composer textarea');
+
+  function renderState() {
+    if (running) {
+      sendBtn.textContent = '■ 停止';
+      sendBtn.title = '终止本次运行（abort）';
+      hb.classList.add('running');
+      ta.placeholder = '运行中：Enter 发送插话（steer），按钮停止';
+    } else {
+      sendBtn.textContent = '发送';
+      sendBtn.title = '提交新指令（prompt）';
+      hb.classList.remove('running', 'stale');
+      ta.placeholder = '空闲：输入消息，Enter 发送 · Shift+Enter 换行';
+      elElapsed.textContent = '--:--';
+      elIdle.textContent = '0';
+    }
+  }
+
+  sendBtn.addEventListener('click', () => {
+    if (running) {
+      running = false;              // 模拟 abort：运行态 → 结束态
+    } else {
+      running = true; t = 0; idle = 0;  // 模拟 prompt：重新开始
+    }
+    renderState();
+  });
+
+  renderState();
+
+  /* 输入框自适应增高（ChatGPT 范式：从 1 行涨到上限后滚动） */
+  ta.addEventListener('input', () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
+  });
+
+  /* ---------- 空态示例芯片：填入输入框（不直接发送）----------
+     选 A 的理由：用户可先看到内容、再编辑、再决定是否发送，
+     比直接发送更可控，避免误发。 */
+  document.getElementById('emptyChips').addEventListener('click', (e) => {
+    const chip = e.target.closest('span');
+    if (!chip) return;
+    ta.value = chip.textContent.trim();
+    ta.dispatchEvent(new Event('input'));   // 触发自适应增高
+    ta.focus();
+  });
+
+  /* ---------- 侧栏上区：项目整体折叠 ---------- */
+  function toggleProjZone(el) {
+    const zone = document.getElementById('projZone');
+    const collapsed = zone.classList.toggle('collapsed');
+    el.querySelector('.zcaret').textContent = collapsed ? '▸' : '▾';
+  }
+
+  /* ---------- 侧栏下区：会话分支折叠 ---------- */
+  function toggleTreeZone(el) {
+    const zone = document.getElementById('treeZone');
+    const collapsed = zone.classList.toggle('collapsed');
+    el.querySelector('.zcaret').textContent = collapsed ? '▸' : '▾';
+  }
+
+  /* ---------- 侧栏项目展开/收起（不影响主区，方案 B）---------- */
+  function toggleProj(el) {
+    const group = el.closest('.proj-group');
+    const collapsed = group.classList.toggle('collapsed');
+    el.classList.toggle('expanded', !collapsed);
+    el.querySelector('.caret').textContent = collapsed ? '▸' : '▾';
+  }
+
+  /* ---------- 会话树：点节点跳转定位 ----------
+     真实产品中会根据节点的 branch id 导航到对应消息位置；
+     低保真下仅做高亮反馈，验证交互形式。 */
+  function jumpNode(el) {
+    document.querySelectorAll('.tree-row').forEach(n => n.classList.remove('active'));
+    el.classList.add('active');
+  }
+
+  /* ---------- 右栏分区折叠 ---------- */
+  function toggleSec(el) {
+    const sec = el.closest('.fold-sec');
+    const collapsed = sec.classList.toggle('collapsed');
+    el.querySelector('.caret').textContent = collapsed ? '▸' : '▾';
+  }
+
+  /* ---------- 点击会话才切换主区（方案 B：展开≠切换）---------- */
+  function openSess(el) {
+    document.querySelectorAll('.sess').forEach(s => s.classList.remove('on'));
+    el.classList.add('on');
+    setView('live');   // 切到会话现场
+  }
+
+  /* ---------- 空态 / 会话现场 切换 ----------
+     产品中由数据驱动（无消息=空态）。低保真下按 E 键对照，
+     不用可视按钮，避免调试开关污染界面。 */
+  function setView(v) {
+    const live = document.getElementById('view-live');
+    const empty = document.getElementById('view-empty');
+    const on = v === 'live';
+    live.classList.toggle('hidden', !on);
+    empty.classList.toggle('hidden', on);
+
+    // 空态 = 新会话，必然空闲；联动状态条与双态按钮
+    if (!on) { running = false; t = 0; idle = 0; renderState(); }
+  }
+  document.addEventListener('keydown', (e) => {
+    // 仅当未在输入框打字时响应
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    if (e.key === 'e' || e.key === 'E') {
+      setView(document.getElementById('view-live').classList.contains('hidden') ? 'live' : 'empty');
+    }
+  });
+
+  /* ---------- 流式自动滚底（ChatGPT 范式）----------
+     新内容到达时自动跟到底；但用户一旦上滑阅读历史，就暂停跟随，
+     并浮出「回到底部」。避免把正在看历史的用户强行拽回底。 */
+  const streamWrap = document.getElementById('view-live');
+  const jumpBtn = document.getElementById('jumpBtn');
+  let followTail = true;   // 是否自动跟随底部
+
+  function nearBottom() {
+    return streamWrap.scrollHeight - streamWrap.scrollTop - streamWrap.clientHeight < 40;
+  }
+  function jumpToBottom() {
+    streamWrap.scrollTop = streamWrap.scrollHeight;
+    followTail = true;
+    jumpBtn.classList.remove('show');
+  }
+  streamWrap.addEventListener('scroll', () => {
+    const nb = nearBottom();
+    followTail = nb;
+    jumpBtn.classList.toggle('show', !nb);
+  });
+  // 模拟新内容到达：仅在自动跟随开启时滚底
+  setInterval(() => {
+    if (running && followTail) streamWrap.scrollTop = streamWrap.scrollHeight;
+  }, 800);
+</script>
+</body>
+</html>
