@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import type { Project, ProjectFileChange, SessionInfo } from "@shared/protocol";
+import type { Project, ProjectFileChange, SessionInfo, SessionUsage, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import { getDatabase } from "./index";
 
@@ -198,6 +198,90 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
     removedLines: row.removed_lines,
     timestamp: row.created_at,
   }));
+}
+
+/**
+ * 记录一条模型用量（每次内核上报的 usage 行对应一条）。
+ * 用量历史只增不改，供审计与统计使用。
+ */
+export function recordUsage(input: {
+  sessionId: string;
+  provider: string;
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number;
+  timestamp: number;
+}): void {
+  getDatabase()
+    .prepare(
+      `INSERT INTO usage_records
+         (session_id, provider, model, input_tokens, output_tokens,
+          cache_read_tokens, cache_write_tokens, cost_usd, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.sessionId,
+      input.provider,
+      input.model,
+      input.input,
+      input.output,
+      input.cacheRead,
+      input.cacheWrite,
+      input.costUsd,
+      input.timestamp,
+    );
+}
+
+/** 会话用量历史（按时间倒序）与累计汇总 */
+export function listSessionUsage(sessionId: string): SessionUsage {
+  const rows = getDatabase()
+    .prepare(
+      `SELECT id, provider, model, input_tokens, output_tokens,
+              cache_read_tokens, cache_write_tokens, cost_usd, created_at
+       FROM usage_records
+       WHERE session_id = ?
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all(sessionId) as unknown as {
+    id: number;
+    provider: string | null;
+    model: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    cost_usd: number;
+    created_at: number;
+  }[];
+
+  const records: UsageRecord[] = rows.map((row) => ({
+    id: row.id,
+    provider: row.provider,
+    model: row.model,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
+    costUsd: row.cost_usd,
+    createdAt: row.created_at,
+  }));
+
+  const totals = records.reduce(
+    (acc, item) => ({
+      inputTokens: acc.inputTokens + item.inputTokens,
+      outputTokens: acc.outputTokens + item.outputTokens,
+      cacheReadTokens: acc.cacheReadTokens + item.cacheReadTokens,
+      cacheWriteTokens: acc.cacheWriteTokens + item.cacheWriteTokens,
+      costUsd: acc.costUsd + item.costUsd,
+      calls: acc.calls + 1,
+    }),
+    { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, calls: 0 },
+  );
+
+  return { records, totals };
 }
 
 /** 项目级改动汇总：跨会话，按时间倒序 */
