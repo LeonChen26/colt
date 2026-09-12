@@ -365,6 +365,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
 
   // 用量落库：内核每产生一条 usage 行就上报一次，不做差值推算
   harness.events.on("usage", (event) => {
+    // 只记录真实模型调用：adjustment=true 是非模型消耗
+    // （lane.recordUsage 手工补记、旧版 JSONL 导入的历史总量），计入会重复计数
+    if (event.row.adjustment) return;
     const currentModel = state?.meta.model ?? `${providerConfig.id}/${modelId}`;
     const slash = currentModel.indexOf("/");
     const usingProvider = slash === -1 ? providerConfig.id : currentModel.slice(0, slash);
@@ -372,6 +375,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     const usage = event.row.usage;
     send({
       type: "usage",
+      // 内核的稳定行 ID，作为幂等键，防重放
+      kernelUsageId: event.row.id,
       provider: usingProvider,
       model: usingModel,
       input: usage.input,
@@ -386,12 +391,18 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 工具调用落库：配对 tool_start/tool_end 得到耗时与入参，在 end 时上报一条
   // args 只在 tool_start 上，故一并缓存
   const toolMeta = new Map<string, { startedAt: number; argsJson: string | null }>();
+  /** 冗底上限：若有未配对的 start 长期驻留，淘汰最旧条目避免无界增长 */
+  const TOOL_META_LIMIT = 256;
   harness.events.on("tool_start", (event) => {
     let argsJson: string | null = null;
     try {
       argsJson = JSON.stringify(event.args ?? null);
     } catch {
       argsJson = null;
+    }
+    if (toolMeta.size >= TOOL_META_LIMIT) {
+      const oldest = toolMeta.keys().next().value;
+      if (oldest !== undefined) toolMeta.delete(oldest);
     }
     toolMeta.set(event.toolCallId, { startedAt: Date.now(), argsJson });
   });
@@ -401,11 +412,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     send({
       type: "toolCall",
       toolCallId: event.toolCallId,
+      runId: event.runId,
       toolName: event.toolName,
       inputJson: meta?.argsJson ?? null,
       isError: event.isError,
       durationMs: meta === undefined ? null : Date.now() - meta.startedAt,
-      timestamp: Date.now(),
+      // 记录调用「发生」的时刻，即开始时间。
+      // 用结束时刻会让并行的快工具（先结束）排在慢工具之前，与模型实际调用顺序相反。
+      timestamp: meta?.startedAt ?? Date.now(),
     });
   });
 

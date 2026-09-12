@@ -177,6 +177,7 @@ export class SessionManager {
           // 用量历史只增不改，直接落库；视图里的累计值仍以内核快照为准
           recordUsage({
             sessionId: options.sessionId,
+            kernelUsageId: message.kernelUsageId,
             provider: message.provider,
             model: message.model,
             input: message.input,
@@ -192,6 +193,7 @@ export class SessionManager {
           recordToolCall({
             toolCallId: message.toolCallId,
             sessionId: options.sessionId,
+            runId: message.runId,
             toolName: message.toolName,
             inputJson: message.inputJson,
             isError: message.isError,

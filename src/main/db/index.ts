@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
   run_id TEXT,
+  /** 内核 usage 行 ID，作为幂等键防重放，可为 NULL（历史数据） */
+  kernel_usage_id TEXT,
   provider TEXT,
   model TEXT,
   input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
   latency_ms INTEGER,
   created_at INTEGER NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_kernel_id ON usage_records(kernel_usage_id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_records(session_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS presets (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /** 判断某表是否已含某列 */
 function hasColumn(instance: DatabaseSync, table: string, column: string): boolean {
@@ -142,6 +145,11 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
     version: 3,
     up: (instance) =>
       addColumnIfMissing(instance, "file_changes", "client_change_id", "TEXT"),
+  },
+  {
+    version: 4,
+    up: (instance) =>
+      addColumnIfMissing(instance, "usage_records", "kernel_usage_id", "TEXT"),
   },
 ];
 

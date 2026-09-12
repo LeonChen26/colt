@@ -173,6 +173,7 @@ export function recordFileChange(
 export function recordToolCall(input: {
   toolCallId: string;
   sessionId: string;
+  runId?: string | null;
   toolName: string;
   inputJson: string | null;
   isError: boolean;
@@ -182,8 +183,8 @@ export function recordToolCall(input: {
   getDatabase()
     .prepare(
       `INSERT INTO tool_calls
-         (id, session_id, tool_name, input_json, is_error, duration_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (id, session_id, run_id, tool_name, input_json, is_error, duration_ms, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          is_error = excluded.is_error,
          duration_ms = excluded.duration_ms`,
@@ -191,6 +192,7 @@ export function recordToolCall(input: {
     .run(
       input.toolCallId,
       input.sessionId,
+      input.runId ?? null,
       input.toolName,
       input.inputJson,
       input.isError ? 1 : 0,
@@ -264,9 +266,12 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
 /**
  * 记录一条模型用量（每次内核上报的 usage 行对应一条）。
  * 用量历史只增不改，供审计与统计使用。
+ * 以内核的 kernelUsageId 作为幂等键：重放同一行不会重复计数。
  */
 export function recordUsage(input: {
   sessionId: string;
+  kernelUsageId: string;
+  runId?: string | null;
   provider: string;
   model: string;
   input: number;
@@ -279,12 +284,15 @@ export function recordUsage(input: {
   getDatabase()
     .prepare(
       `INSERT INTO usage_records
-         (session_id, provider, model, input_tokens, output_tokens,
+         (session_id, run_id, kernel_usage_id, provider, model, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, cost_usd, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(kernel_usage_id) DO NOTHING`,
     )
     .run(
       input.sessionId,
+      input.runId ?? null,
+      input.kernelUsageId,
       input.provider,
       input.model,
       input.input,
