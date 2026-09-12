@@ -77,7 +77,9 @@ export class ApprovalStore {
 
   /**
    * 判定一次工具调用。
-   * 返回 decision 表示立即放行；返回 request 表示需要用户处置。
+   *   - decision：立即放行或拒绝；
+   *   - request：需要用户处置；
+   *   - analyze：自动审批模式下待大模型分析（上层调用 analyzer 后回到 commitAnalyzed）。
    */
   evaluate(input: {
     sessionId: string;
@@ -87,21 +89,15 @@ export class ApprovalStore {
     now: number;
     /** worker 上报的等待上限；缺省用兜底值 */
     timeoutMs?: number;
-  }): { decision: ApprovalDecision } | { request: ApprovalRequest } {
+  }):
+    | { decision: ApprovalDecision }
+    | { request: ApprovalRequest }
+    | { analyze: { invocation: ToolInvocation; projectRoot: string; reason: string } } {
     const state = this.sessions.get(input.sessionId);
     // 未登记的会话按最保守处理：不认识就放行会让审批形同虚设
     const projectRoot = state?.projectRoot ?? "";
 
-    let args: Record<string, unknown> = {};
-    try {
-      const parsed: unknown = JSON.parse(input.argsJson);
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-        args = parsed as Record<string, unknown>;
-      }
-    } catch {
-      args = {};
-    }
-
+    const args = safeParseArgs(input.argsJson);
     const invocation: ToolInvocation = { toolName: input.toolName, args };
     const signature = buildSignature(invocation);
 
@@ -131,20 +127,66 @@ export class ApprovalStore {
       return { decision: { approved: true, reason: verdict.reason } };
     }
 
+    // 自动审批：白名单外普通操作交给大模型分析，不在 store 里做 IO
+    if (verdict.decision === "analyze") {
+      return {
+        analyze: { invocation, projectRoot, reason: verdict.reason },
+      };
+    }
+
+    return { request: this.#enqueue(input, verdict) };
+  }
+
+  /**
+   * 落实大模型的分析结果（自动审批模式）。
+   * 不变量：调用前该 toolCallId 应在 analyze 分支返回过，且未被用户/超时处置。
+   * 分析放行时不写记忆规则：避免把一次模型判断固化成长期免问。
+   */
+  commitAnalyzed(input: {
+    sessionId: string;
+    toolCallId: string;
+    toolName: string;
+    argsJson: string;
+    now: number;
+    allow: boolean;
+    reason: string;
+    timeoutMs?: number;
+  }): { decision: ApprovalDecision } | { request: ApprovalRequest } {
+    if (input.allow) {
+      return { decision: { approved: true, reason: input.reason } };
+    }
+    // 分析不确定/拒绝：退回人工确认（而不是直接拒绝，把最终决定权留给用户）
+    const verdict = evaluateTool(
+      { toolName: input.toolName, args: safeParseArgs(input.argsJson) },
+      {
+        // 用 approval 模式重新判定，只为拿到展示用的 summary/signature/risk
+        mode: "approval",
+        projectRoot: this.sessions.get(input.sessionId)?.projectRoot ?? "",
+        allowRules: [],
+      },
+    );
+    return { request: this.#enqueue(input, { ...verdict, reason: input.reason }) };
+  }
+
+  /** 构造待审条目并入队 */
+  #enqueue(
+    input: { sessionId: string; toolCallId: string; toolName: string; argsJson: string; now: number; timeoutMs?: number },
+    verdict: { summary: string; risk: ApprovalRisk; reason: string; signature: string },
+  ): ApprovalRequest {
     const request: ApprovalRequest = {
       toolCallId: input.toolCallId,
       sessionId: input.sessionId,
       toolName: input.toolName,
       argsJson: input.argsJson,
       summary: verdict.summary,
-      risk: verdict.risk as ApprovalRisk,
+      risk: verdict.risk,
       reason: verdict.reason,
       signature: verdict.signature,
       requestedAt: input.now,
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     };
-    state?.pending.set(input.toolCallId, request);
-    return { request };
+    this.sessions.get(input.sessionId)?.pending.set(input.toolCallId, request);
+    return request;
   }
 
   /**
@@ -203,6 +245,19 @@ export class ApprovalStore {
     state.pending.clear();
     return dropped;
   }
+}
+
+/** 把 argsJson 安全解析成对象；非对象或解析失败一律当空对象（保守） */
+function safeParseArgs(argsJson: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(argsJson);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 落到空对象
+  }
+  return {};
 }
 
 /** 判断已记忆的规则是否覆盖本次调用 */

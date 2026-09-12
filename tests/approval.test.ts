@@ -114,6 +114,36 @@ describe("assessCommand", () => {
   test("未知命令判为 moderate 而非放行", () => {
     assert.equal(assessCommand("some-unknown-binary --do-things").risk, "moderate");
   });
+
+  test("只读白名单基线：不在白名单一律需确认", () => {
+    // 这些命令看起来安全，但未列入白名单，宁可误报也不放行
+    for (const command of ["npm install", "node script.js", "python x.py", "make", "docker ps"]) {
+      assert.equal(assessCommand(command).risk, "moderate", `应需确认：${command}`);
+    }
+  });
+
+  test("白名单命令的无副作用参数仍算只读", () => {
+    assert.equal(assessCommand("grep -rn foo src").risk, "safe");
+    assert.equal(assessCommand("find . -name '*.ts'").risk, "safe");
+    assert.equal(assessCommand("sort a.txt").risk, "safe");
+    assert.equal(assessCommand("sed 's/a/b/' a.txt").risk, "safe");
+  });
+
+  test("条件只读命令带副作用参数不放行", () => {
+    // find/xargs/tee 带副作用参数是明确危险
+    assert.equal(assessCommand("find . -exec rm {} \\;").risk, "dangerous");
+    assert.equal(assessCommand("find . -delete").risk, "dangerous");
+    assert.equal(assessCommand("echo hi | xargs rm").risk, "dangerous");
+    assert.equal(assessCommand("tee out.txt").risk, "dangerous");
+    // sed -i / sort -o 只算需确认
+    assert.equal(assessCommand("sed -i 's/a/b/' a.txt").risk, "moderate");
+    assert.equal(assessCommand("sort -o out.txt a.txt").risk, "moderate");
+  });
+
+  test("管道段中任一非只读命令即需确认", () => {
+    // 白名单化后不再依赖黑名单：管道后半段是未知命令也要拦
+    assert.equal(assessCommand("cat a.txt | some-binary").risk, "moderate");
+  });
 });
 
 describe("assessToolRisk", () => {
@@ -153,6 +183,49 @@ describe("buildSignature", () => {
 
   test("其他工具按工具名通配", () => {
     assert.equal(buildSignature({ toolName: "fetch", args: {} }), "fetch:*");
+  });
+});
+
+describe("evaluateTool 自动审批模式", () => {
+  test("只读调用放行", () => {
+    assert.equal(
+      evaluateTool({ toolName: "bash", args: { command: "git status" } }, config({ mode: "auto" })).decision,
+      "allow",
+    );
+  });
+
+  test("白名单外普通操作交给大模型分析", () => {
+    const verdict = evaluateTool(
+      { toolName: "edit", args: { path: "E:/proj/a.ts" } },
+      config({ mode: "auto" }),
+    );
+    assert.equal(verdict.decision, "analyze");
+    assert.equal(verdict.risk, "moderate");
+  });
+
+  test("普通命令交给大模型分析", () => {
+    assert.equal(
+      evaluateTool({ toolName: "bash", args: { command: "npm install" } }, config({ mode: "auto" })).decision,
+      "analyze",
+    );
+  });
+
+  test("高风险仍需确认", () => {
+    const verdict = evaluateTool(
+      { toolName: "bash", args: { command: "rm -rf build" } },
+      config({ mode: "auto" }),
+    );
+    assert.equal(verdict.decision, "ask");
+    assert.equal(verdict.risk, "dangerous");
+  });
+
+  test("项目外写入仍需确认", () => {
+    const verdict = evaluateTool(
+      { toolName: "write", args: { path: "C:/Windows/x.dll" } },
+      config({ mode: "auto" }),
+    );
+    assert.equal(verdict.decision, "ask");
+    assert.equal(verdict.risk, "dangerous");
   });
 });
 

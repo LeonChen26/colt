@@ -5,14 +5,23 @@
  * 刻意偏保守（拿不准就问），但无法对抗刻意构造的绕过。
  * 真正的隔离要靠操作系统权限或容器，本模块不承担该职责。
  *
+ * 判定基线是**只读白名单**：只有能证明「无副作用」的调用才自动放行，
+ * 其余一律进入确认。危险命令清单不参与放行决策，只用于把风险档位
+ * 抬到 dangerous（更醒目的提示 + 免疫「不再询问」记忆）。
+ *
  * 纯函数，不碰 IO，便于单测覆盖。
  */
 
 /** 风险档位 */
 export type RiskLevel = "safe" | "moderate" | "dangerous";
 
-/** 判定结果 */
-export type Decision = "allow" | "ask";
+/**
+ * 判定结果。
+ *   - allow：直接放行；
+ *   - ask：需要用户确认；
+ *   - analyze：自动审批模式下白名单外的普通操作，交给大模型分析后决定（见 analyzer.ts）。
+ */
+export type Decision = "allow" | "ask" | "analyze";
 
 /** 会话内记忆的放行规则 */
 export interface AllowRule {
@@ -24,8 +33,12 @@ export interface AllowRule {
 }
 
 export interface PolicyConfig {
-  /** full-access：不拦截，等价于旧的全权执行；approval：按风险判定 */
-  mode: "full-access" | "approval";
+  /**
+   * approval：只读白名单放行，其余都要确认；
+   * auto：白名单放行 + 白名单外的普通操作（moderate）自动批准，仅 dangerous 仍需确认；
+   * full-access：不拦截，等价于旧的全权执行。
+   */
+  mode: "approval" | "auto" | "full-access";
   /** 项目根目录，用于判断写入是否越界；已归一为正斜杠 */
   projectRoot: string;
   /** 会话内已记忆的放行规则 */
@@ -59,22 +72,51 @@ const WRITE_TOOLS: Record<string, string> = {
 };
 
 /**
- * 只读 shell 命令白名单。仅匹配命令首词（含 git 的只读子命令）。
- * 宁可漏判为 moderate，也不把可能写盘的命令放进来。
+ * 只读 shell 命令白名单。
+ *
+ * 这是放行的唯一依据：命令首词不在其中，就必须确认。
+ * 刻意偏保守——宁可把只读命令误判成「需确认」，也不放任何可能写盘的命令进来。
+ * 因此一些看似只读的工具（如 find / sed）被排除在外，或需额外参数级校验。
  */
 const READONLY_COMMANDS = new Set([
   "ls", "pwd", "cat", "head", "tail", "wc", "echo", "date", "whoami",
   "which", "type", "file", "stat", "du", "df", "env", "printenv",
-  "grep", "rg", "fd", "find", "tree", "diff", "sort", "uniq", "basename", "dirname",
+  "grep", "rg", "fd", "tree", "diff", "basename", "dirname",
+  "true", "false", "printf", "seq", "uname", "id", "hostname",
 ]);
+
+/**
+ * 看似只读、实则可通过参数产生副作用的命令。
+ * 命中任一「副作用参数」即不放行；find/sed/xargs 等不得不单独把关。
+ */
+const MUTATING_ARGS: { command: string; pattern: RegExp; reason: string }[] = [
+  { command: "find", pattern: /-(exec|execdir|delete|ok|okdir|fls|fprint|fprintf)\b/, reason: "find 带执行/删除/写出参数" },
+  { command: "sed", pattern: /(^|\s)-i/, reason: "sed 就地编辑会改写文件" },
+  { command: "xargs", pattern: /.*/, reason: "xargs 会把内容交给子命令执行" },
+  { command: "tee", pattern: /.*/, reason: "tee 会写入文件" },
+  { command: "awk", pattern: /system\s*\(|print.*>\s*\S/, reason: "awk 可调用 system 或写出文件" },
+  { command: "sort", pattern: /(^|\s)-o\b/, reason: "sort -o 会写出文件" },
+  { command: "uniq", pattern: /\b\S+\s*$/, reason: "uniq 第二个参数是输出文件" },
+];
+
+/**
+ * 需参数级校验才能放行的「条件只读」命令：
+ * 无副作用参数时可当只读，带上了则另算（见 MUTATING_ARGS）。
+ */
+const CONDITIONAL_READONLY = new Set(["find", "sed", "awk", "sort", "uniq"]);
 
 /** git 的只读子命令 */
 const READONLY_GIT = new Set([
   "status", "log", "diff", "show", "branch", "remote", "config", "blame", "describe",
+  "rev-parse", "ls-files", "shortlog", "cat-file", "reflog", "tag", "worktree",
 ]);
 
 /**
- * 危险命令模式。命中即判为 dangerous。
+ * 危险命令模式。
+ *
+ * 注意：**不参与放行决策**（放行只认只读白名单）。命中只做两件事：
+ *   1. 把该调用的风险档位抬到 dangerous，界面用更醒目的样式提示；
+ *   2. 让「本会话内始终允许」的记忆规则对它失效，每次单独确认。
  * 每条都附带给用户看的说明，避免只丢一个「危险」了事。
  */
 const DANGEROUS_PATTERNS: { pattern: RegExp; reason: string }[] = [
@@ -127,7 +169,7 @@ export function isInside(root: string, target: string): boolean {
  */
 export function splitCommands(command: string): string[] {
   return command
-    .split(/&&|\|\||[;|\n]/)
+    .split(/&&|\|\||;|\||\n|&(?!&)/)
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
 }
@@ -142,8 +184,14 @@ function headWord(segment: string): string {
   return "";
 }
 
-/** 判定单条 bash 命令的风险 */
+/**
+ * 判定单条 bash 命令的风险。
+ *
+ * 基线是只读白名单：**只有能证明无副作用的命令才判 safe**，其余一律 moderate。
+ * 危险清单不参与放行，只把风险抬到 dangerous。
+ */
 export function assessCommand(command: string): { risk: RiskLevel; reason: string } {
+  // 1) 明确危险：抬到 dangerous（更醒目 + 免疫记忆规则）
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {
     if (pattern.test(command)) return { risk: "dangerous", reason };
   }
@@ -151,22 +199,42 @@ export function assessCommand(command: string): { risk: RiskLevel; reason: strin
   const segments = splitCommands(command);
   if (segments.length === 0) return { risk: "moderate", reason: "空命令" };
 
-  // 输出重定向会写盘，不能算只读
-  const redirects = /(^|[^>])>{1,2}[^>]/.test(command);
+  // 2) 输出重定向（> / >>）会写盘，整条命令不能算只读
+  if (/(^|[^>])>{1,2}[^>]/.test(command)) {
+    return { risk: "moderate", reason: "命令包含输出重定向，会写出文件" };
+  }
 
-  const allReadonly = segments.every((segment) => {
+  // 3) 逐段校验：每一段的首词都必须在只读白名单内
+  for (const segment of segments) {
     const head = headWord(segment);
+    if (head.length === 0) return { risk: "moderate", reason: "无法识别的命令段" };
+
     if (head === "git") {
       const sub = segment.split(/\s+/).filter(Boolean)[1]?.toLowerCase() ?? "";
-      return READONLY_GIT.has(sub);
+      if (!READONLY_GIT.has(sub)) {
+        return { risk: "moderate", reason: `git ${sub || "（无子命令）"} 可能改写仓库状态` };
+      }
+      continue;
     }
-    return READONLY_COMMANDS.has(head);
-  });
 
-  if (allReadonly && !redirects) {
-    return { risk: "safe", reason: "只读命令" };
+    // 有副作用参数的命令（find/sed/awk/sort/xargs/tee…）单独把关
+    const mutating = MUTATING_ARGS.find((rule) => rule.command === head);
+    if (mutating && mutating.pattern.test(segment)) {
+      // find -exec/-delete、xargs、tee 这类是明确危险；sort -o、awk 等只算需确认
+      const dangerous = head === "find" || head === "xargs" || head === "tee";
+      return { risk: dangerous ? "dangerous" : "moderate", reason: mutating.reason };
+    }
+
+    // 条件只读：参数检查已通过，视为只读
+    if (CONDITIONAL_READONLY.has(head)) continue;
+
+    // 不在白名单：不认识就问，绝不默认放行
+    if (!READONLY_COMMANDS.has(head)) {
+      return { risk: "moderate", reason: `「${head}」不在只读白名单内，可能产生副作用` };
+    }
   }
-  return { risk: "moderate", reason: "会修改文件或产生副作用的命令" };
+
+  return { risk: "safe", reason: "只读命令" };
 }
 
 /** 生成同类调用的签名，用于「不再询问」的记忆匹配 */
@@ -215,6 +283,11 @@ function matchedByRules(
  *
  * 顺序：全权模式 → 只读工具 → 已记忆规则 → 按工具类型评估风险。
  * 记忆规则不能覆盖 dangerous：高风险每次都要单独确认。
+ *
+ * 各模式差异集中在最后一步：
+ *   - approval：只有 safe 放行，moderate/dangerous 都问；
+ *   - auto：safe/moderate 自动放行，仅 dangerous 问（减少打扰，高风险仍拦）；
+ *   - full-access：全放。
  */
 export function evaluateTool(
   invocation: ToolInvocation,
@@ -241,6 +314,11 @@ export function evaluateTool(
 
   if (assessed.risk === "safe") {
     return { ...base, decision: "allow", risk: "safe", reason: assessed.reason };
+  }
+
+  // 自动审批模式：白名单外的普通操作交给大模型分析；危险操作仍需人工确认
+  if (config.mode === "auto" && assessed.risk === "moderate") {
+    return { ...base, decision: "analyze", risk: "moderate", reason: assessed.reason };
   }
 
   return { ...base, decision: "ask", risk: assessed.risk, reason: assessed.reason };

@@ -40,6 +40,97 @@ describe("ApprovalStore 模式", () => {
     assert.equal(instance.getMode(), "full-access");
   });
 
+  test("自动审批模式：普通操作交给分析，高风险仍入待审", () => {
+    const instance = store();
+    instance.setMode("auto");
+
+    // 普通写入进入 analyze 分支（由上层调用大模型分析）
+    const ordinary = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c1",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 1,
+    });
+    assert.ok("analyze" in ordinary);
+    assert.equal(ordinary.analyze.invocation.toolName, "edit");
+    // 分析前不入队
+    assert.equal(instance.listPending(SESSION).length, 0);
+
+    // 高风险命令不经过分析，直接入待审
+    const risky = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c2",
+      toolName: "bash",
+      argsJson: JSON.stringify({ command: "rm -rf build" }),
+      now: 2,
+    });
+    assert.ok("request" in risky);
+    assert.equal(instance.listPending(SESSION).length, 1);
+  });
+
+  test("commitAnalyzed 放行：不写记忆规则", () => {
+    const instance = store();
+    instance.setMode("auto");
+    instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c1",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 1,
+    });
+
+    const outcome = instance.commitAnalyzed({
+      sessionId: SESSION,
+      toolCallId: "c1",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 2,
+      allow: true,
+      reason: "常规项目内文件写入",
+    });
+    assert.ok("decision" in outcome);
+    assert.equal(outcome.decision.approved, true);
+    assert.match(outcome.decision.reason, /常规/);
+    assert.equal(instance.listPending(SESSION).length, 0);
+
+    // 分析放行不固化：下一次同操作仍需重新分析
+    const next = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c2",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 3,
+    });
+    assert.ok("analyze" in next, "分析放行不应写入免问记忆");
+  });
+
+  test("commitAnalyzed 拒绝：退回人工待审", () => {
+    const instance = store();
+    instance.setMode("auto");
+    instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c1",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 1,
+    });
+
+    const outcome = instance.commitAnalyzed({
+      sessionId: SESSION,
+      toolCallId: "c1",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 2,
+      allow: false,
+      reason: "来源可疑，建议人工确认",
+    });
+    assert.ok("request" in outcome);
+    assert.equal(outcome.request.toolCallId, "c1");
+    assert.match(outcome.request.reason, /人工确认/);
+    assert.equal(instance.listPending(SESSION).length, 1);
+  });
+
   test("全权模式下不产生待审", () => {
     const instance = store();
     instance.setMode("full-access");
