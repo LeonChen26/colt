@@ -1,7 +1,6 @@
 /**
  * worker 投影纯函数测试。
  * 这些函数是内核结构 → 渲染层 DTO 的转换层，字段语义易错，值得覆盖。
- * 作者：陕耀云栈WorkMate
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";

@@ -1,6 +1,5 @@
 /**
  * 渲染层纯函数测试：ANSI 解析、diff 行分类、参数格式化。
- * 作者：陕耀云栈WorkMate
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";

@@ -1,7 +1,6 @@
 /**
  * 数据访问层测试：项目/会话的增删查改，以及用量、工具调用、文件改动的写入语义。
  * 每个用例用独立的临时库；repo 依赖 openDatabase 的单例，故用例前重置。
- * 作者：陕耀云栈WorkMate
  */
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -148,8 +147,28 @@ describe("recordToolCall", () => {
     const calls = listSessionToolCalls(session.id);
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.toolName, "bash");
+    assert.equal(calls[0]?.runId, "r1");
+    assert.equal(calls[0]?.inputJson, '{"command":"ls"}');
     assert.equal(calls[0]?.durationMs, 42);
     assert.equal(calls[0]?.isError, false);
+    assert.equal(calls[0]?.createdAt, 1);
+  });
+
+  test("未传 runId 时落库为 null", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, toolName: "read", inputJson: null, isError: false, durationMs: 1, timestamp: 1 });
+    assert.equal(listSessionToolCalls(session.id)[0]?.runId, null);
+  });
+
+  test("覆盖重放时保留原 runId", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, runId: "r1", toolName: "bash", inputJson: null, isError: true, durationMs: 10, timestamp: 1 });
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, runId: "r1", toolName: "bash", inputJson: null, isError: false, durationMs: 20, timestamp: 1 });
+    const calls = listSessionToolCalls(session.id);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.runId, "r1");
   });
 
   test("同一 toolCallId 覆盖而非重复（恢复重放场景）", () => {

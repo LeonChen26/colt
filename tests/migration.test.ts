@@ -1,7 +1,6 @@
 /**
  * schema 迁移测试：造各种旧库形态，验证 openDatabase 能补齐列并置对版本号。
  * openDatabase 内部有模块级单例，每个用例结束必须 closeDatabase()。
- * 作者：陕耀云栈WorkMate
  */
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -119,15 +118,75 @@ describe("openDatabase 迁移", () => {
     assert.equal(userVersion(db), LATEST);
   });
 
-  test("迁移到中间版本后继续升级", () => {
-    seedLegacy(root, LEGACY_SCHEMA, 0);
-    // 先手工只升到 v2，模拟部分迁移过的库
+  test("从中间版本（v2）继续升级，只补剩下的列", () => {
+    // 造一个真正停在 v2 的库：前两个迁移已应用，后续的还没有
+    seedLegacy(
+      root,
+      [
+        `CREATE TABLE sessions (
+           id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, jsonl_path TEXT NOT NULL,
+           kernel_session_id TEXT, preset_id TEXT, model_ref TEXT, created_at INTEGER NOT NULL,
+           updated_at INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0,
+           status TEXT NOT NULL DEFAULT 'active')`,
+        // v3 的 client_change_id 尚未加
+        `CREATE TABLE file_changes (
+           id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, tool_call_id TEXT,
+           file_path TEXT NOT NULL, change_kind TEXT NOT NULL, diff_text TEXT,
+           added_lines INTEGER NOT NULL DEFAULT 0, removed_lines INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL)`,
+        // v4 的 kernel_usage_id 尚未加
+        `CREATE TABLE usage_records (
+           id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, run_id TEXT, provider TEXT,
+           model TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+           cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+           cost_usd REAL NOT NULL DEFAULT 0, latency_ms INTEGER, created_at INTEGER NOT NULL)`,
+      ],
+      2,
+    );
     const db = openDatabase(root);
     assert.equal(userVersion(db), LATEST);
-    // 幂等重跑
-    closeDatabase();
-    const again = openDatabase(root);
-    assert.equal(userVersion(again), LATEST);
+    assert.ok(columns(db, "file_changes").includes("client_change_id"));
+    assert.ok(columns(db, "usage_records").includes("kernel_usage_id"));
+  });
+
+  test("旧库带存量用量数据升级：数据不丢，唯一索引仍能建立", () => {
+    seedLegacy(root, LEGACY_SCHEMA, 0);
+    // 存量行的 kernel_usage_id 均为 NULL，依赖 SQLite「多个 NULL 互不相等」才能建唯一索引
+    const raw = new DatabaseSync(join(root, "data", "banyan.db"));
+    for (let i = 0; i < 5; i += 1) {
+      raw
+        .prepare(
+          "INSERT INTO usage_records (session_id, provider, model, input_tokens, created_at)" +
+            " VALUES ('s1','deepseek','v4',?,?)",
+        )
+        .run(100 + i, 1700000000 + i);
+    }
+    raw.close();
+
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+
+    const count = db.prepare("SELECT COUNT(*) AS c FROM usage_records").get() as { c: number };
+    assert.equal(count.c, 5, "存量数据不应丢失");
+
+    const index = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_usage_kernel_id'")
+      .get();
+    assert.ok(index, "幂等唯一索引应已建立");
+
+    // 升级后幂等键真实生效
+    db.prepare(
+      "INSERT INTO usage_records (session_id, kernel_usage_id, created_at) VALUES ('s1','k-1',1)",
+    ).run();
+    assert.throws(
+      () =>
+        db
+          .prepare(
+            "INSERT INTO usage_records (session_id, kernel_usage_id, created_at) VALUES ('s1','k-1',2)",
+          )
+          .run(),
+      /UNIQUE/,
+    );
   });
 
   test("迁移后 getDatabase 返回可用连接", () => {
