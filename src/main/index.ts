@@ -41,9 +41,11 @@ function createWindow(): BrowserWindow {
 
   window.on("ready-to-show", () => {
     window.show();
-    // 冒烟自检：BANYAN_SMOKE 指向截图输出路径时，跑完流程自动退出
+    // 冒烟自检：BANYAN_SMOKE 指向截图输出路径时，跑完流程自动退出。
+    // 打包后一律不启用（与 worker 覆盖同一条原则）：该装置只为开发期验收，
+    // 其 chunk 也未随包分发（见 electron-builder.yml 的 files 排除项）。
     const smokeTarget = process.env.BANYAN_SMOKE;
-    if (smokeTarget && !smokeStarted) {
+    if (smokeTarget && !app.isPackaged && !smokeStarted) {
       smokeStarted = true;
       void import("./smoke").then(({ runSmoke }) => runSmoke(window, smokeTarget));
     }
