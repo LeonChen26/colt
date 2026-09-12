@@ -3,12 +3,14 @@
  */
 import { app, dialog, ipcMain } from "electron";
 import { join } from "node:path";
+import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap } from "@shared/protocol";
 import { runEnvCheck } from "../env-check";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
 import {
   createSession,
+  deleteSession,
   getSession,
   listProjectChanges,
   listProjects,
@@ -42,6 +44,43 @@ export function setFirstRunReport(report: FirstRunReport): void {
 type Handler<C extends IpcChannel> = (
   request: IpcInvokeMap[C]["request"],
 ) => Promise<IpcInvokeMap[C]["response"]> | IpcInvokeMap[C]["response"];
+
+/**
+ * 删除会话对应的 JSONL 历史文件。
+ * 内核按 cwd 转义目录 + `时间戳_kernelId.jsonl` 命名，DB 里的 jsonl_path 不可靠，
+ * 因此在 sessions 根目录下递归搜文件名包含 kernelSessionId 的文件。
+ * 找不到（无历史的新会话）或删除失败均不报错——DB 记录已删，孤文件无害。
+ */
+function removeSessionJsonl(kernelSessionId: string | null): void {
+  if (!kernelSessionId) return;
+  const root = join(app.getPath("userData"), "sessions");
+  if (!existsSync(root)) return;
+
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (entry.name.includes(kernelSessionId) && entry.name.endsWith(".jsonl")) {
+        try {
+          rmSync(full, { force: true });
+        } catch {
+          // 忽略：文件被占用等情况下不阻断删除流程
+        }
+      }
+    }
+  }
+}
 
 /** 以类型安全的方式注册单个通道 */
 function handle<C extends IpcChannel>(channel: C, handler: Handler<C>): void {
@@ -130,6 +169,20 @@ export function registerIpcHandlers(): void {
     ok: true,
     closed: sessionManager.close(request.sessionId),
   }));
+
+  handle("session.delete", (request) => {
+    const session = getSession(request.sessionId);
+    if (!session) throw new Error("会话不存在或已被删除");
+    // 运行中的会话拒绝删除：避免删除正在写入的 JSONL 与后台进程错配
+    if (sessionManager.isRunning(request.sessionId)) {
+      throw new Error("会话正在运行，请先中止后再删除");
+    }
+    // 先关 worker（若已加载），释放文件句柄，再删数据与文件
+    sessionManager.close(request.sessionId);
+    deleteSession(request.sessionId);
+    removeSessionJsonl(session.kernelSessionId);
+    return { ok: true } as const;
+  });
 
   handle("session.view", (request) => sessionManager.getView(request.sessionId) ?? null);
 

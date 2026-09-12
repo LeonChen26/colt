@@ -10,6 +10,7 @@ import type { BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
 import { ApprovalStore } from "./approval/store";
+import { analyzeToolCall } from "./approval/analyzer";
 import { createDeferred } from "./lib/deferred";
 
 /** 进程池上限，超出时回收最久未活动的空闲会话 */
@@ -31,6 +32,9 @@ interface WorkerEntry {
   lastActiveAt: number;
   running: boolean;
   view?: ConversationView;
+  /** 当前会话的 provider 配置与模型 id，审批分析器需要据此装配模型 */
+  provider: ProviderConfig;
+  modelId: string;
   /**
    * 就绪信号（createDeferred 的 promise）。worker 在发回 ready 之前就退出时会被
    * reject，从而掉出所有 await 它的调用方；否则 session.open 会永远 pending，
@@ -101,6 +105,103 @@ export class SessionManager {
       } satisfies WorkerCommand);
     }
     this.#emitPending(input.sessionId);
+  }
+
+  /**
+   * 自动审批：调大模型分析后回复 worker。
+   *
+   * 分析失败/超时一律回退到人工确认（commitAnalyzed 传 allow=false），
+   * 而不是直接放行——分析器不能成为放行的单点故障。
+   */
+  async #analyzeThenReply(
+    entry: WorkerEntry,
+    options: { sessionId: string; cwd: string },
+    message: Extract<WorkerMessage, { type: "approvalRequest" }>,
+    context: { invocation: { toolName: string; args: Record<string, unknown> }; projectRoot: string; reason: string },
+  ): Promise<void> {
+    const { toolCallId, toolName, argsJson } = message;
+    const apiKey = getSecret(entry.provider.id);
+    const result = await analyzeToolCall({
+      toolName: context.invocation.toolName,
+      args: context.invocation.args,
+      projectRoot: context.projectRoot,
+      policyReason: context.reason,
+      provider: {
+        id: entry.provider.id,
+        name: entry.provider.name,
+        kind: entry.provider.kind,
+        baseUrl: entry.provider.baseUrl,
+        models: entry.provider.models,
+      },
+      modelId: entry.modelId,
+      apiKey,
+    });
+
+    // 分析期间 worker 可能已被回收/替换，回给已死的进程毫无意义
+    if (this.#workers.get(options.sessionId) !== entry) return;
+
+    if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+      console.log(`[approval] 模型分析 ${toolName} allow=${result.allow} analyzed=${result.analyzed} reason=${result.reason}`);
+    }
+
+    const outcome = this.approvals.commitAnalyzed({
+      sessionId: options.sessionId,
+      toolCallId,
+      toolName,
+      argsJson,
+      now: Date.now(),
+      allow: result.allow,
+      reason: result.reason,
+      timeoutMs: message.timeoutMs,
+    });
+
+    if ("decision" in outcome) {
+      entry.child.postMessage({
+        type: "approvalResult",
+        toolCallId,
+        approved: outcome.decision.approved,
+        reason: outcome.decision.reason,
+      } satisfies WorkerCommand);
+      // 分析放行的操作也推一次待审（此时为空），让界面清掉可能残留的占位
+      this.#emitPending(options.sessionId);
+      return;
+    }
+
+    // 未放行：该条目已入待审，沿用与人工审批相同的超时兜底
+    this.#armApprovalTimer(entry, options.sessionId, toolCallId, message.timeoutMs);
+    this.#emitPending(options.sessionId);
+  }
+
+  /**
+   * 为一条待审条目起超时定时器：到点自动拒绝、唤醒 worker、刷新界面。
+   * 人工审批与分析后退回确认共用同一套超时语义。
+   */
+  #armApprovalTimer(
+    entry: WorkerEntry,
+    sessionId: string,
+    toolCallId: string,
+    timeoutMs: number,
+  ): void {
+    const timer = setTimeout(() => {
+      this.#approvalTimers.delete(toolCallId);
+      const decision = this.approvals.resolve({
+        sessionId,
+        toolCallId,
+        approved: false,
+        reason: "审批超时，已自动拒绝。",
+      });
+      if (decision) {
+        entry.child.postMessage({
+          type: "approvalResult",
+          toolCallId,
+          approved: decision.approved,
+          reason: decision.reason,
+        } satisfies WorkerCommand);
+      }
+      this.#emitPending(sessionId);
+    }, timeoutMs);
+    timer.unref?.();
+    this.#approvalTimers.set(toolCallId, timer);
   }
 
   /** 会话被中断时，把所有待决授权一并作废（对齐 ACP Cancelled 语义） */
@@ -183,6 +284,9 @@ export class SessionManager {
     const existing = this.#workers.get(options.sessionId);
     if (existing) {
       existing.lastActiveAt = Date.now();
+      // 审批分析器按 entry 上的 provider/model 装配，复用分支也要同步
+      existing.provider = options.provider;
+      existing.modelId = options.model;
       await existing.ready;
       // 复用分支不能静默丢弃传入的模型：与 worker 当前不一致时补发切换命令
       const wanted = `${options.provider.id}/${options.model}`;
@@ -231,6 +335,8 @@ export class SessionManager {
       child,
       lastActiveAt: Date.now(),
       running: false,
+      provider: options.provider,
+      modelId: options.model,
       ready: readyDeferred.promise,
       pendingBranches: [],
     };
@@ -319,29 +425,12 @@ export class SessionManager {
               approved: outcome.decision.approved,
               reason: outcome.decision.reason,
             } satisfies WorkerCommand);
+          } else if ("analyze" in outcome) {
+            // 自动审批：调用大模型判定，期间 worker 仍阻塞在 before_tool
+            this.#analyzeThenReply(entry, options, message, outcome.analyze);
           } else {
             // 与 worker 同步的超时兜底：到点自动拒绝，界面同步转为「已超时」
-            const { toolCallId } = message;
-            const timer = setTimeout(() => {
-              this.#approvalTimers.delete(toolCallId);
-              const decision = this.approvals.resolve({
-                sessionId: options.sessionId,
-                toolCallId,
-                approved: false,
-                reason: "审批超时，已自动拒绝。",
-              });
-              if (decision) {
-                entry.child.postMessage({
-                  type: "approvalResult",
-                  toolCallId,
-                  approved: decision.approved,
-                  reason: decision.reason,
-                } satisfies WorkerCommand);
-              }
-              this.#emitPending(options.sessionId);
-            }, message.timeoutMs);
-            timer.unref?.();
-            this.#approvalTimers.set(toolCallId, timer);
+            this.#armApprovalTimer(entry, options.sessionId, message.toolCallId, message.timeoutMs);
             this.#emitPending(options.sessionId);
           }
           break;
@@ -427,6 +516,12 @@ export class SessionManager {
   }
 
   setModel(sessionId: string, provider: ProviderConfig, modelId: string): void {
+    // 同步到 entry，审批分析器跟着切换后的模型走
+    const entry = this.#workers.get(sessionId);
+    if (entry) {
+      entry.provider = provider;
+      entry.modelId = modelId;
+    }
     this.#post(sessionId, {
       type: "setModel",
       provider: {
@@ -475,6 +570,14 @@ export class SessionManager {
     const entry = this.#workers.get(sessionId);
     // 经 DB 回填，保证 fileChanges 与持久化一致
     return entry?.view ? this.#withDbChanges(entry.view) : undefined;
+  }
+
+  /**
+   * 会话是否处于运行中（有活跃 worker 且正在跑 Agent）。
+   * 删除会话前用它把“正在写入历史”的会话挡在门外。
+   */
+  isRunning(sessionId: string): boolean {
+    return this.#workers.get(sessionId)?.running ?? false;
   }
 
   /**

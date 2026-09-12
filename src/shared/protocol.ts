@@ -130,6 +130,11 @@ export interface IpcInvokeMap {
     request: { sessionId: string };
     response: { ok: true; closed: boolean };
   };
+  /** 永久删除会话：清 DB 记录、关联用量/工具/改动与 JSONL 历史；运行中的会话会被拒绝 */
+  "session.delete": {
+    request: { sessionId: string };
+    response: { ok: true };
+  };
   "session.view": {
     request: { sessionId: string };
     response: ConversationView | null;
@@ -324,8 +329,13 @@ export interface IpcEventMap {
   "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
 }
 
-/** 审批模式 */
-export type ApprovalMode = "full-access" | "approval";
+/**
+ * 审批模式：
+ *   - approval：只读白名单放行，其余都需确认；
+ *   - auto：白名单放行 + 普通操作自动放行，仅高风险需确认；
+ *   - full-access：一律放行（等价于旧的全权执行）。
+ */
+export type ApprovalMode = "approval" | "auto" | "full-access";
 
 /** 风险档位 */
 export type ApprovalRisk = "safe" | "moderate" | "dangerous";
@@ -385,6 +395,7 @@ export const IPC_CHANNELS = [
   "session.prompt",
   "session.abort",
   "session.close",
+  "session.delete",
   "session.view",
   "secrets.status",
   "secrets.set",
