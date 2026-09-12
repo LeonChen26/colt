@@ -2,7 +2,6 @@
  * ANSI SGR 转义序列解析：把带颜色标记的终端输出切成可渲染的样式片段。
  * pi 的 bash 工具是「执行并流式返回合并输出」，不是交互式 PTY，
  * 因此这里只需解析 SGR，无需完整终端仿真。
- * 作者：陕耀云栈WorkMate
  */
 
 export interface AnsiSpan {

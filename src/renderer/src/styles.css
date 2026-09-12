@@ -1,22 +1,136 @@
 @import "tailwindcss";
 
-/* Banyan 主题：开发者工具观感的暗色基调
-   作者：陕耀云栈WorkMate */
-@theme {
-  --color-surface: #0b0d10;
-  --color-surface-raised: #12151a;
-  --color-surface-overlay: #171b22;
-  --color-border-subtle: #232931;
-  --color-text-primary: #e6e9ef;
-  --color-text-secondary: #98a2b3;
-  --color-text-muted: #6b7480;
-  --color-accent: #4f9cf9;
-  --color-success: #3fb950;
-  --color-warning: #d29922;
-  --color-danger: #f85149;
+/* ============================================================
+   Banyan 设计令牌
+   暗色为默认；data-theme="light" 覆盖为亮色；data-theme="system" 跟随系统。
+   组件只引用令牌，不写死颜色，主题切换全部联动。
+   ============================================================ */
 
-  --font-sans: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+@theme {
+  /* 表面层级 */
+  --color-surface: #0a0c0f;
+  --color-surface-raised: #11141a;
+  --color-surface-overlay: #161a21;
+  --color-surface-input: #0e1116;
+  --color-surface-code: #07090c;
+
+  /* 描边 */
+  --color-line: #20262f;
+  --color-line-strong: #2c333d;
+
+  /* 文字 */
+  --color-text-primary: #e8ebf0;
+  --color-text-secondary: #98a2b3;
+  --color-text-muted: #666f7a;
+
+  /* 中性主色（无彩色） */
+  --color-accent: #c9ced6;
+  --color-accent-soft: rgba(201, 206, 214, 0.1);
+  --color-accent-dim: #7d8694;
+  --color-accent-fg: #0a0c0f;
+  --color-accent-hover: #ffffff;
+
+  /* 语义色（底色 + 前景分列） */
+  --color-success: #3fb950;
+  --color-success-soft: rgba(63, 185, 80, 0.12);
+  --color-success-fg: #7ee787;
+  --color-warning: #d29922;
+  --color-warning-soft: rgba(210, 153, 34, 0.12);
+  --color-danger: #f85149;
+  --color-danger-soft: rgba(248, 81, 73, 0.12);
+  --color-danger-fg: #ff9d95;
+
+  /* 代码高亮 */
+  --color-code-keyword: #e8b98a;
+  --color-code-string: #a3cfa6;
+  --color-code-comment: #6a7280;
+  --color-code-number: #c9a9d4;
+  --color-code-function: #d6dae1;
+  --color-code-prop: #9fb6cf;
+
+  /* 字体 */
+  --font-sans: "Inter", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+
+  /* 布局量 */
+  --h-topbar: 42px;
+  --w-sidebar: 248px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+/* ---------- 亮色主题：覆盖令牌值 ---------- */
+:root[data-theme="light"] {
+  --color-surface: #ffffff;
+  --color-surface-raised: #f7f8f9;
+  --color-surface-overlay: #eef0f2;
+  --color-surface-input: #ffffff;
+  --color-surface-code: #f4f5f7;
+
+  --color-line: #e3e6ea;
+  --color-line-strong: #cdd2d9;
+
+  --color-text-primary: #1a1d21;
+  --color-text-secondary: #565f6b;
+  --color-text-muted: #8b929c;
+
+  --color-accent: #2b3138;
+  --color-accent-soft: rgba(43, 49, 56, 0.06);
+  --color-accent-dim: #6b7480;
+  --color-accent-fg: #ffffff;
+  --color-accent-hover: #3a4149;
+
+  --color-success: #1a7f37;
+  --color-success-soft: rgba(26, 127, 55, 0.08);
+  --color-success-fg: #1a7f37;
+  --color-warning: #9a6700;
+  --color-warning-soft: rgba(154, 103, 0, 0.08);
+  --color-danger: #cf222e;
+  --color-danger-soft: rgba(207, 34, 46, 0.08);
+  --color-danger-fg: #cf222e;
+
+  --color-code-keyword: #a05a00;
+  --color-code-string: #116329;
+  --color-code-comment: #8b929c;
+  --color-code-number: #7a4d92;
+  --color-code-function: #1a1d21;
+  --color-code-prop: #3a5266;
+}
+
+/* ---------- 跟随系统：亮色偏好时套用亮色 ---------- */
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    --color-surface: #ffffff;
+    --color-surface-raised: #f7f8f9;
+    --color-surface-overlay: #eef0f2;
+    --color-surface-input: #ffffff;
+    --color-surface-code: #f4f5f7;
+    --color-line: #e3e6ea;
+    --color-line-strong: #cdd2d9;
+    --color-text-primary: #1a1d21;
+    --color-text-secondary: #565f6b;
+    --color-text-muted: #8b929c;
+    --color-accent: #2b3138;
+    --color-accent-soft: rgba(43, 49, 56, 0.06);
+    --color-accent-dim: #6b7480;
+    --color-accent-fg: #ffffff;
+    --color-accent-hover: #3a4149;
+    --color-success: #1a7f37;
+    --color-success-soft: rgba(26, 127, 55, 0.08);
+    --color-success-fg: #1a7f37;
+    --color-warning: #9a6700;
+    --color-warning-soft: rgba(154, 103, 0, 0.08);
+    --color-danger: #cf222e;
+    --color-danger-soft: rgba(207, 34, 46, 0.08);
+    --color-danger-fg: #cf222e;
+    --color-code-keyword: #a05a00;
+    --color-code-string: #116329;
+    --color-code-comment: #8b929c;
+    --color-code-number: #7a4d92;
+    --color-code-function: #1a1d21;
+    --color-code-prop: #3a5266;
+  }
 }
 
 html,
@@ -30,12 +144,12 @@ body {
   background-color: var(--color-surface);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
-/* 滚动条贴合暗色主题 */
+/* 滚动条贴合主题 */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -44,9 +158,254 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-subtle);
+  background: var(--color-line-strong);
   border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
+  background-clip: padding-box;
+}
+
+/* 运行中呼吸点 */
+@keyframes banyan-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(63, 185, 80, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
+  }
+}
+.pulse-dot {
+  animation: banyan-pulse 2s infinite;
+}
+
+/* 心跳转「似乎卡住」：琥珀、停止呼吸 */
+.stale-dot {
+  background: var(--color-warning) !important;
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+/* 思考轨：半透明弱化、左侧描边，是「氛围组」而非必须阅读 */
+.thought {
+  background: linear-gradient(180deg, rgba(201, 206, 214, 0.04), transparent);
+  border: 1px solid var(--color-line);
+  border-left: 2px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+/* ============================================================
+   助手回复的 Markdown 渲染（对应高保真 .md 容器）
+   颜色全部引用代码高亮令牌，随主题联动。
+   ============================================================ */
+.md {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--color-text-primary);
+  word-break: break-word;
+}
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0 0 10px;
+}
+
+/* 行内代码 */
+.md .md-code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--color-text-primary);
+}
+
+/* 围栏代码块：语言标签 + 复制按钮 */
+.md .md-code-block {
+  margin: 0 0 10px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface-code);
+}
+.md .md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--color-line);
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+}
+.md .md-code-head .lang {
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+}
+.md .md-code-head .copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: none;
+}
+.md .md-code-head .copy:hover {
+  color: var(--color-text-secondary);
+}
+.md pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+}
+.md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* 列表 */
+.md ul,
+.md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 3px 0;
+}
+.md li::marker {
+  color: var(--color-text-muted);
+}
+
+/* 标题：工作流里降级为粗体小标题，不喧宾夺主 */
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 12.5px;
+  font-weight: 650;
+  margin: 14px 0 8px;
+  color: var(--color-text-primary);
+}
+
+.md strong {
+  font-weight: 650;
+  color: var(--color-text-primary);
+}
+.md em {
+  font-style: italic;
+  color: var(--color-text-secondary);
+}
+
+.md blockquote {
+  margin: 0 0 10px;
+  padding: 4px 12px;
+  border-left: 2px solid var(--color-line-strong);
+  color: var(--color-text-secondary);
+}
+
+.md a {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-line-strong);
+}
+.md a:hover {
+  text-decoration-color: var(--color-text-secondary);
+}
+
+.md table {
+  border-collapse: collapse;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.md th,
+.md td {
+  border: 1px solid var(--color-line);
+  padding: 5px 10px;
+  text-align: left;
+}
+.md th {
+  background: var(--color-surface-overlay);
+  font-weight: 600;
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--color-line);
+  margin: 14px 0;
+}
+
+/* ---------- 语法高亮：低饱和，克制 ---------- */
+.md .hljs-keyword,
+.md .hljs-built_in,
+.md .hljs-literal,
+.md .hljs-selector-tag {
+  color: var(--color-code-keyword);
+}
+.md .hljs-string,
+.md .hljs-regexp,
+.md .hljs-addition {
+  color: var(--color-code-string);
+}
+.md .hljs-comment,
+.md .hljs-quote {
+  color: var(--color-code-comment);
+  font-style: italic;
+}
+.md .hljs-number,
+.md .hljs-symbol,
+.md .hljs-bullet {
+  color: var(--color-code-number);
+}
+.md .hljs-title,
+.md .hljs-title.function_,
+.md .hljs-section {
+  color: var(--color-code-function);
+}
+.md .hljs-attr,
+.md .hljs-attribute,
+.md .hljs-variable,
+.md .hljs-property,
+.md .hljs-params,
+.md .hljs-template-variable {
+  color: var(--color-code-prop);
+}
+.md .hljs-punctuation,
+.md .hljs-operator,
+.md .hljs-meta {
+  color: var(--color-text-muted);
+}
+.md .hljs-emphasis {
+  font-style: italic;
+}
+.md .hljs-strong {
+  font-weight: 600;
 }

@@ -1,10 +1,10 @@
 /**
  * 右侧工具调用历史面板：每次工具调用的入参、耗时与成败。
  * 数据来自数据库，可展开查看入参。
- * 作者：陕耀云栈WorkMate
  */
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, Wrench } from "lucide-react";
+import { ICON } from "@/lib/icon";
 import type { ToolCallRecord } from "@shared/protocol";
 import { formatArgs } from "../../../lib/format";
 import { cn } from "../../../lib/utils";
@@ -43,10 +43,10 @@ export function ToolsPanel({
   return (
     <SidePanelShell
       title="工具调用"
-      icon={<Wrench size={12} />}
+      icon={<Wrench {...ICON.sm} />}
       meta={
         calls.length > 0 ? (
-          <span className="text-[--color-text-muted]">
+          <span className="text-text-muted">
             {calls.length} 次{failed > 0 && ` · ${failed} 失败`}
           </span>
         ) : null
@@ -62,8 +62,8 @@ export function ToolsPanel({
         <div
           key={call.id}
           className={cn(
-            "mb-1 overflow-hidden rounded-md border bg-[--color-surface-overlay]",
-            call.isError ? "border-[--color-danger]/40" : "border-transparent",
+            "mb-1 overflow-hidden rounded-md border bg-surface-overlay",
+            call.isError ? "border-danger/40" : "border-transparent",
           )}
         >
           <button
@@ -72,24 +72,24 @@ export function ToolsPanel({
             className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
           >
             <ChevronRight
-              size={12}
+              {...ICON.sm}
               className={cn(
-                "shrink-0 text-[--color-text-muted] transition-transform",
+                "shrink-0 text-text-muted transition-transform",
                 expanded === call.id && "rotate-90",
               )}
             />
-            <span className="font-mono text-xs text-[--color-text-primary]">{call.toolName}</span>
-            {call.isError && <span className="text-xs text-[--color-danger]">失败</span>}
-            <span className="ml-auto shrink-0 text-[10px] text-[--color-text-muted]">
+            <span className="font-mono text-xs text-text-primary">{call.toolName}</span>
+            {call.isError && <span className="text-xs text-danger">失败</span>}
+            <span className="ml-auto shrink-0 text-[10px] text-text-muted">
               {call.durationMs !== null && `${call.durationMs}ms`}
               {" · "}
               {new Date(call.createdAt).toLocaleTimeString("zh-CN")}
             </span>
           </button>
           {expanded === call.id && (
-            <div className="border-t border-[--color-border-subtle] p-2">
-              <div className="mb-1 text-xs text-[--color-text-muted]">入参</div>
-              <pre className="max-h-60 overflow-auto rounded-md bg-black/40 px-2 py-1.5 font-mono text-xs whitespace-pre-wrap">
+            <div className="border-t border-line p-2">
+              <div className="mb-1 text-xs text-text-muted">入参</div>
+              <pre className="max-h-60 overflow-auto rounded-[6px] bg-surface-code px-2 py-1.5 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
                 {formatArgs(call.inputJson ?? "")}
               </pre>
             </div>

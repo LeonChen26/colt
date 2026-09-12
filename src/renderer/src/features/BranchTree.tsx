@@ -1,10 +1,10 @@
 /**
  * 分支树：自绘 SVG，展示会话的全部分支与当前活跃路径
  * 点击任一节点可 navigateTree 跳回该处，之后的对话会形成新分支
- * 作者：陕耀云栈WorkMate
  */
 import { useEffect, useMemo, useState } from "react";
-import { GitBranch, RefreshCw } from "lucide-react";
+import { ChevronDown, RefreshCw } from "lucide-react";
+import { ICON } from "@/lib/icon";
 import type { BranchNode } from "@shared/protocol";
 import { cn } from "../lib/utils";
 
@@ -42,12 +42,13 @@ function layout(nodes: BranchNode[]): Laid[] {
   return result;
 }
 
+/** 节点色：活跃路径用主色，未活跃用中性灰（去蓝，贴合主题令牌） */
 const KIND_COLOR: Record<string, string> = {
-  user: "#3b82f6",
-  assistant: "#a855f7",
-  toolResult: "#64748b",
-  compaction: "#f59e0b",
-  branch_summary: "#f59e0b",
+  user: "var(--color-accent)",
+  assistant: "var(--color-text-primary)",
+  toolResult: "var(--color-text-secondary)",
+  compaction: "var(--color-warning)",
+  branch_summary: "var(--color-warning)",
 };
 
 export function BranchTree({
@@ -61,12 +62,14 @@ export function BranchTree({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const load = useMemo(
     () => async () => {
       setLoading(true);
       setError(null);
       try {
+        // 会话未打开时后端返回空数组（非异常）；有新的对话后刷新即可看到分支
         setNodes(await window.banyan.invoke("session.branches", { sessionId }));
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -101,32 +104,46 @@ export function BranchTree({
   };
 
   return (
-    <aside className="flex w-[340px] shrink-0 flex-col border-l border-[--color-border-subtle] bg-[--color-surface-raised]">
-      <div className="flex shrink-0 items-center justify-between border-b border-[--color-border-subtle] px-3 py-2">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-[--color-text-secondary]">
-          <GitBranch size={12} />
-          分支树
-        </span>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="group flex shrink-0 items-center gap-1.5 px-3.5 py-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        >
+          <ChevronDown
+            {...ICON.xs}
+            className={cn(
+              "shrink-0 text-text-muted transition-transform",
+              collapsed && "-rotate-90",
+            )}
+          />
+          <span className="truncate text-[11px] font-semibold uppercase tracking-[.6px] text-text-muted">
+            会话分支
+          </span>
+        </button>
         <button
           type="button"
           onClick={() => void load()}
-          className="text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
           title="刷新"
         >
-          <RefreshCw size={12} className={cn(loading && "animate-spin")} />
+          <RefreshCw {...ICON.xs} className={cn(loading && "animate-spin")} />
         </button>
       </div>
 
       {error && (
-        <div className="m-2 rounded-md border border-[--color-danger]/50 bg-[--color-danger]/10 px-2 py-1.5 text-xs text-[--color-danger]">
+        <div className="mx-2 mb-1 rounded-[6px] border border-danger/50 bg-danger-soft px-2 py-1.5 text-[11px] text-danger-fg">
           {error}
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {!collapsed && (
+        <>
+          <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
         {laid.length === 0 ? (
-          <p className="px-3 py-8 text-center text-xs text-[--color-text-muted]">
-            {loading ? "加载中…" : "还没有对话记录"}
+          <p className="px-2 py-6 text-center text-[11.5px] text-text-muted">
+            {loading ? "加载中…" : "暂无分支"}
           </p>
         ) : (
           <div className="relative" style={{ height }}>
@@ -147,7 +164,7 @@ export function BranchTree({
                     key={node.id}
                     d={`M ${x1} ${y1} L ${x1} ${y2 - 10} Q ${x1} ${y2} ${x2} ${y2}`}
                     fill="none"
-                    stroke={node.onActivePath ? "#3b82f6" : "#3f3f46"}
+                    stroke={node.onActivePath ? "var(--color-accent)" : "var(--color-line-strong)"}
                     strokeWidth={node.onActivePath ? 1.6 : 1}
                   />
                 );
@@ -158,8 +175,8 @@ export function BranchTree({
                   cx={LEFT_PAD + node.depth * COL_WIDTH}
                   cy={node.row * ROW_HEIGHT + ROW_HEIGHT / 2}
                   r={node.isTip ? 5.5 : 3.5}
-                  fill={node.onActivePath ? (KIND_COLOR[node.kind] ?? "#64748b") : "#3f3f46"}
-                  stroke={node.isTip ? "#e4e4e7" : "none"}
+                  fill={node.onActivePath ? (KIND_COLOR[node.kind] ?? "var(--color-text-muted)") : "var(--color-line-strong)"}
+                  stroke={node.isTip ? "var(--color-text-primary)" : "none"}
                   strokeWidth={node.isTip ? 1.5 : 0}
                 />
               ))}
@@ -173,9 +190,9 @@ export function BranchTree({
                 onClick={() => void navigate(node.id)}
                 title={node.isTip ? "当前所在位置" : "跳转到此处（之后的对话会形成新分支）"}
                 className={cn(
-                  "absolute flex items-center rounded px-2 py-1 text-left text-xs transition",
-                  node.isTip ? "cursor-default" : "hover:bg-[--color-surface-overlay]",
-                  node.onActivePath ? "text-[--color-text-primary]" : "text-[--color-text-muted]",
+                  "absolute flex items-center rounded-[5px] px-1.5 py-1 text-left transition",
+                  node.isTip ? "cursor-default" : "hover:bg-surface-overlay",
+                  node.onActivePath ? "text-text-primary" : "text-text-muted",
                 )}
                 style={{
                   top: node.row * ROW_HEIGHT + 4,
@@ -184,20 +201,22 @@ export function BranchTree({
                   height: ROW_HEIGHT - 8,
                 }}
               >
-                <span className="w-14 shrink-0 text-[10px] text-[--color-text-muted]">
+                <span className="w-10 shrink-0 text-[10px] text-text-muted">
                   {labelOf(node.kind)}
                 </span>
-                <span className="truncate">{node.summary}</span>
+                <span className="truncate text-[11.5px]">{node.summary}</span>
               </button>
             ))}
           </div>
         )}
       </div>
 
-      <p className="shrink-0 border-t border-[--color-border-subtle] px-3 py-2 text-xs leading-relaxed text-[--color-text-muted]">
-        点击历史节点可跳回该处，之后的对话会形成新分支，原分支保留。
+      <p className="shrink-0 border-t border-line px-3.5 py-2 text-[10.5px] leading-relaxed text-text-muted">
+        点击历史节点可跳回该处，之后的对话形成新分支。
       </p>
-    </aside>
+        </>
+      )}
+    </div>
   );
 }
 

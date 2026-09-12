@@ -1,10 +1,10 @@
 /**
  * 右侧面板的公共外壳：头部标题 + 刷新 + 收起，以及加载/空态的统一呈现。
  * 各具体面板（改动/用量/工具）只需提供内容与状态。
- * 作者：陕耀云栈WorkMate
  */
 import type { ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
+import { ICON } from "@/lib/icon";
 import { cn } from "../../../lib/utils";
 
 export function SidePanelShell({
@@ -39,11 +39,11 @@ export function SidePanelShell({
 }): React.JSX.Element {
   return (
     <aside
-      className="flex shrink-0 flex-col border-l border-[--color-border-subtle] bg-[--color-surface-raised]"
+      className="flex shrink-0 flex-col border-l border-line bg-surface-raised"
       style={{ width }}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-[--color-border-subtle] px-3 py-2">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-[--color-text-secondary]">
+      <div className="flex shrink-0 items-center justify-between border-b border-line px-3 py-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
           {icon}
           {title}
           {meta}
@@ -52,15 +52,15 @@ export function SidePanelShell({
           <button
             type="button"
             onClick={onRefresh}
-            className="text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+            className="text-text-muted transition hover:text-text-primary"
             title="刷新"
           >
-            <RefreshCw size={12} className={cn(loading && "animate-spin")} />
+            <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="text-xs text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+            className="text-xs text-text-muted transition hover:text-text-primary"
           >
             收起
           </button>
@@ -68,7 +68,7 @@ export function SidePanelShell({
       </div>
 
       {error && (
-        <div className="m-2 rounded-md border border-[--color-danger]/50 bg-[--color-danger]/10 px-2 py-1.5 text-xs text-[--color-danger]">
+        <div className="m-2 rounded-md border border-danger/50 bg-danger/10 px-2 py-1.5 text-xs text-danger">
           {error}
         </div>
       )}
@@ -77,9 +77,9 @@ export function SidePanelShell({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading && isEmpty ? (
-          <p className="px-2 py-6 text-center text-xs text-[--color-text-muted]">加载中…</p>
+          <p className="px-2 py-6 text-center text-xs text-text-muted">加载中…</p>
         ) : isEmpty ? (
-          <p className="px-2 py-6 text-center text-xs leading-relaxed text-[--color-text-muted]">
+          <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
             {empty}
           </p>
         ) : (

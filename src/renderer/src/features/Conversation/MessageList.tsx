@@ -1,87 +1,268 @@
 /**
- * 消息渲染：消息气泡、可展开的工具卡片、流式光标。
- * 作者：陕耀云栈WorkMate
+ * 消息渲染：消息气泡、思考轨、可展开的工具卡片（内嵌 diff）、流式光标。
+ *
+ * 布局对齐高保真：助手消息用左侧 46px 角色列 + 正文列；用户消息右对齐，
+ * 角色标签在右。工具卡片走语义化图标 + 路径 + 增删行数 + 耗时 + 内嵌 diff。
  */
-import { useState } from "react";
-import { ChevronRight, Terminal } from "lucide-react";
-import type { ViewMessage } from "@shared/worker-protocol";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Brain,
+  Check,
+  ChevronRight,
+  Eye,
+  FileEdit,
+  FilePlus,
+  Terminal,
+  Wrench,
+} from "lucide-react";
+import { ICON } from "@/lib/icon";
+import type { ViewFileChange, ViewMessage } from "@shared/worker-protocol";
+import { Markdown } from "../../components/Markdown";
+import { DiffView } from "../../components/DiffView";
 import { TerminalOutput } from "../../components/TerminalOutput";
-import { formatArgs } from "../../lib/format";
+import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
 import { cn } from "../../lib/utils";
 
-/** 一条消息：正文气泡 + 其发起的工具调用卡片 */
+type ToolResult = { output: string; isError: boolean };
+
+/** 一条消息：正文 + 其发起的工具调用卡片 */
 export function MessageBubble({
   message,
   resultMap,
+  changes,
+  onHoverFile,
 }: {
   message: ViewMessage;
-  resultMap: Map<string, { output: string; isError: boolean }>;
+  resultMap: Map<string, ToolResult>;
+  changes: ViewFileChange[];
+  onHoverFile?: (path: string | null) => void;
 }): React.JSX.Element | null {
   // 工具结果已合并进各自的工具卡片，不再单独成条
   if (message.role === "toolResult") return null;
   if (message.role !== "user" && message.role !== "assistant") return null;
   if (!message.text && message.toolCalls.length === 0) return null;
 
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[72%] rounded-[8px] border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap text-text-primary">
+          {message.text}
+        </div>
+        <span className="ml-2.5 shrink-0 pt-[3px] text-[11px] text-text-muted">你</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-2">
-      {message.text && <Bubble role={message.role}>{message.text}</Bubble>}
-      {message.toolCalls.map((call) => (
-        <ToolCard key={call.id} call={call} result={resultMap.get(call.id)} />
-      ))}
+    <div className="flex gap-2.5">
+      <span className="w-[46px] shrink-0 pt-[3px] text-[11px] text-text-muted">Agent</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        {message.thought && <ThoughtBlock text={message.thought} />}
+        {message.text && <Markdown>{message.text}</Markdown>}
+        {message.toolCalls.map((call) => (
+          <ToolCard
+            key={call.id}
+            name={call.name}
+            args={call.args}
+            durationMs={call.durationMs}
+            result={resultMap.get(call.id)}
+            change={matchChangeByPath(changes, parseArgsJson(call.args).path)}
+            onHoverFile={onHoverFile}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-/** 可展开的工具调用卡片：折叠时只显示名称与参数摘要 */
-function ToolCard({
-  call,
-  result,
-}: {
-  call: { id: string; name: string; args: string };
-  result?: { output: string; isError: boolean };
-}): React.JSX.Element {
+/** 折叠的思考摘要：默认收起，展开看完整推理（氛围组，不抢主回复） */
+function ThoughtBlock({ text }: { text: string }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const isBash = call.name === "bash";
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-1.5 text-[12px] text-text-muted transition hover:text-text-secondary"
+      >
+        <ChevronRight
+          {...ICON.sm}
+          className={cn("shrink-0 transition-transform", open && "rotate-90")}
+        />
+        <Brain {...ICON.sm} />
+        已思考
+      </button>
+      {open && <div className="thought mt-1.5">{text}</div>}
+    </div>
+  );
+}
+
+/** 运行中的思考轨：流式追加，斜体弱化 */
+export function ThinkingRail({ text }: { text: string }): React.JSX.Element {
+  return (
+    <div className="thought">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] not-italic text-text-muted">
+        <Brain {...ICON.sm} />
+        思考中…
+      </div>
+      {text}
+    </div>
+  );
+}
+
+/** 工具类型 → 语义化图标与副标题（对齐 ACP ToolKind） */
+function describeTool(
+  name: string,
+  args: Record<string, unknown>,
+): { icon: ReactNode; subtitle?: string } {
+  const path = typeof args.path === "string" ? args.path : undefined;
+  const command = typeof args.command === "string" ? args.command : undefined;
+  switch (name) {
+    case "edit":
+      return { icon: <FileEdit {...ICON.sm} />, subtitle: path };
+    case "write":
+      return { icon: <FilePlus {...ICON.sm} />, subtitle: path };
+    case "read":
+    case "grep":
+    case "glob":
+    case "ls":
+    case "list":
+    case "search":
+      return { icon: <Eye {...ICON.sm} />, subtitle: command ?? path };
+    case "bash":
+      return { icon: <Terminal {...ICON.sm} />, subtitle: command };
+    default:
+      return { icon: <Wrench {...ICON.sm} />, subtitle: path ?? command };
+  }
+}
+
+/** 耗时展示：<1s 用毫秒，否则保留一位小数 */
+function formatDuration(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** 可展开的工具调用卡片：折叠时显示名称 + 参数摘要 + 增删/耗时 */
+export function ToolCard({
+  name,
+  args,
+  result,
+  durationMs,
+  change,
+  running,
+  onHoverFile,
+}: {
+  name: string;
+  args: string;
+  result?: ToolResult;
+  durationMs?: number;
+  change?: ViewFileChange;
+  running?: boolean;
+  onHoverFile?: (path: string | null) => void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(Boolean(running));
+  const parsed = useMemo(() => parseArgsJson(args), [args]);
+  const { icon, subtitle } = describeTool(name, parsed);
+  const isError = result?.isError ?? false;
+  const path = typeof parsed.path === "string" ? parsed.path : undefined;
+  const hasArgs = Object.keys(parsed).length > 0;
+  const hasStat = change !== undefined && (change.addedLines > 0 || change.removedLines > 0);
+  // 工具条副标题（路径 / 命令）：超长时截断，仅在截断时挂 title 悬停展示完整内容
+  const subtitleText = change?.path ?? subtitle;
+  const subtitleRef = useRef<HTMLSpanElement>(null);
+  const [subtitleTruncated, setSubtitleTruncated] = useState(false);
+  useEffect(() => {
+    const el = subtitleRef.current;
+    if (!el) return;
+    const measure = (): void => setSubtitleTruncated(el.scrollWidth > el.clientWidth + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [subtitleText]);
 
   return (
     <div
       className={cn(
-        "self-start overflow-hidden rounded-lg border bg-[--color-surface-raised]",
-        result?.isError ? "border-[--color-danger]/50" : "border-[--color-border-subtle]",
+        "self-start overflow-hidden rounded-[8px] border bg-surface-raised",
+        isError ? "border-danger/50" : "border-line",
       )}
+      onMouseEnter={() => onHoverFile?.(path ?? null)}
+      onMouseLeave={() => onHoverFile?.(null)}
     >
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left transition hover:bg-[--color-surface-overlay]/50"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-surface-overlay/50"
       >
         <ChevronRight
-          size={12}
-          className={cn("shrink-0 transition-transform", open && "rotate-90")}
+          {...ICON.sm}
+          className={cn("shrink-0 text-text-muted transition-transform", open && "rotate-90")}
         />
-        <Terminal size={12} className="shrink-0 text-[--color-text-muted]" />
-        <span className="font-mono text-xs">{call.name}</span>
-        <span className="truncate font-mono text-xs text-[--color-text-muted]">{call.args}</span>
-        {result?.isError && <span className="ml-auto shrink-0 text-xs text-[--color-danger]">失败</span>}
+        <span className="shrink-0 text-text-muted">{icon}</span>
+        <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
+          {name}
+        </span>
+        <span
+          ref={subtitleRef}
+          title={subtitleTruncated ? subtitleText : undefined}
+          className="w-[320px] shrink-0 truncate font-mono text-[11.5px] text-text-secondary"
+        >
+          {subtitleText ?? ""}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-[11px] text-text-muted">
+          {hasStat && (
+            <span>
+              <span className="text-success-fg">+{change!.addedLines}</span>{" "}
+              <span className="text-danger-fg">−{change!.removedLines}</span>
+            </span>
+          )}
+          {running ? (
+            <span className="flex items-center gap-1.5 text-text-secondary">
+              <span className="live-dot" />
+              运行中
+            </span>
+          ) : result ? (
+            isError ? (
+              <span className="text-danger-fg">失败</span>
+            ) : (
+              <span className="flex items-center gap-1 text-success">
+                <Check {...ICON.xs} />
+                {durationMs !== undefined ? formatDuration(durationMs) : "完成"}
+              </span>
+            )
+          ) : null}
+        </span>
       </button>
 
       {open && (
-        <div className="border-t border-[--color-border-subtle] p-2">
-          <div className="mb-1 text-xs text-[--color-text-muted]">参数</div>
-          <pre className="mb-2 max-h-32 overflow-auto rounded-md bg-black/40 px-3 py-2 font-mono text-xs whitespace-pre-wrap">
-            {formatArgs(call.args)}
-          </pre>
-          <div className="mb-1 text-xs text-[--color-text-muted]">输出</div>
-          {result ? (
-            isBash ? (
-              <TerminalOutput text={result.output} className="max-h-80" />
-            ) : (
-              <pre className="max-h-80 overflow-auto rounded-md bg-black/40 px-3 py-2 font-mono text-xs whitespace-pre-wrap">
-                {result.output}
-              </pre>
-            )
+        <div className="border-t border-line bg-surface p-2">
+          {change?.patch ? (
+            <DiffView patch={change.patch} />
           ) : (
-            <p className="px-1 text-xs text-[--color-text-muted]">（无输出）</p>
+            <>
+              {hasArgs && (
+                <>
+                  <div className="mb-1 text-[11px] text-text-muted">参数</div>
+                  <pre className="mb-2 max-h-32 overflow-auto rounded-[6px] bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                    {formatArgs(args)}
+                  </pre>
+                </>
+              )}
+              <div className="mb-1 text-[11px] text-text-muted">输出</div>
+              {result ? (
+                name === "bash" ? (
+                  <TerminalOutput text={result.output} className="max-h-80" />
+                ) : (
+                  <pre className="max-h-80 overflow-auto rounded-[6px] bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                    {result.output}
+                  </pre>
+                )
+              ) : running ? (
+                <p className="px-1 text-[11px] text-text-muted">执行中…</p>
+              ) : (
+                <p className="px-1 text-[11px] text-text-muted">（无输出）</p>
+              )}
+            </>
           )}
         </div>
       )}
@@ -102,10 +283,10 @@ export function Bubble({
   return (
     <div
       className={cn(
-        "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+        "max-w-[85%] rounded-[10px] border px-3.5 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-wrap",
         role === "user"
-          ? "self-end bg-[--color-accent] text-white"
-          : "self-start border border-[--color-border-subtle] bg-[--color-surface-raised]",
+          ? "border-line bg-surface-overlay text-text-primary"
+          : "border-line bg-surface-raised text-text-primary",
       )}
     >
       {children}

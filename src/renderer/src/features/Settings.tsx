@@ -1,10 +1,10 @@
 /**
  * 设置：provider 与密钥管理
  * 密钥只上行不下行——界面永远拿不到明文，只能看到是否已配置
- * 作者：陕耀云栈WorkMate
  */
 import { useCallback, useEffect, useState } from "react";
 import { Check, KeyRound, Plus, Trash2 } from "lucide-react";
+import { ICON } from "@/lib/icon";
 import type { ModelOption, ProviderConfig } from "@shared/protocol";
 import { cn } from "../lib/utils";
 
@@ -36,18 +36,18 @@ export function Settings(): React.JSX.Element {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-6">
         <h2 className="mb-1 text-base">设置</h2>
-        <p className="mb-6 text-xs text-[--color-text-muted]">
+        <p className="mb-6 text-xs text-text-muted">
           密钥经系统加密后保存在本地，界面不会回显明文。
         </p>
 
         {message && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-green-500/40 bg-green-500/10 px-3 py-2 text-sm text-green-400">
-            <Check size={14} />
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-success/40 bg-success-soft px-3 py-2 text-sm text-success-fg">
+            <Check {...ICON.md} />
             {message}
           </div>
         )}
         {error && (
-          <div className="mb-4 rounded-lg border border-[--color-danger]/50 bg-[--color-danger]/10 px-3 py-2 text-sm text-[--color-danger]">
+          <div className="mb-4 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
@@ -57,9 +57,9 @@ export function Settings(): React.JSX.Element {
           <button
             type="button"
             onClick={() => setAdding((value) => !value)}
-            className="flex items-center gap-1.5 rounded-md border border-[--color-border-subtle] px-2.5 py-1 text-xs text-[--color-text-secondary] transition hover:text-[--color-text-primary]"
+            className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary"
           >
-            <Plus size={12} />
+            <Plus {...ICON.sm} />
             添加 OpenAI 兼容服务
           </button>
         </div>
@@ -136,27 +136,27 @@ function ProviderCard({
   };
 
   return (
-    <div className="rounded-lg border border-[--color-border-subtle] bg-[--color-surface-raised] p-3">
+    <div className="rounded-lg border border-line bg-surface-raised p-3">
       <div className="mb-2 flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2 text-sm">
             {provider.name}
             {provider.builtin && (
-              <span className="rounded bg-[--color-surface-overlay] px-1.5 py-0.5 text-xs text-[--color-text-muted]">
+              <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-xs text-text-muted">
                 内置
               </span>
             )}
             <span
               className={cn(
                 "flex items-center gap-1 text-xs",
-                provider.hasKey ? "text-green-400" : "text-[--color-warning]",
+                provider.hasKey ? "text-success-fg" : "text-warning",
               )}
             >
-              <KeyRound size={11} />
+              <KeyRound {...ICON.xs} />
               {provider.hasKey ? "密钥已配置" : "未配置密钥"}
             </span>
           </div>
-          <div className="mt-0.5 font-mono text-xs text-[--color-text-muted]">
+          <div className="mt-0.5 font-mono text-xs text-text-muted">
             {provider.baseUrl}
           </div>
         </div>
@@ -164,10 +164,10 @@ function ProviderCard({
           <button
             type="button"
             onClick={() => void remove()}
-            className="rounded p-1 text-[--color-text-muted] transition hover:text-[--color-danger]"
+            className="rounded p-1 text-text-muted transition hover:text-danger"
             title="删除"
           >
-            <Trash2 size={14} />
+            <Trash2 {...ICON.md} />
           </button>
         )}
       </div>
@@ -176,7 +176,7 @@ function ProviderCard({
         {provider.models.map((model) => (
           <span
             key={model.id}
-            className="rounded bg-[--color-surface-overlay] px-2 py-0.5 font-mono text-xs text-[--color-text-secondary]"
+            className="rounded bg-surface-overlay px-2 py-0.5 font-mono text-xs text-text-secondary"
           >
             {model.id}
           </span>
@@ -189,13 +189,13 @@ function ProviderCard({
           value={key}
           onChange={(e) => setKey(e.target.value)}
           placeholder={provider.hasKey ? "输入新密钥以替换" : "粘贴 API Key"}
-          className="flex-1 rounded-md border border-[--color-border-subtle] bg-[--color-surface] px-2.5 py-1.5 text-xs outline-none transition placeholder:text-[--color-text-muted] focus:border-[--color-accent]"
+          className="flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition placeholder:text-text-muted focus:border-accent"
         />
         <button
           type="button"
           onClick={() => void saveKey()}
           disabled={!key.trim()}
-          className="rounded-md bg-[--color-accent] px-3 py-1.5 text-xs text-white transition disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
         >
           保存
         </button>
@@ -251,7 +251,7 @@ function ProviderForm({
   };
 
   return (
-    <div className="mb-4 rounded-lg border border-[--color-accent]/40 bg-[--color-surface-raised] p-3">
+    <div className="mb-4 rounded-lg border border-accent/40 bg-surface-raised p-3">
       <div className="grid grid-cols-2 gap-2">
         <Field label="标识（英文，唯一）" value={id} onChange={setId} placeholder="my-endpoint" />
         <Field label="显示名" value={name} onChange={setName} placeholder="我的服务" />
@@ -263,7 +263,7 @@ function ProviderForm({
         placeholder="https://api.example.com/v1"
       />
       <div className="mt-2">
-        <label className="mb-1 block text-xs text-[--color-text-muted]">
+        <label className="mb-1 block text-xs text-text-muted">
           模型（每行一个，可写 id|显示名|上下文长度）
         </label>
         <textarea
@@ -271,7 +271,7 @@ function ProviderForm({
           onChange={(e) => setModelText(e.target.value)}
           rows={3}
           placeholder={"gpt-4o-mini\nqwen-max|通义千问 Max|128000"}
-          className="w-full resize-none rounded-md border border-[--color-border-subtle] bg-[--color-surface] px-2.5 py-1.5 font-mono text-xs outline-none focus:border-[--color-accent]"
+          className="w-full resize-none rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none focus:border-accent"
         />
       </div>
       <Field label="API Key" value={apiKey} onChange={setApiKey} type="password" />
@@ -280,7 +280,7 @@ function ProviderForm({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-[--color-border-subtle] px-3 py-1.5 text-xs text-[--color-text-secondary]"
+          className="rounded-md border border-line px-3 py-1.5 text-xs text-text-secondary"
         >
           取消
         </button>
@@ -288,7 +288,7 @@ function ProviderForm({
           type="button"
           onClick={() => void submit()}
           disabled={!id.trim() || !baseUrl.trim()}
-          className="rounded-md bg-[--color-accent] px-3 py-1.5 text-xs text-white disabled:opacity-40"
+          className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg disabled:opacity-40"
         >
           保存
         </button>
@@ -312,13 +312,13 @@ function Field({
 }): React.JSX.Element {
   return (
     <div className="mt-2">
-      <label className="mb-1 block text-xs text-[--color-text-muted]">{label}</label>
+      <label className="mb-1 block text-xs text-text-muted">{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-md border border-[--color-border-subtle] bg-[--color-surface] px-2.5 py-1.5 text-xs outline-none transition placeholder:text-[--color-text-muted] focus:border-[--color-accent]"
+        className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition placeholder:text-text-muted focus:border-accent"
       />
     </div>
   );

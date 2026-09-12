@@ -1,9 +1,9 @@
 /**
  * 项目级改动汇总：跨会话展示所有文件改动
- * 作者：陕耀云栈WorkMate
  */
 import { useEffect, useMemo, useState } from "react";
 import { FileDiff, RefreshCw } from "lucide-react";
+import { ICON } from "@/lib/icon";
 import type { ProjectFileChange } from "@shared/protocol";
 import { DiffView } from "../components/DiffView";
 import { cn } from "../lib/utils";
@@ -49,47 +49,47 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-[--color-border-subtle] px-4 py-2">
+      <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-2">
         <div className="flex items-center gap-2 text-sm">
-          <FileDiff size={14} />
+          <FileDiff {...ICON.md} />
           项目改动汇总
-          <span className="text-xs text-[--color-text-muted]">
+          <span className="text-xs text-text-muted">
             {changes.length} 次改动 · {byFile.length} 个文件
           </span>
         </div>
         <button
           type="button"
           onClick={() => void load()}
-          className="flex items-center gap-1.5 rounded-md border border-[--color-border-subtle] px-2.5 py-1 text-xs text-[--color-text-secondary] transition hover:text-[--color-text-primary]"
+          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary"
         >
-          <RefreshCw size={12} className={cn(loading && "animate-spin")} />
+          <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
           刷新
         </button>
       </div>
 
       {changes.length === 0 ? (
-        <p className="mt-20 text-center text-sm text-[--color-text-muted]">
+        <p className="mt-20 text-center text-sm text-text-muted">
           {loading ? "加载中…" : "该项目还没有任何文件改动"}
         </p>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <div className="w-[380px] shrink-0 overflow-y-auto border-r border-[--color-border-subtle] p-2">
-            <div className="mb-2 px-2 py-1 text-xs text-[--color-text-muted]">按文件聚合</div>
+          <div className="w-[380px] shrink-0 overflow-y-auto border-r border-line p-2">
+            <div className="mb-2 px-2 py-1 text-xs text-text-muted">按文件聚合</div>
             {byFile.map(([path, stat]) => (
               <div
                 key={path}
-                className="mb-1 rounded-md bg-[--color-surface-raised] px-2 py-1.5"
+                className="mb-1 rounded-md bg-surface-raised px-2 py-1.5"
               >
                 <div className="truncate font-mono text-xs">{path}</div>
-                <div className="flex items-center gap-2 text-xs text-[--color-text-muted]">
+                <div className="flex items-center gap-2 text-xs text-text-muted">
                   <span>{stat.count} 次</span>
-                  {stat.added > 0 && <span className="text-green-400">+{stat.added}</span>}
-                  {stat.removed > 0 && <span className="text-red-400">-{stat.removed}</span>}
+                  {stat.added > 0 && <span className="text-success-fg">+{stat.added}</span>}
+                  {stat.removed > 0 && <span className="text-danger-fg">-{stat.removed}</span>}
                 </div>
               </div>
             ))}
 
-            <div className="mt-3 mb-2 px-2 py-1 text-xs text-[--color-text-muted]">按时间</div>
+            <div className="mt-3 mb-2 px-2 py-1 text-xs text-text-muted">按时间</div>
             {changes.map((change) => (
               <button
                 key={change.id}
@@ -98,12 +98,12 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
                 className={cn(
                   "mb-1 w-full rounded-md px-2 py-1.5 text-left transition",
                   change.id === selected
-                    ? "bg-[--color-surface-overlay]"
-                    : "hover:bg-[--color-surface-overlay]/60",
+                    ? "bg-surface-overlay"
+                    : "hover:bg-surface-overlay/60",
                 )}
               >
                 <div className="truncate font-mono text-xs">{change.path}</div>
-                <div className="flex items-center gap-2 text-xs text-[--color-text-muted]">
+                <div className="flex items-center gap-2 text-xs text-text-muted">
                   <span className="truncate">{change.sessionTitle}</span>
                   <span className="shrink-0">
                     {new Date(change.createdAt).toLocaleTimeString("zh-CN")}
@@ -117,7 +117,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
             {current?.patch ? (
               <DiffView patch={current.patch} />
             ) : (
-              <p className="mt-16 text-center text-xs text-[--color-text-muted]">
+              <p className="mt-16 text-center text-xs text-text-muted">
                 {current ? "该改动由 write 工具整文件写入，内核未提供 diff。" : "选择一条改动查看"}
               </p>
             )}

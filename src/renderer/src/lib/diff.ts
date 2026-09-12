@@ -1,7 +1,6 @@
 /**
  * Unified patch 的行分类。
  * edit 工具的 details.patch 已是标准 unified diff，按行前缀判定类型即可。
- * 作者：陕耀云栈WorkMate
  */
 
 export type DiffLineKind = "add" | "remove" | "hunk" | "meta" | "context";
