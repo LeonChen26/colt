@@ -1,7 +1,6 @@
 /**
  * 密钥存储：safeStorage 加密后落盘，明文只在内存与 worker 进程环境变量中存在
  * 绝不写入日志、不入数据库、不跨 IPC 明文传给渲染层
- * 作者：陕耀云栈WorkMate
  */
 import { app, safeStorage } from "electron";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";

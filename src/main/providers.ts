@@ -1,11 +1,24 @@
 /**
  * Provider 配置：内置 DeepSeek + 用户自定义的 OpenAI 兼容 endpoint
  * 密钥不存这里，统一走 secrets.ts（safeStorage 加密）
- * 作者：陕耀云栈WorkMate
  */
 import type { ModelOption, ProviderConfig } from "@shared/protocol";
+import { DEEPSEEK_MODELS } from "@earendil-works/pi-ai/providers/deepseek.models";
 import { getDatabase } from "./db";
 import { hasSecret } from "./secrets";
+
+/**
+ * 内置 DeepSeek 的模型表直接取自 pi-ai 自带的静态 catalog（DEEPSEEK_MODELS）。
+ * 不手写常量：避免 pi-ai 升级模型表后此处 contextWindow 漂移。
+ * 仅引静态数据模块，不引 deepseekProvider()，以免带入 auth/api 等运行时依赖。
+ */
+function builtinModels(): ModelOption[] {
+  return Object.values(DEEPSEEK_MODELS).map((model) => ({
+    id: model.id,
+    name: model.name,
+    contextWindow: model.contextWindow,
+  }));
+}
 
 /** 内置 DeepSeek：模型表由 pi-ai 自带，此处只列可选项供 UI 展示 */
 export const BUILTIN_DEEPSEEK: ProviderConfig = {
@@ -14,10 +27,7 @@ export const BUILTIN_DEEPSEEK: ProviderConfig = {
   kind: "deepseek",
   baseUrl: "https://api.deepseek.com",
   builtin: true,
-  models: [
-    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", contextWindow: 1_000_000 },
-    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextWindow: 1_000_000 },
-  ],
+  models: builtinModels(),
 };
 
 interface ProviderRow {

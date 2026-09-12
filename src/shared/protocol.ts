@@ -1,7 +1,6 @@
 /**
  * Banyan IPC 契约（单一真源）
  * 主进程、预加载、渲染进程共享此定义。
- * 作者：陕耀云栈WorkMate
  */
 
 import type { ConversationView, ViewFileChange } from "./worker-protocol";
@@ -27,6 +26,27 @@ export interface EnvReport {
   /** 未通过时的说明 */
   problems: string[];
 }
+
+/** 首次运行 / 历史数据检测结果 */
+export interface FirstRunReport {
+  /** 是否存在历史数据目录（%APPDATA%\Banyan 已存在） */
+  hasHistoricalData: boolean;
+  /** 历史数据库文件是否存在 */
+  hasDatabase: boolean;
+  /** 历史项目数量 */
+  projectCount: number;
+  /** 历史会话数量 */
+  sessionCount: number;
+  /** 是否已配置过任何密钥 */
+  hasSecret: boolean;
+  /** 用户数据目录绝对路径 */
+  userDataPath: string;
+  /** 是否已完成首启引导（写入了标志文件） */
+  onboardingDone: boolean;
+}
+
+/** 用户对首启历史数据的选择 */
+export type FirstRunChoice = "import" | "fresh";
 
 /** 项目 */
 export interface Project {
@@ -66,6 +86,16 @@ export interface IpcInvokeMap {
   "app.info": {
     request: void;
     response: { version: string; userDataPath: string };
+  };
+  /** 首启检测：是否发现历史数据、是否需要引导 */
+  "firstRun.check": {
+    request: void;
+    response: FirstRunReport;
+  };
+  /** 用户对历史数据的选择：import=沿用历史数据，fresh=清空重来 */
+  "firstRun.resolve": {
+    request: { choice: FirstRunChoice };
+    response: { ok: true; cleared: boolean };
   };
   "project.pick": {
     request: void;
@@ -126,6 +156,26 @@ export interface IpcInvokeMap {
   "toolCalls.list": {
     request: { sessionId: string };
     response: ToolCallRecord[];
+  };
+  /** 当前待审批的工具调用 */
+  "approval.list": {
+    request: { sessionId: string };
+    response: ApprovalRequest[];
+  };
+  /** 处置一条审批 */
+  "approval.resolve": {
+    request: { sessionId: string } & ApprovalResolution;
+    response: { ok: true };
+  };
+  /** 读取审批模式（省略 sessionId 时为全局默认） */
+  "approval.mode.get": {
+    request: { sessionId?: string };
+    response: { mode: ApprovalMode };
+  };
+  /** 切换审批模式（省略 sessionId 时改全局默认，否则仅改该会话） */
+  "approval.mode.set": {
+    request: { mode: ApprovalMode; sessionId?: string };
+    response: { mode: ApprovalMode };
   };
   /** 列出全部 provider */
   "providers.list": {
@@ -207,6 +257,8 @@ export interface BranchNode {
 /** 一条工具调用记录 */
 export interface ToolCallRecord {
   id: string;
+  /** 所属运行 ID，用于按一次运行聚合；历史数据可能为 null */
+  runId: string | null;
   toolName: string;
   inputJson: string | null;
   isError: boolean;
@@ -268,6 +320,46 @@ export interface IpcEventMap {
   "session.error": { sessionId: string; message: string };
   /** 文件改动（M2 接入） */
   "file.changed": { sessionId: string; change: ViewFileChange };
+  /** 待审批的工具调用（新增或清空时推送全量） */
+  "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
+}
+
+/** 审批模式 */
+export type ApprovalMode = "full-access" | "approval";
+
+/** 风险档位 */
+export type ApprovalRisk = "safe" | "moderate" | "dangerous";
+
+/** 一条待审批的工具调用 */
+export interface ApprovalRequest {
+  /** 内核工具调用 ID，作为应答时的关联键 */
+  toolCallId: string;
+  sessionId: string;
+  toolName: string;
+  /** 完整入参，供用户展开查看 */
+  argsJson: string;
+  /** 一行可读摘要 */
+  summary: string;
+  risk: ApprovalRisk;
+  /** 判定依据 */
+  reason: string;
+  /** 同类调用的签名，用于「不再询问」 */
+  signature: string;
+  requestedAt: number;
+  /** 审批等待上限（毫秒），界面据此显示倒计时 */
+  timeoutMs: number;
+}
+
+/** 用户对一条审批的处置 */
+export interface ApprovalResolution {
+  toolCallId: string;
+  approved: boolean;
+  /** 拒绝时给模型的说明，空则用默认文案 */
+  reason?: string;
+  /** 记住本次选择：signature 仅同签名免问，tool 整个工具免问 */
+  remember?: "signature" | "tool";
+  /** 记住拒绝：下次同类调用自动拒绝（与 remember 互斥语义） */
+  deny?: "signature" | "tool";
 }
 
 export type IpcEventName = keyof IpcEventMap;
@@ -283,6 +375,8 @@ export interface BanyanApi {
 export const IPC_CHANNELS = [
   "env.check",
   "app.info",
+  "firstRun.check",
+  "firstRun.resolve",
   "project.pick",
   "project.list",
   "session.create",
@@ -303,6 +397,10 @@ export const IPC_CHANNELS = [
   "session.setModel",
   "session.steer",
   "session.compact",
+  "approval.list",
+  "approval.resolve",
+  "approval.mode.get",
+  "approval.mode.set",
   "session.branches",
   "session.navigate",
 ] as const satisfies readonly IpcChannel[];
@@ -313,4 +411,5 @@ export const IPC_EVENTS = [
   "session.status",
   "session.error",
   "file.changed",
+  "approval.pending",
 ] as const satisfies readonly IpcEventName[];

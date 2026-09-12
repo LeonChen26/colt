@@ -1,7 +1,6 @@
 /**
  * Banyan 自有 SQLite：工作台元数据（会话本体在 JSONL，不在此库）
  * 驱动：node:sqlite（Electron 44 / Node 24 内置，零原生编译）
- * 作者：陕耀云栈WorkMate
  */
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";

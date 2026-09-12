@@ -1,6 +1,5 @@
 /**
  * 项目与会话的数据访问
- * 作者：陕耀云栈WorkMate
  */
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
@@ -205,13 +204,14 @@ export function recordToolCall(input: {
 export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
   const rows = getDatabase()
     .prepare(
-      `SELECT id, tool_name, input_json, is_error, duration_ms, created_at
+      `SELECT id, run_id, tool_name, input_json, is_error, duration_ms, created_at
        FROM tool_calls
        WHERE session_id = ?
        ORDER BY created_at DESC, id DESC`,
     )
     .all(sessionId) as unknown as {
     id: string;
+    run_id: string | null;
     tool_name: string;
     input_json: string | null;
     is_error: number;
@@ -221,6 +221,7 @@ export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
 
   return rows.map((row) => ({
     id: row.id,
+    runId: row.run_id,
     toolName: row.tool_name,
     inputJson: row.input_json,
     isError: row.is_error === 1,
@@ -267,11 +268,11 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
  * 记录一条模型用量（每次内核上报的 usage 行对应一条）。
  * 用量历史只增不改，供审计与统计使用。
  * 以内核的 kernelUsageId 作为幂等键：重放同一行不会重复计数。
+ * 注：内核的 usage 事件不携带 runId（仅 lane/row/totals），故该列暂为 NULL。
  */
 export function recordUsage(input: {
   sessionId: string;
   kernelUsageId: string;
-  runId?: string | null;
   provider: string;
   model: string;
   input: number;
@@ -284,14 +285,13 @@ export function recordUsage(input: {
   getDatabase()
     .prepare(
       `INSERT INTO usage_records
-         (session_id, run_id, kernel_usage_id, provider, model, input_tokens, output_tokens,
+         (session_id, kernel_usage_id, provider, model, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, cost_usd, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(kernel_usage_id) DO NOTHING`,
     )
     .run(
       input.sessionId,
-      input.runId ?? null,
       input.kernelUsageId,
       input.provider,
       input.model,
@@ -351,6 +351,30 @@ export function listSessionUsage(sessionId: string): SessionUsage {
   );
 
   return { records, totals };
+}
+
+/**
+ * 最近一轮主 lane 调用的上下文占用（prompt tokens = input + cacheRead + cacheWrite）。
+ * 用于 worker 重启后重建进度条：进度条的分子必须取「最近一轮」而非累计，
+ * 累计值随轮次二次增长，不能反映当前对话在窗口里占了多少。
+ * 无记录时返回 0。
+ */
+export function latestContextUsed(sessionId: string): number {
+  const row = getDatabase()
+    .prepare(
+      `SELECT input_tokens, cache_read_tokens, cache_write_tokens
+       FROM usage_records
+       WHERE session_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(sessionId) as unknown as {
+    input_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  } | undefined;
+  if (!row) return 0;
+  return row.input_tokens + row.cache_read_tokens + row.cache_write_tokens;
 }
 
 /** 项目级改动汇总：跨会话，按时间倒序 */

@@ -1,7 +1,6 @@
 /**
  * main ↔ session worker 的进程间消息契约
  * worker 侧持有 harness/lane，向 main 投影稳定 DTO（渲染层零 pi 依赖）
- * 作者：陕耀云栈WorkMate
  */
 
 /** 对话中的一条消息（投影后） */
@@ -10,7 +9,9 @@ export interface ViewMessage {
   role: "user" | "assistant" | "toolResult" | "other";
   text: string;
   /** 助手消息里的工具调用 */
-  toolCalls: { id: string; name: string; args: string }[];
+  toolCalls: { id: string; name: string; args: string; durationMs?: number }[];
+  /** 助手消息的思考过程（思考轨），无则为空 */
+  thought?: string;
   timestamp?: number;
 }
 
@@ -59,6 +60,8 @@ export interface ConversationView {
   fileChanges: ViewFileChange[];
   /** 正在流式输出的助手文本，null 表示当前没有流 */
   streamingText: string | null;
+  /** 正在流式输出的思考文本（思考轨），null 表示当前没有在思考 */
+  thought: string | null;
   /** 正在执行的工具 */
   runningTools: ViewRunningTool[];
   /** 是否有进行中的操作 */
@@ -72,6 +75,12 @@ export interface ConversationView {
     outputTokens: number;
     totalTokens: number;
     costUsd: number;
+    /**
+     * 当前上下文占用：最近一轮主 lane 非 adjustment 调用的 prompt tokens
+     * （input + cacheRead + cacheWrite）。累计的 totalTokens 不能用作上下文占用，
+     * 它随轮次二次增长，几个问题就能把进度条顶满。
+     */
+    contextUsed: number;
   };
 }
 
@@ -111,6 +120,8 @@ export type WorkerCommand =
   | { type: "compact" }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
+  /** 主进程对一条审批的答复，worker 据此决定放行还是阻断 */
+  | { type: "approvalResult"; toolCallId: string; approved: boolean; reason?: string }
   | { type: "dispose" };
 
 /** worker → main */
@@ -155,6 +166,16 @@ export type WorkerMessage =
       timestamp: number;
     }
   | { type: "branches"; nodes: WorkerBranchNode[] }
+  /** 工具需要审批：worker 已阻塞在 before_tool，等主进程回 approvalResult */
+  | {
+      type: "approvalRequest";
+      toolCallId: string;
+      toolName: string;
+      /** 完整入参的 JSON 串；无法序列化时为 "{}" */
+      argsJson: string;
+      /** 审批等待上限（毫秒），主进程与界面据此显示倒计时 */
+      timeoutMs: number;
+    }
   | { type: "modelChanged"; providerId: string; modelId: string }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "log"; message: string };

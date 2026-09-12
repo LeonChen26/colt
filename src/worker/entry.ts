@@ -2,7 +2,6 @@
  * Session Worker：每会话一个 utilityProcess
  * 持有 harness / lane / 会话存储，向 main 投影 ConversationView
  * 形态参考官方 packages/coding-agent/src/experimental/mini/worker/run.ts
- * 作者：陕耀云栈WorkMate
  */
 import {
   AgentHarness,
@@ -38,12 +37,86 @@ import { randomUUID } from "node:crypto";
 import {
   countPatchLines,
   extractText,
+  extractThinking,
   extractToolCalls,
   extractToolText,
   toRelative,
 } from "./lib/project";
+import { ToolCallTracker, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
 
 const context: Context = BACKGROUND_CONTEXT;
+
+/**
+ * 审批往返：worker 发起请求后阻塞，等主进程的 approvalResult。
+ * 主进程持有策略与用户界面，worker 只负责阻塞与执行结果。
+ */
+/** 启用 BANYAN_APPROVAL_DEBUG=1 时输出审批链路日志（排查安全功能为何未生效时用） */
+function trace(message: string): void {
+  if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+    process.stderr.write(`[approval] ${message}\n`);
+  }
+}
+
+/** 与 policy 的 READONLY_TOOLS 对应：这些工具不产生副作用，不参与闸门告警 */
+const RO_SAFE_TOOLS = new Set(["read", "grep", "glob", "ls", "list", "search", "todo"]);
+const pendingApprovals = new Map<
+  string,
+  { resolve: (value: { approved: boolean; reason: string }) => void; timer: NodeJS.Timeout }
+>();
+
+/** 审批等待上限；超时视为拒绝，避免 lane 永久挂起 */
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** 已完成的工具调用耗时（toolCallId → ms），供工具卡片展示；有上限避免无界增长 */
+const toolDurations = new Map<string, number>();
+const TOOL_DURATION_LIMIT = 512;
+
+function rememberDuration(toolCallId: string, durationMs: number | null): void {
+  if (durationMs === null) return;
+  if (toolDurations.size >= TOOL_DURATION_LIMIT) {
+    const oldest = toolDurations.keys().next().value;
+    if (oldest !== undefined) toolDurations.delete(oldest);
+  }
+  toolDurations.set(toolCallId, durationMs);
+}
+
+function requestApproval(
+  toolCallId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{ approved: boolean; reason: string }> {
+  let argsJson = "{}";
+  try {
+    argsJson = JSON.stringify(args ?? {});
+  } catch {
+    argsJson = "{}";
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingApprovals.delete(toolCallId);
+      resolve({ approved: false, reason: "审批超时，已自动拒绝。如需执行请重新发起。" });
+    }, APPROVAL_TIMEOUT_MS);
+    // 不阻止进程退出
+    timer.unref?.();
+
+    pendingApprovals.set(toolCallId, { resolve, timer });
+    trace(`已发出请求 ${toolName} ${toolCallId}`);
+    send({ type: "approvalRequest", toolCallId, toolName, argsJson, timeoutMs: APPROVAL_TIMEOUT_MS });
+  });
+}
+
+/** 主进程答复到达，唤醒对应的阻塞 */
+function settleApproval(toolCallId: string, approved: boolean, reason?: string): void {
+  const entry = pendingApprovals.get(toolCallId);
+  if (entry === undefined) return;
+  pendingApprovals.delete(toolCallId);
+  clearTimeout(entry.timer);
+  entry.resolve({
+    approved,
+    reason: reason ?? "用户拒绝了这次工具调用。请换一种做法，或先向用户说明原因。",
+  });
+}
 
 function send(message: WorkerMessage): void {
   process.parentPort?.postMessage(message);
@@ -63,7 +136,14 @@ function systemPrompt(cwd: string): string {
 /** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
 function project(
   snapshot: LaneSnapshot,
-  meta: { sessionId: string; cwd: string; model: string; fileChanges: ViewFileChange[] },
+  meta: {
+    sessionId: string;
+    cwd: string;
+    model: string;
+    fileChanges: ViewFileChange[];
+    /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
+    contextUsed: number;
+  },
 ): ConversationView {
   const messages: ViewMessage[] = [];
   const toolResults: ViewToolResult[] = [];
@@ -100,7 +180,14 @@ function project(
           ? (role as ViewMessage["role"])
           : "other",
       text: extractText(record.message.content),
-      toolCalls: role === "assistant" ? extractToolCalls(record.message.content) : [],
+      toolCalls:
+        role === "assistant"
+          ? extractToolCalls(record.message.content).map((call) => ({
+              ...call,
+              durationMs: toolDurations.get(call.id),
+            }))
+          : [],
+      thought: role === "assistant" ? extractThinking(record.message.content) || undefined : undefined,
       timestamp: record.message.timestamp,
     });
   }
@@ -109,6 +196,9 @@ function project(
   const streamingText = operation?.streamingMessage
     ? extractText(operation.streamingMessage.content)
     : null;
+  const streamingThought = operation?.streamingMessage
+    ? extractThinking(operation.streamingMessage.content)
+    : "";
 
   const runningTools: ViewRunningTool[] = (operation?.runningTools ?? []).map((tool) => {
     const record = tool as unknown as {
@@ -140,6 +230,7 @@ function project(
     toolResults,
     fileChanges: meta.fileChanges,
     streamingText: streamingText && streamingText.length > 0 ? streamingText : null,
+    thought: streamingThought.length > 0 ? streamingThought : null,
     runningTools,
     // 注意：operation 不为 null 不等于正在跑——status 为 "open" 表示已完成、等待下一步输入
     running: operation !== null && operation.status !== "open",
@@ -151,6 +242,7 @@ function project(
       outputTokens: usage?.output ?? 0,
       totalTokens: usage?.totalTokens ?? 0,
       costUsd: usage?.cost?.total ?? 0,
+      contextUsed: meta.contextUsed,
     },
   };
 }
@@ -177,7 +269,13 @@ interface WorkerState {
   snapshot: LaneSnapshot;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
-  meta: { sessionId: string; cwd: string; model: string; fileChanges: ViewFileChange[] };
+  meta: {
+    sessionId: string;
+    cwd: string;
+    model: string;
+    fileChanges: ViewFileChange[];
+    contextUsed: number;
+  };
   unsubscribe: () => void;
 }
 
@@ -286,6 +384,36 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     context,
   );
 
+  // 审批闸门：每个工具执行前问一次主进程。
+  // handler 返回 Promise，内核会 await，期间整条 lane 挂起；
+  // 抛错会被内核转成 block，所以超时/异常的默认结果是拦截而非放行。
+  const gatedToolCalls = new Set<string>();
+  harness.hooks.on("before_tool", async (event) => {
+    gatedToolCalls.add(event.toolCallId);
+    trace(`hook 触发 ${event.toolName} ${event.toolCallId}`);
+    const decision = await requestApproval(event.toolCallId, event.toolName, event.args);
+    trace(`得到答复 ${event.toolName} approved=${decision.approved}`);
+    if (decision.approved) return undefined;
+    // terminate 不置位：只拦这一次调用，让模型知悉后自行调整，不终止整个对话
+    return { block: { reason: decision.reason } };
+  });
+
+  // 纵深防御：若有影响性工具执行完却没经过闸门，说明拦截链路漏了。
+  // 宁可吐一个显眼告警，也不能静默地把它放过去。
+  harness.hooks.on("after_tool", (event) => {
+    if (RO_SAFE_TOOLS.has(event.toolName)) return undefined;
+    if (gatedToolCalls.has(event.toolCallId)) return undefined;
+    trace(`安全告警：${event.toolName} 未经闸门即执行`);
+    send({
+      type: "error",
+      message:
+        `安全告警：${event.toolName} 执行完成但未经审批闸门` +
+        `（toolCallId=${event.toolCallId}）。本次调用未被拦截，请核对审批链路是否正常。`,
+      fatal: false,
+    });
+    return undefined;
+  });
+
   // 只观测不干预：记录文件改动，返回 undefined 表示不修改工具结果
   harness.hooks.on("after_tool", (event) => {
     if (event.isError) return undefined;
@@ -314,63 +442,36 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   });
 
   // 用量落库：内核每产生一条 usage 行就上报一次，不做差值推算
+  // 过滤规则（非主 lane、adjustment 行）见 buildUsageUpload
   harness.events.on("usage", (event) => {
-    // 只记录真实模型调用：adjustment=true 是非模型消耗
-    // （lane.recordUsage 手工补记、旧版 JSONL 导入的历史总量），计入会重复计数
-    if (event.row.adjustment) return;
-    const currentModel = state?.meta.model ?? `${providerConfig.id}/${modelId}`;
-    const slash = currentModel.indexOf("/");
-    const usingProvider = slash === -1 ? providerConfig.id : currentModel.slice(0, slash);
-    const usingModel = slash === -1 ? currentModel : currentModel.slice(slash + 1);
-    const usage = event.row.usage;
-    send({
-      type: "usage",
-      // 内核的稳定行 ID，作为幂等键，防重放
-      kernelUsageId: event.row.id,
-      provider: usingProvider,
-      model: usingModel,
-      input: usage.input,
-      output: usage.output,
-      cacheRead: usage.cacheRead,
-      cacheWrite: usage.cacheWrite,
-      costUsd: usage.cost.total,
-      timestamp: Date.now(),
-    });
+    // 同步记录最近一轮的上下文占用（prompt tokens）；重启后为空，由主进程用 DB 回填
+    const used = contextUsedFromUsage(event);
+    if (used !== null && state) {
+      state.meta.contextUsed = used;
+      // 触发一次 view 推送，让进度条实时更新；否则要等本轮结束才刷新
+      scheduleFlush();
+    }
+
+    const upload = buildUsageUpload(
+      event,
+      state?.meta.model ?? `${providerConfig.id}/${modelId}`,
+      providerConfig.id,
+      Date.now(),
+    );
+    if (upload) send(upload);
   });
 
   // 工具调用落库：配对 tool_start/tool_end 得到耗时与入参，在 end 时上报一条
-  // args 只在 tool_start 上，故一并缓存
-  const toolMeta = new Map<string, { startedAt: number; argsJson: string | null }>();
-  /** 冗底上限：若有未配对的 start 长期驻留，淘汰最旧条目避免无界增长 */
-  const TOOL_META_LIMIT = 256;
+  const toolTracker = new ToolCallTracker();
   harness.events.on("tool_start", (event) => {
-    let argsJson: string | null = null;
-    try {
-      argsJson = JSON.stringify(event.args ?? null);
-    } catch {
-      argsJson = null;
-    }
-    if (toolMeta.size >= TOOL_META_LIMIT) {
-      const oldest = toolMeta.keys().next().value;
-      if (oldest !== undefined) toolMeta.delete(oldest);
-    }
-    toolMeta.set(event.toolCallId, { startedAt: Date.now(), argsJson });
+    toolTracker.start(event.toolCallId, event.args, Date.now());
   });
   harness.events.on("tool_end", (event) => {
-    const meta = toolMeta.get(event.toolCallId);
-    toolMeta.delete(event.toolCallId);
-    send({
-      type: "toolCall",
-      toolCallId: event.toolCallId,
-      runId: event.runId,
-      toolName: event.toolName,
-      inputJson: meta?.argsJson ?? null,
-      isError: event.isError,
-      durationMs: meta === undefined ? null : Date.now() - meta.startedAt,
-      // 记录调用「发生」的时刻，即开始时间。
-      // 用结束时刻会让并行的快工具（先结束）排在慢工具之前，与模型实际调用顺序相反。
-      timestamp: meta?.startedAt ?? Date.now(),
-    });
+    const upload = toolTracker.end(event, Date.now());
+    if (upload) {
+      rememberDuration(upload.toolCallId, upload.durationMs);
+      send(upload);
+    }
   });
 
   const lane = await harness.lane("main", context);
@@ -382,6 +483,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     cwd,
     model: `${providerConfig.id}/${modelId}`,
     fileChanges: [] as ViewFileChange[],
+    // 进程内初值为 0；首个 usage 事件到达后修正，切会话/重启时由主进程用 DB 覆盖
+    contextUsed: 0,
   };
 
   state = {
@@ -436,6 +539,11 @@ async function handle(command: WorkerCommand): Promise<void> {
   switch (command.type) {
     case "init":
       await init(command);
+      return;
+
+    // 审批答复不依赖会话状态，也不能报错中断：阻塞的 hook 必须被唤醒
+    case "approvalResult":
+      settleApproval(command.toolCallId, command.approved, command.reason);
       return;
 
     case "prompt": {

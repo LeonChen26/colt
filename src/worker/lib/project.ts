@@ -1,7 +1,6 @@
 /**
  * worker 侧的纯投影辅助：从内核数据结构中抽取渲染层需要的字段。
  * 无副作用、不依赖 Electron / pi-agent-core，便于单元测试。
- * 作者：陕耀云栈WorkMate
  */
 import { isAbsolute, relative } from "node:path";
 import type { ViewMessage } from "@shared/worker-protocol";
@@ -35,6 +34,22 @@ export function extractToolCalls(content: unknown): ViewMessage["toolCalls"] {
         }
       })(),
     }));
+}
+
+/** 从助手消息内容块中抽取思考（thinking）文本 */
+export function extractThinking(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block): block is { type: "thinking"; thinking: string } => {
+      return (
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: string }).type === "thinking" &&
+        typeof (block as { thinking?: unknown }).thinking === "string"
+      );
+    })
+    .map((block) => block.thinking)
+    .join("");
 }
 
 /** 从工具结果的 content 块中抽取文本（与消息 content 结构一致） */
