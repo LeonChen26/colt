@@ -10,16 +10,17 @@ import {
   Shrink,
   Square,
   Terminal,
+  Wrench,
 } from "lucide-react";
 import type { ConversationView, ViewFileChange, ViewMessage } from "@shared/worker-protocol";
-import type { ProviderConfig, SessionUsage } from "@shared/protocol";
+import type { ProviderConfig, SessionUsage, ToolCallRecord } from "@shared/protocol";
 import { TerminalOutput } from "../components/TerminalOutput";
 import { DiffView } from "../components/DiffView";
 import { BranchTree } from "./BranchTree";
 import { cn } from "../lib/utils";
 
 /** 右侧面板多选一 */
-type SidePanel = "none" | "changes" | "branches" | "usage";
+type SidePanel = "none" | "changes" | "branches" | "usage" | "tools";
 
 /** 对话面板：消息流 + 流式文本 + 工具实时输出 + 文件改动
  *  作者：陕耀云栈WorkMate */
@@ -246,6 +247,20 @@ export function Conversation({
             <Coins size={12} />
             用量
           </button>
+          <button
+            type="button"
+            onClick={() => setPanel((value) => (value === "tools" ? "none" : "tools"))}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition",
+              panel === "tools"
+                ? "border-[--color-accent] text-[--color-accent]"
+                : "border-[--color-border-subtle] text-[--color-text-secondary] hover:text-[--color-text-primary]",
+            )}
+            title="查看本次会话的工具调用历史"
+          >
+            <Wrench size={12} />
+            工具
+          </button>
           {running && (
             <button
               type="button"
@@ -312,6 +327,7 @@ export function Conversation({
         )}
         {panel === "branches" && <BranchTree sessionId={sessionId} />}
         {panel === "usage" && <UsagePanel sessionId={sessionId} onClose={() => setPanel("none")} />}
+        {panel === "tools" && <ToolPanel sessionId={sessionId} onClose={() => setPanel("none")} />}
       </div>
 
       <div className="shrink-0 border-t border-[--color-border-subtle] p-3">
@@ -454,6 +470,130 @@ function UsagePanel({
                 <span>出 {record.outputTokens.toLocaleString("zh-CN")}</span>
                 <span className="ml-auto font-mono">${record.costUsd.toFixed(6)}</span>
               </div>
+            </div>
+          ))
+        )}
+      </div>
+    </aside>
+  );
+}
+
+/** 右侧工具调用历史面板：每次工具调用的入参、耗时与成败，数据来自数据库 */
+function ToolPanel({
+  sessionId,
+  onClose,
+}: {
+  sessionId: string;
+  onClose: () => void;
+}): React.JSX.Element {
+  const [calls, setCalls] = useState<ToolCallRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setCalls(await window.banyan.invoke("toolCalls.list", { sessionId }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const failed = calls.filter((item) => item.isError).length;
+
+  return (
+    <aside className="flex w-[360px] shrink-0 flex-col border-l border-[--color-border-subtle] bg-[--color-surface-raised]">
+      <div className="flex shrink-0 items-center justify-between border-b border-[--color-border-subtle] px-3 py-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-[--color-text-secondary]">
+          <Wrench size={12} />
+          工具调用
+          {calls.length > 0 && (
+            <span className="text-[--color-text-muted]">
+              {calls.length} 次{failed > 0 && ` · ${failed} 失败`}
+            </span>
+          )}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+            title="刷新"
+          >
+            <RefreshCw size={12} className={cn(loading && "animate-spin")} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs text-[--color-text-muted] transition hover:text-[--color-text-primary]"
+          >
+            收起
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="m-2 rounded-md border border-[--color-danger]/50 bg-[--color-danger]/10 px-2 py-1.5 text-xs text-[--color-danger]">
+          {error}
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {loading && calls.length === 0 ? (
+          <p className="px-2 py-6 text-center text-xs text-[--color-text-muted]">加载中…</p>
+        ) : calls.length === 0 ? (
+          <p className="px-2 py-6 text-center text-xs leading-relaxed text-[--color-text-muted]">
+            还没有工具调用。Agent 使用 read/write/edit/bash 时会记录在此。
+          </p>
+        ) : (
+          calls.map((call) => (
+            <div
+              key={call.id}
+              className={cn(
+                "mb-1 overflow-hidden rounded-md border bg-[--color-surface-overlay]",
+                call.isError ? "border-[--color-danger]/40" : "border-transparent",
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => (v === call.id ? null : call.id))}
+                className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
+              >
+                <ChevronRight
+                  size={12}
+                  className={cn(
+                    "shrink-0 text-[--color-text-muted] transition-transform",
+                    expanded === call.id && "rotate-90",
+                  )}
+                />
+                <span className="font-mono text-xs text-[--color-text-primary]">
+                  {call.toolName}
+                </span>
+                {call.isError && (
+                  <span className="text-xs text-[--color-danger]">失败</span>
+                )}
+                <span className="ml-auto shrink-0 text-[10px] text-[--color-text-muted]">
+                  {call.durationMs !== null && `${call.durationMs}ms`}
+                  {" · "}
+                  {new Date(call.createdAt).toLocaleTimeString("zh-CN")}
+                </span>
+              </button>
+              {expanded === call.id && (
+                <div className="border-t border-[--color-border-subtle] p-2">
+                  <div className="mb-1 text-xs text-[--color-text-muted]">入参</div>
+                  <pre className="max-h-60 overflow-auto rounded-md bg-black/40 px-2 py-1.5 font-mono text-xs whitespace-pre-wrap">
+                    {formatArgs(call.inputJson ?? "")}
+                  </pre>
+                </div>
+              )}
             </div>
           ))
         )}
