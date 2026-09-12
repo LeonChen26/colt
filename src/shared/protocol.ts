@@ -122,6 +122,11 @@ export interface IpcInvokeMap {
     request: { sessionId: string };
     response: SessionUsage;
   };
+  /** 会话工具调用历史 */
+  "toolCalls.list": {
+    request: { sessionId: string };
+    response: ToolCallRecord[];
+  };
   /** 列出全部 provider */
   "providers.list": {
     request: void;
@@ -197,6 +202,16 @@ export interface BranchNode {
   onActivePath: boolean;
   /** 是否是当前指针 */
   isTip: boolean;
+}
+
+/** 一条工具调用记录 */
+export interface ToolCallRecord {
+  id: string;
+  toolName: string;
+  inputJson: string | null;
+  isError: boolean;
+  durationMs: number | null;
+  createdAt: number;
 }
 
 /** 一条用量记录 */
@@ -281,6 +296,7 @@ export const IPC_CHANNELS = [
   "secrets.set",
   "changes.list",
   "usage.list",
+  "toolCalls.list",
   "providers.list",
   "providers.save",
   "providers.remove",

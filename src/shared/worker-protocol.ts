@@ -138,6 +138,18 @@ export type WorkerMessage =
       /** 该条 usage 对应的时间戳（毫秒） */
       timestamp: number;
     }
+  | {
+      type: "toolCall";
+      /** 内核工具调用 ID，天然唯一，作为数据库主键 */
+      toolCallId: string;
+      toolName: string;
+      /** 工具入参的 JSON 字符串，无法序列化时为 null */
+      inputJson: string | null;
+      isError: boolean;
+      /** 仅当配到 tool_start 时才有值 */
+      durationMs: number | null;
+      timestamp: number;
+    }
   | { type: "branches"; nodes: WorkerBranchNode[] }
   | { type: "modelChanged"; providerId: string; modelId: string }
   | { type: "error"; message: string; fatal: boolean }
