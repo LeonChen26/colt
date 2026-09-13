@@ -19,7 +19,7 @@ import {
   type Session,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { createModels } from "@earendil-works/pi-ai";
+import { createModels, type ImageContent } from "@earendil-works/pi-ai";
 import type {
   ConversationView,
   ViewFileChange,
@@ -36,12 +36,16 @@ import { READONLY_TOOLS } from "@shared/readonly-tools";
 import { randomUUID } from "node:crypto";
 import {
   countPatchLines,
+  extractImage,
   extractText,
   extractThinking,
   extractToolCalls,
   extractToolText,
   toRelative,
 } from "./lib/project";
+import { HostBridge } from "./lib/host-bridge";
+import { createBrowserTools } from "./lib/browser-tool";
+import { createComputerTools } from "./lib/computer-tool";
 import {
   ToolCallTracker,
   buildUsageUpload,
@@ -125,15 +129,28 @@ function send(message: WorkerMessage): void {
   process.parentPort?.postMessage(message);
 }
 
+/** 宿主能力客户端：浏览器/桌面的实际执行在主进程，这里只发命令等结果 */
+const hostBridge = new HostBridge(send);
+
 function systemPrompt(cwd: string): string {
   return [
     "你是 Banyan 桌面工作台中的编码助手，运行在用户的本地项目里。",
     `当前工作目录：${cwd}`,
     "可以使用 read / write / edit / bash 工具查看和修改文件。",
+    "可以使用浏览器工具：browser_read 读取页面（snapshot 返回带 ref 的可交互元素），browser_act 打开/点击/输入/滚动，browser_screenshot 截图。操作网页前先用 snapshot 获取 ref。",
+    "可以使用电脑控制工具操作桌面应用：computer_screenshot 截取整个屏幕，computer_action 点击/输入/按键/滚动。每次操作前必须先 computer_screenshot，并基于画面坐标操作；操作后再次截图确认。",
     "动手前先用一句话说明你要做什么，保持简洁、技术化。",
     "【输出语言】始终用中文回复。即使用户消息、文件内容或命令输出含有英文，你的叙述部分也必须是中文；",
     "代码、路径、命令、报错原文保持原样不要翻译。",
   ].join("\n");
+}
+
+/** 渲染层传来的附件是不带 type 的精简结构，这里补成内核要求的 ImageContent */
+function toImageContent(
+  images?: { data: string; mimeType: string }[],
+): ImageContent[] | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.map((image) => ({ type: "image", ...image }));
 }
 
 /** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
@@ -143,6 +160,8 @@ function project(
     sessionId: string;
     cwd: string;
     model: string;
+    /** 当前模型是否支持图片输入（取自模型目录的 input 能力），决定界面能否发图 */
+    imageInput: boolean;
     fileChanges: ViewFileChange[];
     /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
     contextUsed: number;
@@ -172,6 +191,8 @@ function project(
           id: result.toolCallId,
           output: extractText(result.content),
           isError: Boolean(result.isError),
+          // 截图等图片结果另存一份，供工具卡片直接展示
+          image: extractImage(result.content),
         });
       }
     }
@@ -183,6 +204,8 @@ function project(
           ? (role as ViewMessage["role"])
           : "other",
       text: extractText(record.message.content),
+      // 用户随消息发送的图片回显到对话里；与工具截图同源，均为不含前缀的 base64
+      image: role === "user" ? extractImage(record.message.content) : undefined,
       toolCalls:
         role === "assistant"
           ? extractToolCalls(record.message.content).map((call) => ({
@@ -232,14 +255,19 @@ function project(
     lane: snapshot.lane,
     cwd: meta.cwd,
     model: meta.model,
+    imageInput: meta.imageInput,
     messages,
     toolResults,
     fileChanges: meta.fileChanges,
     streamingText: streamingText && streamingText.length > 0 ? streamingText : null,
     thought: streamingThought.length > 0 ? streamingThought : null,
     runningTools,
-    // 注意：operation 不为 null 不等于正在跑——status 为 "open" 表示已完成、等待下一步输入
-    running: operation !== null && operation.status !== "open",
+    // operation 非 null 即为「有一次 run/compaction/navigation 正在飞行」：
+    // 内核 reducer 在 *_start 时写入该对象，在 *_end 时才置回 null。
+    // 注意不要看 operation.status —— OperationStatus 只有 running|open|aborting，
+    // 而 run_start 写入的恰是 "open"（表示「进行中的操作」而非「已完成」），
+    // 用它判定会把整个运行期误判为空闲。
+    running: operation !== null,
     queuedCount: snapshot.queues?.length ?? 0,
     faulted: Boolean(snapshot.faulted),
     stats: {
@@ -279,6 +307,7 @@ interface WorkerState {
     sessionId: string;
     cwd: string;
     model: string;
+    imageInput: boolean;
     fileChanges: ViewFileChange[];
     contextUsed: number;
   };
@@ -350,7 +379,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       session,
       models,
       model,
-      tools: [createReadTool(), createWriteTool(), createEditTool(), createBashTool()],
+      tools: [
+        createReadTool(),
+        createWriteTool(),
+        createEditTool(),
+        createBashTool(),
+        ...createBrowserTools(hostBridge),
+        ...createComputerTools(hostBridge),
+      ],
       toolContext: { env: executionEnv },
       systemPrompt: systemPrompt(cwd),
     },
@@ -455,6 +491,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     sessionId: command.externalSessionId,
     cwd,
     model: `${providerConfig.id}/${modelId}`,
+    // 模型目录声明的输入能力；纯文本模型（如 deepseek-v4-flash）不含 "image"
+    imageInput: model.input?.includes("image") ?? false,
     fileChanges: [] as ViewFileChange[],
     // 进程内初值为 0；首个 usage 事件到达后修正，切会话/重启时由主进程用 DB 覆盖
     contextUsed: 0,
@@ -519,9 +557,14 @@ async function handle(command: WorkerCommand): Promise<void> {
       settleApproval(command.toolCallId, command.approved, command.reason);
       return;
 
+    // 宿主能力答复：唤醒阻塞在 callHost 的工具，同样不能依赖会话状态
+    case "toolRpcResult":
+      hostBridge.settle(command.requestId, command.ok, command.ok ? command.result : command.error);
+      return;
+
     case "prompt": {
       if (!state) throw new Error("会话尚未初始化");
-      await state.lane.prompt(command.text, undefined, context);
+      await state.lane.prompt(command.text, toImageContent(command.images), context);
       // 运行结束后补推一次终态
       if (state) send({ type: "view", view: project(state.snapshot, state.meta) });
       return;
@@ -529,7 +572,7 @@ async function handle(command: WorkerCommand): Promise<void> {
 
     case "steer": {
       if (!state) throw new Error("会话尚未初始化");
-      await state.lane.steer(command.text, undefined, context);
+      await state.lane.steer(command.text, toImageContent(command.images), context);
       return;
     }
 
@@ -555,6 +598,8 @@ async function handle(command: WorkerCommand): Promise<void> {
       );
       state.providerId = targetProviderId;
       state.meta.model = `${targetProviderId}/${command.modelId}`;
+      // 切换模型后图片能力随之变化，界面需立即据此放开/禁止发图
+      state.meta.imageInput = next.input?.includes("image") ?? false;
       send({
         type: "modelChanged",
         providerId: targetProviderId,
@@ -597,6 +642,8 @@ async function handle(command: WorkerCommand): Promise<void> {
         await state.repo.close(context).catch(() => undefined);
         state = undefined;
       }
+      // 作废所有待决宿主调用，否则工具会一直挂到超时
+      hostBridge.dispose();
       process.exit(0);
     }
   }

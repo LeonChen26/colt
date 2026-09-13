@@ -6,6 +6,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   countPatchLines,
+  extractImage,
   extractText,
   extractToolCalls,
   extractToolText,
@@ -72,6 +73,22 @@ describe("extractToolText", () => {
   test("无 content 返回空串", () => {
     assert.equal(extractToolText({ id: "x" }), "");
     assert.equal(extractToolText(null), "");
+  });
+});
+
+describe("extractImage", () => {
+  test("抽取首张图片的 base64 与 mimeType", () => {
+    const content = [
+      { type: "text", text: "已截取页面" },
+      { type: "image", data: "AAAA", mimeType: "image/png" },
+    ];
+    assert.deepEqual(extractImage(content), { data: "AAAA", mimeType: "image/png" });
+  });
+
+  test("无图片或无 content 返回 undefined", () => {
+    assert.equal(extractImage([{ type: "text", text: "x" }]), undefined);
+    assert.equal(extractImage(undefined), undefined);
+    assert.equal(extractImage("plain"), undefined);
   });
 });
 

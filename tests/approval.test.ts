@@ -300,3 +300,126 @@ describe("evaluateTool", () => {
     assert.ok(verdict.summary.length < 140);
   });
 });
+
+describe("浏览器工具判定", () => {
+  test("只读浏览器工具判为 safe", () => {
+    assert.equal(assessToolRisk({ toolName: "browser_read", args: { action: "snapshot" } }, ROOT).risk, "safe");
+    assert.equal(assessToolRisk({ toolName: "browser_screenshot", args: {} }, ROOT).risk, "safe");
+  });
+
+  test("浏览器操作判为 moderate", () => {
+    assert.equal(
+      assessToolRisk({ toolName: "browser_act", args: { action: "navigate", url: "https://x.com" } }, ROOT).risk,
+      "moderate",
+    );
+  });
+
+  test("等待页面就绪判为 safe（只等不改，不该为等页面弹审批）", () => {
+    assert.equal(
+      assessToolRisk({ toolName: "browser_act", args: { action: "wait", mode: "idle" } }, ROOT).risk,
+      "safe",
+    );
+    assert.equal(evaluateTool({ toolName: "browser_act", args: { action: "wait" } }, config()).decision, "allow");
+  });
+
+  test("调整视口判为 safe（不改动页面数据）", () => {
+    assert.equal(
+      assessToolRisk({ toolName: "browser_act", args: { action: "viewport", width: 375, height: 700 } }, ROOT)
+        .risk,
+      "safe",
+    );
+  });
+
+  test("上传项目内文件判为 moderate", () => {
+    assert.equal(
+      assessToolRisk(
+        { toolName: "browser_act", args: { action: "upload", ref: "e1", paths: [`${ROOT}/a.txt`] } },
+        ROOT,
+      ).risk,
+      "moderate",
+    );
+  });
+
+  test("上传项目外文件判为 dangerous（上传即数据外带）", () => {
+    const verdict = assessToolRisk(
+      { toolName: "browser_act", args: { action: "upload", paths: ["C:/Users/me/Desktop/notes.txt"] } },
+      ROOT,
+    );
+    assert.equal(verdict.risk, "dangerous");
+    assert.match(verdict.reason, /项目目录之外/);
+  });
+
+  test("上传敏感文件判为 dangerous，即便在项目内", () => {
+    const verdict = assessToolRisk(
+      { toolName: "browser_act", args: { action: "upload", paths: [`${ROOT}/.env`] } },
+      ROOT,
+    );
+    assert.equal(verdict.risk, "dangerous");
+    assert.match(verdict.reason, /敏感文件/);
+  });
+
+  test("上传签名带上文件本身，避免同 ref 放大放行范围", () => {
+    assert.equal(
+      buildSignature({
+        toolName: "browser_act",
+        args: { action: "upload", ref: "e1", paths: ["/p/a.txt", "/p/b.txt"] },
+      }),
+      "browser_act:upload:/p/a.txt,/p/b.txt",
+    );
+  });
+
+  test("只读浏览器工具在审批模式下直接放行", () => {
+    assert.equal(evaluateTool({ toolName: "browser_read", args: { action: "text" } }, config()).decision, "allow");
+  });
+
+  test("浏览器操作需要确认", () => {
+    const verdict = evaluateTool({ toolName: "browser_act", args: { action: "click", ref: "e1" } }, config());
+    assert.equal(verdict.decision, "ask");
+    assert.equal(verdict.risk, "moderate");
+  });
+
+  test("签名区分动作与目标", () => {
+    assert.equal(
+      buildSignature({ toolName: "browser_act", args: { action: "navigate", url: "https://x.com" } }),
+      "browser_act:navigate:https://x.com",
+    );
+    assert.equal(buildSignature({ toolName: "browser_read", args: { action: "snapshot" } }), "browser_read:snapshot");
+  });
+
+  test("摘要可读", () => {
+    assert.equal(
+      evaluateTool({ toolName: "browser_act", args: { action: "navigate", url: "https://x.com" } }, config()).summary,
+      "browser: navigate https://x.com",
+    );
+  });
+});
+
+describe("电脑控制工具判定", () => {
+  test("截屏判为 moderate（可被会话记忆降噪）", () => {
+    assert.equal(assessToolRisk({ toolName: "computer_screenshot", args: {} }, ROOT).risk, "moderate");
+  });
+
+  test("桌面操作判为 dangerous", () => {
+    assert.equal(
+      assessToolRisk({ toolName: "computer_action", args: { action: "click", x: 1, y: 2 } }, ROOT).risk,
+      "dangerous",
+    );
+  });
+
+  test("桌面操作在审批模式下需要确认", () => {
+    const verdict = evaluateTool({ toolName: "computer_action", args: { action: "click", x: 1, y: 2 } }, config());
+    assert.equal(verdict.decision, "ask");
+    assert.equal(verdict.risk, "dangerous");
+  });
+
+  test("签名与摘要区分动作和坐标", () => {
+    assert.equal(
+      buildSignature({ toolName: "computer_action", args: { action: "click", x: 12, y: 34 } }),
+      "computer_action:click:12,34",
+    );
+    assert.equal(
+      evaluateTool({ toolName: "computer_action", args: { action: "click", x: 12, y: 34 } }, config()).summary,
+      "computer: click (12, 34)",
+    );
+  });
+});

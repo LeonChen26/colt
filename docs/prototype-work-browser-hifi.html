@@ -1,0 +1,2783 @@
+<!DOCTYPE html>
+<!--
+  ================================================================
+  Banyan Work · 概念稿（高保真原型）
+  ================================================================
+
+  状态：概念稿，**并非当前产品实现**。
+  依据：docs/UI-REGIONS.md（区域定义与规则）
+
+  ⚠️ 与当前产品的差异（读此稿时务必区分）：
+
+  | 本稿 | 产品现状 |
+  |---|---|
+  | 浏览器内嵌在右栏 | ✅ 已实现（内嵌 WebContentsView + 右栏「浏览器」页签，2026-09） |
+  | 右栏为页签工作区（文件/终端/浏览器…） | 已实现「正在处理 / 浏览器」两个页签；文件 / 终端 / 任务摘要等视图尚未实现 |
+  | 会话头显示 cwd + git 分支 | ✅ 已实现（cwd + 分支 chip，2026-09） |
+  | 观测栏在输入框下方 | ✅ 已实现（2026-09） |
+  | 工具卡、思考轨、授权卡、文件视图 | 与产品一致 |
+
+  本稿有、产品未做（读稿时勿当成现状）：
+    - 浏览器「停靠 / 弹出」双态、前进后退刷新、观测抽屉（console/network/downloads 面板）
+    - 右栏拖拽调宽把手（当前按视图给建议宽度）与折叠态 44px 图标条
+
+  已从本稿中移除（计划中但未实现，短期不做）：
+    - Work / Code / Design 模式切换
+    - 新建任务 / 插件市场 / 模板库 / 自动化 / 办公助理
+
+  维护约定：
+    - 改动前先读代码确认现状，不凭旧截图推测
+    - 新增 UI 必须先在 docs/UI-REGIONS.md 找到归属区域
+  ================================================================
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Banyan Work · 内嵌浏览器 高保真</title>
+<style>
+  /* ============================================================
+     Banyan Work 模式 · 概念稿（见文件头状态说明）
+     变更点：浏览器由「独立弹窗」改为「右侧停靠面板」，可一键弹出为独立窗口
+     作者：Banyan
+     ============================================================ */
+
+  :root, [data-theme="dark"] {
+    --surface:#0a0c0f; --surface-raised:#11141a; --surface-overlay:#161a21;
+    --surface-input:#0e1116; --surface-code:#07090c;
+    --border:#20262f; --border-strong:#2c333d;
+    --text-primary:#e8ebf0; --text-secondary:#98a2b3; --text-muted:#666f7a;
+    --accent:#c9ced6; --accent-soft:rgba(201,206,214,.10); --accent-dim:#7d8694;
+    --accent-fg:#0a0c0f; --accent-hover:#ffffff;
+    --success:#3fb950; --success-soft:rgba(63,185,80,.12); --success-fg:#7ee787;
+    --warning:#d29922; --warning-soft:rgba(210,153,34,.12);
+    --danger:#f85149; --danger-soft:rgba(248,81,73,.12); --danger-fg:#ff9d95;
+    --code-keyword:#e8b98a; --code-string:#a3cfa6; --code-comment:#6a7280;
+    --code-number:#c9a9d4; --code-function:#d6dae1; --code-prop:#9fb6cf;
+    --shadow-1:0 1px 2px rgba(0,0,0,.3); --shadow-2:0 4px 16px rgba(0,0,0,.4);
+    --r-sm:6px; --r-md:8px; --r-lg:12px;
+    --w-sidebar:236px;
+    /* 右栏（工作区）宽度。默认值由 JS 按截图比例（236/900/544）算出：
+       右栏 = 可用宽度 × 0.3767。此处的 300px 仅为沙箱渲染前的兜底。 */
+    --w-dock:300px;
+  }
+  [data-theme="light"] {
+    --surface:#ffffff; --surface-raised:#f7f8f9; --surface-overlay:#eef0f2;
+    --surface-input:#ffffff; --surface-code:#f4f5f7;
+    --border:#e3e6ea; --border-strong:#cdd2d9;
+    --text-primary:#1a1d21; --text-secondary:#565f6b; --text-muted:#8b929c;
+    --accent:#2b3138; --accent-soft:rgba(43,49,56,.06); --accent-dim:#6b7480;
+    --accent-fg:#ffffff; --accent-hover:#3a4149;
+    --success:#1a7f37; --success-soft:rgba(26,127,55,.08); --success-fg:#1a7f37;
+    --warning:#9a6700; --warning-soft:rgba(154,103,0,.08);
+    --danger:#cf222e; --danger-soft:rgba(207,34,46,.08); --danger-fg:#cf222e;
+    --code-keyword:#a05a00; --code-string:#116329; --code-comment:#8b929c;
+    --code-number:#7a4d92; --code-function:#1a1d21; --code-prop:#3a5266;
+    --shadow-1:0 1px 2px rgba(0,0,0,.06); --shadow-2:0 4px 16px rgba(0,0,0,.10);
+  }
+
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    background:var(--surface); color:var(--text-primary);
+    font-family:"Inter","Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+    font-size:13px; -webkit-font-smoothing:antialiased; overflow:hidden;
+  }  .mono { font-family:"JetBrains Mono","Cascadia Code",Consolas,ui-monospace,monospace; }
+  svg.ico { width:16px; height:16px; flex:none; fill:none; stroke:currentColor;
+    stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+  svg.ico.sm { width:14px; height:14px; }
+  button { font-family:inherit; font-size:inherit; cursor:pointer; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:5px;
+    border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--text-muted); background-clip:padding-box; }
+
+  /* ============ 骨架 ============ */
+  .app { display:flex; flex-direction:column; height:100%; }
+
+  /* ---- 系统标题栏（Electron 无边框窗口的自绘区）---- */
+  .titlebar {
+    height:38px; flex:none; display:flex; align-items:center; gap:10px;
+    padding:0 10px; background:var(--surface);
+  }
+  .tb-icon { width:26px; height:26px; display:inline-flex; align-items:center;
+    justify-content:center; border:none; background:transparent; border-radius:5px;
+    color:var(--text-secondary); }
+  .tb-icon:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .menubar { display:flex; align-items:center; gap:2px; }
+  .menubar button { border:none; background:transparent; color:var(--text-secondary);
+    padding:4px 8px; border-radius:5px; font-size:12.5px; }
+  .menubar button:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .tb-spacer { flex:1; }
+  .win-ctl { display:flex; align-items:center; gap:2px; }
+  .win-ctl button { width:34px; height:26px; border:none; background:transparent;
+    border-radius:5px; color:var(--text-secondary); display:inline-flex;
+    align-items:center; justify-content:center; }
+  .win-ctl button:hover { background:var(--surface-overlay); }
+  .win-ctl button.close:hover { background:#e81123; color:#fff; }
+
+  /* ---- 工作区：可拖拽三列 ---- */
+  .body { flex:1; min-height:0; display:flex; }
+
+  /* 拖拽把手：覆盖在两条分隔线上，8px 命中区、4px 可见条 */
+  /* 拖拽把手：浮在分隔线上（净占 1px，命中 9px） */
+  .grip {
+    flex:none; width:9px; margin:0 -4px; cursor:col-resize;
+    position:relative; z-index:50; align-self:stretch;
+    touch-action:none; user-select:none;
+    background:transparent; border:none; padding:0;
+  }
+  /* 可见指示线：hover / 拖动时亮起 */
+  .grip::after {
+    content:""; position:absolute; top:0; bottom:0; left:4px; width:1px;
+    background:transparent; transition:background .14s;
+  }
+  .grip:hover::after,
+  .grip.dragging::after { background:var(--accent-dim); }
+  /* 拖动中屏蔽选中，避免拖拽时误选文本 */
+  body.resizing, body.resizing * { cursor:col-resize !important; user-select:none !important; }
+  body.resizing .viewport { pointer-events:none; }
+
+  /* ============ 左栏 ============ */
+  .sidebar {
+    width:var(--w-sidebar); flex:none; min-width:0; display:flex; flex-direction:column;
+    background:var(--surface-raised); border-right:1px solid var(--border);
+  }
+
+  /* 模式切换 Work / Code / Design */
+  .modes { display:flex; gap:2px; padding:8px 10px 6px; }
+  .modes button {
+    flex:1; display:inline-flex; align-items:center; justify-content:center; gap:5px;
+    height:28px; border:none; background:transparent; border-radius:var(--r-sm);
+    color:var(--text-muted); font-size:12.5px; font-weight:500;
+  }
+  .modes button:hover { background:var(--surface-overlay); color:var(--text-secondary); }
+  .modes button.on { background:var(--surface-overlay); color:var(--text-primary); }
+
+  /* 主导航 */
+  .nav { padding:2px 8px 8px; display:flex; flex-direction:column; gap:1px; }
+  .nav a {
+    display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:var(--r-sm);
+    color:var(--text-secondary); text-decoration:none; font-size:12.5px;
+  }
+  .nav a:hover { background:var(--surface-overlay); color:var(--text-primary); }
+
+  .side-scroll { flex:1; min-height:0; overflow-y:auto; padding-bottom:8px; }
+  .zone-head {
+    display:flex; align-items:center; gap:6px; padding:8px 12px 4px;
+    color:var(--text-muted); font-size:11.5px; font-weight:600; letter-spacing:.3px;
+  }
+  .zone-head .zact { margin-left:auto; display:flex; gap:4px; }
+  .zone-head .zact button { border:none; background:transparent; color:var(--text-muted);
+    padding:2px; border-radius:4px; display:inline-flex; }
+  .zone-head .zact button:hover { color:var(--text-primary); background:var(--surface-overlay); }
+
+  .proj { padding:0 8px; }
+  .proj-head {
+    display:flex; align-items:center; gap:7px; padding:6px 8px; border-radius:var(--r-sm);
+    color:var(--text-secondary); font-size:12.5px;
+  }
+  .proj-head:hover { background:var(--surface-overlay); }
+  .proj-head .pname { font-weight:550; color:var(--text-primary); }
+  .caret { display:inline-flex; color:var(--text-muted); transition:transform .15s; }
+  .caret.collapsed { transform:rotate(-90deg); }
+
+  .sess-list { display:flex; flex-direction:column; gap:1px; padding:1px 0 4px 14px; }
+  .sess {
+    display:flex; align-items:center; gap:8px; padding:5px 8px;
+    border-radius:var(--r-sm); color:var(--text-secondary); font-size:12.5px;
+    position:relative;
+  }
+  .sess:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .sess.on { background:var(--surface-overlay); color:var(--text-primary); }
+  .sess.on::before {
+    content:""; position:absolute; left:-8px; top:50%; transform:translateY(-50%);
+    width:2px; height:16px; background:var(--accent); border-radius:1px;
+  }
+  .sess .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sess .badge {
+    font-size:10.5px; padding:1px 5px; border-radius:4px;
+    background:var(--accent-soft); color:var(--text-secondary);
+  }
+
+  /* 用户区 */
+  .user {
+    flex:none; display:flex; align-items:center; gap:8px; padding:9px 12px;
+    border-top:1px solid var(--border);
+  }
+  .avatar {
+    width:24px; height:24px; border-radius:50%; flex:none;
+    background:linear-gradient(140deg,#3fb950,#1f7a34);
+    display:flex; align-items:center; justify-content:center;
+    font-size:11px; font-weight:700; color:#04140a;
+  }
+  .user .uname { font-size:12.5px; color:var(--text-primary); font-weight:500; }
+  .user .plan { font-size:11px; color:var(--text-muted); }
+  .icon-btn {
+    width:26px; height:26px; border:none; background:transparent; border-radius:5px;
+    color:var(--text-muted); display:inline-flex; align-items:center; justify-content:center;
+  }
+  .icon-btn:hover { background:var(--surface-overlay); color:var(--text-primary); }
+
+  /* ============ 中栏：会话现场 ============ */
+  .center {
+    flex:1; min-width:0; display:flex; flex-direction:column; background:var(--surface);
+    /* 容器查询上下文：输入区按中栏自身宽度响应，而非窗口宽度 */
+    container-type:inline-size; container-name:center;
+  }
+
+  .chat-card {
+    flex:1; min-height:0; display:flex; flex-direction:column;
+  }
+  .chat-head {
+    flex:none; display:flex; align-items:center; gap:8px; padding:9px 14px;
+    border-bottom:1px solid var(--border);
+  }
+  .chat-head .ttl {
+    font-size:12.5px; color:var(--text-primary); font-weight:500;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .chat-head .dots { color:var(--text-muted); }
+
+  /* 会话上下文（cwd + git 分支）：次级信息，不抢标题的注意力 */
+  .ch-sep { width:1px; height:14px; background:var(--border); flex:none; margin:0 4px; }
+  .ch-ctx {
+    display:inline-flex; align-items:center; gap:5px; flex:none;
+    height:22px; padding:0 7px; border-radius:var(--r-sm);
+    border:none; background:transparent;
+    color:var(--text-muted); font-size:11.5px;
+  }
+  .ch-ctx .c { color:var(--text-secondary); }
+  .ch-ctx.branch { border:1px solid var(--border); }
+  .ch-ctx.branch:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .ch-ctx.branch:hover .c { color:var(--text-primary); }
+  .ch-ctx .caret { color:var(--text-muted); }
+  /* 窄中栏：cwd 可截断，分支始终保留（它是关键信息） */
+  /* 窄中栏：cwd 优先截断，极窄时才隐藏（分支始终保留） */
+  @container center (max-width: 900px) {
+    .ch-ctx:not(.branch) .c { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  }
+  @container center (max-width: 620px) {
+    .ch-ctx:not(.branch) { display:none; }
+  }
+
+  /* ============ 现场状态栏 Live Bar（设计宪法 P0）============
+     置于输入框下方：把「现在什么情况」压成一条常驻窄条。
+     心跳与实时上下文是治「不知道它在干嘛」的核心——数字在跳，用户就知道它还活着。
+     注意：模型选择归输入区（模型是发送时的参数）；此处只留运行态观测。 */
+  .live-bar {
+    display:flex; align-items:center; justify-content:center; gap:10px;
+    padding:7px 2px 0; background:transparent;
+    font-size:11.5px; color:var(--text-secondary);
+  }
+  /* 运行中：心跳点自身脉动已足够证明“它还活着”，不再额外加左边光条 */
+  .live-bar.running { /* 预留：如需整体高亮可在此处加背景 */ }
+  @keyframes breathe {
+    0%,100% { opacity:.3; }
+    50%     { opacity:1; }
+  }
+
+  .lb-item { display:inline-flex; align-items:center; gap:6px; flex:none; white-space:nowrap; }
+  .lb-sep { width:1px; height:12px; background:var(--border); flex:none; }
+  .lb-ctx { color:var(--text-secondary); }
+  .lb-label { color:var(--text-muted); }
+
+  /* 上下文占用条：>70% 琥珀，>90% 红 */
+  .lb-ctx { display:inline-flex; align-items:center; gap:6px; }
+  .lb-track {
+    width:64px; height:5px; border-radius:3px; overflow:hidden;
+    background:var(--surface-overlay); display:block;
+  }
+  .lb-fill { display:block; height:100%; border-radius:3px; background:var(--accent-dim); }
+  .lb-fill.warn { background:var(--warning); }
+  .lb-fill.danger { background:var(--danger); }
+
+  /* 心跳：绿点脉动 + 已耗时 + 最后活动 */
+  .lb-heart { display:inline-flex; align-items:center; gap:6px; flex:none; white-space:nowrap; }
+  .lb-dot {
+    width:6px; height:6px; border-radius:50%; background:var(--success); flex:none;
+    animation:lb-pulse 2s infinite;
+  }
+  @keyframes lb-pulse {
+    0%   { box-shadow:0 0 0 0 rgba(63,185,80,.45); }
+    70%  { box-shadow:0 0 0 5px rgba(63,185,80,0); }
+    100% { box-shadow:0 0 0 0 rgba(63,185,80,0); }
+  }
+  .lb-bar.stale .lb-dot, .live-bar.stale .lb-dot {
+    background:var(--warning); animation:none; box-shadow:none;
+  }
+
+  /* 窄中栏：优先保住心跳与上下文，收起次要信息 */
+  @container center (max-width: 760px) {
+    .lb-opt { display:none; }
+  }
+  @container center (max-width: 520px) {
+    .lb-track { width:40px; }
+    .lb-idle { display:none; }
+  }
+  .hbtn {
+    height:24px; padding:0 7px; border:1px solid var(--border); background:var(--surface-raised);
+    border-radius:var(--r-sm); color:var(--text-secondary); display:inline-flex;
+    align-items:center; gap:5px; font-size:11.5px;
+  }
+  .hbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .hbtn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
+  .hbtn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
+
+  /* ============ 工具审批卡片（对齐 ApprovalCard.tsx）============
+     lane 在等待期间是挂起的，必须让用户一眼看出「在等我」，
+     并给出四档语义 + 可见超时，而不是以为程序卡死。 */
+  .approval {
+    margin:12px 0; padding:12px; border-radius:var(--r-lg);
+    border:1px solid rgba(210,153,34,.5); background:var(--warning-soft);
+  }
+  /* 高风险：转为危险色 */
+  .approval.danger {
+    border-color:rgba(248,81,73,.6); background:rgba(248,81,73,.05);
+  }
+  .ap-head { display:flex; align-items:flex-start; gap:8px; }
+  .ap-icon { flex:none; margin-top:2px; display:inline-flex; color:var(--warning); }
+  .approval.danger .ap-icon { color:var(--danger); }
+  .ap-body { flex:1; min-width:0; }
+  .ap-title { display:flex; align-items:center; gap:8px; }
+  .ap-title .t { font-size:12px; font-weight:550; color:var(--text-primary); }
+  .ap-title .risk { font-size:12px; }
+  .ap-title .risk.safe { color:var(--text-secondary); }
+  .ap-title .risk.moderate { color:var(--warning); }
+  .ap-title .risk.danger { color:var(--danger); }
+  .ap-summary {
+    margin:4px 0 0; font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:12px; color:var(--text-primary); word-break:break-all;
+  }
+  .ap-reason { margin:4px 0 0; font-size:12px; color:var(--text-muted); }
+  /* 可见超时：与主进程/worker 同一时间基准，逐秒回退 */
+  .ap-timer {
+    flex:none; display:inline-flex; align-items:center; gap:4px;
+    font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:11px; color:var(--warning); white-space:nowrap;
+  }
+  .ap-timer.expired { color:var(--text-muted); }
+  .ap-expand {
+    margin-top:8px; display:inline-flex; align-items:center; gap:4px;
+    border:none; background:transparent; padding:0;
+    font-size:12px; color:var(--text-muted);
+  }
+  .ap-expand:hover { color:var(--text-primary); }
+  .ap-expand .caret { transition:transform .15s; display:inline-flex; }
+  .ap-expand.open .caret { transform:rotate(90deg); }
+
+  /* 展开后的 diff（内嵌，不跳转） */
+  .ap-diff {
+    margin-top:6px; border:1px solid var(--border); border-radius:var(--r-sm);
+    background:var(--surface-code); overflow:hidden;
+  }
+  .ap-diff-head {
+    display:flex; align-items:center; gap:6px; padding:5px 8px;
+    border-bottom:1px solid var(--border); font-size:11px; color:var(--text-muted);
+  }
+  .ap-diff-head .fpath { font-family:"JetBrains Mono",Consolas,monospace; color:var(--text-secondary); }
+  .ap-diff-body { padding:6px 0; font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px; line-height:1.7; }
+  .ap-line { display:flex; padding:0 8px; white-space:pre; }
+  .ap-line .ln { flex:none; width:22px; text-align:right; margin-right:10px; color:var(--text-muted); user-select:none; }
+  .ap-line.add { background:rgba(63,185,80,.10); }
+  .ap-line.add .code { color:var(--success-fg); }
+  .ap-line.del { background:rgba(248,81,73,.10); }
+  .ap-line.del .code { color:var(--danger-fg); }
+  .ap-line .code { color:var(--text-secondary); }
+
+  /* 四档动作区 */
+  .ap-actions { margin-top:12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ap-btn {
+    height:26px; padding:0 10px; border-radius:var(--r-sm);
+    border:1px solid var(--border); background:transparent;
+    color:var(--text-secondary); font-size:12px;
+    display:inline-flex; align-items:center; gap:5px; white-space:nowrap;
+  }
+  .ap-btn:hover { color:var(--text-primary); border-color:var(--border-strong); }
+  .ap-btn.primary {
+    background:var(--accent); border-color:var(--accent); color:var(--accent-fg); font-weight:550;
+  }
+  .ap-btn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); color:var(--accent-fg); }
+  .ap-btn.deny { border-color:rgba(248,81,73,.4); color:var(--danger); }
+  .ap-btn.deny:hover { background:var(--danger-soft); color:var(--danger-fg); }
+  .ap-spacer { flex:1 1 auto; min-width:0; }
+  .ap-note { margin-top:12px; font-size:12px; color:var(--text-muted); }
+
+  /* 窄中栏：动作区按钮挤压时换行（已开 wrap） */
+  @container center (max-width: 520px) {
+    .ap-actions .ap-btn .txt { display:none; }
+  }
+
+  /* ============ 思考轨 Thought Rail（对齐 ACP agent_thought_chunk）============
+     推理过程单独成流，与正式回复分开。
+     视觉弱化：斜体、次级色、半透明底——它是「氛围组」，让用户安心，而非必须阅读。 */
+  .thought-rail { margin:0 0 12px; }
+  .thought-toggle {
+    display:inline-flex; align-items:center; gap:6px;
+    border:none; background:transparent; padding:0;
+    font-size:12px; color:var(--text-muted);
+  }
+  .thought-toggle:hover { color:var(--text-secondary); }
+  .thought-toggle .caret { display:inline-flex; transition:transform .15s; }
+  .thought-toggle.open .caret { transform:rotate(90deg); }
+
+  /* 思考内容：半透明渐变底 + 左侧描边，弱于主回复 */
+  .thought {
+    margin-top:6px;
+    background:linear-gradient(180deg, rgba(201,206,214,.04), transparent);
+    border:1px solid var(--border);
+    border-left:2px solid var(--border-strong);
+    border-radius:var(--r-md);
+    padding:10px 14px;
+    color:var(--text-secondary);
+    font-size:12.5px; font-style:italic; line-height:1.7;
+  }
+  /* 流式追加的思考末尾：闪烁光标，证明还在写 */
+  .thought .cursor {
+    display:inline-block; width:6px; height:13px; vertical-align:-2px;
+    background:var(--text-muted); margin-left:2px;
+    animation:caret-blink 1s step-end infinite;
+  }
+  @keyframes caret-blink { 50% { opacity:0; } }
+
+  /* 已完成态：收起为「已思考」单行，与运行中高度一致，避免流式结束后跳变 */
+  .thought-done .thought-toggle { color:var(--text-muted); }
+
+  /* ============ 工具卡 ToolCard（对齐 MessageList.tsx ToolCard）============
+     会话流里出现频率最高的元素（每轮多个）。
+     默认折叠成一行：caret + 语义图标 + 工具名 + 路径/命令 + 增删 + 耗时 + 状态。
+     信息密度可调（①-A）：展开才显示 diff / 参数 / 输出 / 截图。 */
+  .tool {
+    margin:6px 0; border:1px solid var(--border); border-radius:var(--r-md);
+    background:var(--surface-raised); overflow:hidden;
+  }
+  .tool.error { border-color:rgba(248,81,73,.5); }
+
+  .tool-head {
+    display:flex; align-items:center; gap:8px; width:100%;
+    padding:8px 12px; border:none; background:transparent; text-align:left;
+  }
+  .tool-head:hover { background:rgba(22,26,33,.5); }
+  .tool-head .caret { display:inline-flex; color:var(--text-muted); transition:transform .15s; flex:none; }
+  .tool-head.open .caret { transform:rotate(90deg); }
+  .tool-head .ticon { flex:none; display:inline-flex; color:var(--text-muted); }
+  .tool-name {
+    flex:none; font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:11.5px; font-weight:650; color:var(--text-primary);
+  }
+  /* 路径/命令：可伸缩并截断，让右侧统计列始终可见（规则 ④-A） */
+  .tool-sub {
+    flex:1 1 auto; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap;
+    font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:11.5px; color:var(--text-secondary);
+  }
+  .tool-meta {
+    flex:none; display:flex; align-items:center; gap:10px;
+    font-size:11px; color:var(--text-muted); white-space:nowrap;
+  }
+  .tool-meta .run { display:inline-flex; align-items:center; gap:6px; color:var(--text-secondary); }
+  .tool-meta .run .dot {
+    width:6px; height:6px; border-radius:50%; background:var(--success); flex:none;
+    animation:lb-pulse 2s infinite;
+  }
+  .tool-meta .ok { display:inline-flex; align-items:center; gap:4px; color:var(--success); }
+  .tool-meta .fail { color:var(--danger-fg); }
+
+  /* 展开体 */
+  .tool-body {
+    border-top:1px solid var(--border); background:var(--surface); padding:8px;
+  }
+  .tool-body .sect { margin-bottom:4px; font-size:11px; color:var(--text-muted); }
+  .tool-body .sect:not(:first-child) { margin-top:8px; }
+  .tool-pre {
+    max-height:200px; overflow:auto; border-radius:var(--r-sm);
+    background:var(--surface-code); padding:8px 12px; margin:0 0 8px;
+    font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:11.5px; line-height:1.7; color:var(--text-secondary);
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .tool-shot {
+    max-height:320px; border-radius:var(--r-sm); border:1px solid var(--border);
+    margin-bottom:8px; display:block;
+  }
+
+  /* ============ 文件视图（预览左 + 文件树右）============ */
+  .file-view .fv-body { flex:1; min-height:0; display:flex; }
+
+  /* 预览区 */
+  .fv-preview {
+    flex:1; min-width:280px; display:flex; flex-direction:column; background:var(--surface);
+  }
+  .fv-empty {
+    flex:1; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:4px; padding:24px; text-align:center;
+  }
+  .fv-empty .et { margin:10px 0 0; font-size:12.5px; color:var(--text-secondary); }
+  .fv-empty .es { margin:0; max-width:220px; font-size:11.5px; line-height:1.6; color:var(--text-muted); }
+
+  .fv-content { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .fv-toolbar {
+    flex:none; display:flex; align-items:center; gap:6px;
+    padding:7px 10px; border-bottom:1px solid var(--border);
+    background:var(--surface-raised);
+  }
+  .fv-path {
+    flex:1; min-width:0; font-size:11.5px; color:var(--text-secondary);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .fv-badge {
+    flex:none; font-size:10px; font-weight:700; padding:1px 5px;
+    border-radius:3px; background:var(--warning-soft); color:var(--warning);
+  }
+  .fv-badge.add { background:var(--success-soft); color:var(--success-fg); }
+  .fv-scroll { flex:1; min-height:0; overflow:auto; }
+  /* 代码视图自身占满滚动区宽度，避免行号列被压缩 */
+  .fv-scroll > .fv-code { min-width:100%; }
+
+  /* 文件树 */
+  .fv-tree {
+    flex:none; width:200px; display:flex; flex-direction:column;
+    border-left:1px solid var(--border); background:var(--surface-raised);
+    position:relative;
+  }
+  /* 折叠态：树收成窄条（只剩一个展开按钮），预览区拿回全部宽度 */
+  .file-view.tree-collapsed .fv-tree {
+    width:32px;
+    border-left:1px solid var(--border);
+  }
+  .file-view.tree-collapsed .fv-search,
+  .file-view.tree-collapsed .fv-root,
+  .file-view.tree-collapsed .fv-list { display:none; }
+  /* 展开按钮：折叠时显示在窄条中间 */
+  .fv-expand {
+    display:none; width:100%; height:32px; border:none; background:transparent;
+    color:var(--text-muted); align-items:center; justify-content:center;
+  }
+  .fv-expand:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .file-view.tree-collapsed .fv-expand { display:inline-flex; }
+  /* 折叠按钮：展开时位于树顶部（搜索框旁） */
+  .fv-collapse {
+    display:inline-flex; width:100%; height:26px; border:none; background:transparent;
+    color:var(--text-muted); align-items:center; justify-content:center;
+  }
+  .fv-collapse:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .file-view.tree-collapsed .fv-collapse { display:none; }
+  .fv-search {
+    flex:none; display:flex; align-items:center; gap:7px;
+    margin:8px; padding:0 8px; height:26px;
+    border:1px solid var(--border); border-radius:var(--r-sm);
+    background:var(--surface-input); color:var(--text-muted);
+  }
+  .fv-search input {
+    flex:1; min-width:0; border:none; outline:none; background:transparent;
+    color:var(--text-primary); font-size:11.5px; font-family:inherit;
+  }
+  .fv-search .kbd {
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:10px; color:var(--text-muted);
+  }
+  .fv-root { flex:none; display:flex; align-items:center; gap:4px; padding:0 10px 6px; }
+  .fv-root .rt { flex:1; min-width:0; font-size:11.5px; font-weight:600; color:var(--text-primary); }
+  .fv-list { flex:1; min-height:0; overflow-y:auto; padding:0 6px 8px; }
+
+  .fvn {
+    display:flex; align-items:center; gap:6px; width:100%;
+    padding:5px 6px; border:none; background:transparent;
+    border-radius:var(--r-sm); color:var(--text-secondary);
+    font-size:11.5px; text-align:left;
+  }
+  .fvn:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .fvn.on { background:var(--surface-overlay); color:var(--text-primary); }
+  .fvn .caret { flex:none; display:inline-flex; color:var(--text-muted); }
+  .fvn .caret svg { transition:transform .15s; }
+  .fvn.collapsed .caret svg { transform:rotate(-90deg); }
+  .fvn .ficon { flex:none; display:inline-flex; color:var(--text-muted); }
+  .fvn .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* 变更标记：不分组，用单字母表示（对齐 git 习惯） */
+  .fvn .mark {
+    flex:none; font-size:9.5px; font-weight:700; padding:0 4px;
+    border-radius:3px; background:var(--warning-soft); color:var(--warning);
+  }
+  .fvn .mark.add { background:var(--success-soft); color:var(--success-fg); }
+
+  /* 预览内容 */
+  .fv-doc { padding:16px 20px 32px; }
+  .fv-doc .md { font-size:12.5px; }
+  .fv-code {
+    display:flex; align-items:flex-start;
+    font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:11.5px; line-height:1.75;
+  }
+  .fv-code .gutter {
+    flex:none; width:44px; padding:12px 8px 12px 0; text-align:right;
+    color:var(--text-muted); user-select:none;
+    background:var(--surface-raised); border-right:1px solid var(--border);
+    white-space:pre; position:sticky; left:0;
+  }
+  .fv-code .lines {
+    flex:1; min-width:0; padding:12px 14px;
+    white-space:pre; overflow-x:auto; color:var(--text-secondary);
+  }
+  .fv-note {
+    margin:12px; padding:10px 12px; border:1px solid var(--border);
+    border-radius:var(--r-md); background:var(--surface-raised);
+    font-size:12px; line-height:1.6; color:var(--text-secondary);
+  }
+  .fv-img { padding:16px; display:flex; justify-content:center; }
+  .fv-img img { max-width:100%; border:1px solid var(--border); border-radius:var(--r-md); }
+
+  /* ---- 终端视图 ---- */
+  .term {
+    flex:1; min-height:0; overflow-y:auto; padding:10px 14px;
+    background:var(--surface-code);
+    font-family:"JetBrains Mono","Cascadia Code",Consolas,monospace;
+    font-size:12px; line-height:1.75;
+  }
+  .term-line { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .term-line .p { color:var(--success-fg); }
+  .term-line .c { color:var(--text-primary); }
+  .term-out { color:var(--text-secondary); padding-left:2px; }
+  .term-ok { color:var(--text-secondary); padding-left:2px; }
+  .term .cursor {
+    display:inline-block; width:7px; height:13px; background:var(--text-secondary);
+    animation:caret-blink 1s step-end infinite;
+  }
+
+  /* 消息流 */
+  .stream { flex:1; min-height:0; overflow-y:auto; padding:16px 18px 8px; }
+  .stream-inner { max-width:760px; margin:0 auto; }
+
+  .md { font-size:13px; line-height:1.72; color:var(--text-primary); }
+  .md p { margin:0 0 10px; }
+  .md .file-ref {
+    color:var(--code-prop); text-decoration:underline;
+    text-decoration-color:var(--border-strong); text-underline-offset:3px;
+  }
+  .md ul { margin:0 0 12px; padding-left:18px; }
+  .md li { margin-bottom:5px; }
+  .md li::marker { color:var(--text-muted); }
+  .md code {
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:12px;
+    background:var(--surface-code); border:1px solid var(--border);
+    padding:1px 5px; border-radius:4px; color:var(--code-secondary,#a3cfa6);
+  }
+  .md h4 { font-size:13.5px; margin:16px 0 8px; font-weight:650; }
+
+  /* 变更文件卡 */
+  .file-card {
+    display:flex; align-items:center; gap:10px; padding:9px 11px; margin:10px 0;
+    border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface-raised);
+  }
+  .file-card .ficon {
+    width:30px; height:30px; flex:none; border-radius:var(--r-sm);
+    background:var(--surface-overlay); display:flex; align-items:center;
+    justify-content:center; color:var(--code-prop);
+  }
+  .file-card .fmain { flex:1; min-width:0; }
+  .file-card .fname { font-size:12.5px; color:var(--text-primary); font-weight:550;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .file-card .fsub { font-size:11px; color:var(--text-muted); margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .file-card .fgo { color:var(--text-muted); flex:none; }
+
+  .changed {
+    display:flex; align-items:center; gap:10px; padding:9px 11px; margin:10px 0;
+    border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface-raised);
+  }
+  .changed .cbtn {
+    display:inline-flex; align-items:center; gap:6px; border:none; background:transparent;
+    color:var(--text-primary); font-size:12.5px; font-weight:550; padding:0;
+  }
+  .changed .stat { margin-left:auto; display:flex; align-items:center; gap:8px;
+    font-size:11.5px; }
+  .add { color:var(--success-fg); }
+  .del { color:var(--danger-fg); }
+
+  /* 消息操作条 */
+  .msg-acts {
+    display:flex; align-items:center; gap:2px; margin:6px 0 14px;
+  }
+  .msg-acts button { width:26px; height:26px; border:none; background:transparent;
+    border-radius:5px; color:var(--text-muted); display:inline-flex;
+    align-items:center; justify-content:center; }
+  .msg-acts button:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .msg-acts .by { margin-left:auto; font-size:11px; color:var(--text-muted); }
+
+  /* 快捷建议 */
+  .suggests { display:flex; flex-direction:column; gap:8px; margin-top:14px; }
+  .sug {
+    display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+    padding:10px 12px; border:1px solid var(--border); border-radius:var(--r-md);
+    background:var(--surface-raised); color:var(--text-secondary); font-size:12.5px;
+  }
+  .sug:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .sug .arrow { margin-left:auto; color:var(--text-muted); }
+
+  /* 输入区 */
+  .composer { flex:none; padding:0 18px 14px; }
+  .composer-inner { max-width:760px; margin:0 auto; }  .cbox {
+    border:1px solid var(--border); border-radius:var(--r-lg);
+    background:var(--surface-raised); padding:10px 12px 8px;
+    transition:border-color .15s;
+  }
+  .cbox:focus-within { border-color:var(--border-strong); }
+  .cbox .ph { color:var(--text-muted); font-size:12.5px; line-height:1.6; }
+  .cbox .tools {
+    display:flex; align-items:center; gap:8px; margin-top:10px;
+    flex-wrap:wrap;            /* 窄宽度时允许换行，而不是逐出容器 */
+    row-gap:6px;
+  }
+  .cbtn {
+    height:28px; display:inline-flex; align-items:center; gap:6px;
+    padding:0 8px; border:none; background:transparent; border-radius:var(--r-sm);
+    color:var(--text-secondary); font-size:12px;
+    flex:none; min-width:0; white-space:nowrap;
+  }
+  .cbtn:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .cbtn.pill { border:1px solid var(--border); }
+  .cbtn .caret { color:var(--text-muted); }
+  /* 可收缩的标签：窄时先隐藏文字，保留图标与 caret */
+  .cbtn .lbl {
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    min-width:0; max-width:120px;
+  }
+  .cspacer { flex:1 1 auto; min-width:0; }
+  /* 右侧控制组：保证不被挤走 */
+  .cright {
+    display:flex; align-items:center; gap:8px;
+    flex:0 0 auto;              /* 不拉伸、不收缩 */
+  }
+  /* 宽容器：右侧控制组靠右（用 push 元素占位，不依赖 auto margin） */
+  .cpush { flex:1 1 0; min-width:0; }
+
+  /* 窄容器：折叠文字标签，保住单行（实测折叠后约 354px，中栏最窄 358px 刚好放得下） */
+  @container center (max-width: 560px) {
+    .cbtn .lbl { display:none; }
+    .cbtn.model .lbl { display:inline; max-width:78px; }
+  }
+  /* 更窄（会话区拖到极窄）时才换行兼顾：右侧控制组独占一行并靠右 */
+  @container center (max-width: 400px) {
+    .cpush { display:none; }
+    .cright { width:100%; justify-content:flex-end; }
+    .cbtn.model .lbl { max-width:52px; }
+  }
+  .cbtn.model { max-width:150px; }
+  .send {
+    width:28px; height:28px; border:none; border-radius:50%;
+    background:var(--accent); color:var(--accent-fg);
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  .send:hover { background:var(--accent-hover); }
+  .hint { text-align:center; font-size:11px; color:var(--text-muted); margin-top:8px; }
+
+  /* ============ 右栏：内嵌浏览器 ============ */
+  .dock {
+    width:var(--w-dock); flex:none; min-width:0; display:flex; flex-direction:column;
+    background:var(--surface-raised); border-left:1px solid var(--border);
+    position:relative;   /* 让「+」下拉菜单相对本栏定位 */
+  }
+  .dock-head {
+    flex:none; display:flex; align-items:center; gap:8px; padding:8px 10px;
+    border-bottom:1px solid var(--border); background:var(--surface-raised);
+  }
+
+  /* 折叠态：收成窄图标条（不可完全关闭，只是收起内容） */
+  .dock.collapsed { width:38px !important; }
+  /* 折叠时内容区隐藏，只剩页签图标条 */
+  .dock.collapsed .dock-view { display:none !important; }
+  .dock.collapsed .dock-tabs {
+    flex-direction:column; padding:6px 0; gap:4px; border-bottom:none;
+    height:100%; align-items:stretch;
+  }
+  .dock.collapsed .dock-tab {
+    width:100%; height:32px; padding:0; justify-content:center;
+    border-bottom:none; border-left:2px solid transparent; margin-bottom:0;
+  }
+  .dock.collapsed .dock-tab.on {
+    border-bottom-color:transparent; border-left-color:var(--accent);
+  }
+  /* 折叠时隐藏文字与计数，只留图标与状态点 */
+  .dock.collapsed .dock-tab .tlabel,
+  .dock.collapsed .dock-tab .tcount { display:none; }
+  .dock.collapsed .dock-tab .dot-live {
+    position:absolute; top:6px; right:8px; width:5px; height:5px;
+  }
+  .dock.collapsed .dock-tab { position:relative; }
+  .dock.collapsed .tspacer { display:none; }
+  /* 折叠旋钮：转成向左（展开） */
+  .dock.collapsed #dockCollapse svg { transform:rotate(180deg); }
+  .dock.collapsed #dockCollapse { align-self:center; flex:none; }
+
+  /* ---- 右栏视图页签（规则 ⑦-B：工作区容器）----
+     右栏就是「工作区」：「正在处理」只是它的默认视图，
+     浏览器 / 阅读器 / 文件浏览等是它的其他视图。
+     宽度只有一个来源：用户拖拽（--w-dock）。视图切换只给“建议值”，
+     一旦用户手动拖过，后续切视图不再覆盖。 */
+
+  .dock-tabs {
+    flex:none; display:flex; align-items:center; gap:2px;
+    padding:6px 8px 0; border-bottom:1px solid var(--border);
+    background:var(--surface-raised);
+    /* 页签区可横向滚动，但 + / 折叠 / 间距 必须固定不被挤走 */
+    overflow-x:auto; overflow-y:hidden;
+    scrollbar-width:none;
+  }
+  .dock-tabs::-webkit-scrollbar { height:0; }
+  /* 页签本身不收缩，超出就滚 */
+  .dock-tab { flex:none; }
+  /* 固定在右侧的两个控件（折叠按钮在左、新增在右） */
+  #dockCollapse, #dockAdd { flex:none; position:sticky; }
+  #dockAdd { right:0; background:var(--surface-raised); }
+  #dockCollapse { left:0; background:var(--surface-raised); }
+  .dock-tab {
+    flex:none; display:inline-flex; align-items:center; gap:6px;
+    height:28px; padding:0 10px; border:none; background:transparent;
+    border-bottom:2px solid transparent; margin-bottom:-1px;
+    color:var(--text-muted); font-size:12px; white-space:nowrap;
+  }
+  .dock-tab:hover { color:var(--text-secondary); }
+  .dock-tab.on {
+    color:var(--text-primary); border-bottom-color:var(--accent); font-weight:550;
+  }
+  .dock-tab .dot-live {
+    width:6px; height:6px; border-radius:50%; background:var(--success);
+    animation:lb-pulse 2s infinite;
+  }
+  .dock-tab .tcount {
+    font-size:10px; padding:0 5px; border-radius:8px;
+    background:var(--surface-overlay); color:var(--text-secondary);
+  }
+  .dock-tab.on .tcount { background:var(--accent-soft); color:var(--text-primary); }
+  .tspacer { flex:1; }
+
+  /* 「+」新增视图菜单（Chrome / VS Code 范式：已打开的显页签，新增走菜单） */
+  .dock-add {
+    flex:none; width:26px; height:26px; border:none; background:transparent;
+    border-radius:var(--r-sm); color:var(--text-muted);
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  .dock-add:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .dock-add.on { background:var(--surface-overlay); color:var(--text-primary); }
+
+  .dock-menu {
+    position:absolute; top:38px; right:8px; z-index:60;
+    min-width:196px; padding:4px;
+    background:var(--surface-overlay);
+    border:1px solid var(--border-strong); border-radius:var(--r-md);
+    box-shadow:var(--shadow-2);
+  }
+  .dock-menu .msearch {
+    display:flex; align-items:center; gap:7px; padding:6px 8px;
+    border-bottom:1px solid var(--border); margin-bottom:4px;
+    color:var(--text-muted); font-size:12px;
+  }
+  .dock-menu .msearch input {
+    flex:1; min-width:0; border:none; outline:none; background:transparent;
+    color:var(--text-primary); font-size:12px; font-family:inherit;
+  }
+  .dock-menu .msearch kbd {
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:10px;
+    color:var(--text-muted); border:1px solid var(--border);
+    border-radius:3px; padding:0 4px;
+  }
+  .dock-menu button {
+    display:flex; align-items:center; gap:9px; width:100%;
+    padding:7px 8px; border:none; background:transparent;
+    border-radius:var(--r-sm); color:var(--text-secondary); font-size:12.5px;
+    text-align:left;
+  }
+  .dock-menu button:hover { background:var(--surface-raised); color:var(--text-primary); }
+  .dock-menu button .mi { flex:none; display:inline-flex; color:var(--text-muted); }
+  .dock-menu button .ml { flex:1; min-width:0; }
+  .dock-menu button .mk {
+    flex:none; font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:10px; color:var(--text-muted);
+  }
+  /* 视图简介：菜单里一行小字说明它是什么 */
+  .dock-menu button .md {
+    display:block; font-size:11px; color:var(--text-muted); margin-top:1px;
+  }
+
+  /* 页签上的关闭按钮（已打开的视图可关） */
+  .dock-tab .tclose {
+    display:inline-flex; width:14px; height:14px; align-items:center;
+    justify-content:center; border-radius:3px; margin-left:1px;
+    color:var(--text-muted); opacity:0;
+  }
+  .dock-tab:hover .tclose { opacity:1; }
+  .dock-tab .tclose:hover { background:var(--border-strong); color:var(--text-primary); }
+
+  /* 视图容器：占满剩余高度 */
+  .dock-view { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .dock-loaded { flex:1; min-height:0; display:flex; flex-direction:column; }
+
+  /* 浏览器未加载态：不创建 WebContents，只给一个轻量占位 */
+  .dock-lazy {
+    flex:1; min-height:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:6px; padding:24px;
+    text-align:center;
+  }
+  .dock-lazy .lt { margin:10px 0 0; font-size:12.5px; color:var(--text-secondary); }
+  .dock-lazy .ls {
+    margin:0; max-width:240px; font-size:11.5px; line-height:1.6; color:var(--text-muted);
+  }
+  .dock-lazy .lbtn {
+    margin-top:12px; display:inline-flex; align-items:center; gap:6px;
+    height:28px; padding:0 12px; border:1px solid var(--border);
+    border-radius:var(--r-sm); background:transparent;
+    color:var(--text-secondary); font-size:12px;
+  }
+  .dock-lazy .lbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
+
+  /* ---- 跟随线视图 ---- */
+  .fsec { flex:none; border-bottom:1px solid var(--border); display:flex; flex-direction:column; min-height:0; }
+  .fsec-head {
+    display:flex; align-items:center; gap:6px; width:100%;
+    padding:9px 12px; border:none; background:transparent; text-align:left;
+  }
+  .fsec-head:hover { background:var(--surface-overlay); }
+  .fsec-head .caret { display:inline-flex; color:var(--text-muted); transition:transform .15s; }
+  .fsec-head.closed .caret { transform:rotate(-90deg); }
+  .fsec-title {
+    font-size:11px; font-weight:650; letter-spacing:.5px;
+    text-transform:uppercase; color:var(--text-muted);
+  }
+  .fsec-meta {
+    margin-left:auto; font-size:10.5px; color:var(--text-muted);
+    text-transform:none; letter-spacing:0; font-weight:500;
+  }
+  .fsec-body { max-height:280px; overflow-y:auto; padding:0 8px 6px; }
+
+  .frow {
+    display:flex; align-items:center; gap:6px;
+    padding:6px 8px; border-radius:var(--r-sm);
+  }
+  .frow:hover { background:var(--surface-overlay); }
+  .frow .ficon { flex:none; display:inline-flex; color:var(--text-muted); }
+  .frow .fdot {
+    width:6px; height:6px; border-radius:50%; background:var(--success); flex:none;
+    animation:lb-pulse 2s infinite;
+  }
+  .frow .fname {
+    flex:1; min-width:0; font-size:11px; color:var(--text-secondary);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .frow .fmeta {
+    flex:none; display:flex; align-items:center; gap:6px;
+    font-size:10.5px; color:var(--text-muted);
+  }
+  .fsum { margin:0 0 8px; font-size:12px; color:var(--text-secondary); }
+  .fbtn {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:5px 10px; border:1px solid var(--border); border-radius:var(--r-sm);
+    background:transparent; color:var(--text-secondary); font-size:11.5px;
+  }
+  .fbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
+
+  .tline { display:flex; align-items:center; gap:8px; padding:5px 8px; font-size:11.5px; color:var(--text-secondary); }
+  .tmark {
+    width:8px; height:8px; border-radius:50%; flex:none;
+    border:1.5px solid var(--text-muted); background:var(--surface-raised);
+  }
+  .tmark.on { background:var(--accent); border-color:var(--accent); }
+  .dock-title { display:flex; align-items:center; gap:7px; font-size:12.5px;
+    font-weight:550; color:var(--text-primary); flex:none; }
+  .nav-btns { display:flex; align-items:center; gap:1px; margin-left:2px; }
+  .urlbar {
+    flex:1; min-width:0; display:flex; align-items:center; gap:7px;
+    height:26px; padding:0 9px; border:1px solid var(--border);
+    border-radius:var(--r-sm); background:var(--surface-input);
+  }
+  .urlbar .lock { color:var(--success); display:inline-flex; flex:none; }
+  .urlbar .u {
+    font-size:11.5px; color:var(--text-secondary); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;
+  }
+  .urlbar .u b { color:var(--text-primary); font-weight:550; }
+  .dock-acts { display:flex; align-items:center; gap:2px; flex:none; }
+
+  /* agent 正在操作的提示条 */
+  .agent-strip {
+    flex:none; display:flex; align-items:center; gap:8px; padding:6px 12px;
+    background:var(--accent-soft); border-bottom:1px solid var(--border);
+    font-size:11.5px; color:var(--text-secondary);
+  }
+  .agent-strip .live {
+    width:6px; height:6px; border-radius:50%; background:var(--success); flex:none;
+    box-shadow:0 0 0 0 rgba(63,185,80,.45); animation:pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow:0 0 0 0 rgba(63,185,80,.45); }
+    70%  { box-shadow:0 0 0 5px rgba(63,185,80,0); }
+    100% { box-shadow:0 0 0 0 rgba(63,185,80,0); }
+  }
+  .agent-strip .step { margin-left:auto; color:var(--text-muted); }
+
+  /* 页面视口（WebContentsView 的真实占位区） */
+  .viewport {
+    flex:1; min-height:0; position:relative; background:#fff;
+    overflow:hidden;
+  }
+  /* 占位：真实运行时这里是 WebContentsView 的合成层，下面仅示意 */
+  .page {
+    position:absolute; inset:0; background:#fff; color:#1a1d21;
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei UI",sans-serif;
+    overflow:hidden;
+  }
+  .page-top {
+    height:44px; background:#0f172a; display:flex; align-items:center;
+    gap:10px; padding:0 18px; color:#e2e8f0;
+  }
+  .page-top .logo {
+    width:22px; height:22px; border-radius:5px; background:#3b82f6;
+    display:flex; align-items:center; justify-content:center;
+    font-size:11px; font-weight:700; color:#fff;
+  }
+  .page-top .nm { font-size:13px; font-weight:600; }
+  .page-top .sp { flex:1; }
+  .page-top .lk { font-size:12px; color:#94a3b8; }
+
+  .page-body { padding:26px 34px; }
+  .page-body h1 { font-size:20px; margin:0 0 6px; color:#0f172a; }
+  .page-body .sub { font-size:12.5px; color:#64748b; margin:0 0 20px; }
+  .form { max-width:320px; display:flex; flex-direction:column; gap:12px; }
+  .field label { display:block; font-size:12px; color:#475569; margin-bottom:5px; }
+  .field input {
+    width:100%; height:34px; border:1px solid #cbd5e1; border-radius:6px;
+    padding:0 10px; font-size:13px; color:#0f172a; background:#fff;
+    outline:none; font-family:inherit;
+  }
+  .field input:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.12); }
+  .field input.filled { border-color:#3b82f6; }
+  .pbtn {
+    height:36px; border:none; border-radius:6px; background:#3b82f6; color:#fff;
+    font-size:13px; font-weight:550; margin-top:4px;
+  }
+
+  /* ⭐ agent 操作高亮：让"它在点哪儿"可见 */
+  .agent-ring {
+    position:absolute; pointer-events:none;
+    border:2px solid #3b82f6; border-radius:7px;
+    box-shadow:0 0 0 4px rgba(59,130,246,.16);
+    animation:ring 1.6s ease-out;
+  }
+  @keyframes ring {
+    0%   { opacity:0; transform:scale(.96); }
+    18%  { opacity:1; transform:scale(1); }
+    100% { opacity:0; transform:scale(1.02); }
+  }
+  .agent-tag {
+    position:absolute; pointer-events:none;
+    background:#1e40af; color:#fff; font-size:10.5px; font-weight:600;
+    padding:2px 7px; border-radius:5px 5px 5px 0;
+    white-space:nowrap; z-index:3;
+    font-family:"JetBrains Mono",Consolas,monospace;
+    box-shadow:0 2px 8px rgba(0,0,0,.25);
+  }
+  .agent-tag::after {
+    content:""; position:absolute; left:0; bottom:-4px;
+    border-left:5px solid #1e40af; border-bottom:5px solid transparent;
+  }
+  /* 截图遮罩：说明"agent 看到的是这一帧" */
+  .frame-note {
+    position:absolute; right:10px; bottom:10px;
+    background:rgba(15,23,42,.86); color:#e2e8f0; font-size:10.5px;
+    padding:4px 9px; border-radius:5px; display:flex; align-items:center; gap:6px;
+    font-family:"JetBrains Mono",Consolas,monospace; backdrop-filter:blur(4px);
+  }
+
+  /* 观测抽屉：console / 网络 / 下载 */
+  .observe { flex:none; border-top:1px solid var(--border); background:var(--surface); }
+  .obs-tabs {
+    display:flex; align-items:center; gap:2px; padding:5px 8px;
+    border-bottom:1px solid var(--border);
+  }
+  .obs-tabs button {
+    height:24px; padding:0 9px; border:none; background:transparent;
+    border-radius:var(--r-sm); color:var(--text-muted); font-size:11.5px;
+    display:inline-flex; align-items:center; gap:5px;
+  }
+  .obs-tabs button:hover { color:var(--text-secondary); background:var(--surface-overlay); }
+  .obs-tabs button.on { background:var(--surface-overlay); color:var(--text-primary); }
+  .obs-tabs .cnt {
+    font-size:10px; padding:0 4px; border-radius:3px;
+    background:var(--danger-soft); color:var(--danger-fg);
+  }
+  .obs-body { max-height:118px; overflow-y:auto; padding:7px 10px; }
+  .obs-row { display:flex; gap:9px; font-size:11px; line-height:1.65; padding:2px 0; }
+  .obs-row .lv { flex:none; width:9px; text-align:center; }
+  .obs-row .msg { flex:1; min-width:0; color:var(--text-secondary); }
+  .obs-row .msg b { color:var(--text-primary); font-weight:550; }
+  .obs-row.err .msg b { color:var(--danger-fg); }
+  .obs-row.warn .msg b { color:var(--warning); }
+  .obs-row .st { flex:none; color:var(--text-muted); }
+  .obs-row .st.ok { color:var(--success-fg); }
+
+  /* 面板底部状态 */
+  .dock-foot {
+    flex:none; display:flex; align-items:center; gap:8px; padding:6px 10px;
+    border-top:1px solid var(--border); background:var(--surface-raised);
+    font-size:11px; color:var(--text-muted);
+  }
+  .dock-foot .fsp { flex:1; }
+  .dock-foot .vp { cursor:ew-resize; }
+  .dock-foot .vp:hover { color:var(--text-secondary); }
+
+  /* 停靠/弹出 切换按钮 */
+  .dock-toggle {
+    display:inline-flex; border:1px solid var(--border); border-radius:var(--r-sm);
+    overflow:hidden; flex:none;
+  }
+  .dock-toggle button {
+    width:26px; height:22px; border:none; background:transparent;
+    color:var(--text-muted); display:inline-flex; align-items:center;
+    justify-content:center;
+  }
+  .dock-toggle button:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .dock-toggle button.on { background:var(--surface-overlay); color:var(--text-primary); }
+
+  /* ============ 设计说明浮层（演示用，非产品 UI）============ */
+  .notes-toggle {
+    position:fixed; left:18px; bottom:18px; z-index:51;
+    display:inline-flex; align-items:center; gap:7px;
+    height:30px; padding:0 11px; border-radius:var(--r-lg);
+    background:var(--surface-overlay); border:1px solid var(--border-strong);
+    color:var(--text-secondary); font-size:11.5px; box-shadow:var(--shadow-2);
+  }
+  .notes-toggle:hover { color:var(--text-primary); }
+
+  .notes {
+    position:fixed; left:18px; bottom:18px; z-index:52;
+    width:330px; background:var(--surface-overlay);
+    border:1px solid var(--border-strong); border-radius:var(--r-lg);
+    box-shadow:var(--shadow-2); overflow:hidden;
+  }
+  .notes header {
+    display:flex; align-items:center; gap:8px; padding:9px 12px;
+    border-bottom:1px solid var(--border); font-size:12px; font-weight:650;
+  }
+  .notes header .x { margin-left:auto; }
+  .notes ul { margin:0; padding:10px 12px 12px 26px; font-size:11.5px;
+    line-height:1.7; color:var(--text-secondary); }
+  .notes li { margin-bottom:7px; }
+  .notes li b { color:var(--text-primary); }
+  .notes li::marker { color:var(--accent-dim); }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ 图标集 ============ -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-tree" viewBox="0 0 24 24"><path d="M12 22v-8"/><path d="M12 14a4 4 0 0 0 0-8 3.5 3.5 0 0 0-3.5 3.5A3.5 3.5 0 0 0 7 16a4 4 0 0 0 5 2"/><path d="M12 14a4 4 0 0 1 0-8 3.5 3.5 0 0 1 3.5 3.5A3.5 3.5 0 0 1 17 16a4 4 0 0 1-5 2"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-panel-left" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10" r="1.2"/><circle cx="12" cy="8" r="1.2"/><circle cx="15.5" cy="10" r="1.2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M14 3a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v2h-1a2 2 0 0 0 0 4h1v2a2 2 0 0 1-2 2h-2v-1a2 2 0 0 0-4 0v1H8a2 2 0 0 1-2-2v-2H5a2 2 0 0 1 0-4h1V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2z"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 14 9 5 9-5"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></symbol>
+    <symbol id="i-coffee" viewBox="0 0 24 24"><path d="M4 8h13v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M17 9h2a3 3 0 0 1 0 6h-2"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M3 8 12 3l9 5v8l-9 5-9-5z"/><path d="m3 8 9 5 9-5M12 21v-8"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-file-md" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-file-diff" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 11v6M9 14h6"/></symbol>
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M3 8h11a5 5 0 0 1 0 10H8"/><path d="M3 8l4-4M3 8l4 4"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M21 8H10a5 5 0 0 0 0 10h6"/><path d="M21 8l-4-4M21 8l-4 4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-thumb-up" viewBox="0 0 24 24"><path d="M7 22V11l5-9 1.5.8a2 2 0 0 1 1 2.2L13.5 9H19a2 2 0 0 1 2 2.3l-1.2 8A2 2 0 0 1 17.8 21H7z"/><path d="M7 11H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3"/></symbol>
+    <symbol id="i-thumb-down" viewBox="0 0 24 24"><path d="M17 2v11l-5 9-1.5-.8a2 2 0 0 1-1-2.2L10.5 15H5a2 2 0 0 1-2-2.3l1.2-8A2 2 0 0 1 6.2 3H17z"/><path d="M17 13h3a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1h-3"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 16-4.5-4.5L7 21"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8.5-8 9.5C7.5 20.5 4 17 4 12V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-shield-question" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8.5-8 9.5C7.5 20.5 4 17 4 12V6z"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 2.2"/><path d="M12 16h.01"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></symbol>
+    <symbol id="i-at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol>
+    <symbol id="i-percent" viewBox="0 0 24 24"><path d="M19 5 5 19"/><circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/></symbol>
+    <symbol id="i-corner-down" viewBox="0 0 24 24"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 11-5 4 5 4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  </svg>
+
+  <!-- ============ 标题栏 ============ -->
+  <header class="titlebar">
+    <button class="tb-icon" title="切换侧栏"><svg class="ico sm"><use href="#i-panel-left"/></svg></button>
+    <button class="tb-icon" title="搜索"><svg class="ico sm"><use href="#i-search"/></svg></button>
+    <nav class="menubar">
+      <button>编辑(E)</button>
+      <button>帮助(H)</button>
+    </nav>
+    <div class="tb-spacer"></div>
+    <div class="win-ctl">
+      <button title="最小化"><svg class="ico sm"><use href="#i-minus"/></svg></button>
+      <button title="最大化"><svg class="ico sm"><use href="#i-square"/></svg></button>
+      <button class="close" title="关闭"><svg class="ico sm"><use href="#i-close"/></svg></button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <!-- ============ 左栏（对齐实际产品：项目 + 会话 + 分支树）============ -->
+    <aside class="sidebar">
+      <div class="zone-head">
+        项目
+        <span class="zact">
+          <button title="打开目录"><svg class="ico sm"><use href="#i-folder"/></svg> 打开</button>
+        </span>
+      </div>
+
+      <div class="side-scroll">
+        <div class="proj">
+          <div class="proj-head">
+            <span class="caret"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">banyan</span>
+          </div>
+          <div class="sess-list">
+            <div class="sess on"><span class="t">Banyan添加Computer和Browse…</span></div>
+            <div class="sess"><span class="t">Dev模式Smoke测试</span></div>
+            <div class="sess"><span class="t">检查UI与高保真设计差距</span></div>
+          </div>
+
+          <div class="proj-head">
+            <span class="caret collapsed"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">machora</span>
+          </div>
+
+          <div class="proj-head">
+            <span class="caret collapsed"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">默认</span>
+          </div>
+
+          <div class="proj-head">
+            <span class="caret"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">jiuwenswarm</span>
+          </div>
+          <div class="sess-list">
+            <div class="sess"><span class="t">查看当前分支</span></div>
+            <div class="sess"><span class="t">如何启动并接入Machora</span></div>
+          </div>
+
+          <div class="proj-head">
+            <span class="caret collapsed"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">hermes-agent</span>
+          </div>
+
+          <div class="proj-head">
+            <span class="caret collapsed"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">pi</span>
+          </div>
+
+          <div class="proj-head">
+            <span class="caret collapsed"><svg class="ico sm"><use href="#i-chevron-down"/></svg></span>
+            <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-folder"/></svg>
+            <span class="pname">langfuse</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="user">
+        <div class="avatar">陈</div>
+        <div style="flex:1;min-width:0">
+          <div class="uname">chen</div>
+        </div>
+        <span class="plan">免费</span>
+        <button class="icon-btn" title="设置"><svg class="ico sm"><use href="#i-settings"/></svg></button>
+      </div>
+    </aside>
+
+    <!-- 拖拽把手：左栏 ↔ 中栏 -->
+    <div class="grip" id="gripLeft" title="拖拽调整左栏宽度（双击复位）"></div>
+
+    <!-- ============ 中栏：会话现场 ============ -->
+    <main class="center">
+      <div class="chat-card">
+        <div class="chat-head">
+          <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-monitor"/></svg>
+          <span class="ttl">Banyan添加Computer和Brows…</span>
+
+          <span class="ch-sep"></span>
+
+          <!-- 会话上下文：工作目录 + git 分支（规则 ②-B）——
+               “我在哪干活”必须在动手前可见，尤其是改错分支出事的时候 -->
+          <span class="ch-ctx" title="工作目录">
+            <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+            <span class="mono c">E:/code/opensource/banyan</span>
+          </span>
+          <button class="ch-ctx branch" type="button" title="当前 git 分支（点击切换）">
+            <svg class="ico sm" style="width:12px;height:12px"><use href="#i-branch"/></svg>
+            <span class="mono c">main</span>
+            <svg class="ico sm caret" style="width:10px;height:10px"><use href="#i-chevron-down"/></svg>
+          </button>
+
+          <div style="flex:1"></div>
+          <button class="hbtn" title="分享"><svg class="ico sm"><use href="#i-arrow-up-right"/></svg></button>
+          <button class="hbtn" title="复制会话"><svg class="ico sm"><use href="#i-copy"/></svg></button>
+        </div>
+
+        <div class="stream">
+          <div class="stream-inner">
+            <!-- ---- 思考轨：推理过程单独成流，默认折叠 ---- -->
+            <div class="thought-rail" id="thoughtRail">
+              <button class="thought-toggle" id="thoughtToggle" type="button">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm"><use href="#i-brain"/></svg>
+                <span id="thoughtLabel">思考中…</span>
+              </button>
+              <div class="thought" id="thoughtBody" style="display:none">我先确认一下断言 21→22 条改动的边界：新增的「关闭会话未抛捕获异常」是不是只覆盖了主进程路径，还是也涵盖 worker 侧。看现有用例，C4 那条是手动用例，说明自动化还盖不住，所以断言清单的措辞要避免暗示已全量覆盖。<span class="cursor"></span></div>
+            </div>
+
+            <!-- ---- 工具卡：会话流里最高频的元素（规则 ④-C / ④-D）---- -->
+            <!-- ① read：语义图标 + 路径 + 耗时 + 完成 -->
+            <div class="tool" data-tool>
+              <button class="tool-head" type="button" data-tool-toggle>
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="ticon"><svg class="ico sm"><use href="#i-eye"/></svg></span>
+                <span class="tool-name">read</span>
+                <span class="tool-sub">src/main/host/browser-host.ts</span>
+                <span class="tool-meta">
+                  <span class="ok"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-check"/></svg>108ms</span>
+                </span>
+              </button>
+              <div class="tool-body" style="display:none">
+                <div class="sect">参数</div>
+                <pre class="tool-pre">{
+  "path": "src/main/host/browser-host.ts"
+}</pre>
+                <div class="sect">输出</div>
+                <pre class="tool-pre">/**
+ * 内置浏览器宿主：主进程持有真实的 BrowserWindow/WebContents，worker 通过 toolRpc 驱动。
+ * ...
+ */</pre>
+              </div>
+            </div>
+
+            <!-- ② edit：带增删统计 -->
+            <div class="tool" data-tool>
+              <button class="tool-head" type="button" data-tool-toggle>
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="ticon"><svg class="ico sm"><use href="#i-file-edit"/></svg></span>
+                <span class="tool-name">edit</span>
+                <span class="tool-sub">docs/prototype-work-browser-hifi.html</span>
+                <span class="tool-meta">
+                  <span><span class="add">+4</span> <span class="del">−1</span></span>
+                  <span class="ok"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-check"/></svg>23ms</span>
+                </span>
+              </button>
+              <div class="tool-body" style="display:none">
+                <div class="ap-diff" style="margin-top:0">
+                  <div class="ap-diff-head">
+                    <svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-diff"/></svg>
+                    <span class="fpath">docs/prototype-work-browser-hifi.html</span>
+                    <span style="margin-left:auto"><span class="add">+4</span> <span class="del">−1</span></span>
+                  </div>
+                  <div class="ap-diff-body">
+                    <div class="ap-line"><span class="ln">1206</span><span class="code">.grip {</span></div>
+                    <div class="ap-line del"><span class="ln">1207</span><span class="code">-  width:0;</span></div>
+                    <div class="ap-line add"><span class="ln">1207</span><span class="code">+  width:7px; margin:0 -3px;</span></div>
+                    <div class="ap-line add"><span class="ln">1208</span><span class="code">+  cursor:col-resize;</span></div>
+                    <div class="ap-line add"><span class="ln">1209</span><span class="code">+  touch-action:none;</span></div>
+                    <div class="ap-line"><span class="ln">1210</span><span class="code">}</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ③ bash：内联终端输出 + 运行中 -->
+            <div class="tool" data-tool>
+              <button class="tool-head" type="button" data-tool-toggle>
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="ticon"><svg class="ico sm"><use href="#i-terminal"/></svg></span>
+                <span class="tool-name">bash</span>
+                <span class="tool-sub">npm test -- browser</span>
+                <span class="tool-meta">
+                  <span class="run"><span class="dot"></span>运行中</span>
+                </span>
+              </button>
+              <div class="tool-body" style="display:none">
+                <div class="sect">输出</div>
+                <pre class="tool-pre">▶ browser-host.spec.ts
+  ✓ snapshot 列出可交互元素
+  ✓ 弹窗拦截回当前窗口
+  ✓ 上传经 CDP 注入 file input
+
+2 passed · 1.2s</pre>
+              </div>
+            </div>
+
+            <!-- ④ browser_act：对应右栏的页面现场（规则 ④-A / ⑦-A）-->
+            <div class="tool" data-tool>
+              <button class="tool-head" type="button" data-tool-toggle>
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="ticon"><svg class="ico sm"><use href="#i-globe"/></svg></span>
+                <span class="tool-name">browser_act</span>
+                <span class="tool-sub">type @e7</span>
+                <span class="tool-meta">
+                  <span class="ok"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-check"/></svg>42ms</span>
+                </span>
+              </button>
+              <div class="tool-body" style="display:none">
+                <div class="sect">参数</div>
+                <pre class="tool-pre">{
+  "action": "type",
+  "ref": "e7",
+  "text": "chen@banyan.dev"
+}</pre>
+                <div class="sect">输出</div>
+                <pre class="tool-pre">已输入到 e7</pre>
+              </div>
+            </div>
+
+            <!-- ⑤ 失败态：错误边框 + 失败标识 -->
+            <div class="tool error" data-tool>
+              <button class="tool-head" type="button" data-tool-toggle>
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="ticon"><svg class="ico sm"><use href="#i-terminal"/></svg></span>
+                <span class="tool-name">bash</span>
+                <span class="tool-sub">npm run typecheck</span>
+                <span class="tool-meta">
+                  <span class="fail">失败</span>
+                </span>
+              </button>
+              <div class="tool-body" style="display:none">
+                <div class="sect">输出</div>
+                <pre class="tool-pre">src/renderer/src/App.tsx(42,7): error TS2322:
+  Type 'string | undefined' is not assignable to type 'string'.</pre>
+              </div>
+            </div>
+
+            <div class="md">
+              <p><span class="file-ref">docs/BROWSER-TEST-CASES.md</span> 更新：</p>
+              <ul>
+                <li>断言清单 21 → 22 条，新增「关闭会话未抛捕获异常」</li>
+                <li>手动用例新增 C4：开浏览器页面后关闭会话 → 不弹错误框（就是你踩到的那条路径）</li>
+                <li>新增 §4.3 记录这道断言的来历，把“异步异常造成假绿”这个坑写下来，避免以后又只看断言数字</li>
+              </ul>
+              <h4>当前状态</h4>
+              <p>应用已重启（5 个 Electron 进程），夹具站监听<br />
+              <code>http://127.0.0.1:8787/</code> ，那个错误对话框随旧进程一起没了，可以继续体验。冒烟产物已清理。</p>
+            </div>
+
+            <div class="file-card">
+              <div class="ficon"><svg class="ico sm"><use href="#i-file-md"/></svg></div>
+              <div class="fmain">
+                <div class="fname">BROWSER-TEST-CASES.md</div>
+                <div class="fsub">BROWSER-TEST-CASES.md</div>
+              </div>
+            </div>
+
+            <div class="changed">
+              <button class="cbtn">
+                <svg class="ico sm"><use href="#i-file-diff"/></svg>
+                4 个文件已更改
+                <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-chevron-up"/></svg>
+              </button>
+              <div class="stat">
+                <span class="add">+28</span>
+                <span class="del">−84</span>
+                <span style="width:1px;height:14px;background:var(--border)"></span>
+                <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-arrow-up-right"/></svg>
+              </div>
+            </div>
+
+            <!-- ---- 工具审批卡：阻塞态显式呈现，对齐 ACP 权限模型 ---- -->
+            <div class="approval" id="approvalCard">
+              <div class="ap-head">
+                <span class="ap-icon"><svg class="ico" style="width:18px;height:18px"><use href="#i-shield-question"/></svg></span>
+                <div class="ap-body">
+                  <div class="ap-title">
+                    <span class="t">需要你的许可</span>
+                    <span class="risk moderate">需确认</span>
+                  </div>
+                  <p class="ap-summary">edit  docs/prototype-work-browser-hifi.html</p>
+                  <p class="ap-reason">覆盖写入已存在文件，将替换原有内容。</p>
+                </div>
+                <span class="ap-timer" id="apTimer">
+                  <svg class="ico sm" style="width:12px;height:12px"><use href="#i-clock"/></svg>
+                  <span id="apTimerText">45s 后超时</span>
+                </span>
+              </div>
+
+              <button class="ap-expand" id="apExpand" type="button">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span id="apExpandLabel">查看改动</span>
+              </button>
+
+              <!-- 展开态：内嵌 diff（对齐 ToolCallContent.Diff） -->
+              <div class="ap-diff" id="apDiff" style="display:none">
+                <div class="ap-diff-head">
+                  <svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-diff"/></svg>
+                  <span class="fpath">docs/prototype-work-browser-hifi.html</span>
+                  <span style="margin-left:auto"><span class="add">+3</span> <span class="del">−1</span></span>
+                </div>
+                <div class="ap-diff-body">
+                  <div class="ap-line"><span class="ln">1206</span><span class="code">.grip {</span></div>
+                  <div class="ap-line del"><span class="ln">1207</span><span class="code">-  flex:none; width:0;</span></div>
+                  <div class="ap-line add"><span class="ln">1207</span><span class="code">+  flex:none; width:7px; margin:0 -3px;</span></div>
+                  <div class="ap-line add"><span class="ln">1208</span><span class="code">+  cursor:col-resize; touch-action:none;</span></div>
+                  <div class="ap-line"><span class="ln">1209</span><span class="code">}</span></div>
+                </div>
+              </div>
+
+              <!-- 四档语义：allow_once / allow_always | reject_once / reject_always -->
+              <div class="ap-actions" id="apActions">
+                <button class="ap-btn primary" type="button">
+                  <svg class="ico sm" style="width:12px;height:12px"><use href="#i-check"/></svg>
+                  <span class="txt">允许一次</span>
+                </button>
+                <button class="ap-btn" type="button" title="本次会话内不再询问 edit 的同级风险调用">
+                  <span class="txt">本会话内始终允许</span>
+                </button>
+                <span class="ap-spacer"></span>
+                <button class="ap-btn" type="button">
+                  <svg class="ico sm" style="width:12px;height:12px"><use href="#i-close"/></svg>
+                  <span class="txt">拒绝一次</span>
+                </button>
+                <button class="ap-btn deny" type="button" title="本次会话内自动拒绝 edit">
+                  <span class="txt">始终拒绝</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="msg-acts">
+              <button title="复制"><svg class="ico sm"><use href="#i-copy"/></svg></button>
+              <button title="重试"><svg class="ico sm"><use href="#i-rotate"/></svg></button>
+              <button title="撤销"><svg class="ico sm"><use href="#i-undo"/></svg></button>
+              <button title="有用"><svg class="ico sm"><use href="#i-thumb-up"/></svg></button>
+              <button title="没用"><svg class="ico sm"><use href="#i-thumb-down"/></svg></button>
+              <span class="by">由 AI 生成</span>
+            </div>
+
+            <div class="suggests">
+              <button class="sug">
+                好的，执行吧
+                <span class="arrow"><svg class="ico sm"><use href="#i-arrow-right"/></svg></span>
+              </button>
+              <button class="sug">
+                请帮我验证刚才修复的关闭会话逻辑
+                <span class="arrow"><svg class="ico sm"><use href="#i-arrow-right"/></svg></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="composer-inner">
+            <div class="cbox">
+              <div class="ph">帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。</div>
+              <div class="tools">
+                <button class="cbtn" title="添加附件"><svg class="ico sm"><use href="#i-plus"/></svg></button>
+                <button class="cbtn pill" title="访问模式">
+                  <svg class="ico sm" style="color:var(--warning)"><use href="#i-shield"/></svg>
+                  <span class="lbl">完全访问</span>
+                  <svg class="ico sm caret"><use href="#i-chevron-down"/></svg>
+                </button>
+                <button class="cbtn pill" title="图片">
+                  <svg class="ico sm" style="color:var(--text-muted)"><use href="#i-image"/></svg>
+                  <svg class="ico sm caret"><use href="#i-chevron-down"/></svg>
+                </button>
+
+                <span class="cpush"></span>
+
+                <div class="cright">
+                  <button class="cbtn model" title="当前模型：deepseek-flash">
+                    <span class="lbl">deepseek-flash</span>
+                    <svg class="ico sm caret"><use href="#i-chevron-down"/></svg>
+                  </button>
+                  <button class="cbtn" title="语音输入"><svg class="ico sm"><use href="#i-mic"/></svg></button>
+                  <button class="send" title="发送"><svg class="ico sm"><use href="#i-arrow-up"/></svg></button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ---- Live Bar：现场状态栏（置于输入框下方）---- -->
+            <div class="live-bar running">
+              <!-- 上下文占用：实测 7% -->
+              <span class="lb-item lb-ctx" title="上下文占用 69,684 / 1,000,000">
+                <span class="lb-label lb-opt">上下文</span>
+                <span class="lb-track"><span class="lb-fill" style="width:7%"></span></span>
+                <span class="mono">7% · 69.7k / 1.0M</span>
+              </span>
+
+              <span class="lb-sep lb-opt"></span>
+              <span class="lb-item lb-opt mono" title="本次会话累计成本">$0.0206</span>
+
+              <span class="lb-sep"></span>
+
+              <!-- 心跳：已耗时 + 最后活动 -->
+              <span class="lb-heart">
+                <span class="lb-dot"></span>
+                <span>运行中</span>
+                <span class="mono">00:44</span>
+              </span>
+              <span class="lb-item lb-idle mono">最后活动 3s 前</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 拖拽把手：中栏 ↔ 右栏（内嵌浏览器） -->
+    <div class="grip" id="gripRight" title="拖拽调整浏览器面板宽度（双击复位）"></div>
+
+    <!-- ============ 右栏：工作台面（多视图容器，规则 ⑦-B）============ -->
+    <aside class="dock" id="dock">
+      <!-- 视图页签栏（C 方案：已打开的显页签，「+」新增） -->
+      <div class="dock-tabs" role="tablist">
+        <button class="icon-btn" title="折叠" id="dockCollapse">
+          <svg class="ico sm"><use href="#i-chevron-right"/></svg>
+        </button>
+
+        <!-- 已打开的视图由脚本动态生成（见 dockView 管理） -->
+        <button class="dock-add" type="button" id="dockAdd" title="新增视图">
+          <svg class="ico sm"><use href="#i-plus"/></svg>
+        </button>
+
+        <span class="tspacer"></span>
+      </div>
+
+      <!-- 「+」下拉：新增视图（对齐实际产品的菜单结构） -->
+      <div class="dock-menu" id="dockMenu" style="display:none">
+        <div class="msearch">
+          <svg class="ico sm" style="width:13px;height:13px"><use href="#i-search"/></svg>
+          <input type="text" placeholder="搜索视图…" />
+          <kbd>⇧F</kbd>
+        </div>
+        <button type="button" data-add-view="file">
+          <span class="mi"><svg class="ico sm" style="width:14px;height:14px"><use href="#i-file-md"/></svg></span>
+          <span class="ml">文件<span class="md">浏览与预览任务文件</span></span>
+        </button>
+        <button type="button" data-add-view="terminal">
+          <span class="mi"><svg class="ico sm" style="width:14px;height:14px"><use href="#i-terminal"/></svg></span>
+          <span class="ml">终端<span class="md">运行命令及脚本</span></span>
+        </button>
+        <button type="button" data-add-view="browser">
+          <span class="mi"><svg class="ico sm" style="width:14px;height:14px"><use href="#i-globe"/></svg></span>
+          <span class="ml">浏览器<span class="md">浏览及调试网页</span></span>
+        </button>
+        <button type="button" data-add-view="summary">
+          <span class="mi"><svg class="ico sm" style="width:14px;height:14px"><use href="#i-list"/></svg></span>
+          <span class="ml">任务摘要<span class="md">执行进展、产物汇总</span></span>
+        </button>
+        <button type="button" data-add-view="changes">
+          <span class="mi"><svg class="ico sm" style="width:14px;height:14px"><use href="#i-code"/></svg></span>
+          <span class="ml">代码变更<span class="md">待提交、已提交、AI 变更</span></span>
+        </button>
+      </div>
+
+      <!-- ===== 视图一：正在处理（默认、常驻）===== -->
+      <div class="dock-view" id="dockViewFollow">
+        <!-- 段一：Agent 正在处理 -->
+        <div class="fsec">
+          <button class="fsec-head" type="button" data-fsec-toggle>
+            <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-down"/></svg></span>
+            <span class="fsec-title">Agent 正在处理</span>
+            <span class="fsec-meta">4 个文件</span>
+          </button>
+          <div class="fsec-body" data-fsec-body>
+            <div class="frow">
+              <span class="fdot"></span>
+              <span class="fname mono">browser_act</span>
+              <span class="fmeta">刚刚</span>
+            </div>
+            <div class="frow" data-jump="docs/BROWSER-TEST-CASES.md" title="点击在「文件」视图中打开">
+              <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-edit"/></svg></span>
+              <span class="fname mono">docs/prototype-work-browser-hifi.html</span>
+              <span class="fmeta"><span class="add">+4</span> <span class="del">−1</span> 刚刚</span>
+            </div>
+            <div class="frow" data-jump="src/main/host/browser-host.ts" title="点击在「文件」视图中打开">
+              <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-eye"/></svg></span>
+              <span class="fname mono">src/main/host/browser-host.ts</span>
+              <span class="fmeta">2s 前</span>
+            </div>
+            <div class="frow" data-jump="docs/BROWSER-TEST-CASES.md" title="点击在「文件」视图中打开">
+              <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-edit"/></svg></span>
+              <span class="fname mono">docs/BROWSER-TEST-CASES.md</span>
+              <span class="fmeta"><span class="add">+28</span> <span class="del">−84</span> 12s 前</span>
+            </div>
+            <div class="frow" data-jump="AGENTS.md" title="点击在「文件」视图中打开">
+              <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-eye"/></svg></span>
+              <span class="fname mono">src/renderer/src/App.tsx</span>
+              <span class="fmeta">28s 前</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 段二：本次改动 -->
+        <div class="fsec">
+          <button class="fsec-head" type="button" data-fsec-toggle>
+            <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-down"/></svg></span>
+            <span class="fsec-title">本次改动</span>
+            <span class="fsec-meta">4 文件 <span class="add">+32</span> <span class="del">−85</span></span>
+          </button>
+          <div class="fsec-body" data-fsec-body>
+            <p class="fsum">4 文件 · <span class="add">+32</span> <span class="del">−85</span></p>
+            <button class="fbtn" type="button">
+              <svg class="ico sm" style="width:13px;height:13px"><use href="#i-file-diff"/></svg>
+              查看全部改动
+            </button>
+          </div>
+        </div>
+
+        <!-- 段三：会话时间线 -->
+        <div class="fsec">
+          <button class="fsec-head" type="button" data-fsec-toggle>
+            <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-down"/></svg></span>
+            <span class="fsec-title">会话时间线</span>
+          </button>
+          <div class="fsec-body" data-fsec-body>
+            <div class="tline">
+              <span class="tmark on"></span><span>当前</span>
+            </div>
+            <div class="tline">
+              <span class="tmark"></span><span>起点 · 初始对话</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock-foot">
+          <span class="mono">E:/code/opensource/banyan</span>
+          <span class="fsp"></span>
+          <span class="mono">跟随线</span>
+        </div>
+      </div><!-- /dock-view follow -->
+
+      <!-- ===== 视图二：浏览器（按需加载）===== -->
+      <!-- 默认不创建 WebContents：用到才起，避免空会话白占一个渲染进程。 -->
+      <div class="dock-view" id="dockViewBrowser" style="display:none">
+      <!-- 未加载态：提示将要加载，并提供入口 -->
+      <div class="dock-lazy" id="dockLazy">
+        <svg class="ico" style="width:26px;height:26px;color:var(--text-muted)"><use href="#i-globe"/></svg>
+        <p class="lt">浏览器尚未加载</p>
+        <p class="ls">agent 使用浏览器时会自动打开；在此之前不占用资源。</p>
+        <button class="lbtn" type="button" id="dockLoad">
+          <svg class="ico sm" style="width:13px;height:13px"><use href="#i-rotate"/></svg>
+          立即加载
+        </button>
+      </div>
+
+      <!-- 已加载态：真实浏览器面板（初始隐藏） -->
+      <div class="dock-loaded" id="dockLoaded" style="display:none">
+      <div class="dock-head">
+        <span class="dock-title">
+          <svg class="ico sm" style="color:var(--text-secondary)"><use href="#i-globe"/></svg>
+          浏览器
+        </span>
+
+        <div class="nav-btns">
+          <button class="icon-btn" title="后退"><svg class="ico sm"><use href="#i-chevron-left"/></svg></button>
+          <button class="icon-btn" title="前进" style="opacity:.45"><svg class="ico sm"><use href="#i-chevron-right"/></svg></button>
+          <button class="icon-btn" title="刷新"><svg class="ico sm"><use href="#i-rotate"/></svg></button>
+        </div>
+
+        <div class="urlbar">
+          <span class="lock"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-lock"/></svg></span>
+          <span class="u"><b>127.0.0.1:8787</b>/login</span>
+        </div>
+
+        <div class="dock-acts">
+          <!-- ⭐ 停靠 / 弹出 双态：把形态选择权交给用户 -->
+          <span class="dock-toggle">
+            <button class="on" title="停靠在窗口内"><svg class="ico sm" style="width:13px;height:13px"><use href="#i-panel-left"/></svg></button>
+            <button title="弹出为独立窗口"><svg class="ico sm" style="width:13px;height:13px"><use href="#i-external"/></svg></button>
+          </span>
+          <button class="icon-btn" title="收起"><svg class="ico sm"><use href="#i-close"/></svg></button>
+        </div>
+      </div>
+
+      <!-- agent 正在操作 -->
+      <div class="agent-strip">
+        <span class="live"></span>
+        <span>Agent 正在操作此页面</span>
+        <span class="step mono">browser_act · type @e7</span>
+      </div>
+
+      <!-- 页面视口 -->
+      <div class="viewport">
+        <div class="page">
+          <div class="page-top">
+            <div class="logo">B</div>
+            <div class="nm">Fixture Hub</div>
+            <div class="sp"></div>
+            <div class="lk">登录</div>
+          </div>
+
+          <div class="page-body">
+            <h1>登录到 Fixture Hub</h1>
+            <p class="sub">用你的账号继续，或创建新账号。</p>
+
+            <div class="form">
+              <div class="field">
+                <label>邮箱地址</label>
+                <input class="filled" value="chen@banyan.dev" readonly />
+              </div>
+              <div class="field">
+                <label>密码</label>
+                <input type="password" value="password" readonly />
+              </div>
+              <!-- agent 刚点击的位置：涟漪高亮 + 标签 -->
+              <button class="pbtn" style="position:relative">
+                登录
+                <span class="agent-ring" style="left:-4px;top:-4px;right:-4px;bottom:-4px"></span>
+                <span class="agent-tag" style="left:-4px;bottom:calc(100% + 4px)">[e7] button「登录」</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="frame-note">
+          <svg class="ico sm" style="width:12px;height:12px"><use href="#i-image"/></svg>
+          agent 看到的即此帧
+        </div>
+      </div>
+
+      <!-- 观测抽屉 -->
+      <div class="observe">
+        <div class="obs-tabs">
+          <button class="on"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-terminal"/></svg>控制台 <span class="cnt">1</span></button>
+          <button><svg class="ico sm" style="width:12px;height:12px"><use href="#i-globe"/></svg>网络</button>
+          <button><svg class="ico sm" style="width:12px;height:12px"><use href="#i-box"/></svg>下载</button>
+        </div>
+        <div class="obs-body">
+          <div class="obs-row err">
+            <span class="lv">●</span>
+            <span class="msg"><b>POST /api/login 401 Unauthorized</b> — 凭证校验失败</span>
+            <span class="st">12:04:31</span>
+          </div>
+          <div class="obs-row warn">
+            <span class="lv">●</span>
+            <span class="msg"><b>[warn]</b> 未设置 SameSite，Cookie 可能被第三方拦截</span>
+            <span class="st">12:04:31</span>
+          </div>
+          <div class="obs-row">
+            <span class="lv" style="color:var(--text-muted)">●</span>
+            <span class="msg">拦截新窗口请求，已在当前窗口打开：/docs/session</span>
+            <span class="st">12:04:28</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="dock-foot">
+        <span class="mono">127.0.0.1:8787</span>
+        <span class="fsp"></span>
+        <span class="vp" title="拖拽调整宽度">视口 <b id="dockVp" class="mono">544</b>×—</span>
+        <span style="width:1px;height:12px;background:var(--border)"></span>
+        <span class="mono">独立 session</span>
+      </div>
+      </div><!-- /dock-loaded -->
+      </div><!-- /dock-view browser -->
+
+      <!-- ===== 视图：文件（文件树 + 预览，规则 ⑦-B）===== -->
+      <!-- 布局：预览区在左、文件树在右（按产品决定，树靠窗口边缘） -->
+      <div class="dock-view file-view" id="dockViewFile" style="display:none">
+        <div class="fv-body">
+          <!-- 预览区 -->
+          <div class="fv-preview" id="fvPreview">
+            <!-- 空态 -->
+            <div class="fv-empty" id="fvEmpty">
+              <svg class="ico" style="width:26px;height:26px;color:var(--text-muted)"><use href="#i-file-md"/></svg>
+              <p class="et">文件</p>
+              <p class="es">从文件树中选择文件即可在此处预览</p>
+            </div>
+
+            <!-- 内容态（默认隐藏） -->
+            <div class="fv-content" id="fvContent" style="display:none">
+              <div class="fv-toolbar">
+                <span class="fv-path mono" id="fvPath">docs/BROWSER-TEST-CASES.md</span>
+                <span class="fv-badge" id="fvBadge">M</span>
+                <button class="icon-btn" title="复制内容"><svg class="ico sm"><use href="#i-copy"/></svg></button>
+                <button class="icon-btn" title="用系统程序打开"><svg class="ico sm"><use href="#i-external"/></svg></button>
+              </div>
+              <div class="fv-scroll" id="fvScroll">
+                <!-- 由脚本按类型填入：Markdown / 代码 / 图片 / 太大提示 -->
+              </div>
+            </div>
+          </div>
+
+          <!-- 文件树（在右） -->
+          <div class="fv-tree">
+            <!-- 折叠态：只显示展开按钮 -->
+            <button class="fv-expand" type="button" id="fvExpand" title="展开文件树">
+              <svg class="ico sm"><use href="#i-panel-left"/></svg>
+            </button>
+
+            <div class="fv-search">
+              <svg class="ico sm" style="width:13px;height:13px"><use href="#i-search"/></svg>
+              <input type="text" placeholder="搜索文件名" />
+              <button class="fv-collapse" type="button" id="fvCollapse" title="折叠文件树" style="width:auto">
+                <svg class="ico sm" style="width:13px;height:13px"><use href="#i-chevron-right"/></svg>
+              </button>
+            </div>
+            <div class="fv-root">
+              <span class="rt mono">banyan</span>
+              <button class="icon-btn" title="搜索"><svg class="ico sm"><use href="#i-search"/></svg></button>
+              <button class="icon-btn" title="更多"><svg class="ico sm"><use href="#i-list"/></svg></button>
+            </div>
+            <div class="fv-list">
+              <!-- 目录（默认折叠的大目录在前） -->
+              <button class="fvn dir collapsed" data-dir="build">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">build</span>
+              </button>
+              <button class="fvn dir" data-dir="docs">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-down"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">docs</span>
+              </button>
+              <button class="fvn file changed" data-file="docs/BROWSER-TEST-CASES.md">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-md"/></svg></span>
+                <span class="nm mono">BROWSER-TEST-CASES.md</span>
+                <span class="mark">M</span>
+              </button>
+              <button class="fvn file" data-file="docs/UI-REGIONS.md">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-md"/></svg></span>
+                <span class="nm mono">UI-REGIONS.md</span>
+              </button>
+              <button class="fvn file" data-file="docs/UI-DESIGN-v3.md">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-md"/></svg></span>
+                <span class="nm mono">UI-DESIGN-v3.md</span>
+              </button>
+              <button class="fvn dir collapsed" data-dir="node_modules">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">node_modules</span>
+              </button>
+              <button class="fvn dir collapsed" data-dir="out">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">out</span>
+              </button>
+              <button class="fvn dir collapsed" data-dir="release">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">release</span>
+              </button>
+              <button class="fvn dir collapsed" data-dir="scripts">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">scripts</span>
+              </button>
+              <button class="fvn dir" data-dir="src">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-down"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">src</span>
+              </button>
+              <button class="fvn file changed" data-file="src/main/host/browser-host.ts">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-code"/></svg></span>
+                <span class="nm mono">browser-host.ts</span>
+                <span class="mark">M</span>
+              </button>
+              <button class="fvn file changed" data-file="docs/prototype-work-browser-hifi.html">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-code"/></svg></span>
+                <span class="nm mono">prototype-work-browser-hifi.html</span>
+                <span class="mark">M</span>
+              </button>
+              <button class="fvn dir collapsed" data-dir="tests">
+                <span class="caret"><svg class="ico sm" style="width:11px;height:11px"><use href="#i-chevron-right"/></svg></span>
+                <svg class="ico sm" style="width:12px;height:12px"><use href="#i-folder"/></svg>
+                <span class="nm mono">tests</span>
+              </button>
+              <button class="fvn file new" data-file="AGENTS.md">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-file-md"/></svg></span>
+                <span class="nm mono">AGENTS.md</span>
+                <span class="mark add">A</span>
+              </button>
+              <button class="fvn file" data-file="package.json">
+                <span class="ficon"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-box"/></svg></span>
+                <span class="nm mono">package.json</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock-foot">
+          <span class="mono">E:/code/opensource/banyan</span>
+          <span class="fsp"></span>
+          <span>只读</span>
+        </div>
+      </div><!-- /dock-view file -->
+
+      <!-- ===== 视图：通用（终端 / 任务摘要 / 代码变更 共用）===== -->
+      <div class="dock-view" id="dockViewGeneric" style="display:none">
+        <div class="dock-head">
+          <span class="dock-title">
+            <svg class="ico sm" style="color:var(--text-secondary)"><use href="#i-terminal"/></svg>
+            <span id="dockGenericTitle">powershell 1</span>
+          </span>
+          <div style="flex:1"></div>
+          <button class="icon-btn" title="新建"><svg class="ico sm"><use href="#i-plus"/></svg></button>
+          <button class="icon-btn" title="展开"><svg class="ico sm"><use href="#i-external"/></svg></button>
+        </div>
+
+        <!-- 终端示例内容 -->
+        <div class="term">
+          <div class="term-line"><span class="p">PS E:\code\opensource\banyan&gt;</span> <span class="c">npm run fixture</span></div>
+          <div class="term-out">&gt; banyan@0.0.1 fixture</div>
+          <div class="term-out">&gt; node scripts/fixture-server.mjs</div>
+          <div class="term-ok">夹具站已监听 http://127.0.0.1:8787/</div>
+          <div class="term-line"><span class="p">PS E:\code\opensource\banyan&gt;</span> <span class="cursor"></span></div>
+        </div>
+
+        <div class="dock-foot">
+          <span class="mono">powershell</span>
+          <span class="fsp"></span>
+          <span>UTF-8</span>
+        </div>
+      </div><!-- /dock-view generic -->
+
+    </aside>
+  </div>
+</div>
+
+<button class="notes-toggle" id="notesToggle" onclick="toggleNotes(true)">
+  <svg class="ico sm" style="color:var(--accent-dim)"><use href="#i-sliders"/></svg>
+  本次设计要点
+</button>
+
+<!-- ============ 设计说明（演示浮层）============ -->
+<div class="notes" id="notes" style="display:none">
+  <header>
+    <svg class="ico sm" style="color:var(--accent-dim)"><use href="#i-sliders"/></svg>
+    本次设计要点
+    <button class="icon-btn x" onclick="toggleNotes(false)"><svg class="ico sm"><use href="#i-close"/></svg></button>
+  </header>
+  <ul>
+    <li><b>只读的状态条</b>：上下文占用条 · 成本 · 心跳（已耗时 + 最后活动）。每秒走字，超 30s 无活动转琥珀并提示“似乎卡住了”——不伪造活动，如实告知。</li>
+    <li><b>右栏默认「正在处理」，常驻可折叠</b>：本地文件投影（agent 正在读/改什么），是自用场景下最需要随时看到的信息。可折叠为 44px 图标条（不占地方但仍在），切到「浏览器」时才真正加载页面，在此之前不占资源。</li>
+    <li><b>工具卡（会话流最高频）</b>：默认折叠一行（语义图标 + 工具名 + 路径/命令 + 增删 + 耗时 + 状态），展开看 diff / 参数 / 输出。图标按工具类型区分，不统一用扳手。</li>
+    <li><b>三列可拖拽</b>：两条分隔线均可拖拽；双击把手复位。右栏下限 360、中栏下限 420。</li>
+    <li><b>窄栏不溢出</b>：输入区工具行按中栏宽度响应（容器查询）——窄时先折叠文字标签，再让右侧控制组换行独占一行，发送按钮永不逐出。</li>
+    <li><b>浏览器内嵌停靠</b>：由独立弹窗改为右侧一列，agent 操作与页面在同一视野，消除视线跳跃。</li>
+    <li><b>双态切换</b>：右上角「停靠 / 弹出」——需要大屏时用户自己弹出去，形态权交给用户。</li>
+    <li><b>agent 操作高亮</b>：点击处涟漪环 + <span class="mono">[e7] button「登录」</span> 标签，把「它在点哪儿」变成看得见。</li>
+    <li><b>观测并入面板</b>：console / 网络 / 下载收进底部抽屉，随窗口走，不再随关窗蒸发。</li>
+    <li><b>不抢焦</b>：agent 的动作只更新本条提示带与高亮，不改动用户正在读的会话流。</li>
+  </ul>
+</div>
+
+<script>
+  // 主题跟随（演示用）：Cmd/Ctrl + 点击标题栏空白切换
+  document.querySelector('.tb-spacer').addEventListener('click', () => {
+    const root = document.documentElement;
+    root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+  });
+
+
+  /* ============================================================
+     Live Bar 心跳：每秒 +1，并刷新「最后活动」。
+     这是治「卡住焦虑」的核心——数字在跳，用户就知道它还活着；
+     超过 30s 无活动则转 stale（琥珀）并提示“似乎卡住了”，不伪造活动。
+     ============================================================ */
+  (function () {
+    const STALE_SEC = 30;
+    const bar = document.querySelector('.live-bar');
+    const clock = bar.querySelector('.lb-heart .mono');
+    const idleEl = bar.querySelector('.lb-idle');
+    if (!bar || !clock) return;
+
+    let elapsed = 44;   // 对齐截图时刻
+    let lastActivity = 3;
+
+    setInterval(() => {
+      elapsed += 1;
+      lastActivity += 1;
+      clock.textContent =
+        String(Math.floor(elapsed / 60)).padStart(2, '0') + ':' +
+        String(elapsed % 60).padStart(2, '0');
+
+      const stale = lastActivity > STALE_SEC;
+      idleEl.textContent = '最后活动 ' + lastActivity + 's 前';
+      bar.classList.toggle('stale', stale);
+      if (stale && !bar.querySelector('.lb-stale-tip')) {
+        const tip = document.createElement('span');
+        tip.className = 'lb-item lb-stale-tip';
+        tip.textContent = '似乎卡住了';
+        idleEl.after(tip);
+      }
+    }, 1000);
+  })();
+
+
+
+
+
+  // 设计说明开合
+  function toggleNotes(on) {
+    document.getElementById('notes').style.display = on ? 'block' : 'none';
+    document.getElementById('notesToggle').style.display = on ? 'none' : 'inline-flex';
+  }
+
+  /* ============================================================
+     三列拖拽拉伸
+     - 左把手：调整左栏宽度（200 ~ 380）
+     - 右把手：调整工作区宽度（220 ~ 窗口中栏留 360）
+     双击把手 = 恢复默认宽度；宽度写入 CSS 变量，真实项目里回写 view 状态。
+     ============================================================ */
+  (function () {
+    const MIN_SIDEBAR = 200, MAX_SIDEBAR = 380;
+    // 工作区下限 220：允许拖到接近折叠条（“正在处理”这类窄内容也够用）
+    const MIN_DOCK = 220, MIN_CENTER = 360;
+    /** 截图比例：左 236 / 中 900 / 右 544。右栏占可用宽度的 544/1444。 */
+    const DOCK_RATIO = 544 / (900 + 544);
+    // 各视图的建议宽度（也按比例算，浏览器需要更多空间）
+    const DEFAULT_DOCK = 300;   // 兜底
+    const root = document.documentElement;
+
+    // 用户是否手动拖过工作区宽度（拖过之后不再自动按比例算）
+    let dockUserSized = false;
+
+    function setVar(name, px) { root.style.setProperty(name, px + 'px'); }
+    function getVar(name) { return parseFloat(getComputedStyle(root).getPropertyValue(name)) || 0; }
+    function setDockWidth(px) { setVar('--w-dock', px); }
+
+    /** 当前激活视图的类型（由 dock.dataset.view 记录，视图管理器写入） */
+    function currentKind() {
+      const d = document.getElementById('dock');
+      return d ? d.dataset.view : null;
+    }
+
+    /** 各视图的建议宽度系数（占可用宽度的比例）。
+        文件/浏览器需要横向空间，正在处理/终端窄一些就够。 */
+    const VIEW_RATIO = {
+      file: 0.70,      // 文件：树 + 预览，需要宽
+      browser: 0.52,   // 浏览器：页面要完整
+      terminal: 0.46,  // 终端：命令输出
+      activity: 0.30,  // 正在处理：纯列表
+      summary: 0.34,
+      changes: 0.46,
+    };
+
+    /** 按视图类型 + 截图比例算出工作区应有的宽度 */
+    function ratioDockWidth(kind) {
+      const total = document.querySelector('.body').getBoundingClientRect().width;
+      const maxDock = total - getVar('--w-sidebar') - MIN_CENTER;
+      const ratio = (kind && VIEW_RATIO[kind]) || DOCK_RATIO;
+      const want = (total - getVar('--w-sidebar')) * ratio;
+      return Math.min(Math.max(MIN_DOCK, Math.round(want)), Math.max(MIN_DOCK, maxDock));
+    }
+
+    function syncDockViewport() {
+      const dock = document.querySelector('.dock');
+      const vp = document.getElementById('dockVp');
+      if (dock && vp) vp.textContent = String(Math.round(dock.getBoundingClientRect().width));
+    }
+
+    /* --------------------------------------------------------------
+       拖拽绑定：用 mousedown + document 级监听，避开 setPointerCapture
+       的隐式依赖（它要求元素可捕获，且会重定向后续事件，容易静默失效）。
+       -------------------------------------------------------------- */
+    function bindGrip(el, onDrag) {
+      if (!el) return;
+      let startX = 0, startVal = 0, dragging = false;
+
+      function onMove(e) {
+        if (!dragging) return;
+        e.preventDefault();
+        // 第二个参数是本次拖拽起始时的宽度，供需要单向计算的视图使用
+        onDrag.write(startVal + (e.clientX - startX), startVal);
+      }
+
+      function onUp() {
+        if (!dragging) return;
+        dragging = false;
+        el.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        syncDockViewport();
+      }
+
+      el.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        dragging = true;
+        startX = e.clientX;
+        startVal = onDrag.read();
+        el.classList.add('dragging');
+        document.body.classList.add('resizing');
+        // 挂在 document 上：鼠标移出把手（甚至出窗口）也不会丢事件
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+
+      // 双击复位
+      el.addEventListener('dblclick', () => { onDrag.reset(); syncDockViewport(); });
+    }
+
+    // 左把手：向左拖 → 左栏变窄；向右拖 → 左栏变宽。
+    // 把手在左栏右边界上，位移与左栏宽度同向，无需取负。
+    bindGrip(document.getElementById('gripLeft'), {
+      read: () => getVar('--w-sidebar'),
+      write: (px) => setVar('--w-sidebar', Math.min(MAX_SIDEBAR, Math.max(MIN_SIDEBAR, px))),
+      reset: () => setVar('--w-sidebar', 236),
+    });
+
+    // 右把手：向左拖 → 工作区变宽；向右拖 → 工作区变窄。
+    // 注：bindGrip 传进来的是 startVal + dx（startVal=当前宽度），
+    // 不能直接取负——应对**位移**取负，宽度本身保持正值。
+    bindGrip(document.getElementById('gripRight'), {
+      read: () => getVar('--w-dock'),
+      write: (raw, startVal) => {
+        const dx = raw - startVal;
+        const px = startVal - dx;
+        const total = document.querySelector('.body').getBoundingClientRect().width;
+        const maxDock = total - getVar('--w-sidebar') - MIN_CENTER;
+        setDockWidth(Math.min(Math.max(MIN_DOCK, px), Math.max(MIN_DOCK, maxDock)));
+        dockUserSized = true;
+      },
+      reset: () => { dockUserSized = false; setDockWidth(ratioDockWidth(currentKind())); },
+    });
+
+    // 把宽度控制权暴露给页签逻辑：未手动拖过时按比例设置
+    window.__banyanDock = {
+      suggest(kind) {
+        if (dockUserSized) return;
+        setDockWidth(ratioDockWidth(kind));
+      },
+      sync: syncDockViewport,
+    };
+
+    window.addEventListener('resize', () => {
+      // 未手动拖过时，跟随窗口按比例重算
+      if (!dockUserSized) setDockWidth(ratioDockWidth(currentKind()));
+      syncDockViewport();
+    });
+    // 初始就按截图比例设置
+    setDockWidth(ratioDockWidth(currentKind()));
+    syncDockViewport();
+
+    /* ------------------------------------------------------------------
+       拖拽自检（仅设计稿保留，方便在 Console 里验证 / 定位问题）
+         __banyanTest.info()             查看把手位置、尺寸、命中元素
+         __banyanTest.drag('gripLeft',60)  模拟拖拽 +60px
+         无参数 drag() = 跑一遍标准用例，返回结果
+       ------------------------------------------------------------------ */
+    window.__banyanTest = {
+      info() {
+        const out = {};
+        ['gripLeft', 'gripRight'].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) { out[id] = 'NOT FOUND'; return; }
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          // 该点实际命中的元素：验证把手是否被遮挡
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          out[id] = {
+            rect: { x: Math.round(r.x), w: Math.round(r.width), h: Math.round(r.height) },
+            pointerEvents: cs.pointerEvents,
+            zIndex: cs.zIndex,
+            hitSelf: hit === el,
+            hitEl: hit ? (hit.id || hit.className || hit.tagName) : null,
+          };
+        });
+        out.cssVars = {
+          sidebar: getVar('--w-sidebar'),
+          dock: getVar('--w-dock'),
+        };
+        return out;
+      },
+
+      drag(id, dx) {
+        const el = document.getElementById(id);
+        if (!el) return 'NOT FOUND: ' + id;
+        const before = this.info();
+        const r = el.getBoundingClientRect();
+        const y = r.top + r.height / 2;
+        const opts = (x) => ({ clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true });
+        el.dispatchEvent(new MouseEvent('mousedown', opts(r.left + r.width / 2)));
+        document.dispatchEvent(new MouseEvent('mousemove', opts(r.left + r.width / 2 + dx)));
+        document.dispatchEvent(new MouseEvent('mouseup', opts(r.left + r.width / 2 + dx)));
+        const after = this.info();
+        return {
+          before: before.cssVars,
+          after: after.cssVars,
+          delta: {
+            sidebar: after.cssVars.sidebar - before.cssVars.sidebar,
+            dock: after.cssVars.dock - before.cssVars.dock,
+          },
+          expect: id === 'gripLeft' ? 'sidebar 应变化 +' + dx : 'dock 应变化 ' + -dx,
+        };
+      },
+
+      run() {
+        const out = { info: this.info() };
+        out.leftDrag = this.drag('gripLeft', 60);
+        out.rightDrag = this.drag('gripRight', 60);
+        return out;
+      },
+    };
+  })();
+
+  /* ============================================================
+     思考轨：默认折叠为单行标题，展开看实时推理。
+     折叠态高度与「已思考」一致，避免流式结束后跳变（对齐 ThinkingRail）。
+     ============================================================ */
+  (function () {
+    const rail = document.getElementById('thoughtRail');
+    if (!rail) return;
+    const toggle = document.getElementById('thoughtToggle');
+    const body = document.getElementById('thoughtBody');
+    toggle.addEventListener('click', () => {
+      const open = body.style.display === 'none';
+      body.style.display = open ? 'block' : 'none';
+      toggle.classList.toggle('open', open);
+    });
+  })();
+
+  /* ============================================================
+     右栏视图页签（规则 ⑦-B）：正在处理（默认、常驻）↔ 浏览器（按需加载）
+     关键：切到浏览器时才「创建」它，在此之前只有占位——
+     避免空会话白占一个渲染进程（对齐 browser-host 的懒创建）。
+     ============================================================ */
+  (function () {
+    const dock = document.getElementById('dock');
+    const tabsBar = dock.querySelector('.dock-tabs');
+    const addBtn = document.getElementById('dockAdd');
+    const menu = document.getElementById('dockMenu');
+    if (!tabsBar || !addBtn) return;
+
+    /* -------- 视图类型定义（决定页签名、图标、容器）-------- */
+    const KINDS = {
+      activity: { label: '正在处理', icon: '#i-file-edit', once: true,  pinned: true },
+      file:     { label: '文件',     icon: '#i-file-md',  once: true  },
+      terminal: { label: 'powershell', icon: '#i-terminal', once: false },
+      browser:  { label: '浏览器',   icon: '#i-globe',    once: true,  lazy: true },
+      summary:  { label: '任务摘要', icon: '#i-list',     once: true  },
+      changes:  { label: '代码变更', icon: '#i-code',     once: true  },
+    };
+
+    /* -------- 已打开的视图（运行时状态）-------- */
+    // 每项：{ id, kind, title, count }
+    let seq = 0;
+    const openViews = [];
+    let activeId = null;
+    // 同名计数：terminal → 1,2,3…
+    const kindSeq = {};
+
+    /* -------- 视图容器：三种（正在处理 / 浏览器 / 通用）-------- */
+    const containers = {
+      follow:  document.getElementById('dockViewFollow'),
+      browser: document.getElementById('dockViewBrowser'),
+      generic: document.getElementById('dockViewGeneric'),
+      file:    document.getElementById('dockViewFile'),
+    };
+    function containerFor(kind) {
+      if (kind === 'browser') return 'browser';
+      if (kind === 'file') return 'file';
+      if (kind === 'activity') return 'follow';
+      return 'generic';
+    }
+
+    /* -------- 懒加载：浏览器首次激活才创建 -------- */
+    let browserLoaded = false;
+    const lazyEl = document.getElementById('dockLazy');
+    const loadedEl = document.getElementById('dockLoaded');
+    function loadBrowser() {
+      if (browserLoaded) return;
+      browserLoaded = true;
+      if (lazyEl) lazyEl.style.display = 'none';
+      if (loadedEl) loadedEl.style.display = 'flex';
+    }
+
+    /* -------- 渲染页签栏 -------- */
+    function renderTabs() {
+      tabsBar.querySelectorAll('.dock-tab').forEach((el) => el.remove());
+      openViews.forEach((v) => {
+        const kind = KINDS[v.kind];
+        const btn = document.createElement('button');
+        btn.className = 'dock-tab' + (v.id === activeId ? ' on' : '');
+        btn.type = 'button';
+        btn.dataset.viewId = v.id;
+        btn.setAttribute('role', 'tab');
+
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('class', 'ico sm');
+        icon.setAttribute('style', 'width:13px;height:13px');
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        use.setAttribute('href', kind.icon);
+        icon.appendChild(use);
+        btn.appendChild(icon);
+
+        const lbl = document.createElement('span');
+        lbl.className = 'tlabel';
+        lbl.textContent = v.title;
+        btn.appendChild(lbl);
+
+        // 正在处理：显示文件数徽标
+        if (v.kind === 'file') {
+          const c = document.createElement('span');
+          c.className = 'tcount';
+          c.textContent = '4';
+          btn.appendChild(c);
+        }
+        // 浏览器：agent 操作中的绿点
+        if (v.kind === 'browser') {
+          const d = document.createElement('span');
+          d.className = 'dot-live';
+          d.title = 'Agent 正在操作';
+          btn.appendChild(d);
+        }
+        // 关闭按钮（默认视图不可关）
+        if (!v.pinned) {
+          const x = document.createElement('span');
+          x.className = 'tclose';
+          x.title = '关闭此视图';
+          x.innerHTML = '<svg class="ico sm" style="width:10px;height:10px"><use href="#i-close"/></svg>';
+          x.addEventListener('click', (e) => { e.stopPropagation(); closeView(v.id); });
+          btn.appendChild(x);
+        }
+
+        btn.addEventListener('click', () => activate(v.id));
+        tabsBar.insertBefore(btn, addBtn);
+      });
+    }
+
+    /* -------- 激活某个视图 -------- */
+    function activate(id) {
+      const v = openViews.find((item) => item.id === id);
+      if (!v) return;
+      activeId = id;
+
+      if (KINDS[v.kind].lazy) loadBrowser();
+
+      const key = containerFor(v.kind);
+      Object.entries(containers).forEach(([k, el]) => {
+        if (el) el.style.display = k === key ? 'flex' : 'none';
+      });
+
+      const gt = document.getElementById('dockGenericTitle');
+      if (gt && key === 'generic') gt.textContent = v.title;
+
+      renderTabs();
+
+      if (window.__banyanDock) {
+        window.__banyanDock.suggest(v.kind);
+        window.__banyanDock.sync();
+      }
+      dock.dataset.view = v.kind;
+    }
+
+    /* -------- 新增视图（「+」菜单选类型）-------- */
+    function openView(kindName) {
+      const kind = KINDS[kindName];
+      if (!kind) return;
+
+      // once 类型：已存在则直接切过去，不重复创建
+      if (kind.once) {
+        const exist = openViews.find((v) => v.kind === kindName);
+        if (exist) { activate(exist.id); return; }
+      }
+
+      seq += 1;
+      kindSeq[kindName] = (kindSeq[kindName] ?? 0) + 1;
+      const title = kind.once
+        ? kind.label
+        : (kindName === 'terminal' ? `powershell ${kindSeq[kindName]}` : `${kind.label} ${kindSeq[kindName]}`);
+
+      const v = { id: 'v' + seq, kind: kindName, title, pinned: kindName === 'file' };
+      openViews.push(v);
+      activate(v.id);
+    }
+
+    /* -------- 关闭视图 -------- */
+    function closeView(id) {
+      const idx = openViews.findIndex((v) => v.id === id);
+      if (idx < 0) return;
+      const wasActive = openViews[idx].id === activeId;
+      openViews.splice(idx, 1);
+      if (wasActive) {
+        const next = openViews[Math.max(0, idx - 1)];
+        if (next) activate(next.id);
+      } else {
+        renderTabs();
+      }
+    }
+
+    /* -------- 「+」菜单 -------- */
+    function closeMenu() {
+      menu.style.display = 'none';
+      addBtn.classList.remove('on');
+    }
+    addBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = menu.style.display === 'none';
+      menu.style.display = open ? 'block' : 'none';
+      addBtn.classList.toggle('on', open);
+    });
+    menu.addEventListener('click', (e) => e.stopPropagation());
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+    menu.querySelectorAll('[data-add-view]').forEach((item) => {
+      item.addEventListener('click', () => {
+        openView(item.dataset.addView);
+        closeMenu();
+      });
+    });
+
+    /* -------- 文件视图：文件树 → 预览（按扩展名分派）-------- */
+    const fvEmpty = document.getElementById('fvEmpty');
+    const fvContent = document.getElementById('fvContent');
+    const fvPath = document.getElementById('fvPath');
+    const fvBadge = document.getElementById('fvBadge');
+    const fvScroll = document.getElementById('fvScroll');
+
+    /* 演示用的文件内容（真实实现里由主进程读盘返回） */
+    const FILE_BODIES = {
+      'docs/BROWSER-TEST-CASES.md': {
+        badge: 'M',
+        kind: 'md',
+        text: '# Banyan 浏览器能力验证用例\n\n> 定位：内置浏览器（观测 / 上传 / 下载 / 弹窗）的手动与自动化验证指南\n\n## 1. 为什么要单独做这份用例\n\n浏览器这几项能力都无法靠单测覆盖，必须落在「真实页面 + 真实文件系统」上：\n\n| 能力 | 为什么单测覆盖不到 |\n|---|---|\n| 上传 | `input[type=file].value` 出于安全不允许 JS 赋值 |\n| 下载 | 需要服务端给出 `Content-Disposition: attachment` |\n| 控制台 / 网络 | 观测的是 webContents 与 session 的运行时事件 |\n\n> 验证内部能力用夹具站；只有「能不能连真实网站」才需要公网站点。',
+      },
+      'docs/UI-REGIONS.md': {
+        kind: 'md',
+        text: '# Banyan 界面区域定义\n\n> **作用**：约束后续 UI 修改。任何新增/移动功能，先在此找到归属区域。\n\n## 零、总原则\n\n**1. 一个区域只回答一类疑问。** 功能回答的疑问与所在区域不符时，应当搬家。\n\n**2. 区域按「视角」分层。** 全局 / 会话级 / 运行态 / 外部世界。\n\n**3. 只读区不承载操作，操作区不承载观测。**',
+      },
+      'src/main/host/browser-host.ts': {
+        badge: 'M',
+        kind: 'code',
+        lang: 'typescript',
+        text: '/**\n * 内置浏览器宿主：主进程持有真实的 BrowserWindow/WebContents，\n * worker 通过 toolRpc 驱动。\n */\nimport { app, BrowserWindow, session } from "electron";\n\ninterface SessionBrowser {\n  window: BrowserWindow;\n  /** 控制台与网络观测缓冲，导航时清空 */\n  capture: CaptureBuffer;\n}\n\nexport class BrowserHost {\n  readonly #sessions = new Map<string, SessionBrowser>();\n\n  /** 懒创建：某会话首次使用浏览器时才开窗 */\n  #windowFor(sessionId: string): BrowserWindow {\n    const existing = this.#sessions.get(sessionId);\n    if (existing && !existing.window.isDestroyed()) return existing.window;\n    // ...\n  }\n}',
+      },
+      'AGENTS.md': {
+        badge: 'A',
+        badgeClass: 'add',
+        kind: 'md',
+        text: '# AGENTS.md · 在这个仓库里工作必须先读\n\n> 这份文件记录**已经犯过的错误**，目的是不再犯第二次。\n\n## 一、文件修改纪律\n\n### 1.1 禁止用脚本反复改写同一个文件\n\n**事故**：为了验证拖拽方向，连续多轮用脚本注入测试代码，\n最终把页面搞到「拖拽失效」。\n\n**铁律**：改文件用 `edit`，一次改到位；验证与修改分开。',
+      },
+      'package.json': {
+        kind: 'code',
+        lang: 'json',
+        text: '{\n  "name": "banyan",\n  "version": "0.0.1",\n  "private": true,\n  "description": "Banyan 桌面 Agent 工作台",\n  "type": "module",\n  "main": "out/main/index.js",\n  "engines": { "node": ">=22" },\n  "scripts": {\n    "dev": "electron-vite dev",\n    "test": "node --import ./tests/ts-resolve.mjs --test \\"tests/**/*.test.ts\\""\n  }\n}',
+      },
+    };
+
+    /* 极简 Markdown → HTML（演示用；真实实现直接复用 Markdown 组件） */
+    function miniMarkdown(src) {
+      const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return src
+        .split('\n')
+        .map((line) => {
+          if (/^### /.test(line)) return '<h4>' + esc(line.slice(4)) + '</h4>';
+          if (/^## /.test(line)) return '<h4>' + esc(line.slice(3)) + '</h4>';
+          if (/^# /.test(line)) return '<h4>' + esc(line.slice(2)) + '</h4>';
+          if (/^> /.test(line)) return '<blockquote class="md-quote">' + esc(line.slice(2)) + '</blockquote>';
+          if (/^\|/.test(line)) return '<div class="mono" style="font-size:11.5px;color:var(--text-secondary)">' + esc(line) + '</div>';
+          if (/^\s*[-*] /.test(line)) return '<div>· ' + esc(line.replace(/^\s*[-*] /, '')) + '</div>';
+          if (line.trim() === '') return '<div style="height:8px"></div>';
+          return '<p>' + esc(line) + '</p>';
+        })
+        .join('');
+    }
+
+    function openFile(path) {
+      // 树里高亮
+      document.querySelectorAll('.fvn.on').forEach((el) => el.classList.remove('on'));
+      const node = document.querySelector('[data-file="' + path + '"]');
+      if (node) node.classList.add('on');
+
+      const body = FILE_BODIES[path] || { kind: 'unknown', text: '' };
+      fvPath.textContent = path;
+      fvEmpty.style.display = 'none';
+      fvContent.style.display = 'flex';
+
+      // 标记
+      if (body.badge) {
+        fvBadge.style.display = '';
+        fvBadge.textContent = body.badge;
+        fvBadge.className = 'fv-badge' + (body.badgeClass ? ' ' + body.badgeClass : '');
+      } else {
+        fvBadge.style.display = 'none';
+      }
+
+      if (body.kind === 'md') {
+        fvScroll.innerHTML = '<div class="fv-doc"><div class="md">' + miniMarkdown(body.text) + '</div></div>';
+      } else if (body.kind === 'code') {
+        const lines = body.text.split('\n');
+        const gutter = lines.map((_, i) => i + 1).join('\n');
+        fvScroll.innerHTML =
+          '<div class="fv-code"><div class="gutter">' + gutter + '</div>' +
+          '<div class="lines">' + body.text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div></div>';
+      } else {
+        fvScroll.innerHTML = '<div class="fv-note">该文件类型暂不支持预览。可用右上角按钮在系统程序中打开。</div>';
+      }
+      fvScroll.scrollTop = 0;
+    }
+
+    /* 文件树：点击文件（联动跳转会复用 openFile） */
+    document.querySelectorAll('.fvn.file').forEach((node) => {
+      node.addEventListener('click', () => openFile(node.dataset.file));
+    });
+
+    /* 文件树折叠：读文件时收起树，把宽度让给预览 */
+    const fvCollapse = document.getElementById('fvCollapse');
+    const fvExpand = document.getElementById('fvExpand');
+    const fileView = document.getElementById('dockViewFile');
+    if (fvCollapse) fvCollapse.addEventListener('click', () => fileView.classList.add('tree-collapsed'));
+    if (fvExpand) fvExpand.addEventListener('click', () => fileView.classList.remove('tree-collapsed'));
+
+    /* 目录展开/折叠（无真实子项，仅演示箭头与状态） */
+    document.querySelectorAll('.fvn.dir').forEach((node) => {
+      node.addEventListener('click', () => node.classList.toggle('collapsed'));
+    });
+
+    /* -------- 「正在处理」→ 文件视图 联动跳转（用户确认的第 2 点）-------- */
+    document.querySelectorAll('.frow[data-jump]').forEach((row) => {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', () => {
+        const path = row.dataset.jump;
+        const fileView = openViews.find((v) => v.kind === 'file');
+        if (fileView) activate(fileView.id);
+        openFile(path);
+      });
+    });
+
+    const loadBtn = document.getElementById('dockLoad');
+    if (loadBtn) loadBtn.addEventListener('click', loadBrowser);
+
+    /* -------- 折叠 -------- */
+    const collapseBtn = document.getElementById('dockCollapse');
+    if (collapseBtn) {
+      collapseBtn.addEventListener('click', () => {
+        const next = !dock.classList.contains('collapsed');
+        dock.classList.toggle('collapsed', next);
+        collapseBtn.title = next ? '展开' : '折叠';
+        if (window.__banyanDock) window.__banyanDock.sync();
+      });
+    }
+
+    /* -------- 初始：预置几个视图（演示页签栏效果）-------- */
+    openViews.push({ id: 'v0', kind: 'activity', title: '正在处理', pinned: true });
+    openViews.push({ id: 'v1', kind: 'file', title: '文件' });
+    openViews.push({ id: 'v2', kind: 'terminal', title: 'powershell 1' });
+    openViews.push({ id: 'v3', kind: 'browser', title: '浏览器' });
+    seq = 3;
+    kindSeq.terminal = 1;
+    activate('v0');
+    // 预置一个已打开的文件（演示预览效果）
+    openFile('src/main/host/browser-host.ts');
+
+  })();
+
+  /* ============================================================
+     跟随线分段折叠（对齐 FollowPanel 的 SectionHead）
+     ============================================================ */
+  (function () {
+    document.querySelectorAll('[data-fsec-toggle]').forEach((head) => {
+      head.addEventListener('click', () => {
+        const body = head.parentElement.querySelector('[data-fsec-body]');
+        const closed = head.classList.toggle('closed');
+        if (body) body.style.display = closed ? 'none' : 'block';
+      });
+    });
+  })();
+
+  /* ============================================================
+     工具卡：统一事件委托，默认折叠成一行。
+     展开显示 diff / 参数 / 输出（对齐 ToolCard 的 open 状态）。
+     ============================================================ */
+  (function () {
+    document.addEventListener('click', (e) => {
+      const head = e.target.closest('[data-tool-toggle]');
+      if (!head) return;
+      const card = head.closest('[data-tool]');
+      const body = card.querySelector('.tool-body');
+      if (!body) return;
+      const open = body.style.display === 'none';
+      body.style.display = open ? 'block' : 'none';
+      head.classList.toggle('open', open);
+    });
+  })();
+
+  /* ============================================================
+     工具审批卡（对齐 ApprovalCard.tsx 的行为）：
+       - 可见超时：逐秒回退，归零后转为「已超时自动拒绝」
+       - 展开查看改动：内嵌 diff，不跳转
+       - 四档动作：点击后卡片转为已决态，验证不会留悬念
+     ============================================================ */
+  (function () {
+    const card = document.getElementById('approvalCard');
+    if (!card) return;
+    const expandBtn = document.getElementById('apExpand');
+    const expandLabel = document.getElementById('apExpandLabel');
+    const diff = document.getElementById('apDiff');
+    const actions = document.getElementById('apActions');
+    const timer = document.getElementById('apTimer');
+    const timerText = document.getElementById('apTimerText');
+
+    // 展开 / 收起
+    expandBtn.addEventListener('click', () => {
+      const open = diff.style.display === 'none';
+      diff.style.display = open ? 'block' : 'none';
+      expandBtn.classList.toggle('open', open);
+      expandLabel.textContent = open ? '收起改动' : (expandBtn.dataset.hasDiff === '1' ? '查看改动' : '完整参数');
+    });
+    expandBtn.dataset.hasDiff = '1';
+
+    // 可见超时：与主进程/worker 同一时间基准，逐秒回退
+    let remain = 45;
+    let decided = false;
+    const tick = setInterval(() => {
+      if (decided) return;
+      remain -= 1;
+      if (remain <= 0) {
+        clearInterval(tick);
+        timer.classList.add('expired');
+        timerText.textContent = '已超时';
+        actions.outerHTML = '<p class="ap-note">已超时自动拒绝，如需执行请重新发起。</p>';
+        return;
+      }
+      timerText.textContent = remain + 's 后超时';
+    }, 1000);
+
+    // 四档动作：dismiss 后卡片保留但转为已决态（对齐原组件的不留悬念）
+    function decide(text) {
+      decided = true;
+      clearInterval(tick);
+      timer.outerHTML = '<span class="ap-timer expired"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-check"/></svg><span>' + text + '</span></span>';
+      const note = document.createElement('p');
+      note.className = 'ap-note';
+      note.textContent = '已记录你的选择，继续执行。';
+      actions.replaceWith(note);
+    }
+    actions.addEventListener('click', (e) => {
+      const btn = e.target.closest('.ap-btn');
+      if (!btn) return;
+      const label = btn.querySelector('.txt');
+      decide(label ? label.textContent : '已处理');
+    });
+  })();
+</script>
+</body>
+</html>

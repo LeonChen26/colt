@@ -58,6 +58,19 @@ export function extractToolText(result: unknown): string {
   return extractText((result as { content?: unknown }).content);
 }
 
+/** 从工具结果的 content 块中抽取首张图片（base64 + mimeType），无则返回 undefined */
+export function extractImage(content: unknown): { data: string; mimeType: string } | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) continue;
+    const record = block as { type?: string; data?: unknown; mimeType?: unknown };
+    if (record.type === "image" && typeof record.data === "string" && typeof record.mimeType === "string") {
+      return { data: record.data, mimeType: record.mimeType };
+    }
+  }
+  return undefined;
+}
+
 /** 统计 unified patch 的增删行数 */
 export function countPatchLines(patch: string): { added: number; removed: number } {
   let added = 0;

@@ -10,7 +10,13 @@
  * worker 进程启停重置；删除会话（unregister）或退出应用即失效——权限决定不应
  * 悄悄长期生效。待审队列则与 worker 同寿命，进程没了即清空。
  */
-import type { ApprovalMode, ApprovalRequest, ApprovalRisk } from "@shared/protocol";
+import type {
+  ApprovalMode,
+  ApprovalRequest,
+  ApprovalRisk,
+  ApprovalRuleKind,
+  ApprovalRuleView,
+} from "@shared/protocol";
 import { buildSignature, evaluateTool, type AllowRule, type ToolInvocation } from "./policy";
 
 export interface ApprovalDecision {
@@ -37,6 +43,13 @@ interface SessionState {
 export class ApprovalStore {
   private readonly sessions = new Map<string, SessionState>();
   private mode: ApprovalMode = "approval";
+  /** 规则 id 单调递增，仅在本进程内唯一即可（规则本身就不落盘） */
+  #ruleSeq = 0;
+
+  /** 给规则补一个稳定 id */
+  #withId(rule: AllowRule): AllowRule {
+    return rule.id !== undefined ? rule : { ...rule, id: `r${(this.#ruleSeq += 1)}` };
+  }
 
   /** 读取审批模式：传入 sessionId 时优先该会话的设定，否则为全局默认 */
   getMode(sessionId?: string): ApprovalMode {
@@ -52,12 +65,18 @@ export class ApprovalStore {
    * 传入 sessionId：只改该会话的设定；会话尚未登记时先建一个占位 state，
    *   避免把「会话级」误写成全局默认（否则会污染其他会话）。
    * 不传 sessionId：改全局默认，作为未单独设定会话的回退值。
+   *
+   * 切到 full-access 时清空记忆的放行/拒绝规则：两者的语义都是代用户做后续
+   * 决定，在全权模式下已无意义；而拒绝规则优先级高于模式（见 evaluate 中 deny
+   * 检查在 evaluateTool 之前），不清空会让用户切了全权仍被旧规则拦住，且界面
+   * 无从解释。
    */
   setMode(mode: ApprovalMode, sessionId?: string): void {
     if (sessionId !== undefined) {
       const state = this.sessions.get(sessionId);
       if (state) {
         state.mode = mode;
+        if (mode === "full-access") this.#forgetRules(state);
       } else {
         // 会话未登记（worker 未起）：建占位 state，register 时会保留这里的 mode
         this.sessions.set(sessionId, {
@@ -71,6 +90,16 @@ export class ApprovalStore {
       return;
     }
     this.mode = mode;
+    // 改全局默认同样清空各会话的记忆规则，避免旧规则继续压过新模式
+    if (mode === "full-access") {
+      for (const state of this.sessions.values()) this.#forgetRules(state);
+    }
+  }
+
+  /** 清空某会话记忆的放行与拒绝规则 */
+  #forgetRules(state: SessionState): void {
+    state.rules.length = 0;
+    state.denyRules.length = 0;
   }
 
   /**
@@ -237,9 +266,11 @@ export class ApprovalStore {
       // 高风险调用不写记忆：policy 也会兜住，这里提前拦一道避免无效规则堆积
       if (request.risk !== "dangerous") {
         state.rules.push(
-          input.remember === "tool"
-            ? { toolName: request.toolName, scope: "tool" }
-            : { toolName: request.toolName, scope: "signature", signature: request.signature },
+          this.#withId(
+            input.remember === "tool"
+              ? { toolName: request.toolName, scope: "tool" }
+              : { toolName: request.toolName, scope: "signature", signature: request.signature },
+          ),
         );
       }
     }
@@ -247,9 +278,11 @@ export class ApprovalStore {
     // 「始终拒绝」：记住拒绝，下次同类调用直接拦下
     if (!input.approved && input.deny) {
       state.denyRules.push(
-        input.deny === "tool"
-          ? { toolName: request.toolName, scope: "tool" }
-          : { toolName: request.toolName, scope: "signature", signature: request.signature },
+        this.#withId(
+          input.deny === "tool"
+            ? { toolName: request.toolName, scope: "tool" }
+            : { toolName: request.toolName, scope: "signature", signature: request.signature },
+        ),
       );
     }
 
@@ -263,9 +296,53 @@ export class ApprovalStore {
     };
   }
 
-  /** 会话被回收或中断时清空待审，避免界面残留幽灵条目 */
-  clearPending(sessionId: string): ApprovalRequest[] {
+  /**
+   * 列出会话内已记忆的规则（放行 + 拒绝），供界面查看与管理。
+   * 返回视图对象而非内部数组，避免界面拿到可变引用直接改内部状态。
+   */
+  listRules(sessionId: string): ApprovalRuleView[] {
     const state = this.sessions.get(sessionId);
+    if (!state) return [];
+    const toView = (rule: AllowRule, kind: ApprovalRuleKind): ApprovalRuleView => ({
+      id: rule.id ?? "",
+      kind,
+      toolName: rule.toolName,
+      scope: rule.scope,
+      ...(rule.signature !== undefined ? { signature: rule.signature } : {}),
+    });
+    return [
+      ...state.rules.map((rule) => toView(rule, "allow")),
+      ...state.denyRules.map((rule) => toView(rule, "deny")),
+    ];
+  }
+
+  /**
+   * 删除一条规则。返回是否删中。
+   * 放行与拒绝两类共用同一套 id 空间，故两边都找一遍。
+   */
+  removeRule(sessionId: string, ruleId: string): boolean {
+    const state = this.sessions.get(sessionId);
+    if (!state) return false;
+    for (const bucket of [state.rules, state.denyRules]) {
+      const index = bucket.findIndex((rule) => rule.id === ruleId);
+      if (index >= 0) {
+        bucket.splice(index, 1);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 清空规则；不给 kind 时两类都清 */
+  clearRules(sessionId: string, kind?: ApprovalRuleKind): void {
+    const state = this.sessions.get(sessionId);
+    if (!state) return;
+    if (kind === undefined || kind === "allow") state.rules.length = 0;
+    if (kind === undefined || kind === "deny") state.denyRules.length = 0;
+  }
+
+  /** 会话被回收或中断时清空待审，避免界面残留幽灵条目 */
+  clearPending(sessionId: string): ApprovalRequest[] {    const state = this.sessions.get(sessionId);
     if (!state) return [];
     const dropped = [...state.pending.values()];
     state.pending.clear();

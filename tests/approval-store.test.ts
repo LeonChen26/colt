@@ -32,6 +32,18 @@ function askWrite(
   assert.ok("request" in outcome, "写入应当进入待审");
 }
 
+/** 造一条 bash 待审：与 edit 用不同工具，避免规则互相干扰 */
+function askBash(instance: ApprovalStore, toolCallId: string, now = 1): void {
+  const outcome = instance.evaluate({
+    sessionId: SESSION,
+    toolCallId,
+    toolName: "bash",
+    argsJson: JSON.stringify({ command: "npm test" }),
+    now,
+  });
+  assert.ok("request" in outcome, "bash 应当进入待审");
+}
+
 describe("ApprovalStore 模式", () => {
   test("默认审批模式，可切换", () => {
     const instance = store();
@@ -423,6 +435,118 @@ describe("ApprovalStore 生命周期", () => {
     assert.ok("decision" in next, "拒绝规则不应随 worker 重登记失效");
     assert.equal(next.decision.approved, false);
     assert.equal(instance.listPending(SESSION).length, 0, "自动拒绝不应产生待审条目");
+  });
+
+  test("切全权模式清空拒绝规则：旧拒绝不再拦住同类调用", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: false, deny: "tool" });
+
+    // 未切模式前，同类调用被自动拒绝
+    const blocked = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c2",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 2,
+    });
+    assert.ok("decision" in blocked && blocked.decision.approved === false);
+
+    // 切到全权后，旧拒绝规则应失效
+    instance.setMode("full-access", SESSION);
+    const next = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c3",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 3,
+    });
+    assert.ok("decision" in next, "全权模式应直接放行，不再回到待审");
+    assert.equal(next.decision.approved, true, "旧拒绝规则不应继续生效");
+  });
+
+  test("切全权模式清空放行规则", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
+
+    instance.setMode("full-access", SESSION);
+    instance.setMode("approval", SESSION);
+
+    // 回到严格模式后，先前的放行记忆不应残留
+    const again = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c2",
+      toolName: "edit",
+      argsJson: JSON.stringify({ path: "E:/proj/a.ts" }),
+      now: 2,
+    });
+    assert.ok("request" in again, "放行规则应已被清空，需重新询问");
+  });
+
+  test("规则列表：可查看已记忆的放行与拒绝规则", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "signature" });
+    askBash(instance, "c2");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c2", approved: false, deny: "tool" });
+
+    const rules = instance.listRules(SESSION);
+    assert.equal(rules.length, 2);
+    assert.equal(rules[0]!.kind, "allow");
+    assert.equal(rules[0]!.toolName, "edit");
+    assert.equal(rules[0]!.scope, "signature");
+    assert.equal(rules[0]!.signature, "edit:e:/proj/a.ts");
+    assert.equal(rules[1]!.kind, "deny");
+    assert.equal(rules[1]!.toolName, "bash");
+    assert.equal(rules[1]!.scope, "tool");
+    assert.ok(rules.every((rule) => rule.id.length > 0), "每条规则应有稳定 id");
+  });
+
+  test("删除单条规则：立即不再生效，其余保留", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
+    askBash(instance, "c2");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c2", approved: false, deny: "tool" });
+
+    const denyRule = instance.listRules(SESSION).find((rule) => rule.kind === "deny");
+    assert.ok(denyRule, "应有拒绝规则");
+    assert.equal(instance.removeRule(SESSION, denyRule.id), true);
+    assert.equal(instance.listRules(SESSION).length, 1, "只删掉目标那条");
+    assert.equal(instance.removeRule(SESSION, "not-exist"), false, "删不存在的 id 返回 false");
+
+    // 拒绝规则已删，同类 bash 调用应重新回到待审
+    const next = instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c3",
+      toolName: "bash",
+      argsJson: JSON.stringify({ command: "npm test" }),
+      now: 2,
+    });
+    assert.ok("request" in next, "删除拒绝规则后不应再自动拒绝");
+  });
+
+  test("清空规则：可按类别，也可全清", () => {
+    const instance = store();
+    askWrite(instance, "c1");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
+    askBash(instance, "c2");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c2", approved: false, deny: "tool" });
+
+    instance.clearRules(SESSION, "deny");
+    assert.equal(instance.listRules(SESSION).length, 1);
+    assert.equal(instance.listRules(SESSION)[0]!.kind, "allow");
+
+    instance.clearRules(SESSION);
+    assert.equal(instance.listRules(SESSION).length, 0);
+  });
+
+  test("未登记会话查规则返回空而非报错", () => {
+    const instance = new ApprovalStore();
+    assert.deepEqual(instance.listRules("nope"), []);
+    assert.equal(instance.removeRule("nope", "r1"), false);
+    instance.clearRules("nope");
   });
 
   test("重登记清空待审队列（阻塞方随进程消失）", () => {

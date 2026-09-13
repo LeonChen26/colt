@@ -14,6 +14,8 @@ export interface ViewMessage {
   toolCalls: { id: string; name: string; args: string; durationMs?: number }[];
   /** 助手消息的思考过程（思考轨），无则为空 */
   thought?: string;
+  /** 用户消息随附的图片（base64 不含 data URI 前缀），无则为空 */
+  image?: { data: string; mimeType: string };
   timestamp?: number;
 }
 
@@ -23,6 +25,8 @@ export interface ViewToolResult {
   id: string;
   output: string;
   isError: boolean;
+  /** 工具产生的图片（如浏览器截图），base64 不含 data URI 前缀 */
+  image?: { data: string; mimeType: string };
 }
 
 /** 正在执行的工具 */
@@ -57,6 +61,11 @@ export interface ConversationView {
   lane: string;
   cwd: string;
   model: string;
+  /**
+   * 当前模型是否支持图片输入。不支持时渲染层必须阻止发送图片并给出提示——
+   * 否则适配器会按 `model.input.includes("image")` 静默丢弃图片，用户只看到"发了但 AI 没反应"。
+   */
+  imageInput: boolean;
   messages: ViewMessage[];
   /** toolCallId → 工具结果，供工具卡片展开时查阅 */
   toolResults: ViewToolResult[];
@@ -88,6 +97,20 @@ export interface ConversationView {
   };
 }
 
+/**
+ * 宿主能力标识：由主进程（Electron GUI 侧）实现，worker 通过 toolRpc 远程调用。
+ * 浏览器/桌面这类能力必须由宿主进程持有（窗口与 OS 权限），故 worker 只能发命令。
+ */
+export type HostCapability = "browser" | "computer";
+
+/** 宿主能力的调用返回：文本 + 可选图片（截图等） */
+export interface HostResult {
+  /** 给模型与界面看的文本 */
+  text: string;
+  /** 图片结果，base64 不含 data URI 前缀 */
+  image?: { data: string; mimeType: string };
+}
+
 /** main → worker */
 export type WorkerCommand =
   | {
@@ -101,8 +124,8 @@ export type WorkerCommand =
       provider: ProviderBuildConfig;
       model: string;
     }
-  | { type: "prompt"; text: string }
-  | { type: "steer"; text: string }
+  | { type: "prompt"; text: string; images?: { data: string; mimeType: string }[] }
+  | { type: "steer"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "abort" }
   | { type: "setModel"; provider: ProviderBuildConfig; modelId: string }
   | { type: "compact" }
@@ -110,6 +133,10 @@ export type WorkerCommand =
   | { type: "navigate"; targetId: string }
   /** 主进程对一条审批的答复，worker 据此决定放行还是阻断 */
   | { type: "approvalResult"; toolCallId: string; approved: boolean; reason?: string }
+  /** 主进程对一次宿主能力调用的答复（成功） */
+  | { type: "toolRpcResult"; requestId: string; ok: true; result: HostResult }
+  /** 主进程对一次宿主能力调用的答复（失败） */
+  | { type: "toolRpcResult"; requestId: string; ok: false; error: string }
   | { type: "dispose" };
 
 /** worker → main */
@@ -165,6 +192,14 @@ export type WorkerMessage =
       timeoutMs: number;
     }
   | { type: "modelChanged"; providerId: string; modelId: string }
+  /** worker 请求宿主能力（浏览器/桌面）：主进程执行后回 toolRpcResult */
+  | {
+      type: "toolRpc";
+      requestId: string;
+      capability: HostCapability;
+      action: string;
+      params: Record<string, unknown>;
+    }
   | { type: "error"; message: string; fatal: boolean }
   | { type: "log"; message: string };
 

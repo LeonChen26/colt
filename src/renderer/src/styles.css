@@ -183,12 +183,78 @@ body {
 .pulse-dot {
   animation: banyan-pulse 2s infinite;
 }
+.live-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-success);
+  animation: banyan-pulse 2s infinite;
+}
 
 /* 心跳转「似乎卡住」：琥珀、停止呼吸 */
 .stale-dot {
   background: var(--color-warning) !important;
   animation: none !important;
   box-shadow: none !important;
+}
+
+.conv-center {
+  container: center / inline-size;
+}
+.conv-head {
+  container: center / inline-size;
+}
+.lb-track {
+  width: 64px;
+}
+@container center (max-width: 900px) {
+  .ch-ctx:not(.branch) .c {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+@container center (max-width: 620px) {
+  .ch-ctx:not(.branch) {
+    display: none;
+  }
+}
+@container center (max-width: 760px) {
+  .lb-opt {
+    display: none;
+  }
+}
+@container center (max-width: 560px) {
+  .cbtn .lbl {
+    display: none;
+  }
+  .cbtn.model .lbl {
+    display: inline;
+    max-width: 78px;
+  }
+}
+@container center (max-width: 520px) {
+  .lb-track {
+    width: 40px;
+  }
+  .lb-idle {
+    display: none;
+  }
+}
+@container center (max-width: 400px) {
+  .cpush {
+    display: none;
+  }
+  .cright {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .cbtn.model .lbl {
+    max-width: 52px;
+  }
 }
 
 /* 思考轨：半透明弱化、左侧描边，是「氛围组」而非必须阅读 */

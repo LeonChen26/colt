@@ -1,5 +1,7 @@
 /**
- * 右栏「跟随线」：让用户随时看到 Agent 正在碰哪些文件、本次改了多少。
+ * 右栏工作区的「正在处理」视图（默认视图，规则 ⑦-E）：让用户随时看到 Agent 正在碰哪些文件、本次改了多少。
+ *
+ * 由 WorkspaceDock 提供页签与边框，本组件只负责内容，故根节点是撑满的 div 而非 aside。
  *
  * 两段（均可折叠，对齐高保真 .fsec）：
  *   1. Agent 正在处理 —— 运行中的工具 + 最近改动的文件（含增删行数与相对时间）
@@ -115,7 +117,7 @@ export function FollowPanel({
   const removed = changes.reduce((sum, change) => sum + change.removedLines, 0);
 
   return (
-    <aside className="flex w-[280px] shrink-0 flex-col border-l border-line bg-surface-raised">
+    <div className="flex min-h-0 w-full flex-1 flex-col">
       {/* 段一：Agent 正在处理 */}
       <section className="flex min-h-0 flex-col border-b border-line">
         <SectionHead
@@ -229,6 +231,6 @@ export function FollowPanel({
           </div>
         )}
       </section>
-    </aside>
+    </div>
   );
 }

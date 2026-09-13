@@ -57,6 +57,38 @@ export interface Project {
   lastOpenedAt: number;
 }
 
+/** 会话工作目录的 git 状态 */
+export interface GitStatus {
+  /** 目录是否位于某个 git 仓库内 */
+  isRepo: boolean;
+  /** 当前分支名；游离 HEAD 或非仓库时为 null */
+  branch: string | null;
+  /** 是否处于游离 HEAD（HEAD 直接指向提交） */
+  detached: boolean;
+}
+
+/** 矩形（窗口内容坐标，CSS px 即 DIP） */
+export interface BrowserRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 内嵌浏览器视图状态。
+ *
+ * 浏览器本体现在是挂在主窗口上的 WebContentsView（原生视图，浮在渲染层之上），
+ * 渲染层无法直接绘制它，只能：① 上报「页面区域」矩形让主进程摆放；② 展示 URL 等元信息。
+ * loaded 为 false 表示尚未创建 WebContents（懒创建，见 UI-REGIONS ⑦-2）。
+ */
+export interface BrowserViewState {
+  sessionId: string;
+  loaded: boolean;
+  url: string;
+  title: string;
+}
+
 /** 会话（索引信息，本体在 JSONL） */
 export interface SessionInfo {
   id: string;
@@ -75,7 +107,7 @@ export interface SessionInfo {
 }
 
 /** 会话运行态 */
-export type SessionRunState = "idle" | "running";
+export type SessionRunState = "idle" | "running" | "dormant" | "crashed";
 
 /**
  * 运行时调用通道白名单：preload 据此拒绝未授权通道。
@@ -113,8 +145,14 @@ export const IPC_CHANNELS = [
   "approval.resolve",
   "approval.mode.get",
   "approval.mode.set",
+  "approval.rules.list",
+  "approval.rules.remove",
+  "approval.rules.clear",
   "session.branches",
   "session.navigate",
+  "git.status",
+  "browser.bounds",
+  "browser.state.get",
 ] as const;
 
 /** 渲染进程 → 主进程的调用通道契约（类型真源） */
@@ -158,7 +196,17 @@ export interface IpcInvokeMap {
     response: { ok: true };
   };
   "session.prompt": {
-    request: { sessionId: string; text: string };
+    request: {
+      sessionId: string;
+      text: string;
+      /** 随消息发送的图片；data 为 base64，不含 data URI 前缀 */
+      images?: { data: string; mimeType: string }[];
+      /**
+       * 会话工作目录。worker 被空闲回收后主进程凭它自动重建会话进程，
+       * 因此渲染层必须回传（与 session.open 同源）。
+       */
+      cwd?: string;
+    };
     response: { ok: true };
   };
   "session.abort": {
@@ -222,6 +270,21 @@ export interface IpcInvokeMap {
     request: { mode: ApprovalMode; sessionId?: string };
     response: { mode: ApprovalMode };
   };
+  /** 列出会话内已记忆的放行/拒绝规则 */
+  "approval.rules.list": {
+    request: { sessionId: string };
+    response: ApprovalRuleView[];
+  };
+  /** 删除一条已记忆的规则 */
+  "approval.rules.remove": {
+    request: { sessionId: string; ruleId: string };
+    response: { ok: true };
+  };
+  /** 清空会话内全部规则（可按类别） */
+  "approval.rules.clear": {
+    request: { sessionId: string; kind?: ApprovalRuleKind };
+    response: { ok: true };
+  };
   /** 列出全部 provider */
   "providers.list": {
     request: void;
@@ -261,6 +324,24 @@ export interface IpcInvokeMap {
   "session.navigate": {
     request: { sessionId: string; targetId: string };
     response: { ok: true };
+  };
+  /** 读取会话工作目录的 git 分支（会话头展示） */
+  "git.status": {
+    request: { cwd: string };
+    response: GitStatus;
+  };
+  /**
+   * 渲染层上报内嵌浏览器的「页面区域」矩形（窗口内容坐标），主进程据此摆放 WebContentsView。
+   * rect 为 null 表示该视图当前不可见（用户切到了别的页签 / 窗口过窄），主进程隐藏原生视图。
+   */
+  "browser.bounds": {
+    request: { sessionId: string; rect: BrowserRect | null };
+    response: { ok: true };
+  };
+  /** 读取会话的内嵌浏览器状态（渲染层挂载时对齐已加载的视图，避免切会话后丢页签） */
+  "browser.state.get": {
+    request: { sessionId: string };
+    response: BrowserViewState;
   };
 }
 
@@ -373,13 +454,14 @@ export const IPC_EVENTS = [
   "session.error",
   "file.changed",
   "approval.pending",
+  "browser.state",
 ] as const;
 
 /** 主进程 → 渲染进程的推送通道（类型真源） */
 export interface IpcEventMap {
   /** 会话视图更新（由 worker 投影而来） */
   "session.view": ConversationView;
-  /** 会话运行状态变化 */
+  /** 会话状态变化：worker 进程启停与 Agent 运行态 */
   "session.status": { sessionId: string; state: SessionRunState };
   /** 会话错误 */
   "session.error": { sessionId: string; message: string };
@@ -387,6 +469,8 @@ export interface IpcEventMap {
   "file.changed": { sessionId: string; change: ViewFileChange };
   /** 待审批的工具调用（新增或清空时推送全量） */
   "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
+  /** 内嵌浏览器视图状态变化（首次加载 / 导航 / 标题变化 / 销毁） */
+  "browser.state": BrowserViewState;
 }
 
 export type IpcEventName = keyof IpcEventMap;
@@ -427,6 +511,25 @@ export interface ApprovalRequest {
   requestedAt: number;
   /** 审批等待上限（毫秒），界面据此显示倒计时 */
   timeoutMs: number;
+}
+
+/** 规则类别：放行 or 拒绝 */
+export type ApprovalRuleKind = "allow" | "deny";
+
+/**
+ * 供界面展示与管理的记忆规则视图。
+ * 规则本体只存主进程内存，这里给出稳定 id 与人类可读描述，
+ * 界面按 id 删除，不依赖内部数组下标。
+ */
+export interface ApprovalRuleView {
+  /** 稳定标识，删除时回传 */
+  id: string;
+  kind: ApprovalRuleKind;
+  toolName: string;
+  /** tool：整个工具生效；signature：仅同参数签名生效 */
+  scope: "tool" | "signature";
+  /** scope 为 signature 时的原始命令/路径签名，供界面还原上下文 */
+  signature?: string;
 }
 
 /** 用户对一条审批的处置 */

@@ -2,21 +2,26 @@
  * 对话面板：消息流 + 流式文本 + 工具实时输出 + 状态栏（Live Bar）+ 右侧面板编排。
  * 具体的改动/用量/工具/分支面板已拆到 panels/ 与 BranchTree。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
+  ArrowUp,
   ChevronDown,
   Coins,
   FileDiff,
+  Folder,
+  GitBranch,
+  ImagePlus,
   Loader2,
-  Send,
+  ShieldCheck,
   Shrink,
   Square,
   Wrench,
+  X,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
-import type { ApprovalMode, ApprovalRequest, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, ApprovalRequest, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
 import { splitModelRef } from "@shared/model-ref";
 import { cn } from "../../lib/utils";
 import { Markdown } from "../../components/Markdown";
@@ -24,15 +29,30 @@ import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageLi
 import { ChangesPanel } from "./panels/ChangesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { ToolsPanel } from "./panels/ToolsPanel";
+import { RulesPanel } from "./panels/RulesPanel";
 import { ApprovalCard } from "./ApprovalCard";
-import { FollowPanel } from "./FollowPanel";
+import { DOCK_SUGGEST_WIDTH, WorkspaceDock, type DockView } from "./WorkspaceDock";
 import type { ReactNode } from "react";
 
 /** 右侧面板多选一 */
-type SidePanel = "none" | "changes" | "usage" | "tools";
+type SidePanel = "none" | "changes" | "usage" | "tools" | "rules";
 
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
 const STALE_IDLE_SEC = 30;
+
+/** 待发送的图片附件；data 为不含 data URI 前缀的 base64（pi 的 ImageContent 约定） */
+interface Attachment {
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
+/**
+ * 单张上限与张数上限。图片以 base64 走 IPC 的 postMessage，
+ * 1920×1200 的 PNG 约 350KB、base64 后约 470KB，不设限会明显拖慢主进程。
+ */
+const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+const MAX_ATTACHMENTS = 4;
 
 const MODE_OPTIONS: { value: ApprovalMode; label: string; hint: string }[] = [
   { value: "approval", label: "审批模式", hint: "只读命令放行，其余逐条确认" },
@@ -46,6 +66,12 @@ const MODE_LABEL: Record<ApprovalMode, string> = {
   "full-access": "全权执行模式",
 };
 
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
 export function Conversation({
   sessionId,
   cwd,
@@ -57,6 +83,7 @@ export function Conversation({
 }): React.JSX.Element {
   const [view, setView] = useState<ConversationView | null>(null);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
   const [panel, setPanel] = useState<SidePanel>("none");
@@ -64,8 +91,29 @@ export function Conversation({
   const [mode, setMode] = useState<ApprovalMode>("approval");
   /** 跟随线联动：hover 工具卡片时高亮它碰的文件 */
   const [hoveredFile, setHoveredFile] = useState<string | null>(null);
+  const [git, setGit] = useState<GitStatus | null>(null);
+  /** 右栏工作区当前页签（默认「正在处理」，规则 ⑦-E） */
+  const [dockTab, setDockTab] = useState<DockView>("follow");
+  /** 内嵌浏览器视图状态（loaded 为 false 表示尚未创建 WebContents） */
+  const [browser, setBrowser] = useState<BrowserViewState | null>(null);
+  /** 右栏可用宽度：用于把「建议宽度」钳制到不挤压中栏（⑦-B 中栏下限 360px） */
+  const [dockSpace, setDockSpace] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** 工作区根节点：量它才能知道右栏能宽到哪 */
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** 是否已自动切过一次浏览器页签（规则 ⑦-F 只在「首次使用」切） */
+  const browserAutoSwitchedRef = useRef(false);
+
+  /**
+   * 右栏宽度：视图切换只给**建议值**（⑦-B），并按可用空间钳制，
+   * 保证中栏不被挤到 360px 以下（那会让会话流无法阅读）。
+   */
+  const dockWidth = useMemo(() => {
+    const suggestion = DOCK_SUGGEST_WIDTH[dockTab];
+    if (dockSpace <= 0) return suggestion;
+    return Math.max(220, Math.min(suggestion, dockSpace - 360));
+  }, [dockTab, dockSpace]);
 
   // 心跳：运行期间每秒重渲染，驱动「已耗时 / 最后活动」显示
   const [now, setNow] = useState(() => Date.now());
@@ -80,6 +128,73 @@ export function Conversation({
   useEffect(() => {
     runStartedAtRef.current = view?.running ? (runStartedAtRef.current ?? Date.now()) : null;
   }, [view?.running]);
+
+  // 会话头展示工作目录的 git 分支（规则 ②-B）；非仓库或读取失败则隐藏。
+  // 用户可能在应用外部切换分支，故除 cwd 变化外，窗口重新获焦时也刷新一次。
+  useEffect(() => {
+    let disposed = false;
+    const refresh = (): void => {
+      void window.banyan
+        .invoke("git.status", { cwd })
+        .then((next) => {
+          if (!disposed) setGit(next);
+        })
+        .catch(() => {
+          if (!disposed) setGit(null);
+        });
+    };
+    setGit(null);
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [cwd]);
+
+  // 内嵌浏览器：订阅视图状态；agent 首次使用浏览器时自动切到「浏览器」页签（规则 ⑦-F）。
+  // ⑦-C（视野跳跃为零）在此场景优先于 ⑦-D（不抢焦）——新现场的开始必须被看到。
+  useEffect(() => {
+    let disposed = false;
+    browserAutoSwitchedRef.current = false;
+    setBrowser(null);
+    setDockTab("follow");
+
+    const apply = (next: BrowserViewState): void => {
+      if (disposed) return;
+      setBrowser(next);
+      if (next.loaded && !browserAutoSwitchedRef.current) {
+        browserAutoSwitchedRef.current = true;
+        setDockTab("browser");
+      }
+      if (!next.loaded) browserAutoSwitchedRef.current = false;
+    };
+
+    // 挂载时对齐：本组件卸载期间（切会话）该会话可能已经加载过浏览器
+    void window.banyan
+      .invoke("browser.state.get", { sessionId })
+      .then(apply)
+      .catch(() => undefined);
+
+    const off = window.banyan.on("browser.state", (state) => {
+      if (state.sessionId === sessionId) apply(state);
+    });
+    return () => {
+      disposed = true;
+      off();
+    };
+  }, [sessionId]);
+
+  // 量工作区可用宽度，用于把右栏「建议宽度」钳制到不挤压中栏
+  useLayoutEffect(() => {
+    const node = rootRef.current;
+    if (node === null) return;
+    const measure = (): void => setDockSpace(node.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -173,17 +288,64 @@ export function Conversation({
     [sessionId],
   );
 
+  /** 把 File（粘贴 / 拖拽 / 选择）读成 base64 附件；非图片与超限的直接拒绝并说明原因 */
+  const addFiles = useCallback(async (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (images.length === 0) return;
+    setError(null);
+    const accepted: Attachment[] = [];
+    for (const file of images.slice(0, MAX_ATTACHMENTS)) {
+      const label = file.name || "剪贴板图片";
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        setError(`图片过大：${label}（${(file.size / 1024 / 1024).toFixed(1)}MB，上限 4MB）`);
+        continue;
+      }
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error(`读取图片失败：${label}`));
+        reader.readAsDataURL(file);
+      });
+      // 去掉 "data:image/png;base64," 前缀，只保留 base64 主体
+      const comma = dataUrl.indexOf(",");
+      accepted.push({
+        name: label,
+        mimeType: file.type || "image/png",
+        data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl,
+      });
+    }
+    if (accepted.length > 0) {
+      setAttachments((prev) => [...prev, ...accepted].slice(0, MAX_ATTACHMENTS));
+    }
+  }, []);
+
   const submit = useCallback(async () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text && attachments.length === 0) return;
+    // 纯文本模型下适配器会按 model.input 静默丢弃图片。这里直接拦下并说明，
+    // 避免用户看到"图发出去了但 AI 毫无反应"。
+    if (attachments.length > 0 && view && !view.imageInput) {
+      setError(
+        `当前模型（${view.model}）不支持图片输入，图片会被丢弃。请先切换到支持视觉的模型。`,
+      );
+      return;
+    }
+    const images = attachments.map((item) => ({ data: item.data, mimeType: item.mimeType }));
     setInput("");
+    setAttachments([]);
     setError(null);
     try {
-      await window.banyan.invoke("session.prompt", { sessionId, text });
+      await window.banyan.invoke("session.prompt", {
+        sessionId,
+        text,
+        images: images.length > 0 ? images : undefined,
+        // 主进程凭 cwd 在 worker 被空闲回收后自动重建会话进程
+        cwd,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [input, sessionId]);
+  }, [input, attachments, view, sessionId, cwd]);
 
   const abort = useCallback(async () => {
     try {
@@ -291,14 +453,47 @@ export function Conversation({
   }, [input, resizeInput]);
 
   return (
-    // 两列三行：左列「会话头 / 消息流 / 输入区」，右列是满高的跟随线。
-    // 用网格而不是嵌套，确保输入区不会横向伸到跟随线下方（高保真的分栏模型）。
-    <div className="grid h-full grid-cols-[1fr_280px] grid-rows-[auto_1fr_auto] overflow-hidden">
-      <div className="col-start-1 row-start-1 flex shrink-0 items-center justify-between border-b border-line px-3.5 py-2">
-        <div className="min-w-0">
-          <div className="truncate font-mono text-[12px] text-text-primary">{cwd}</div>
+    // 两列三行：左列「会话头 / 消息流 / 输入区」，右列是满高的工作区（页签容器）。
+    // 用网格而不是嵌套，确保输入区不会横向伸到工作区下方（高保真的分栏模型）。
+    <div
+      ref={rootRef}
+      className="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden"
+      style={{ gridTemplateColumns: `minmax(0, 1fr) ${dockWidth}px` }}
+    >
+      <div className="conv-head col-start-1 row-start-1 flex shrink-0 items-center justify-between gap-2 border-b border-line px-3.5 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className="ch-ctx flex min-w-0 items-center gap-1.5 text-[11.5px] text-text-muted"
+            title="工作目录"
+          >
+            <Folder {...ICON.xs} className="shrink-0" />
+            <span className="c truncate font-mono text-text-secondary">{cwd}</span>
+          </span>
+          {git?.isRepo && (git.branch || git.detached) && (
+            <button
+              type="button"
+              title={git.detached ? "游离 HEAD：当前不在任何分支上" : "当前 git 分支"}
+              className={cn(
+                "ch-ctx branch flex h-[22px] shrink-0 items-center gap-1.5 rounded-[6px] border px-1.5 text-[11.5px] transition",
+                git.detached
+                  ? "border-warning/50 text-warning"
+                  : "border-line text-text-muted hover:border-line-strong hover:text-text-primary",
+              )}
+            >
+              <GitBranch {...ICON.xs} className="shrink-0" />
+              <span
+                className={cn(
+                  "c font-mono",
+                  git.detached ? "text-warning" : "text-text-secondary",
+                )}
+              >
+                {git.detached ? "游离 HEAD" : git.branch}
+              </span>
+              {!git.detached && <ChevronDown {...ICON.xs} className="shrink-0" />}
+            </button>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {contextRatio > 0.7 && (
             <button
               type="button"
@@ -331,6 +526,13 @@ export function Conversation({
             label="工具"
             title="查看本次会话的工具调用历史"
             onClick={() => togglePanel("tools")}
+          />
+          <PanelToggle
+            active={panel === "rules"}
+            icon={<ShieldCheck {...ICON.sm} />}
+            label="规则"
+            title="查看并管理本次会话记住的审批规则"
+            onClick={() => togglePanel("rules")}
           />
         </div>
       </div>
@@ -440,49 +642,189 @@ export function Conversation({
         )}
         {panel === "usage" && <UsagePanel sessionId={sessionId} onClose={() => setPanel("none")} />}
         {panel === "tools" && <ToolsPanel sessionId={sessionId} onClose={() => setPanel("none")} />}
+        {panel === "rules" && <RulesPanel sessionId={sessionId} onClose={() => setPanel("none")} />}
       </div>
 
-      <div className="col-start-1 row-start-3 min-w-0 shrink-0 border-t border-line p-3">
-        <div className="mx-auto max-w-3xl">
-          {/* 状态栏（Live Bar）：模型 · 模式 · 上下文 · 成本 · 心跳 */}
-          <div className="mb-2 flex flex-wrap items-center gap-2.5 text-[11px] text-text-muted">
-            <Picker
-              title="模型"
-              value={`${currentProviderId}/${currentModelId}`}
-              label={currentModelLabel}
-              options={modelOptions}
-              onChange={(value) => void switchModel(value)}
-            />
-            <Picker
-              title="会话级模式"
-              value={mode}
-              label={MODE_LABEL[mode]}
-              options={MODE_OPTIONS}
-              onChange={(value) => void switchMode(value as ApprovalMode)}
+      <div className="conv-center col-start-1 row-start-3 min-w-0 shrink-0">
+        <div className="mx-auto max-w-[796px] px-[18px] pb-3.5">
+          {/* 输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行） */}
+          <div
+            className="rounded-[12px] border border-line bg-surface-raised px-3 pb-2 pt-2.5 transition focus-within:border-line-strong"
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              const files = [...e.dataTransfer.files];
+              if (files.length === 0) return;
+              e.preventDefault();
+              void addFiles(files);
+            }}
+          >
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                {attachments.map((item, index) => (
+                  <span
+                    key={`${item.name}-${index}`}
+                    className="inline-flex items-center gap-2 rounded-[8px] border border-line bg-surface-overlay py-1 pl-1 pr-2"
+                  >
+                    <img
+                      src={`data:${item.mimeType};base64,${item.data}`}
+                      alt={item.name}
+                      className="h-10 w-10 rounded-[5px] border border-line object-cover"
+                    />
+                    <span className="max-w-[140px] truncate text-[11px] text-text-secondary">
+                      {item.name}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="移除图片"
+                      onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== index))}
+                      className="text-text-muted transition hover:text-danger-fg"
+                    >
+                      <X {...ICON.xs} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {attachments.length > 0 && view && !view.imageInput && (
+              <p className="mb-1.5 text-[11px] text-warning">
+                当前模型不支持图片输入，发送前请切换到支持视觉的模型（如
+                deepseek-v4-flash-vision-exp）
+              </p>
+            )}
+
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onPaste={(e) => {
+                const files = [...e.clipboardData.items]
+                  .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                  .map((item) => item.getAsFile())
+                  .filter((file): file is File => file !== null);
+                if (files.length === 0) return;
+                e.preventDefault();
+                void addFiles(files);
+              }}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void submit();
+                }
+              }}
+              rows={1}
+              placeholder={
+                running
+                  ? "运行中：Enter 发送插话，按钮停止"
+                  : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
+              }
+              className="max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted"
             />
 
-            <span className="h-[13px] w-px bg-line-strong" />
+            {/* 工具行：附件 / 访问模式（左），模型 / 发送（右） */}
+            <div className="comp-tools mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+              <label
+                title="添加图片（也可直接粘贴或拖入输入框）"
+                className="flex h-7 shrink-0 cursor-pointer items-center rounded-[6px] px-2 text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary"
+              >
+                <ImagePlus {...ICON.sm} />
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    void addFiles([...(e.target.files ?? [])]);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
 
+              <Picker
+                title="访问模式"
+                value={mode}
+                label={MODE_LABEL[mode]}
+                options={MODE_OPTIONS}
+                icon={<ShieldCheck {...ICON.sm} className="text-warning" />}
+                onChange={(value) => void switchMode(value as ApprovalMode)}
+              />
+
+              <span className="cpush flex-1" />
+
+              <div className="cright flex shrink-0 items-center gap-2">
+                <Picker
+                  title="当前模型"
+                  value={`${currentProviderId}/${currentModelId}`}
+                  label={currentModelLabel}
+                  options={modelOptions}
+                  plain
+                  className="model"
+                  onChange={(value) => void switchModel(value)}
+                />
+                {running ? (
+                  <button
+                    type="button"
+                    onClick={() => void abort()}
+                    title="停止"
+                    className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full bg-danger text-white transition hover:opacity-90"
+                  >
+                    <Square {...ICON.sm} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void submit()}
+                    disabled={!input.trim() && attachments.length === 0}
+                    title="发送"
+                    className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full bg-accent text-accent-fg transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ArrowUp {...ICON.sm} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {view && view.queuedCount > 0 && (
+            <p className="mt-1.5 text-[11px] text-text-muted">
+              队列中还有 {view.queuedCount} 条待处理
+            </p>
+          )}
+
+          {/* 现场状态栏（Live Bar）：置于输入框下方，只留运行态观测（⑥-A 只读区不放操作） */}
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 pt-[7px] text-[11.5px] text-text-secondary",
+              stale && "stale",
+            )}
+          >
             {contextWindow > 0 && (
               <span className="flex items-center gap-1.5" title="上下文占用">
-                <span className="h-[5px] w-[76px] overflow-hidden rounded-full bg-line">
+                <span className="lb-opt text-text-muted">上下文</span>
+                <span className="lb-track h-[5px] overflow-hidden rounded-full bg-surface-overlay">
                   <span
                     className={cn("block h-full rounded-full", contextBarClass)}
                     style={{ width: `${Math.min(100, contextRatio * 100)}%` }}
                   />
                 </span>
                 <span className="font-mono">
-                  {(contextRatio * 100).toFixed(0)}% · {contextUsed.toLocaleString()} /{" "}
-                  {contextWindow.toLocaleString()}
+                  {(contextRatio * 100).toFixed(0)}% · {formatTokens(contextUsed)} /{" "}
+                  {formatTokens(contextWindow)}
                 </span>
               </span>
             )}
 
+            {contextWindow > 0 && <span className="lb-opt h-[12px] w-px bg-line" />}
+
             {view && view.stats.costUsd > 0 && (
-              <span className="font-mono">${view.stats.costUsd.toFixed(4)}</span>
+              <span className="lb-opt font-mono" title="本次会话累计成本">
+                ${view.stats.costUsd.toFixed(4)}
+              </span>
             )}
 
-            <span className="h-[13px] w-px bg-line-strong" />
+            <span className="h-[12px] w-px bg-line" />
 
             <span className="flex items-center gap-2.5">
               {running ? (
@@ -493,7 +835,7 @@ export function Conversation({
                     <span className="font-mono">{elapsedLabel}</span>
                   </span>
                   {lastActivity > 0 && (
-                    <span className={cn("font-mono", stale && "text-warning")}>
+                    <span className={cn("lb-idle font-mono", stale && "text-warning")}>
                       最后活动 {idleSec}s 前
                     </span>
                   )}
@@ -504,62 +846,19 @@ export function Conversation({
               )}
             </span>
           </div>
-
-          <div className="flex items-end gap-2">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void submit();
-                }
-              }}
-              rows={1}
-              placeholder={
-                running
-                  ? "运行中：Enter 发送插话，按钮停止"
-                  : "空闲：输入消息，Enter 发送 · Shift+Enter 换行"
-              }
-              className="max-h-[180px] flex-1 resize-none rounded-[12px] border border-line bg-surface-input px-3.5 py-2.5 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent-dim focus:ring-[3px] focus:ring-accent-soft"
-            />
-            {running ? (
-              <button
-                type="button"
-                onClick={() => void abort()}
-                className="flex h-10 shrink-0 items-center gap-1.5 rounded-[12px] bg-danger px-3 text-[13px] font-semibold text-white transition hover:opacity-90"
-              >
-                <Square {...ICON.sm} />
-                停止
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void submit()}
-                disabled={!input.trim()}
-                className="flex h-10 shrink-0 items-center gap-1.5 rounded-[12px] bg-accent px-3 text-[13px] font-semibold text-accent-fg transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-                style={{ minWidth: 76 }}
-              >
-                <Send {...ICON.sm} />
-                发送
-              </button>
-            )}
-          </div>
-          {view && view.queuedCount > 0 && (
-            <p className="mt-1.5 text-[11px] text-text-muted">
-              队列中还有 {view.queuedCount} 条待处理
-            </p>
-          )}
         </div>
       </div>
 
-      {/* 右列：满高跟随线，跨三行，所以输入区不会压到它下面 */}
-      <div className="col-start-2 row-span-3 row-start-1 flex min-h-0">
-        <FollowPanel
+      {/* 右列：工作区（页签切换「正在处理」/「浏览器」），跨三行，所以输入区不会压到它下面 */}
+      <div className="col-start-2 row-span-3 row-start-1 flex min-h-0 min-w-0">
+        <WorkspaceDock
+          sessionId={sessionId}
           view={view}
           highlightPath={hoveredFile}
           onOpenChanges={() => setPanel("changes")}
+          browser={browser}
+          tab={dockTab}
+          onTab={setDockTab}
         />
       </div>
     </div>
@@ -572,12 +871,18 @@ function Picker({
   value,
   label,
   options,
+  icon,
+  plain,
+  className,
   onChange,
 }: {
   title: string;
   value: string;
   label: string;
   options: { value: string; label: string; hint?: string }[];
+  icon?: ReactNode;
+  plain?: boolean;
+  className?: string;
   onChange: (value: string) => void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
@@ -599,11 +904,15 @@ function Picker({
         onClick={() => setOpen((v) => !v)}
         title={title}
         className={cn(
-          "flex items-center gap-1.5 rounded-[6px] border border-line bg-surface px-2 py-0.5 text-[11.5px] text-text-secondary transition",
-          "hover:border-line-strong hover:text-text-primary",
+          "cbtn flex h-7 items-center gap-1.5 rounded-[6px] border px-2 text-[12px] text-text-secondary transition",
+          plain
+            ? "border-transparent hover:border-transparent hover:bg-surface-overlay hover:text-text-primary"
+            : "border-line hover:border-line-strong hover:text-text-primary",
+          className,
         )}
       >
-        <span className="max-w-[180px] truncate">{label}</span>
+        {icon}
+        <span className="lbl max-w-[180px] truncate">{label}</span>
         <ChevronDown {...ICON.xs} className="shrink-0 text-text-muted" />
       </button>
       {open && options.length > 0 && (

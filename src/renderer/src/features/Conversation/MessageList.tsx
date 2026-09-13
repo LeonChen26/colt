@@ -12,6 +12,8 @@ import {
   Eye,
   FileEdit,
   FilePlus,
+  Globe,
+  Monitor,
   Terminal,
   Wrench,
 } from "lucide-react";
@@ -23,7 +25,7 @@ import { TerminalOutput } from "../../components/TerminalOutput";
 import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
 import { cn } from "../../lib/utils";
 
-type ToolResult = { output: string; isError: boolean };
+type ToolResult = { output: string; isError: boolean; image?: { data: string; mimeType: string } };
 
 /**
  * 助手行级骨架：左侧固定角色列 + 右侧正文列。
@@ -54,12 +56,20 @@ export function MessageBubble({
   // 工具结果已合并进各自的工具卡片，不再单独成条
   if (message.role === "toolResult") return null;
   if (message.role !== "user" && message.role !== "assistant") return null;
-  if (!message.text && message.toolCalls.length === 0) return null;
+  // 只带图片、没有文字的消息也必须渲染
+  if (!message.text && !message.image && message.toolCalls.length === 0) return null;
 
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[72%] rounded-[8px] border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap text-text-primary">
+        <div className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-[8px] border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap text-text-primary">
+          {message.image && (
+            <img
+              src={`data:${message.image.mimeType};base64,${message.image.data}`}
+              alt="随消息发送的图片"
+              className="max-h-64 rounded-[6px] border border-line"
+            />
+          )}
           {message.text}
         </div>
         <span className="ml-2.5 shrink-0 pt-[3px] text-[11px] text-text-muted">你</span>
@@ -154,6 +164,21 @@ function describeTool(
       return { icon: <Eye {...ICON.sm} />, subtitle: command ?? path };
     case "bash":
       return { icon: <Terminal {...ICON.sm} />, subtitle: command };
+    case "browser_read":
+    case "browser_screenshot":
+    case "browser_act": {
+      const url = typeof args.url === "string" ? args.url : undefined;
+      const action = typeof args.action === "string" ? args.action : undefined;
+      const ref = typeof args.ref === "string" ? args.ref : undefined;
+      return { icon: <Globe {...ICON.sm} />, subtitle: url ?? action ?? ref };
+    }
+    case "computer_screenshot":
+    case "computer_action": {
+      const action = typeof args.action === "string" ? args.action : "screenshot";
+      const coords =
+        typeof args.x === "number" && typeof args.y === "number" ? `(${args.x}, ${args.y})` : undefined;
+      return { icon: <Monitor {...ICON.sm} />, subtitle: coords ? `${action} ${coords}` : action };
+    }
     default:
       return { icon: <Wrench {...ICON.sm} />, subtitle: path ?? command };
   }
@@ -273,13 +298,26 @@ export function ToolCard({
               )}
               <div className="mb-1 text-[11px] text-text-muted">输出</div>
               {result ? (
-                name === "bash" ? (
-                  <TerminalOutput text={result.output} className="max-h-80" />
-                ) : (
-                  <pre className="max-h-80 overflow-auto rounded-[6px] bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
-                    {result.output}
-                  </pre>
-                )
+                <>
+                  {result.image && (
+                    <img
+                      alt="工具截图"
+                      className="mb-2 max-h-80 rounded-[6px] border border-line"
+                      src={`data:${result.image.mimeType};base64,${result.image.data}`}
+                    />
+                  )}
+                  {result.output ? (
+                    name === "bash" ? (
+                      <TerminalOutput text={result.output} className="max-h-80" />
+                    ) : (
+                      <pre className="max-h-80 overflow-auto rounded-[6px] bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                        {result.output}
+                      </pre>
+                    )
+                  ) : result.image ? null : (
+                    <p className="px-1 text-[11px] text-text-muted">（无输出）</p>
+                  )}
+                </>
               ) : running ? (
                 <p className="px-1 text-[11px] text-text-muted">执行中…</p>
               ) : (

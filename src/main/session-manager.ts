@@ -5,13 +5,14 @@
 import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { ConversationView, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
+import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
 import { ApprovalStore } from "./approval/store";
 import { analyzeToolCall } from "./approval/analyzer";
 import { createDeferred } from "./lib/deferred";
+import { hostBridge } from "./host";
 
 /** 进程池上限，超出时回收最久未活动的空闲会话 */
 const MAX_WORKERS = 6;
@@ -35,6 +36,14 @@ interface WorkerEntry {
   /** 当前会话的 provider 配置与模型 id，审批分析器需要据此装配模型 */
   provider: ProviderConfig;
   modelId: string;
+  /**
+   * 主动销毁原因（undefined 表示未主动销毁，即崩溃）。
+   * exit 回调靠它三分：
+   * - undefined：进程自己死了 → 发 crashed，醒目告警
+   * - "idle"：空闲超时回收 / 进程池淘汰 → 发 dormant，提示「空闲休眠」
+   * - "closed"：用户切走 / 启动超时 / 应用退出 → 静默（预期行为，无需提示）
+   */
+  disposeReason?: "idle" | "closed";
   /**
    * 就绪信号（createDeferred 的 promise）。worker 在发回 ready 之前就退出时会被
    * reject，从而掉出所有 await 它的调用方；否则 session.open 会永远 pending，
@@ -68,6 +77,9 @@ export class SessionManager {
 
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
+    // 内嵌浏览器的视图状态（首次加载 / 导航 / 标题变化 / 销毁）统一走本类的推送出口。
+    // onState 以最后一次注册为准，故重复 attachWindow 不会叠加监听。
+    hostBridge.onBrowserState((state) => this.#emit("browser.state", state));
   }
 
   #emit(channel: string, payload: unknown): void {
@@ -230,6 +242,35 @@ export class SessionManager {
     }
   }
 
+  /**
+   * 执行一次宿主能力调用（浏览器/桌面）并回发结果。
+   * 期间 worker 可能已被回收/替换，回给已死的进程毫无意义，直接丢弃。
+   */
+  async #handleToolRpc(
+    entry: WorkerEntry,
+    message: Extract<WorkerMessage, { type: "toolRpc" }>,
+  ): Promise<void> {
+    let result: WorkerCommand;
+    try {
+      const value: HostResult = await hostBridge.handle({
+        sessionId: entry.sessionId,
+        capability: message.capability,
+        action: message.action,
+        params: message.params,
+      });
+      result = { type: "toolRpcResult", requestId: message.requestId, ok: true, result: value };
+    } catch (error) {
+      result = {
+        type: "toolRpcResult",
+        requestId: message.requestId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (this.#workers.get(entry.sessionId) !== entry) return;
+    entry.child.postMessage(result);
+  }
+
   #sessionsRoot(): string {
     const dir = join(app.getPath("userData"), "sessions");
     mkdirSync(dir, { recursive: true });
@@ -344,9 +385,9 @@ export class SessionManager {
     const readyDeferred = createDeferred<void>();
     const readyTimer = setTimeout(() => {
       readyDeferred.reject(new Error(`会话进程启动超时（${READY_TIMEOUT_MS / 1000}s），请重试。`));
-      // 卡死的进程留着只会占坑，连同回收
+      // 卡死的进程留着只会占坑，连同回收。已由 session.open 报错，无需再提示休眠
       const stuck = this.#workers.get(options.sessionId);
-      if (stuck) this.#disposeWorker(stuck);
+      if (stuck) this.#disposeWorker(stuck, "closed");
     }, READY_TIMEOUT_MS);
     // 就绪（或已失败）后无需再计时，也不阻止进程退出
     readyTimer.unref?.();
@@ -372,6 +413,8 @@ export class SessionManager {
           // 持久化内核会话 ID，下次打开时续接历史
           setKernelSessionId(options.sessionId, message.kernelSessionId);
           readyDeferred.resolve();
+          // 通知界面：worker 已就绪（侧栏据此把“休眠/中断”退回正常态）
+          this.#emit("session.status", { sessionId: options.sessionId, state: "idle" });
           break;
         case "view": {
           entry.view = this.#withDbChanges(message.view);
@@ -460,6 +503,12 @@ export class SessionManager {
           break;
         }
 
+        case "toolRpc": {
+          // 宿主能力（浏览器/桌面）由主进程执行，结果异步回发
+          void this.#handleToolRpc(entry, message);
+          break;
+        }
+
         case "branches": {
           // FIFO：worker 按收到的顺序回复，最早的等待方先兑现
           const settle = entry.pendingBranches.shift();
@@ -481,15 +530,37 @@ export class SessionManager {
       }
     });
 
-    child.on("exit", () => {
+    child.on("exit", (code) => {
+      // 三分：
+      // - 未主动销毁（disposeReason 为 undefined）→ 崩溃，发 crashed + error
+      // - "idle"（超时回收 / 池淘汰）→ 发 dormant，侧栏提示「空闲休眠」
+      // - "closed"（切走 / 启动超时 / 应用退出）→ 静默，属预期行为
+      const reason = entry.disposeReason;
       this.#workers.delete(options.sessionId);
       // 与 #disposeWorker 对齐：worker 没了，改动列表缓存也一并丢弃
       this.#fileChangesCache.delete(options.sessionId);
+      // 进程异常退出（未走 dispose 命令）时也要收掉浏览器窗口，避免孤儿窗口；
+      // 正常 dispose 已先关过，这里是幂等空操作
+      hostBridge.disposeSession(options.sessionId);
       clearTimeout(readyTimer);
       // 尚未 ready 就退出：掐断等待方，否则 session.open 永久挂起，
       // 渲染层会一直停在「正在启动会话进程…」。已 ready 时这里是空操作。
       readyDeferred.reject(new Error("会话进程在就绪前退出，请重试。"));
-      this.#emit("session.status", { sessionId: options.sessionId, state: "idle" });
+      if (!reason) {
+        // 崩溃：无人能再响应审批与分支查询，清理避免界面残留幽灵卡片
+        this.#emit("session.status", { sessionId: options.sessionId, state: "crashed" });
+        const dropped = this.approvals.clearPending(options.sessionId);
+        for (const item of dropped) this.#clearApprovalTimer(item.toolCallId);
+        if (dropped.length > 0) this.#emitPending(options.sessionId);
+        entry.pendingBranches.length = 0;
+        this.#emit("session.error", {
+          sessionId: options.sessionId,
+          message: `会话进程异常退出（code=${code ?? "unknown"}），历史已保留。再发一条消息会自动重连恢复。`,
+        });
+      } else if (reason === "idle") {
+        // 仅超时回收/池淘汰才提示休眠；用户主动切走不打扰
+        this.#emit("session.status", { sessionId: options.sessionId, state: "dormant" });
+      }
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -523,11 +594,36 @@ export class SessionManager {
     entry.lastActiveAt = Date.now();
   }
 
-  prompt(sessionId: string, text: string): void {
+  prompt(sessionId: string, text: string, images?: { data: string; mimeType: string }[]): void {
     const entry = this.#workers.get(sessionId);
     if (!entry) throw new Error(`会话未运行：${sessionId}`);
     // 运行中则作为插话，否则作为新一轮提问
-    this.#post(sessionId, { type: entry.running ? "steer" : "prompt", text });
+    this.#post(sessionId, { type: entry.running ? "steer" : "prompt", text, images });
+  }
+
+  /**
+   * 投递一条用户消息；worker 已被回收时先重建再投递。
+   *
+   * 长时间不用的会话会被空闲回收（见 startIdleReaper），此时 #workers 里已无该
+   * sessionId。旧行为是直接抛「会话未运行」，界面表现为“发了消息毫无反应”。
+   * 这里改为透明自愈：借用调用方给的 recover 工厂重建 worker（它会复用 #pending
+   * 去重），ready 后再发消息。若重建后 worker 仍不在池中（启动失败），
+   * 则抛出“会话未运行”，由界面展示错误——不再静默。
+   */
+  async promptOrReconnect(
+    sessionId: string,
+    text: string,
+    images: { data: string; mimeType: string }[] | undefined,
+    recover: () => Promise<void>,
+  ): Promise<void> {
+    if (!this.#workers.has(sessionId)) {
+      // 重建期间 worker 也可能被并发调用者拉起，recover 内部已用 #pending 去重
+      await recover();
+    }
+    // 重建成功后按当前运行态选择 prompt / steer；仍缺失说明 recover 没成功
+    const entry = this.#workers.get(sessionId);
+    if (!entry) throw new Error(`会话未运行：${sessionId}`);
+    this.#post(sessionId, { type: entry.running ? "steer" : "prompt", text, images });
   }
 
   abort(sessionId: string): void {
@@ -611,18 +707,31 @@ export class SessionManager {
    * 运行中的会话不关闭——避免措断正在进行的 Agent 运行，
    * 让它在空闲回收或下次 open 时自然收敛。
    */
+  /**
+   * 关闭会话 worker（渲染层卸载时调用）。
+   * 运行中的会话不关闭——避免措断正在进行的 Agent 运行，
+   * 让它在空闲回收或下次 open 时自然收敛。
+   * 这属于用户主动切走，不是“会话被系统收起来”，故标 closed 静默。
+   */
   close(sessionId: string): boolean {
     const entry = this.#workers.get(sessionId);
     if (!entry || entry.running) return false;
-    this.#disposeWorker(entry);
+    this.#disposeWorker(entry, "closed");
     return true;
   }
 
-  /** 发送 dispose 并从池中移除（不处理 exit 回调的幂等删） */
-  #disposeWorker(entry: WorkerEntry): void {
+  /**
+   * 发送 dispose 并从池中移除（不处理 exit 回调的幂等删）。
+   * reason 决定进程退出时是否向界面提示：idle 会提示「空闲休眠」，closed 静默。
+   */
+  #disposeWorker(entry: WorkerEntry, reason: "idle" | "closed"): void {
+    // 先记销毁原因：exit 回调据此区分崩溃 / 空闲休眠 / 静默关闭
+    entry.disposeReason = reason;
     this.#workers.delete(entry.sessionId);
     // 缓存与 worker 同寿命：进程没了就丢弃，避免为打开过的历史会话常驻内存
     this.#fileChangesCache.delete(entry.sessionId);
+    // 该会话的浏览器窗口随 worker 一起关闭，避免遗留孤儿窗口
+    hostBridge.disposeSession(entry.sessionId);
     // worker 没了就无人能响应审批，待审条目必须清掉，否则界面残留幽灵卡片
     const dropped = this.approvals.clearPending(entry.sessionId);
     for (const item of dropped) this.#clearApprovalTimer(item.toolCallId);
@@ -644,7 +753,8 @@ export class SessionManager {
       .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
     const victim = idle[0];
     if (!victim) throw new Error(`并发会话已达上限（${MAX_WORKERS}），请先结束一个运行中的会话。`);
-    this.#disposeWorker(victim);
+    // 与超时回收同类：都是被系统收起来，提示「空闲休眠」
+    this.#disposeWorker(victim, "idle");
   }
 
   /** 周期回收长时间空闲的 worker；唤醒靠 JSONL 重放，成本只是重启延迟 */
@@ -654,7 +764,7 @@ export class SessionManager {
       const now = Date.now();
       for (const entry of [...this.#workers.values()]) {
         if (!entry.running && now - entry.lastActiveAt > IDLE_TIMEOUT_MS) {
-          this.#disposeWorker(entry);
+          this.#disposeWorker(entry, "idle");
         }
       }
     }, IDLE_SWEEP_MS);
@@ -668,6 +778,8 @@ export class SessionManager {
       this.#reaper = undefined;
     }
     for (const entry of [...this.#workers.values()]) {
+      // 应用退出属预期关闭，标 closed 避免被 exit 回调当成崩溃或休眠告警
+      entry.disposeReason = "closed";
       try {
         entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
       } catch {
@@ -676,6 +788,7 @@ export class SessionManager {
     }
     this.#workers.clear();
     this.#fileChangesCache.clear();
+    hostBridge.disposeAll();
   }
 }
 

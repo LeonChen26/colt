@@ -27,6 +27,11 @@ export type Decision = "allow" | "ask" | "analyze";
 
 /** 会话内记忆的放行规则 */
 export interface AllowRule {
+  /**
+   * 稳定标识，供界面按 id 删除。
+   * 可选：测试与旧路径手写的规则可省略，store 入库时会补一个。
+   */
+  id?: string;
   toolName: string;
   /** tool：该工具全部放行；signature：仅放行同签名的调用 */
   scope: "tool" | "signature";
@@ -69,6 +74,24 @@ const WRITE_TOOLS: Record<string, string> = {
   write: "path",
   create: "path",
 };
+
+/**
+ * 浏览器只读工具：不改变页面状态，判为 safe 直接放行。
+ * 注意 screenshot 虽无副作用，但会把页面内容外发给模型，故不并入 READONLY_TOOLS
+ * （后者语义是「文件系统侧确定无副作用」），仅在本模块按 safe 处理。
+ */
+const BROWSER_READ_TOOLS: ReadonlySet<string> = new Set(["browser_read", "browser_screenshot"]);
+
+/** 浏览器操作工具：会改变页面状态，需确认 */
+const BROWSER_ACT_TOOL = "browser_act";
+
+/**
+ * 电脑控制工具。
+ * 截图只是读取屏幕（无副作用），判 moderate——含隐私但可被「本会话始终允许」降噪；
+ * 实际操作会真实控制整台桌面的鼠标键盘，判 dangerous，永远单独确认。
+ */
+const COMPUTER_SCREENSHOT_TOOL = "computer_screenshot";
+const COMPUTER_ACTION_TOOL = "computer_action";
 
 /**
  * 只读 shell 命令白名单。
@@ -236,6 +259,16 @@ export function assessCommand(command: string): { risk: RiskLevel; reason: strin
   return { risk: "safe", reason: "只读命令" };
 }
 
+/** 取出 upload 的路径参数，非法值忽略 */
+function readUploadPaths(args: Record<string, unknown>): string[] {
+  const value = args.paths;
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 /** 生成同类调用的签名，用于「不再询问」的记忆匹配 */
 export function buildSignature(invocation: ToolInvocation): string {
   const { toolName, args } = invocation;
@@ -246,6 +279,23 @@ export function buildSignature(invocation: ToolInvocation): string {
   const pathKey = WRITE_TOOLS[toolName];
   if (pathKey !== undefined && typeof args[pathKey] === "string") {
     return `${toolName}:${normalizePath(args[pathKey] as string)}`;
+  }
+  if (toolName === BROWSER_ACT_TOOL) {
+    const action = typeof args.action === "string" ? args.action : "";
+    // 上传的签名必须带上文件本身：只按 ref 记忆，会让「本次会话不再询问」覆盖之后任意文件的传外
+    if (action === "upload") return `browser_act:upload:${readUploadPaths(args).join(",")}`;
+    const target = typeof args.url === "string" ? args.url : typeof args.ref === "string" ? args.ref : "";
+    return `browser_act:${action}${target ? `:${target}` : ""}`;
+  }
+  if (BROWSER_READ_TOOLS.has(toolName)) {
+    const action = typeof args.action === "string" ? args.action : "";
+    return action ? `${toolName}:${action}` : `${toolName}:*`;
+  }
+  if (toolName === COMPUTER_ACTION_TOOL) {
+    const action = typeof args.action === "string" ? args.action : "";
+    const target =
+      typeof args.x === "number" && typeof args.y === "number" ? `${args.x},${args.y}` : "";
+    return `computer_action:${action}${target ? `:${target}` : ""}`;
   }
   return `${toolName}:*`;
 }
@@ -260,6 +310,29 @@ function buildSummary(invocation: ToolInvocation): string {
   const pathKey = WRITE_TOOLS[toolName];
   if (pathKey !== undefined && typeof args[pathKey] === "string") {
     return `${toolName}: ${args[pathKey] as string}`;
+  }
+  if (toolName === BROWSER_ACT_TOOL) {
+    const action = typeof args.action === "string" ? args.action : "";
+    if (action === "upload") {
+      const paths = readUploadPaths(args);
+      const ref = typeof args.ref === "string" ? args.ref : "";
+      return `browser: upload ${ref}${paths.length > 0 ? ` (${paths.join(", ")})` : ""}`.trim();
+    }
+    const target = typeof args.url === "string" ? args.url : typeof args.ref === "string" ? args.ref : "";
+    return `browser: ${action}${target ? ` ${target}` : ""}`.trim();
+  }
+  if (BROWSER_READ_TOOLS.has(toolName)) {
+    if (toolName === "browser_screenshot") return "browser: screenshot";
+    return `browser: ${typeof args.action === "string" && args.action ? args.action : "read"}`;
+  }
+  if (toolName === COMPUTER_SCREENSHOT_TOOL) {
+    return "computer: screenshot";
+  }
+  if (toolName === COMPUTER_ACTION_TOOL) {
+    const action = typeof args.action === "string" ? args.action : "";
+    const target =
+      typeof args.x === "number" && typeof args.y === "number" ? ` (${args.x}, ${args.y})` : "";
+    return `computer: ${action}${target}`.trim();
   }
   return toolName;
 }
@@ -349,6 +422,44 @@ export function assessToolRisk(
       return { risk: "dangerous", reason: "写入项目目录之外" };
     }
     return { risk: "moderate", reason: "修改项目内文件" };
+  }
+
+  // 浏览器只读：不改页面状态，直接放行
+  if (BROWSER_READ_TOOLS.has(toolName)) {
+    return { risk: "safe", reason: "浏览器只读操作，无副作用" };
+  }
+
+  // 浏览器操作：可能改变页面状态，需确认。wait/viewport 不改动页面数据，按只读放行
+  if (toolName === BROWSER_ACT_TOOL) {
+    if (args.action === "wait") return { risk: "safe", reason: "等待页面就绪，无副作用" };
+    if (args.action === "viewport") return { risk: "safe", reason: "调整浏览窗口视口，不改动页面数据" };
+    if (args.action === "upload") {
+      // 上传是数据外带的原语：把本地文件交给远端页面，最坏情况是 .env / 私钥被送到对方站点。
+      // 故沿用 write/edit 的路径纪律——项目外或敏感文件一律 dangerous，每次单独确认。
+      const paths = readUploadPaths(args);
+      if (paths.length === 0) return { risk: "moderate", reason: "上传操作但未提供文件路径" };
+      for (const raw of paths) {
+        const normalized = normalizePath(raw);
+        for (const { pattern, reason } of SENSITIVE_PATH_PATTERNS) {
+          if (pattern.test(normalized)) return { risk: "dangerous", reason: `上传敏感文件：${reason}` };
+        }
+        if (!isInside(projectRoot, raw)) {
+          return { risk: "dangerous", reason: `上传项目目录之外的文件：${raw}` };
+        }
+      }
+      return { risk: "moderate", reason: `向页面上传 ${paths.length} 个文件` };
+    }
+    return { risk: "moderate", reason: "浏览器页面操作，可能改变页面状态" };
+  }
+
+  // 电脑控制截图：读取整屏，无副作用但含隐私，需确认（可被会话记忆降噪）
+  if (toolName === COMPUTER_SCREENSHOT_TOOL) {
+    return { risk: "moderate", reason: "读取整个屏幕画面，可能含隐私内容" };
+  }
+
+  // 电脑控制操作：真实控制桌面鼠标键盘，最高风险，永远单独确认
+  if (toolName === COMPUTER_ACTION_TOOL) {
+    return { risk: "dangerous", reason: "直接控制鼠标键盘，会操作整个桌面" };
   }
 
   // 未知工具：不认识就问

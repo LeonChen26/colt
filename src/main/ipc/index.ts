@@ -7,6 +7,7 @@ import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap } from "@shared/protocol";
 import { splitModelRef } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
+import { readGitStatus } from "../git";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
 import {
@@ -21,6 +22,7 @@ import {
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
+import { hostBridge } from "../host";
 import { closeDatabase, openDatabase } from "../db";
 import { deleteSecret, hasSecret, maskSecret, setSecret } from "../secrets";
 import {
@@ -45,6 +47,37 @@ export function setFirstRunReport(report: FirstRunReport): void {
 type Handler<C extends IpcChannel> = (
   request: IpcInvokeMap[C]["request"],
 ) => Promise<IpcInvokeMap[C]["response"]> | IpcInvokeMap[C]["response"];
+
+/**
+ * 解析会话应使用的 provider/model（带失效回退）并启动（或复用）worker。
+ * session.open 与 session.prompt 的自动重连共用，保证两处模型选择一致。
+ */
+async function openSessionWorker(input: {
+  sessionId: string;
+  cwd: string;
+  model?: string;
+}): Promise<void> {
+  // 模型优先级：显式传入 > 会话上次选定 > 内置 DeepSeek 默认，形如 "providerId/modelId"
+  const raw =
+    input.model ?? getSession(input.sessionId)?.modelRef ?? `${BUILTIN_DEEPSEEK.id}/${DEFAULT_MODEL}`;
+  let { provider: providerId, model: modelId } = splitModelRef(raw, BUILTIN_DEEPSEEK.id);
+
+  // 持久化的 modelRef 可能已失效（provider 被删、模型下线），退回内置默认，
+  // 否则会话将因 provider 找不到而永久打不开
+  let provider = getProvider(providerId);
+  if (!provider || !provider.models.some((item) => item.id === modelId)) {
+    providerId = BUILTIN_DEEPSEEK.id;
+    modelId = DEFAULT_MODEL;
+    provider = BUILTIN_DEEPSEEK;
+  }
+
+  await sessionManager.ensureWorker({
+    sessionId: input.sessionId,
+    cwd: input.cwd,
+    model: modelId,
+    provider,
+  });
+}
 
 /**
  * 删除会话对应的 JSONL 历史文件。
@@ -130,32 +163,24 @@ export function registerIpcHandlers(): void {
   handle("session.list", (request) => listSessions(request?.projectId));
 
   handle("session.open", async (request) => {
-    // 模型优先级：显式传入 > 会话上次选定 > 内置 DeepSeek 默认
-    // 形如 "providerId/modelId"
-    const raw =
-      request.model ?? getSession(request.sessionId)?.modelRef ?? `${BUILTIN_DEEPSEEK.id}/${DEFAULT_MODEL}`;
-    let { provider: providerId, model: modelId } = splitModelRef(raw, BUILTIN_DEEPSEEK.id);
-
-    // 持久化的 modelRef 可能已失效（provider 被删、模型下线），退回内置默认，
-    // 否则会话将因 provider 找不到而永久打不开
-    let provider = getProvider(providerId);
-    if (!provider || !provider.models.some((item) => item.id === modelId)) {
-      providerId = BUILTIN_DEEPSEEK.id;
-      modelId = DEFAULT_MODEL;
-      provider = BUILTIN_DEEPSEEK;
-    }
-
-    await sessionManager.ensureWorker({
+    await openSessionWorker({
       sessionId: request.sessionId,
       cwd: request.cwd,
-      model: modelId,
-      provider,
+      model: request.model,
     });
     return { ok: true } as const;
   });
 
-  handle("session.prompt", (request) => {
-    sessionManager.prompt(request.sessionId, request.text);
+  handle("session.prompt", async (request) => {
+    // 会话可能已被空闲回收（长时间不用）；带 cwd 时自动重建后再投递，避免
+    // 旧行为下直接抛「会话未运行」导致界面静默无响应。
+    if (request.cwd) {
+      await sessionManager.promptOrReconnect(request.sessionId, request.text, request.images, () =>
+        openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
+      );
+    } else {
+      sessionManager.prompt(request.sessionId, request.text, request.images);
+    }
     return { ok: true } as const;
   });
 
@@ -226,6 +251,20 @@ export function registerIpcHandlers(): void {
     return { mode: sessionManager.approvals.getMode(request.sessionId) };
   });
 
+  handle("approval.rules.list", (request) =>
+    sessionManager.approvals.listRules(request.sessionId),
+  );
+
+  handle("approval.rules.remove", (request) => {
+    sessionManager.approvals.removeRule(request.sessionId, request.ruleId);
+    return { ok: true } as const;
+  });
+
+  handle("approval.rules.clear", (request) => {
+    sessionManager.approvals.clearRules(request.sessionId, request.kind);
+    return { ok: true } as const;
+  });
+
   handle("providers.list", () => listProviders());
 
   handle("providers.save", (request) => {
@@ -269,6 +308,15 @@ export function registerIpcHandlers(): void {
     sessionManager.navigate(request.sessionId, request.targetId);
     return { ok: true } as const;
   });
+
+  handle("git.status", (request) => readGitStatus(request.cwd));
+
+  // 内嵌浏览器：渲染层上报页面区域矩形供主进程摆放 WebContentsView（原生视图不参与 DOM 叠层）
+  handle("browser.bounds", (request) => {
+    hostBridge.setBrowserBounds(request.sessionId, request.rect);
+    return { ok: true } as const;
+  });
+  handle("browser.state.get", (request) => hostBridge.browserState(request.sessionId));
 }
 
 /** 首启时若环境变量里有 key 且尚未配置，则自动导入一次，方便开发 */

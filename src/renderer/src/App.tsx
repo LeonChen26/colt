@@ -48,6 +48,17 @@ export default function App(): React.JSX.Element {
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   /** 运行中的会话 → 开始时刻（用于侧栏「运行中 · mm:ss」） */
   const [runningSessions, setRunningSessions] = useState<Map<string, number>>(new Map());
+  /**
+   * 已停止会话 id → 停止原因。
+   * worker 被空闲回收或崩溃后进程消失，但列表项与消息仍保留，界面看上去“会话还在”。
+   * 主进程以 session.status 告知，侧栏据此区分：
+   * - "dormant"：空闲休眠（长时间未用被回收 / 主动关闭），低调提示「空闲休眠 · 发送即恢复」
+   * - "crashed"：异常退出，醒目提示「异常中断 · 发送即恢复」
+   * 重新就绪（idle）或运行中（running）时移出。
+   */
+  const [offlineSessions, setOfflineSessions] = useState<Map<string, "dormant" | "crashed">>(
+    new Map(),
+  );
   const [now, setNow] = useState(() => Date.now());
 
   // 主题挂载到下 <html>，并在变更时持久化
@@ -127,6 +138,22 @@ export default function App(): React.JSX.Element {
           if (!next.has(view.sessionId)) next.set(view.sessionId, Date.now());
         } else {
           next.delete(view.sessionId);
+        }
+        return next;
+      });
+    });
+  }, []);
+
+  // 全局监听会话进程状态：worker 停止/崩溃后侧栏要能看出来，否则界面看上去“会话还在”
+  useEffect(() => {
+    return window.banyan.on("session.status", ({ sessionId, state }) => {
+      setOfflineSessions((map) => {
+        const next = new Map(map);
+        if (state === "dormant" || state === "crashed") {
+          next.set(sessionId, state);
+        } else {
+          // idle（worker 就绪）或 running（Agent 跑起来）都意味着进程活着
+          next.delete(sessionId);
         }
         return next;
       });
@@ -310,6 +337,7 @@ export default function App(): React.JSX.Element {
                               session={session}
                               active={session.id === activeSession?.id}
                               startedAt={runningSessions.get(session.id)}
+                              offlineState={offlineSessions.get(session.id)}
                               now={now}
                               onClick={() => {
                                 if (project.id !== activeProject?.id) setActiveProject(project);
@@ -513,6 +541,7 @@ function SessionRow({
   session,
   active,
   startedAt,
+  offlineState,
   now,
   onClick,
   onDelete,
@@ -520,6 +549,11 @@ function SessionRow({
   session: SessionInfo;
   active: boolean;
   startedAt?: number;
+  /**
+   * worker 已离开内存的原因：空闲休眠（stopped）/ 崩溃（crashed）。
+   * 与 startedAt 正交：停止的会话一定不在运行中。
+   */
+  offlineState?: "dormant" | "crashed";
   now: number;
   onClick: () => void;
   onDelete: () => void;
@@ -547,9 +581,13 @@ function SessionRow({
             "h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px]",
             running
               ? "pulse-dot border-success bg-success"
-              : active
-                ? "border-accent bg-accent"
-                : "border-text-muted",
+              : offlineState === "crashed"
+                ? "border-danger bg-danger"
+                : offlineState === "dormant"
+                  ? "border-warning"
+                  : active
+                    ? "border-accent bg-accent"
+                    : "border-text-muted",
           )}
         />
         <span className="min-w-0 flex-1">
@@ -561,8 +599,19 @@ function SessionRow({
           >
             {session.title}
           </span>
-          <span className="block truncate text-[10.5px] text-text-muted">
-            {running ? `运行中 · ${formatElapsed(startedAt, now)}` : formatAgo(session.updatedAt)}
+          <span
+            className={cn(
+              "block truncate text-[10.5px]",
+              offlineState === "crashed" ? "text-danger-fg" : "text-text-muted",
+            )}
+          >
+            {running
+              ? `运行中 · ${formatElapsed(startedAt, now)}`
+              : offlineState === "crashed"
+                ? "异常中断 · 发送即恢复"
+                : offlineState === "dormant"
+                  ? "空闲休眠 · 发送即恢复"
+                  : formatAgo(session.updatedAt)}
           </span>
         </span>
       </button>
