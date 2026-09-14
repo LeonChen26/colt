@@ -647,4 +647,60 @@
   `ConsoleEntry` / `NetworkEntry` 里压根没有，要扩主进程 `CaptureBuffer` 与协议类型，
   还会牵动 `browser_read` 给模型的文本（`formatConsole` / `formatNetwork`，被压缩过是刻意的）。
   即 N1 的**后半（②）仍待定**：见 `NEXT-PHASE.md` §3.1 N1。
+
+### v1.34 —— `/compact` 斜杠命令：手动压缩上下文（2026-09）
+
+> 依据：用户要求「实现一个手动上下文压缩的命令」。
+>
+> ⚠️ **动手前先读代码纠正了一处前提**：压缩**全链路早已存在**——
+> `session.compact`（IPC）→ `SessionManager.compact` → worker 的 `case "compact"` →
+> `state.lane.compact()` → 重取快照；⑥ 上也已有「压缩上下文」按钮。
+> 缺的**不是压缩能力**，而是「不受 `contextRatio > 0.7` 门槛限制的入口」。
+> 故本项是**加入口**，不是实现压缩。
+
+**① 命令识别是纯前端本地判定（`lib/slash-command.ts`）**
+
+`parseSlashCommand(text)` 只认 `/compact`，未知 `/xxx` 一律 `null`。两条规则刻意从严：
+- **必须独占整条输入**（`/compact`、`/compact  `），**不做前缀匹配**。
+  ⚠️ 初版实现写的是 `split(/\s+/, 1)` 取第一段比对，**单测当场抓出它会把
+  `/compact 一下` 当成命令吞掉**——用户那句「用 /compact 手动压缩」就永远发不出去。
+  改成整串比对后该用例转绿。这是「判错方向的代价不对称」：漏认只是原样发出（可见），
+  误认是静默吞掉用户输入（不可见）。
+- **未知命令一律放行**：贴路径（`/usr/local/bin/node`）是常见输入，不能因为以 `/` 开头就被拦。
+
+**② 不做命令菜单（纪律说明）**：`NEXT-PHASE.md` §3.2 的 D3 把「`/` 命令菜单」列为不做，
+理由是**后端没有命令注册**、画菜单就是死菜单。本项与它**不冲突**：这里只识别**确实有实现**的那一个
+命令，**不画菜单、不做自动补全、不列清单**——即不引入任何「点了没反应的入口」（`AGENTS.md` §3.6）。
+
+**③ 可发现性用「真能点的按钮」解决**：光靠 placeholder 或文档告知等于**隐形**。
+输入区工具行（「附件」「访问模式」同排）加了一个 `/compact` 按钮，
+**与在输入框敲 `/compact` 回车走同一条 `compact()`**（`data-slash-command="compact"` 供冒烟定位），
+不是只写一行提示文字。运行中禁用并给出原因。
+
+**④ 两处顺带修复**
+- **运行中守卫**：`compact()` 前判运行态并给出说明。压缩会**重写 transcript**
+  （worker 里 compact 之后必须重新取快照），与在飞的 run 撞上会让分流与工具配对错乱。
+  ⚠️ 因 `running` 的派生值位置靠后（⑥ 那一段），而斜杠命令在输入区更靠前判，
+  故用 `runningRef` 镜像避开依赖倒挂（直接把 `running` 当依赖会迫使 `compact` / `submit` 跟着重建）。
+- **worker 回收自愈**：`compact` 原先走裸 `#post`，而 `#post` 在 worker 被空闲回收后
+  **会抛「会话未运行」**（`prompt` 那条链路早有 `promptOrReconnect` 自愈，`compact` 没有）——
+  即旧行为下点压缩按钮有概率「点了没反应」。新增 `SessionManager.compactOrReconnect`
+  （不能直接复用 `promptOrReconnect`：重建后必须发 `compact` 而不是 prompt / steer，
+  否则用户敲的 `/compact` 会变成一轮**真实的模型请求**）。协议侧 `session.compact` 增可选 `cwd`。
+
+**⑤ 给冒烟加的稳定锚点**：错误区加了 `data-conv-error`（与 `data-run-state` 同性质）。
+
+验收：`typecheck` / **439 单测（438 通过 / 1 跳过；新增 4 条）** / `build` / **`dock` 152/152**（146 → 152）。
+`dock` 新增 6 条：入口可点、`/compact` 真的派发压缩、不会被当成普通提问、输入框被消费、
+**带正文的 `/compact …` 回落成普通提问**、以 `/` 开头的路径照常发出。
+
+⚠️ 判据不用界面文字，而是**在 `sessionManager` 上打桩计数**（`compact` / `compactOrReconnect`
+对 `promptOrReconnect`），跑完立即复原——「真的走了压缩」这件事只有主进程侧的调用记录能作证。
+并做了**反向验证**：临时把实现改回前缀匹配，确认那条防误吞断言**如期变红**（146/152）——
+证明它有真实判定力，不是恒真断言。
+
+⚠️ **已知 flaky（非本项引入）**：反向验证那一轮里，B1 的几条「原生视图与页面区域逐像素对齐」
+断言也曾变红（窗口尺寸/DPI 竞态），恢复正确实现后重跑 152/152 全绿。
+这几条是既有的偶发，与 `/compact` 无关——记录在此，免得下次被误当成新 bug。
+
 - 修改本文档需记录：**改了什么区域、依据什么事实、影响哪些已有设计**。

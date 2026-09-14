@@ -25,6 +25,7 @@ import type { ApprovalMode, ApprovalRequest, BrowserNavAction, BrowserViewState,
 import { resolveSessionModel, splitModelRef } from "@shared/model-ref";
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
+import { parseSlashCommand } from "../../lib/slash-command";
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
@@ -304,6 +305,14 @@ export function Conversation({
     runStartedAtRef.current = view?.running ? (runStartedAtRef.current ?? Date.now()) : null;
   }, [view?.running]);
 
+  /**
+   * 运行态的 ref 镜像。`running` 的派生值在组件靠后处（⑥ 那一段）才算出来，
+   * 而 `compact`（由输入框的斜杠命令调用，位置更靠前）需要读它——用 ref 避开
+   * 依赖倒挂：直接把 `running` 当依赖会迫使 `compact` / `submit` 都跟着重建。
+   */
+  const runningRef = useRef(false);
+  runningRef.current = view?.running ?? false;
+
   // 会话头展示工作目录的 git 分支（规则 ②-B）；非仓库或读取失败则隐藏。
   // 用户可能在应用外部切换分支，故除 cwd 变化外，窗口重新获焦时也刷新一次。
   useEffect(() => {
@@ -511,9 +520,36 @@ export function Conversation({
     }
   }, []);
 
+  /**
+   * 手动压缩上下文（⑥ 的按钮与 `/compact` 命令共用）。
+   *
+   * 运行中不允许：压缩会**重写 transcript**（worker 里 compact 之后要重新取快照），
+   * 与在飞的 run 撞在一起会让分流与工具配对错乱。运行中直接给出说明而不是静默丢队列。
+   */
+  const compact = useCallback(async () => {
+    setError(null);
+    if (runningRef.current) {
+      setError("运行中无法压缩上下文：请先停止当前运行，或等它跑完。");
+      return;
+    }
+    try {
+      await window.colt.invoke("session.compact", { sessionId, cwd });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [sessionId, cwd]);
+
   const submit = useCallback(async () => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
+    // 斜杠命令：只认白名单（`/compact`），未知的 `/xxx` 回落成普通提问照常发出。
+    // 命令**不消耗附件**，也不清空输入——压缩失败时用户还能改一改再发。
+    const command = parseSlashCommand(text);
+    if (command) {
+      setInput("");
+      await compact();
+      return;
+    }
     // 纯文本模型下适配器会按 model.input 静默丢弃图片。这里直接拦下并说明，
     // 避免用户看到"图发出去了但 AI 毫无反应"。
     if (attachments.length > 0 && view && !view.imageInput) {
@@ -537,20 +573,11 @@ export function Conversation({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [input, attachments, view, sessionId, cwd]);
+  }, [input, attachments, view, sessionId, cwd, compact]);
 
   const abort = useCallback(async () => {
     try {
       await window.colt.invoke("session.abort", { sessionId });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [sessionId]);
-
-  const compact = useCallback(async () => {
-    setError(null);
-    try {
-      await window.colt.invoke("session.compact", { sessionId });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -728,7 +755,10 @@ export function Conversation({
           )}
 
           {error && (
-            <div className="mb-3 rounded-[8px] border border-danger/50 bg-danger-soft px-3 py-2 text-[12.5px] text-danger-fg">
+            <div
+              data-conv-error
+              className="mb-3 rounded-[8px] border border-danger/50 bg-danger-soft px-3 py-2 text-[12.5px] text-danger-fg"
+            >
               {error}
             </div>
           )}
@@ -926,6 +956,28 @@ export function Conversation({
                 icon={<ShieldCheck {...ICON.sm} className="text-warning" />}
                 onChange={(value) => void switchMode(value as ApprovalMode)}
               />
+
+              {/*
+                `/compact` 的可发现入口：命令是**前端本地识别**的（`parseSlashCommand`），
+                但只靠 placeholder / 文档告知用户等于“隐形”。这里做成**真能点**的按钮
+                （点它与在输入框敲 `/compact` 回车走同一条 `compact()`），不是只写一行提示文字。
+                运行中禁用并给出原因，与 `compact()` 的守卫一致。
+              */}
+              <button
+                type="button"
+                onClick={() => void compact()}
+                disabled={running}
+                data-slash-command="compact"
+                title={
+                  running
+                    ? "运行中无法压缩上下文（压缩会重写会话记录）"
+                    : "压缩上下文（也可在输入框敲 /compact 回车）"
+                }
+                className="flex h-7 shrink-0 items-center gap-1 rounded-[6px] px-2 font-mono text-[11.5px] text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Shrink {...ICON.sm} className="shrink-0" />
+                /compact
+              </button>
 
               <span className="cpush flex-1" />
 

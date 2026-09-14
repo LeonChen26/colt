@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { writeFile } from "node:fs/promises";
 import { upsertProject, createSession, getProject } from "./db/repo";
 import { hostBridge } from "./host";
+import { sessionManager } from "./session-manager";
 import { join, resolve } from "node:path";
 import type { HostResult } from "@shared/worker-protocol";
 // 夹具站与「手动体验」共用同一份页面（scripts/fixture-server.mjs 是唯一数据源），
@@ -1857,6 +1858,96 @@ async function runDock(
     });
     await sleep(700);
     checks.push(["最窄右栏下「恢复」后仍逐像素对齐", await alignedNow()]);
+
+    // ---- `/compact` 斜杠命令（手动上下文压缩）----
+    // 压缩链路本身早已存在（session.compact → worker 的 compact 分支），本条验的是
+    // **输入框能不能把它叫出来**，以及「未知 / 带参数的写法会不会被误吞」。
+    //
+    // 判据不用界面文字，直接在 `sessionManager` 上打桩计数：命令是否被识别、
+    // 以及它是走了压缩还是被当成普通提问发出（后者会打到 `promptOrReconnect`）。
+    // 打桩跑完立刻恢复，不残留到其他段落。
+    const compactCalls: string[] = [];
+    const promptCalls: string[] = [];
+    const realCompact = sessionManager.compact.bind(sessionManager);
+    const realCompactOrReconnect = sessionManager.compactOrReconnect.bind(sessionManager);
+    const realPromptOrReconnect = sessionManager.promptOrReconnect.bind(sessionManager);
+    sessionManager.compact = (id: string) => {
+      compactCalls.push(id);
+      realCompact(id);
+    };
+    sessionManager.compactOrReconnect = async (id: string, recover: () => Promise<void>) => {
+      compactCalls.push(id);
+      await realCompactOrReconnect(id, recover);
+    };
+    sessionManager.promptOrReconnect = async (id, text, images, recover) => {
+      promptCalls.push(text);
+      await realPromptOrReconnect(id, text, images, recover);
+    };
+
+    /** 把文本敲进输入框并回车——用真实事件驱动，走的是用户那条按键通道 */
+    const typeAndEnter = (text: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const ta = document.querySelector("textarea");
+        if (!ta) return false;
+        // React 受控组件：必须用原生 setter 写值再派发 input，否则 onChange 收不到
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, "value").set;
+        setter.call(ta, ${JSON.stringify(text)});
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        ta.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", bubbles: true, cancelable: true,
+        }));
+        return true;
+      })()`);
+
+    const inputValue = (): Promise<string> =>
+      run<string>(`(document.querySelector("textarea") || {}).value ?? ""`);
+    const slashButton = (): Promise<boolean> =>
+      run<boolean>(
+        `!!document.querySelector('[data-slash-command="compact"]')`,
+      );
+
+    // 命令的可见入口必须真能点（且它自己也走同一条 compact 路径）
+    checks.push(["输入区有 /compact 的可点入口", await slashButton()]);
+
+    // ① 裸 `/compact`：应走压缩，输入框被消费，且不发普通提问
+    compactCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/compact");
+    await sleep(400);
+    checks.push([
+      "敲 /compact 回车 → 真的派发了上下文压缩",
+      compactCalls.includes(session.id),
+    ]);
+    checks.push(["/compact 不会被当成普通提问发出去", promptCalls.length === 0]);
+    checks.push(["命令输入框被清空（已消费，不会滞留）", (await inputValue()) === ""]);
+
+    // ② 带正文的 `/compact ...`：必须回落成普通提问。
+    // 这条是**防误吞**：若只按前缀匹配，用户写「用 /compact 压缩一下」这句话就永远发不出去了。
+    compactCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/compact 帮我看看");
+    await sleep(400);
+    checks.push([
+      "带正文的 /compact … 不被当成命令（回落成普通提问）",
+      compactCalls.length === 0 && promptCalls.some((t) => t.includes("/compact 帮我看看")),
+    ]);
+
+    // ③ 未知命令同样放行：贴路径（/usr/...）是很常见的输入
+    compactCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/usr/local/bin/node");
+    await sleep(400);
+    checks.push([
+      "以 / 开头的普通文本（如路径）照常发出",
+      compactCalls.length === 0 && promptCalls.some((t) => t === "/usr/local/bin/node"),
+    ]);
+    log(`  /compact 打桩：compact=${compactCalls.length}，prompt=${promptCalls.length}`);
+
+    // 复原打桩，避免影响后续断言（dock 到此也接近尾声）
+    sessionManager.compact = realCompact;
+    sessionManager.compactOrReconnect = realCompactOrReconnect;
+    sessionManager.promptOrReconnect = realPromptOrReconnect;
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   } finally {

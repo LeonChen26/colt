@@ -775,6 +775,22 @@ export class SessionManager {
     this.#post(sessionId, { type: "compact" });
   }
 
+  /**
+   * 手动压缩；worker 已被空闲回收时先重建再投递（同 `promptOrReconnect` 的自愈）。
+   *
+   * 不比 `promptOrReconnect` 能合并：压缩与 prompt 的语义不同，重建后**必须**发 `compact`
+   * 而不是 prompt / steer，否则用户敲的 `/compact` 会变成一轮真实的模型请求。
+   */
+  async compactOrReconnect(sessionId: string, recover: () => Promise<void>): Promise<void> {
+    if (!this.#workers.has(sessionId)) {
+      // 重建期间 worker 也可能被并发调用者拉起，recover 内部已用 #pending 去重
+      await recover();
+    }
+    const entry = this.#workers.get(sessionId);
+    if (!entry) throw new Error(`会话未运行：${sessionId}`);
+    this.#post(sessionId, { type: "compact" });
+  }
+
   navigate(sessionId: string, targetId: string): void {
     this.#post(sessionId, { type: "navigate", targetId });
   }

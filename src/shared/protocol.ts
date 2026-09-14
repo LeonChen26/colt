@@ -428,9 +428,9 @@ export interface IpcInvokeMap {
     request: { sessionId: string; text: string };
     response: { ok: true };
   };
-  /** 手动触发上下文压缩 */
+  /** 手动触发上下文压缩。带 cwd 时在被空闲回收后自动重建会话进程（同 session.prompt） */
   "session.compact": {
-    request: { sessionId: string };
+    request: { sessionId: string; cwd?: string };
     response: { ok: true };
   };
   /** 分支树 */

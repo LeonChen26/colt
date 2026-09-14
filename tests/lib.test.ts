@@ -15,6 +15,7 @@ import {
   formatToolDuration,
   toolCallSummary,
 } from "../src/renderer/src/lib/session-stats.ts";
+import { parseSlashCommand } from "../src/renderer/src/lib/slash-command.ts";
 import {
   consoleFields,
   consoleRowKey,
@@ -651,5 +652,37 @@ describe("观测条目详情（N1）", () => {
     assert.ok(consoleRowKey(consoleEntry()).startsWith("console:"));
     assert.ok(networkRowKey(networkEntry()).startsWith("network:"));
     assert.ok(downloadRowKey(downloadEntry()).startsWith("downloads:"));
+  });
+});
+
+/** 输入框的斜杠命令识别（`/compact`）。判错方向的代价不对称：漏认只是「原样发出去」。 */
+describe("parseSlashCommand", () => {
+  test("认下 /compact 及其前后空白与大小写", () => {
+    assert.equal(parseSlashCommand("/compact"), "compact");
+    assert.equal(parseSlashCommand("  /compact  "), "compact");
+    assert.equal(parseSlashCommand("/compact\n"), "compact");
+    assert.equal(parseSlashCommand("/COMPACT"), "compact");
+  });
+
+  test("命令必须独占整条输入：后面带正文不算命令", () => {
+    // 否则「用 /compact 手动压缩」这句会被当成命令吞掉，用户根本发不出去
+    assert.equal(parseSlashCommand("/compact 一下"), null);
+    assert.equal(parseSlashCommand("/compact please"), null);
+  });
+
+  test("未知命令一律回落成普通提问（宁可原样发出，不静默丢失）", () => {
+    assert.equal(parseSlashCommand("/help"), null);
+    assert.equal(parseSlashCommand("/clear"), null);
+    // 以 / 开头的正文也必须放行：贴路径、贴 POSIX 绝对路径都是常见输入
+    assert.equal(parseSlashCommand("/usr/local/bin/node"), null);
+    assert.equal(parseSlashCommand("/compact/extra"), null);
+  });
+
+  test("非命令输入（空串 / 裸斜杠 / 普通文本）返回 null", () => {
+    assert.equal(parseSlashCommand(""), null);
+    assert.equal(parseSlashCommand("   "), null);
+    assert.equal(parseSlashCommand("/"), null);
+    assert.equal(parseSlashCommand("compact"), null);
+    assert.equal(parseSlashCommand("帮我看看 compact 的实现"), null);
   });
 });

@@ -318,8 +318,16 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
-  handle("session.compact", (request) => {
-    sessionManager.compact(request.sessionId);
+  handle("session.compact", async (request) => {
+    // 会话可能已被空闲回收；带 cwd 时自动重建后再投递（同 session.prompt），
+    // 否则旧行为下会直接抛「会话未运行」——用户看到的只是“点了没反应”。
+    if (request.cwd) {
+      await sessionManager.compactOrReconnect(request.sessionId, () =>
+        openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
+      );
+    } else {
+      sessionManager.compact(request.sessionId);
+    }
     return { ok: true } as const;
   });
 
