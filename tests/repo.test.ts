@@ -88,6 +88,19 @@ describe("sessions", () => {
     assert.equal(listSessions().length, 2);
   });
 
+  /**
+   * 草稿会话落库时必须**沿用**调用方已分配的 id：id 在 session.create 时就交给了界面，
+   * 若落库时另生成一个，界面手里那个 id 指向的就是一条不存在的会话。
+   */
+  test("可复用调用方给定的会话 id（草稿落库）", () => {
+    const project = upsertProject("E:/demo");
+    const draftId = "draft-1";
+    const session = createSession(project.id, "E:/demo/jsonl", undefined, draftId);
+    assert.equal(session.id, draftId);
+    assert.equal(getSession(draftId)?.id, draftId);
+    assert.equal(listSessions(project.id).length, 1);
+  });
+
   test("持久化内核会话 ID 与选定模型", () => {
     const project = upsertProject("E:/demo");
     const session = createSession(project.id, "E:/demo/jsonl");

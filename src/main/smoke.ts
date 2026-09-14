@@ -9,13 +9,26 @@
  *       面板迁入页签（A3-5 / ⑦-H / ⑦-G：「工具」「改动」「文件」三个视图都取消后只剩统计与规则）、
  *       观测抽屉（B2）与它的**条目详情**（N1：点行展开完整字段 + 复制到剪贴板）、
  *       浏览器前进/后退/刷新（B1），以及 ⑥ Live Bar 的运行状态段（C1/C2：已中断 / 已失败 / 空闲）
+ * model：未开启会话（无 worker）时也能选模型——落库的选定值照样回显、切换立即生效
  */
 import { app, BrowserWindow, clipboard, nativeImage, WebContentsView } from "electron";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { upsertProject, createSession, getProject } from "./db/repo";
+import {
+  upsertProject,
+  createSession,
+  deleteSession,
+  getProject,
+  getSession,
+  listSessions,
+  setSessionModel,
+} from "./db/repo";
 import { hostBridge } from "./host";
 import { sessionManager } from "./session-manager";
+import { listProviders, removeProvider, saveProvider } from "./providers";
+import { deleteSecret, getSecret, setSecret } from "./secrets";
+import { writeOnboardedFlag } from "./first-run";
+import { hasUsableProvider, resolveSessionModel } from "@shared/model-ref";
 import { join, resolve } from "node:path";
 import type { HostResult } from "@shared/worker-protocol";
 // 夹具站与「手动体验」共用同一份页面（scripts/fixture-server.mjs 是唯一数据源），
@@ -146,6 +159,12 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runCrash(window, project.id, sessionsDir, log, run);
     } else if (mode === "dock") {
       await runDock(window, project.id, sessionsDir, log, run);
+    } else if (mode === "model") {
+      await runModelSelect(window, sessionsDir, project.id, log, run);
+      await runModelFallback(window, sessionsDir, project.id, log, run);
+      await runModelKeyless(window, sessionsDir, project.id, log, run);
+      await runModelSwitchDuringOpen(window, sessionsDir, project.id, log, run);
+      await runSessionDraft(window, sessionsDir, project.id, log, run);
     } else {
       await runBasic(window, sessionsDir, project.id, log, run);
     }
@@ -213,6 +232,498 @@ async function runBasic(
   }
 
   await report(session.id, log, run);
+}
+
+/**
+ * 「未开启会话也能选模型」的端到端用例。
+ *
+ * 回归背景（用户实测）：「未开启会话就不能选 model」。会话没有 worker 时（未打开、
+ * 或已被空闲回收）`session.view` 返回 null，而模型下拉的显示值原先只取自 `view.model`，
+ * 于是「已经选好并落库」在界面上毫无反映——用户看到的就是选了没反应。
+ *
+ * 这里用**新建的、故意不配密钥的 provider** 造出「选中即注定没有 worker」的场景：
+ * 主进程只落库并回 needsKey，不 fork worker。全程真实点开下拉，断言：
+ *   1. 无 worker 时，落库的选定值照样显示在会话头上；
+ *   2. 换一个模型后立刻回显且已落库，而此刻**确实没有 worker**；
+ *   3. 缺密钥给的是黄色提示而不是红色错误。
+ * 三条合起来即「未开启会话也能选 model」。
+ */
+async function runModelSelect(
+  window: BrowserWindow,
+  sessionsDir: string,
+  projectId: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const PROVIDER_ID = "smoke-keyless";
+  const MODEL_A = "smoke-model-a";
+  const MODEL_B = "smoke-model-b";
+  const NAME_A = "Smoke 无密钥模型 A";
+  const NAME_B = "Smoke 无密钥模型 B";
+  const LABEL_A = `${NAME_A}（未配置密钥）`;
+  const LABEL_B = `${NAME_B}（未配置密钥）`;
+  const checks: [string, boolean][] = [];
+
+  // 故意不配密钥：选中它时主进程只落库、不拉 worker，正是要验的场景
+  saveProvider({
+    id: PROVIDER_ID,
+    name: "Smoke 无密钥服务",
+    baseUrl: "https://example.invalid/v1",
+    models: [
+      { id: MODEL_A, name: NAME_A, contextWindow: 1000 },
+      { id: MODEL_B, name: NAME_B, contextWindow: 1000 },
+    ],
+  });
+
+  const session = createSession(projectId, sessionsDir);
+  // 直接落库「已选定 A」，且**不调 session.open** —— 会话因此没有 worker
+  setSessionModel(session.id, `${PROVIDER_ID}/${MODEL_A}`);
+  log(`会话：${session.id}（已落库选定 ${PROVIDER_ID}/${MODEL_A}，未打开）`);
+
+  /** 会话头上模型下拉的显示文案 */
+  const pickerLabel = (): Promise<string | null> =>
+    run<string | null>(`(() => {
+      const el = document.querySelector("button.model .lbl");
+      return el ? el.textContent.trim() : null;
+    })()`);
+
+  try {
+    // 用例自带环境准备：否则首启引导覆盖层会盖住命中测试，用例变成「看环境脸色」
+    writeOnboardedFlag(app.getPath("userData"));
+    window.reload();
+    await sleep(4000);
+
+    // 与 App 同款取法：session.list 第一条（updated_at DESC）就是渲染层显示的那个会话
+    const list = await run<{ id: string }[]>(
+      `window.colt.invoke("session.list", ${JSON.stringify({ projectId })})`,
+    );
+    log(`列表首条：${list[0]?.id ?? "（空）"}（本用例 ${session.id}）`);
+    checks.push(["界面活动会话就是用例建的这条", list[0]?.id === session.id]);
+
+    const initial = await pickerLabel();
+    log(`初始下拉文案：${initial}`);
+    checks.push(["无 worker 时照样显示落库的选定值", initial === LABEL_A]);
+
+    // 点开下拉（必须分两次：setOpen 是 React 状态更新，同一轮 DOM 里还没有选项）
+    await run(`document.querySelector("button.model")?.click() ?? null`);
+    await sleep(400);
+    const clicked = await run<boolean>(`(() => {
+      const option = [...document.querySelectorAll("button")].find(
+        (b) => b.textContent.trim() === ${JSON.stringify(LABEL_B)},
+      );
+      if (!option) return false;
+      option.click();
+      return true;
+    })()`);
+    checks.push(["下拉里能找到并点中目标模型", clicked]);
+
+    await sleep(1000);
+    const after = await pickerLabel();
+    log(`切换后下拉文案：${after}`);
+    checks.push(["切换后立刻回显为所选模型", after === LABEL_B]);
+    checks.push([
+      "选择已落库（重启后仍生效）",
+      getSession(session.id)?.modelRef === `${PROVIDER_ID}/${MODEL_B}`,
+    ]);
+
+    // 关键前提：这一路确实没有 worker，否则上面的回显可能只是 worker 汇报的
+    const workerView = await run<unknown>(
+      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
+    );
+    checks.push(["全程没有 worker（会话始终未开启）", workerView === null]);
+
+    const noticeCount = await run<number>(`document.querySelectorAll("[data-conv-notice]").length`);
+    const errorCount = await run<number>(`document.querySelectorAll("[data-conv-error]").length`);
+    checks.push(["缺密钥是黄色提示而非红色错误", noticeCount === 1 && errorCount === 0]);
+  } finally {
+    // 先出结论再清理：清理出岔子也不该吞掉已拿到的证据
+    log("[model] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    removeProvider(PROVIDER_ID);
+    deleteSecret(PROVIDER_ID);
+  }
+}
+
+/**
+ * 未配内置 DeepSeek、只配了自定义服务时的**默认模型解析**。
+ *
+ * 回归背景（用户实测）：没有 DeepSeek 密钥、配好了自定义 provider，会话又从未选过模型时，
+ * 默认解析死认内置 DeepSeek → 界面挂着「尚未配置 DeepSeek 的 API Key」，
+ * 一发消息更会被同一句话**拒绝**（`#spawnWorker` 的密钥检查直接抛错）。
+ * 用户明明配好了能用的服务，却一直被告知 DeepSeek 缺密钥——这就是「会报错」。
+ *
+ * 判据里同时看两侧：主进程解析出的 provider（确定性）、界面上的红错/黄条、以及发消息是否被挡。
+ */
+async function runModelFallback(
+  window: BrowserWindow,
+  sessionsDir: string,
+  projectId: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const PROVIDER_ID = "smoke-custom";
+  const MODEL_ID = "smoke-custom-model";
+  const MODEL_NAME = "Smoke 自定义模型";
+  const checks: [string, boolean][] = [];
+
+  // 场景前提：内置 DeepSeek 没有密钥、用户只配了自定义服务（且填了密钥）。
+  // DeepSeek 的密钥是**环境资产**（跑冒烟的那份 userData 里可能真配过），用完原样还回去，
+  // 免得一次冒烟把环境改坏、后续用例看到的前提就不对了。
+  const savedDeepseekKey = getSecret("deepseek");
+  deleteSecret("deepseek");
+  saveProvider({
+    id: PROVIDER_ID,
+    name: "Smoke 自定义服务",
+    baseUrl: "https://example.invalid/v1",
+    models: [{ id: MODEL_ID, name: MODEL_NAME, contextWindow: 1000 }],
+  });
+  setSecret(PROVIDER_ID, "sk-smoke-fake-key");
+
+  // 会话从未选过模型：正是「默认解析」要负责的情形
+  const session = createSession(projectId, sessionsDir);
+  log(`会话：${session.id}（未选模型，且内置 DeepSeek 无密钥）`);
+
+  try {
+    writeOnboardedFlag(app.getPath("userData"));
+    window.reload();
+    await sleep(4000);
+
+    const list = await run<{ id: string }[]>(
+      `window.colt.invoke("session.list", ${JSON.stringify({ projectId })})`,
+    );
+    checks.push(["界面活动会话就是用例建的这条", list[0]?.id === session.id]);
+
+    // 主进程侧：默认解析必须落到**可用**的自定义服务，而不是没密钥的内置 DeepSeek
+    const resolved = resolveSessionModel(getSession(session.id)?.modelRef ?? null, listProviders());
+    log(`默认解析：${resolved.providerId}/${resolved.modelId}`);
+    checks.push(["默认解析落到已配置密钥的自定义服务", resolved.providerId === PROVIDER_ID]);
+
+    // 界面侧：不该出现任何点名 DeepSeek 的红错或黄条
+    const banner = await run<string>(`(() => {
+      const err = document.querySelector("[data-conv-error]")?.textContent ?? "";
+      const note = document.querySelector("[data-conv-notice]")?.textContent ?? "";
+      return err || note;
+    })()`);
+    log(`界面提示：${banner || "（无）"}`);
+    checks.push(["界面没有「尚未配置 DeepSeek」的报错/提示", !banner.includes("DeepSeek")]);
+
+    // 会话确实开了（视图存在 = worker 真的起来了，而非被密钥检查挡在门外）
+    const view = await run<{ model?: string } | null>(
+      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
+    );
+    checks.push(["会话已用自定义服务打开（worker 已就绪）", view !== null]);
+
+    const label = await run<string | null>(`(() => {
+      const el = document.querySelector("button.model .lbl");
+      return el ? el.textContent.trim() : null;
+    })()`);
+    log(`下拉文案：${label}`);
+    checks.push(["下拉显示的是自定义模型", label === MODEL_NAME]);
+
+    // 直接复现用户的报错：发一条消息，看是否被「尚未配置 DeepSeek 的 API Key」挡住
+    // （worker 起不来时 promptOrReconnect 会把这句话原样抛给界面）
+    const promptOutcome = await run<string>(
+      `window.colt.invoke("session.prompt", ${JSON.stringify({
+        sessionId: session.id,
+        text: "hi",
+        cwd: process.env.COLT_SMOKE_CWD ?? process.cwd(),
+      })}).then(() => "OK").catch((e) => String(e && e.message ? e.message : e))`,
+    );
+    log(`发消息结果：${promptOutcome}`);
+    checks.push(["发消息不再被 DeepSeek 缺密钥挡住", !promptOutcome.includes("DeepSeek")]);
+  } finally {
+    log("[model/fallback] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    removeProvider(PROVIDER_ID);
+    deleteSecret(PROVIDER_ID);
+    if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+  }
+}
+
+/**
+ * 会话**正在打开**时切模型（worker 进程已登记、但 init 还没跑完）。
+ *
+ * 回归背景（用户实测）：切模型报错「会话尚未初始化」。根因是 `#workers` 里的条目在
+ * fork 之后**立刻**就登记了，而 worker 的 `init`（重放历史）还在跑——`has(sessionId)`
+ * 只代表「进程已拉起」，不代表「已就绪」。把命令下发给一个还没 init 完的 worker，
+ * 它的 handler 会在 `state` 就绪前收到并从 `case "setModel"` 抛「会话尚未初始化」。
+ *
+ * 会话越大越容易撞上：init 要重放整份 JSONL（实测 2.4 万行那份要好几秒），
+ * 用户在这段时间里点模型下拉就中招。
+ *
+ * 用例刻意用**合成会话 id**：真实会话会被 App 启动时自动打开，我这边 wait 几秒之后
+ * worker 早已就绪，窗口就没了（第一版用例就是这么空跑过去的）。
+ * 断言读渲染层收到的 `session.error` 事件，不依赖红条是否渲染、也不依赖当前会话是谁。
+ */
+async function runModelSwitchDuringOpen(
+  window: BrowserWindow,
+  _sessionsDir: string,
+  _projectId: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const PROVIDER_ID = "smoke-custom";
+  const MODEL_ID = "smoke-custom-model";
+  const checks: [string, boolean][] = [];
+  /** 合成会话 id：库里没有这条，App 不会替我打开它，窗口留给用例自己制造 */
+  const sessionId = "smoke-during-init";
+  const cwd = process.env.COLT_SMOKE_CWD ?? process.cwd();
+
+  const savedDeepseekKey = getSecret("deepseek");
+  deleteSecret("deepseek");
+  saveProvider({
+    id: PROVIDER_ID,
+    name: "Smoke 自定义服务",
+    baseUrl: "https://example.invalid/v1",
+    models: [{ id: MODEL_ID, name: "Smoke 自定义模型", contextWindow: 1000 }],
+  });
+  setSecret(PROVIDER_ID, "sk-smoke-fake-key");
+  log(`会话：${sessionId}（合成 id，worker 未就绪时下发命令）`);
+
+  try {
+    writeOnboardedFlag(app.getPath("userData"));
+    window.reload();
+    await sleep(4000);
+
+    // 渲染层挂一个收集器：worker 报错会以 session.error 事件回来，这是用户看到的红条源头
+    await run<boolean>(`(() => {
+      window.__modelErrors = [];
+      window.colt.on("session.error", (payload) => window.__modelErrors.push(payload.message));
+      return true;
+    })()`);
+
+    const provider = listProviders().find((item) => item.id === PROVIDER_ID);
+    if (!provider) throw new Error("用例前置失败：自定义 provider 未注册");
+
+    // 只登记、不等就绪：这句返回时进程刚 fork 出来，init（重放历史）还在跑
+    const opening = sessionManager.ensureWorker({ sessionId, cwd, model: MODEL_ID, provider });
+    // 立刻走一遍生产路径（IPC 的 session.setModel 也是调它），落进「已登记、未就绪」的窗口
+    await sessionManager.setModelOrReconnect(sessionId, provider, MODEL_ID, undefined);
+    await opening.catch(() => undefined);
+    await sleep(1500);
+
+    const errors = await run<string[]>(`window.__modelErrors ?? []`);
+    log(`worker 侧错误事件：${errors.length > 0 ? errors.join(" | ") : "（无）"}`);
+    checks.push([
+      "init 期间下发 setModel 不被 worker 以「会话尚未初始化」拒绝",
+      !errors.some((message) => message.includes("初始化")),
+    ]);
+  } finally {
+    log("[model/during-init] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    sessionManager.close(sessionId);
+    removeProvider(PROVIDER_ID);
+    deleteSecret(PROVIDER_ID);
+    if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+  }
+}
+
+/**
+ * 只用**无需密钥**的本地 / 自建服务（ollama、vLLM、llama.cpp …）时必须能正常对话。
+ *
+ * 回归背景（用户实测）：没有 DeepSeek 密钥、只配了自建 endpoint。旧判据把「可用」
+ * 等同于「配了密钥」，于是默认解析落到内置 DeepSeek、界面挂「尚未配置 DeepSeek 的
+ * API Key」、发消息被启动检查拒绝——服务明明跑着，一个也用不上。
+ *
+ * 用例刻意**不配任何密钥**、也不预先选定模型，让整条链路自己走默认解析；
+ * 断言取主进程的解析结果与渲染层真实渲染出来的文案，不看内部字段。
+ */
+async function runModelKeyless(
+  window: BrowserWindow,
+  sessionsDir: string,
+  projectId: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const PROVIDER_ID = "smoke-local";
+  const MODEL_ID = "smoke-local-model";
+  const MODEL_NAME = "Smoke 本地模型";
+  const checks: [string, boolean][] = [];
+
+  const savedDeepseekKey = getSecret("deepseek");
+
+  // 前两个用例创建的会话可能还在跑：它们每推一次 view 就会 touch updated_at，
+  // 把「列表第一条」的位置占住，于是 App 打开的不是我们这条、断言也就失去意义。
+  // 先等它们跑完再收掉 worker，列表顺序才由本用例的会话决定。
+  for (const other of listSessions(projectId)) {
+    for (let i = 0; i < 40 && sessionManager.isRunning(other.id); i += 1) await sleep(500);
+    sessionManager.close(other.id);
+  }
+
+  // 内置 DeepSeek 空着：唯一「能用」的服务就是这个不需要密钥的本地 endpoint
+  deleteSecret("deepseek");
+  saveProvider({
+    id: PROVIDER_ID,
+    name: "Smoke 本地服务",
+    baseUrl: "https://example.invalid/v1",
+    models: [{ id: MODEL_ID, name: MODEL_NAME, contextWindow: 1000 }],
+    requiresKey: false,
+  });
+
+  // 不设 model_ref：走的就是「会话从未选过模型」的默认解析
+  const session = createSession(projectId, sessionsDir);
+  log(`会话：${session.id}（未选模型，且内置 DeepSeek 无密钥）`);
+
+  try {
+    writeOnboardedFlag(app.getPath("userData"));
+    window.reload();
+    await sleep(4000);
+
+    const providers = listProviders();
+    const resolved = resolveSessionModel(null, providers);
+    log(`默认解析：${resolved.providerId}/${resolved.modelId}`);
+    checks.push(["默认解析落到无需密钥的本地服务", resolved.providerId === PROVIDER_ID]);
+    checks.push(["无需密钥的服务被判定为可用", hasUsableProvider(providers)]);
+
+    const list = await run<{ id: string }[]>(
+      `window.colt.invoke("session.list", ${JSON.stringify({ projectId })})`,
+    );
+    log(`列表首条：${list[0]?.id ?? "（空）"}（本用例 ${session.id}）`);
+    checks.push(["界面活动会话就是用例建的这条", list[0]?.id === session.id]);
+
+    // App 的模型黄条与 Conversation 的提示都以「尚未配置」开头，一并排除
+    const text = await run<string>(`document.body.innerText`);
+    const complained = text.includes("尚未配置");
+    log(`界面提示：${complained ? "含「尚未配置」" : "（无）"}`);
+    checks.push(["界面没有「尚未配置 API Key」的黄条/红错", !complained]);
+
+    const label = await run<string | null>(`(() => {
+      const el = document.querySelector("button.model .lbl");
+      return el ? el.textContent.trim() : null;
+    })()`);
+    log(`下拉文案：${label}`);
+    checks.push(["模型下拉不带「（未配置密钥）」后缀", label === MODEL_NAME]);
+
+    // 渲染层挂载时会走真实 IPC 打开会话；无密钥被拦下的话这里永远等不到 view
+    let opened = false;
+    for (let i = 0; i < 20 && !opened; i += 1) {
+      opened = sessionManager.getView(session.id) !== null;
+      if (!opened) await sleep(500);
+    }
+    checks.push(["会话已用本地服务打开（worker 已就绪）", opened]);
+  } finally {
+    log("[model/keyless] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    sessionManager.close(session.id);
+    removeProvider(PROVIDER_ID);
+    deleteSecret(PROVIDER_ID);
+    if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+  }
+}
+
+/**
+ * 新建会话是**草稿**：只分配 id，不写库、不 fork worker、不建 JSONL，首次发消息才落库。
+ *
+ * 回归背景：`session.create` 过去立刻 INSERT 一行，于是「点了新建就退出」会在侧栏留下
+ * 一串 message_count=0、点开还没反应的空会话（而用户一个字都没发过）。
+ *
+ * 断言全部落在「可观察的事实」上：主进程的会话表、有没有 worker、侧栏有没有那一行。
+ */
+async function runSessionDraft(
+  window: BrowserWindow,
+  _sessionsDir: string,
+  projectId: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const PROVIDER_ID = "smoke-draft-local";
+  const checks: [string, boolean][] = [];
+  const cwd = process.env.COLT_SMOKE_CWD ?? process.cwd();
+  const savedDeepseekKey = getSecret("deepseek");
+  let draftId: string | null = null;
+
+  // 前置：把还在跑的会话收掉（它们会持续 touch updated_at），并让模型解析落到一个
+  // 不存在的 endpoint 上——只为本用例避免真的打外部 API，与草稿本身无关。
+  for (const other of listSessions(projectId)) {
+    for (let i = 0; i < 40 && sessionManager.isRunning(other.id); i += 1) await sleep(500);
+    sessionManager.close(other.id);
+  }
+  deleteSecret("deepseek");
+  saveProvider({
+    id: PROVIDER_ID,
+    name: "Smoke 草稿用例服务",
+    baseUrl: "https://example.invalid/v1",
+    models: [{ id: "smoke-draft-model", name: "Smoke 草稿模型", contextWindow: 1000 }],
+    requiresKey: false,
+  });
+
+  const before = listSessions(projectId).length;
+  log(`新建前会话数：${before}`);
+
+  /** 侧栏里「新建会话」按钮（项目行上的 +） */
+  const findNewButton = `[...document.querySelectorAll("button")].find(
+    (b) => b.getAttribute("title") === "新建会话",
+  )`;
+
+  try {
+    writeOnboardedFlag(app.getPath("userData"));
+    window.reload();
+    await sleep(4000);
+
+    // 那个 + 平时是 opacity-0、靠 hover 显形，所以必须做命中测试：只查「在 DOM 里」
+    // 发现不了「被顶出可视区 / 上面盖着别的元素」（小目标入口的老坑）。
+    const hit = await run<{ found: boolean; top: boolean }>(`(() => {
+      const btn = ${findNewButton};
+      if (!btn) return { found: false, top: false };
+      const r = btn.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { found: true, top: Boolean(at && (at === btn || btn.contains(at))) };
+    })()`);
+    checks.push(["侧栏「新建会话」按钮真的在可视区且可点", hit.found && hit.top]);
+
+    await run(`(() => { ${findNewButton}?.click(); return null; })()`);
+    await sleep(800);
+
+    // 侧栏是「新会话插在最前」，因此第一条就是它；行上有 data-session-row 便于取 id
+    const rows = await run<(string | null)[]>(
+      `[...document.querySelectorAll("[data-session-row]")].map((el) => el.getAttribute("data-session-row"))`,
+    );
+    draftId = rows[0] ?? null;
+    log(`侧栏首条：${draftId ?? "（无）"}（共 ${rows.length} 行，期望 ${before + 1}）`);
+    checks.push(["侧栏出现新建的那条会话", draftId !== null && rows.length === before + 1]);
+
+    // 本用例的核心：此刻它还**没有**落库
+    checks.push([
+      "草稿尚未写入 sessions 表",
+      draftId !== null && getSession(draftId) === undefined,
+    ]);
+    checks.push(["草稿没有 worker（没 fork 进程）", draftId !== null && sessionManager.getView(draftId) === undefined]);
+
+    const afterCreate = listSessions(projectId).length;
+    log(`新建后会话数：${afterCreate}`);
+    checks.push(["session.list 里看不到草稿", afterCreate === before]);
+
+    // 首次发消息：到这一步才落库（走的就是生产的 session.prompt 通道）
+    const outcome = await run<string>(
+      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: draftId, text: "hi", cwd })})
+        .then(() => "OK").catch((e) => String((e && e.message) || e))`,
+    );
+    log(`首次发消息结果：${outcome}`);
+    checks.push(["首次发消息未被挡下", outcome === "OK"]);
+    checks.push(["发消息后草稿已落库", draftId !== null && getSession(draftId) !== undefined]);
+
+    let opened = false;
+    for (let i = 0; i < 20 && !opened; i += 1) {
+      opened = draftId !== null && sessionManager.getView(draftId) !== undefined;
+      if (!opened) await sleep(500);
+    }
+    checks.push(["发消息后会话已打开（worker 就绪）", opened]);
+  } finally {
+    log("[session/draft] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    if (draftId) {
+      sessionManager.close(draftId);
+      deleteSession(draftId);
+    }
+    removeProvider(PROVIDER_ID);
+    deleteSecret(PROVIDER_ID);
+    if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+  }
 }
 
 /**

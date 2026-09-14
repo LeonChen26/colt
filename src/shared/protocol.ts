@@ -288,6 +288,17 @@ export interface IpcInvokeMap {
     request: void;
     response: Project[];
   };
+  /**
+   * 新建会话：**只分配 id，不落库**（草稿）。
+   *
+   * 首次发消息（`session.prompt`）时才写入 sessions 表，届时才 fork worker、才由内核
+   * 创建 JSONL。这样「点了新建就退出」不会在侧栏留下一串 `message_count=0`、
+   * 点开还没反应的空会话。
+   * 代价是草稿只存在于内存：重启即消失——这正是「还没用过的会话」应有的语义。
+   *
+   * 返回的 `SessionInfo` 与真实会话同形，界面无需特殊分支；`jsonlPath` 为空串
+   * （文件尚不存在），`kernelSessionId` 为 null。
+   */
   "session.create": {
     request: { projectId: string; presetId?: string };
     response: SessionInfo;
@@ -410,7 +421,18 @@ export interface IpcInvokeMap {
   };
   /** 新增或更新自定义 provider */
   "providers.save": {
-    request: { id: string; name: string; baseUrl: string; models: ModelOption[]; apiKey?: string };
+    request: {
+      id: string;
+      name: string;
+      baseUrl: string;
+      models: ModelOption[];
+      apiKey?: string;
+      /**
+       * 该服务是否需要 API Key（不传按「需要」处理，与服务该字段缺省时的语义一致）。
+       * 本地 endpoint 勾掉它才可能被判定为「可用」。
+       */
+      requiresKey?: boolean;
+    };
     response: { ok: true };
   };
   /** 删除自定义 provider */
@@ -420,8 +442,13 @@ export interface IpcInvokeMap {
   };
   /** 切换会话使用的模型 */
   "session.setModel": {
-    request: { sessionId: string; providerId: string; modelId: string };
-    response: { ok: true };
+    /** cwd 用于 worker 已被空闲回收时自愈重建（同 session.prompt / session.compact） */
+    request: { sessionId: string; providerId: string; modelId: string; cwd?: string };
+    /**
+     * needsKey：选中的服务尚未配密钥。选择已落库（model_ref）但未启动会话，
+     * 界面应引导去设置页填密钥，而不是把它当成错误。
+     */
+    response: { ok: true; needsKey?: boolean };
   };
   /** 显式插话 */
   "session.steer": {
@@ -530,6 +557,15 @@ export interface ProviderConfig {
   models: ModelOption[];
   /** 密钥是否已配置（不返回明文） */
   hasKey?: boolean;
+  /**
+   * 是否需要 API Key。
+   *
+   * 本地 / 自建的 OpenAI 兼容服务（ollama、vLLM、llama.cpp …）通常**没有**密钥，
+   * 若把「配了密钥」当成「可用」的同义词，这类服务会被永远判为不可用：
+   * 默认解析落不到它、打开会话被密钥检查拦下——用户明明跑着模型，却一个也用不上。
+   * 「是否需要鉴权」是服务的属性，只能由用户显式声明，推断不出来。
+   */
+  requiresKey: boolean;
 }
 
 /** 会话分支树节点 */

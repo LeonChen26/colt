@@ -103,11 +103,22 @@ export function getProject(projectId: string): Project | undefined {
   return row ? toProject(row) : undefined;
 }
 
-export function createSession(projectId: string, jsonlPath: string, presetId?: string): SessionInfo {
+/**
+ * 新建会话行。
+ *
+ * `id` 用于**草稿会话落库**：id 在 `session.create` 时就交给了渲染层，
+ * 首次发消息时落库必须沿用同一个，否则界面持有的 id 指向的是一条不存在的会话。
+ */
+export function createSession(
+  projectId: string,
+  jsonlPath: string,
+  presetId?: string,
+  id?: string,
+): SessionInfo {
   const db = getDatabase();
   const now = Date.now();
   const row: SessionRow = {
-    id: randomUUID(),
+    id: id ?? randomUUID(),
     project_id: projectId,
     title: "新会话",
     jsonl_path: jsonlPath,

@@ -25,7 +25,12 @@ const isDev = process.defaultApp === true || !app.isPackaged;
 appNameSetup();
 function appNameSetup(): void {
   app.setName("Colt");
-  app.setPath("userData", join(app.getPath("appData"), "Colt"));
+  // 开发态用独立目录：与安装版共用同一份数据时，两个实例会各自 fork 一个 worker
+  // 写**同一个**会话 JSONL，而内核要求 seq 跨行严格递增——双写会让整份历史在下次
+  // 打开时被判为 Invalid storage 而彻底打不开（真实事故，见 commit.js 的校验）。
+  // 顺带一个好处：单实例锁按 userData 路径生效，于是 dev 与安装版仍能并存。
+  const dirName = isDev ? "Colt-dev" : "Colt";
+  app.setPath("userData", join(app.getPath("appData"), dirName));
 }
 
 function createWindow(): BrowserWindow {
@@ -99,24 +104,62 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-app.whenReady().then(() => {
-  // 首启检测必须在 openDatabase 之前：后者会创建 data 目录，掩盖“全新环境”的判断
-  setFirstRunReport(inspectUserData(app.getPath("userData")));
-  openDatabase(app.getPath("userData"));
-  // 审批策略设置需在库打开后才能读（sessionManager 是模块级单例，构造期库尚未就绪）
-  sessionManager.reloadAnalyzeCommandAllowlist();
-  importKeyFromEnvIfMissing();
-  registerIpcHandlers();
-  sessionManager.startIdleReaper();
-  const window = createWindow();
-  attachWindow(window);
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      attachWindow(createWindow());
-    }
+/**
+ * 单实例锁：同一份 userData 只允许一个实例活着。
+ *
+ * 之所以是硬约束而不是礼貌：两个实例会各自 fork 一个 worker 去写**同一个**会话
+ * JSONL。内核要求 seq 跨行严格递增（commit.js 的 validateCommittedWrites），
+ * 两条写入流交错后，整份历史会在下一次打开时被判为 Invalid JSONL storage 而
+ * **再也打不开**——这是已经发生过的事故，不是假想风险。
+ *
+ * 锁按 userData 路径生效，而开发态用的是独立目录（见 appNameSetup），
+ * 所以 dev 与安装版仍可各跑一份，只是各自不能再开第二份。
+ */
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  // 用户重复双击图标时把已有窗口放到前面，而不是静默什么都不发生
+  app.on("second-instance", () => {
+    const [existing] = BrowserWindow.getAllWindows();
+    if (!existing) return;
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
   });
-});
+  bootApp();
+}
+
+function bootApp(): void {
+  app.whenReady().then(() => {
+    // 首启检测必须在 openDatabase 之前：后者会创建 data 目录，掩盖“全新环境”的判断
+    setFirstRunReport(inspectUserData(app.getPath("userData")));
+    openDatabase(app.getPath("userData"));
+    // 审批策略设置需在库打开后才能读（sessionManager 是模块级单例，构造期库尚未就绪）
+    sessionManager.reloadAnalyzeCommandAllowlist();
+    importKeyFromEnvIfMissing();
+    registerIpcHandlers();
+    sessionManager.startIdleReaper();
+    const window = createWindow();
+    attachWindow(window);
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        attachWindow(createWindow());
+      }
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    // 仅 Windows 目标，但保留标准行为
+    if (process.platform !== "darwin") app.quit();
+  });
+
+  app.on("before-quit", () => {
+    sessionManager.disposeAll();
+    // 退出用 shutdownDatabase 而非 closeDatabase：后者保留自愈所需的路径，
+    // 会让退出过程中的残余调用把库又建出来
+    shutdownDatabase();
+  });
+}
 
 /**
  * 建窗后统一登记宿主窗口。
@@ -127,15 +170,3 @@ function attachWindow(window: BrowserWindow): void {
   sessionManager.attachWindow(window);
   hostBridge.attachWindow(window);
 }
-
-app.on("window-all-closed", () => {
-  // 仅 Windows 目标，但保留标准行为
-  if (process.platform !== "darwin") app.quit();
-});
-
-app.on("before-quit", () => {
-  sessionManager.disposeAll();
-  // 退出用 shutdownDatabase 而非 closeDatabase：后者保留自愈所需的路径，
-  // 会让退出过程中的残余调用把库又建出来
-  shutdownDatabase();
-});

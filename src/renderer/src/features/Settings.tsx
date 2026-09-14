@@ -192,6 +192,8 @@ function ProviderCard({
           name: provider.name,
           baseUrl: provider.baseUrl,
           models: provider.models,
+          // 必须回传，否则这次「只存密钥」会把「无需密钥」的声明重置回「需要密钥」
+          requiresKey: provider.requiresKey,
           apiKey: key,
         });
       }
@@ -225,11 +227,20 @@ function ProviderCard({
             <span
               className={cn(
                 "flex items-center gap-1 text-xs",
-                provider.hasKey ? "text-success-fg" : "text-warning",
+                // 无需密钥是**正常**状态，不该跟「未配置密钥」一样报黄
+                !provider.requiresKey
+                  ? "text-text-muted"
+                  : provider.hasKey
+                    ? "text-success-fg"
+                    : "text-warning",
               )}
             >
               <KeyRound {...ICON.xs} />
-              {provider.hasKey ? "密钥已配置" : "未配置密钥"}
+              {!provider.requiresKey
+                ? "无需密钥"
+                : provider.hasKey
+                  ? "密钥已配置"
+                  : "未配置密钥"}
             </span>
           </div>
           <div className="mt-0.5 font-mono text-xs text-text-muted">
@@ -264,7 +275,13 @@ function ProviderCard({
           type="password"
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          placeholder={provider.hasKey ? "输入新密钥以替换" : "粘贴 API Key"}
+          placeholder={
+            !provider.requiresKey
+              ? "可留空（该服务无需密钥）"
+              : provider.hasKey
+                ? "输入新密钥以替换"
+                : "粘贴 API Key"
+          }
           className="flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition placeholder:text-text-muted focus:border-accent"
         />
         <button
@@ -294,6 +311,7 @@ function ProviderForm({
   const [baseUrl, setBaseUrl] = useState("");
   const [modelText, setModelText] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [requiresKey, setRequiresKey] = useState(true);
 
   const submit = async (): Promise<void> => {
     try {
@@ -318,6 +336,7 @@ function ProviderForm({
         name: name.trim() || id.trim(),
         baseUrl: baseUrl.trim(),
         models,
+        requiresKey,
         apiKey: apiKey.trim() || undefined,
       });
       await onSaved();
@@ -351,6 +370,21 @@ function ProviderForm({
         />
       </div>
       <Field label="API Key" value={apiKey} onChange={setApiKey} type="password" />
+
+      <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-text-secondary">
+        <input
+          type="checkbox"
+          checked={!requiresKey}
+          onChange={(e) => setRequiresKey(!e.target.checked)}
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-[var(--color-accent)]"
+        />
+        <span>
+          该服务不需要 API Key（本地 / 自建 endpoint，如 ollama、vLLM、llama.cpp）
+          <span className="mt-0.5 block text-text-muted">
+            不勾选时，未填密钥的服务会被判定为「还不能用」，默认也不会选中它。
+          </span>
+        </span>
+      </label>
 
       <div className="mt-3 flex justify-end gap-2">
         <button

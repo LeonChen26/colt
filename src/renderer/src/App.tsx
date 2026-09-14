@@ -81,19 +81,23 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      try {
-        const [envReport, projectList, providerList] = await Promise.all([
-          window.colt.invoke("env.check", undefined),
-          window.colt.invoke("project.list", undefined),
-          window.colt.invoke("providers.list", undefined),
-        ]);
-        setEnv(envReport);
-        setProjects(projectList);
-        setProviders(providerList);
-        setModelServiceReady(hasUsableProvider(providerList));
-        if (projectList.length > 0) setActiveProject(projectList[0]!);
+      // 分开取值而不是 Promise.all：三者互不依赖，任何一个失败（如 env.check 在
+      // 探测 bash 时揽到异常）都不应该拖紧其余两项。
+      // 旧写法下三者共用一次 try，任一 reject 就让 setProviders 永不执行——
+      // 模型下拉因 options 为空而**点开无任何反应**，用户看到的就是「选不了模型」。
+      const [envReport, projectList, providerList] = await Promise.all([
+        window.colt.invoke("env.check", undefined).catch(() => null),
+        window.colt.invoke("project.list", undefined).catch(() => [] as Project[]),
+        window.colt.invoke("providers.list", undefined).catch(() => [] as ProviderConfig[]),
+      ]);
+      if (envReport) setEnv(envReport);
+      setProjects(projectList);
+      setProviders(providerList);
+      setModelServiceReady(hasUsableProvider(providerList));
+      if (projectList.length > 0) setActiveProject(projectList[0]!);
 
-        // 首启引导：仅在尚未完成引导时弹出（已完成则直接进主界面）
+      // 首启引导：仅在尚未完成引导时弹出（已完成则直接进主界面）
+      try {
         const report = await window.colt.invoke("firstRun.check", undefined);
         if (!report.onboardingDone) setFirstRun(report);
       } catch (e) {
@@ -175,6 +179,28 @@ export default function App(): React.JSX.Element {
     return list;
   }, []);
 
+  /**
+   * 会话模型选择已落库后同步本地缓存，让 `sessionModelRef` 立刻反映新值。
+   *
+   * 不做这一步，切走再回来（Conversation 以 sessionId 为 key 重挂载）会退回旧值；
+   * 而这类会话常常**没有 worker**，`view.model` 也补不上，用户会再次看到「选了没生效」。
+   */
+  const applySessionModel = useCallback((sessionId: string, modelRef: string) => {
+    setSessionsByProject((map) => {
+      const next = new Map(map);
+      for (const [projectId, list] of next) {
+        if (!list.some((item) => item.id === sessionId)) continue;
+        next.set(
+          projectId,
+          list.map((item) => (item.id === sessionId ? { ...item, modelRef } : item)),
+        );
+        break;
+      }
+      return next;
+    });
+    setActiveSession((current) => (current?.id === sessionId ? { ...current, modelRef } : current));
+  }, []);
+
   // 切换项目时：展开该项目并拉取其会话
   useEffect(() => {
     if (!activeProject) return;
@@ -201,16 +227,21 @@ export default function App(): React.JSX.Element {
 
   const newSession = useCallback(async () => {
     if (!activeProject) return;
+    const projectId = activeProject.id;
     try {
-      const session = await window.colt.invoke("session.create", {
-        projectId: activeProject.id,
+      const session = await window.colt.invoke("session.create", { projectId });
+      // 新会话是**草稿**：首次发消息才落库，所以 session.list 里还没有它。
+      // 必须本地插进列表，否则侧栏看不到这一条，用户也就无从点回来。
+      setSessionsByProject((map) => {
+        const next = new Map(map);
+        next.set(projectId, [session, ...(next.get(projectId) ?? [])]);
+        return next;
       });
-      await loadProjectSessions(activeProject.id);
       setActiveSession(session);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [activeProject, loadProjectSessions]);
+  }, [activeProject]);
 
   /** 删除会话：确认 → 调后端 → 刷新列表并适时清空选中 */
   const deleteSession = useCallback(
@@ -402,6 +433,7 @@ export default function App(): React.JSX.Element {
               cwd={activeProject.rootPath}
               sessionModelRef={activeSession.modelRef}
               providers={providers}
+              onModelSelected={(modelRef) => applySessionModel(activeSession.id, modelRef)}
             />
           ) : (
             <div className="flex h-full items-center justify-center">
@@ -580,6 +612,7 @@ function SessionRow({
 
   return (
     <div
+      data-session-row={session.id}
       className={cn(
         "group/session flex w-full items-center gap-2 rounded-[6px] px-1.5 py-1.5 transition",
         active ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",

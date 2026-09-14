@@ -29,6 +29,8 @@ export const BUILTIN_DEEPSEEK: ProviderConfig = {
   baseUrl: "https://api.deepseek.com",
   builtin: true,
   models: builtinModels(),
+  // 官方 API 必须带密钥
+  requiresKey: true,
 };
 
 interface ProviderRow {
@@ -37,6 +39,8 @@ interface ProviderRow {
   kind: string;
   base_url: string;
   models_json: string;
+  /** 0 表示无需鉴权（本地 / 自建 endpoint）；旧库经迁移后同样有该列 */
+  requires_key: number;
   created_at: number;
 }
 
@@ -54,6 +58,8 @@ function toConfig(row: ProviderRow): ProviderConfig {
     baseUrl: row.base_url,
     builtin: false,
     models,
+    // 只有显式的 0 才算「无需密钥」；缺列 / NULL 一律按需要密钥处理，宁严勿松
+    requiresKey: row.requires_key !== 0,
   };
 }
 
@@ -80,6 +86,8 @@ export function saveProvider(input: {
   name: string;
   baseUrl: string;
   models: ModelOption[];
+  /** 省略按「需要密钥」处理（与缺省语义一致，避免老调用方静默变成「无需鉴权」） */
+  requiresKey?: boolean;
 }): void {
   if (input.id === BUILTIN_DEEPSEEK.id) throw new Error("内置 provider 不可修改");
   const id = input.id.trim();
@@ -87,14 +95,22 @@ export function saveProvider(input: {
 
   getDatabase()
     .prepare(
-      `INSERT INTO providers (id, name, kind, base_url, models_json, created_at)
-       VALUES (?, ?, 'openai-compatible', ?, ?, ?)
+      `INSERT INTO providers (id, name, kind, base_url, models_json, requires_key, created_at)
+       VALUES (?, ?, 'openai-compatible', ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          base_url = excluded.base_url,
-         models_json = excluded.models_json`,
+         models_json = excluded.models_json,
+         requires_key = excluded.requires_key`,
     )
-    .run(id, input.name.trim() || id, input.baseUrl.trim(), JSON.stringify(input.models), Date.now());
+    .run(
+      id,
+      input.name.trim() || id,
+      input.baseUrl.trim(),
+      JSON.stringify(input.models),
+      input.requiresKey === false ? 0 : 1,
+      Date.now(),
+    );
 }
 
 /** 删除自定义 provider */

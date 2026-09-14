@@ -2,9 +2,10 @@
  * IPC 路由：所有渲染进程调用的落点
  */
 import { app, dialog, ipcMain } from "electron";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
-import type { IpcChannel, IpcInvokeMap } from "@shared/protocol";
+import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import { resolveSessionModel } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
 import { readGitStatus } from "../git";
@@ -20,6 +21,7 @@ import {
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  setSessionModel,
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
@@ -57,8 +59,7 @@ async function openSessionWorker(input: {
   sessionId: string;
   cwd: string;
   model?: string;
-}): Promise<void> {
-  const providers = listProviders();
+}): Promise<void> {  const providers = listProviders();
   const { providerId, modelId } = resolveSessionModel(
     input.model ?? getSession(input.sessionId)?.modelRef,
     providers,
@@ -115,6 +116,35 @@ function handle<C extends IpcChannel>(channel: C, handler: Handler<C>): void {
   ipcMain.handle(channel, async (_event, request) => handler(request));
 }
 
+/** 会话的历史目录（真实 JSONL 由内核在其中按「转义后的 cwd + kernelId」生成） */
+function jsonlPathFor(projectId: string): string {
+  return join(app.getPath("userData"), "sessions", projectId);
+}
+
+/**
+ * 草稿会话：`session.create` 只分配 id 并登记在这里，**不写 sessions 表**。
+ *
+ * 首次发消息（见 materializeDraft）时才落库——在那之前不 fork worker、不建 JSONL。
+ * 否则「点了新建就退出」会在侧栏留下一条 message_count=0、点开还没反应的会话，
+ * 而用户从没往里发过一个字。
+ *
+ * 只存在于内存：重启即消失，这正是「还没用过的会话」应有的语义。
+ */
+const drafts = new Map<
+  string,
+  { projectId: string; presetId?: string; modelRef: string | null }
+>();
+
+/** 把草稿落库；不是草稿则什么都不做。落库后立刻从草稿表移除，避免二次落库 */
+function materializeDraft(sessionId: string): void {
+  const draft = drafts.get(sessionId);
+  if (!draft) return;
+  drafts.delete(sessionId);
+  createSession(draft.projectId, jsonlPathFor(draft.projectId), draft.presetId, sessionId);
+  // 落库前在草稿上选过的模型要跟着走：不然用户「先选模型再发消息」的那一步会被丢掉
+  if (draft.modelRef) setSessionModel(sessionId, draft.modelRef);
+}
+
 export function registerIpcHandlers(): void {
   handle("env.check", () => runEnvCheck());
 
@@ -164,13 +194,36 @@ export function registerIpcHandlers(): void {
   handle("project.list", () => listProjects());
 
   handle("session.create", (request) => {
-    const jsonlPath = join(app.getPath("userData"), "sessions", request.projectId);
-    return createSession(request.projectId, jsonlPath, request.presetId);
+    const now = Date.now();
+    const id = randomUUID();
+    drafts.set(id, {
+      projectId: request.projectId,
+      presetId: request.presetId,
+      modelRef: null,
+    });
+    // 与真实会话同形，界面无需特殊分支；jsonlPath 为空串——文件要等首次发消息才存在
+    const draft: SessionInfo = {
+      id,
+      projectId: request.projectId,
+      title: "新会话",
+      jsonlPath: "",
+      kernelSessionId: null,
+      presetId: request.presetId ?? null,
+      modelRef: null,
+      createdAt: now,
+      updatedAt: now,
+      messageCount: 0,
+      status: "active",
+    };
+    return draft;
   });
 
   handle("session.list", (request) => listSessions(request?.projectId));
 
   handle("session.open", async (request) => {
+    // 草稿没有历史可载入，也不该为一个「还没发过消息」的会话 fork worker / 建 JSONL。
+    // 首次发消息时由 session.prompt 落库并打开（见 materializeDraft）。
+    if (drafts.has(request.sessionId)) return { ok: true } as const;
     await openSessionWorker({
       sessionId: request.sessionId,
       cwd: request.cwd,
@@ -180,6 +233,8 @@ export function registerIpcHandlers(): void {
   });
 
   handle("session.prompt", async (request) => {
+    // 首次发消息：草稿在此刻落库（此后才是「真实会话」，会出现在 session.list 里）
+    materializeDraft(request.sessionId);
     // 会话可能已被空闲回收（长时间不用）；带 cwd 时自动重建后再投递，避免
     // 旧行为下直接抛「会话未运行」导致界面静默无响应。
     if (request.cwd) {
@@ -203,6 +258,8 @@ export function registerIpcHandlers(): void {
   }));
 
   handle("session.delete", (request) => {
+    // 草稿：既没有落库数据也没有文件，丢掉内存记录即可
+    if (drafts.delete(request.sessionId)) return { ok: true } as const;
     const session = getSession(request.sessionId);
     if (!session) throw new Error("会话不存在或已被删除");
     // 运行中的会话拒绝删除：避免删除正在写入的 JSONL 与后台进程错配
@@ -294,6 +351,7 @@ export function registerIpcHandlers(): void {
       name: request.name,
       baseUrl: request.baseUrl,
       models: request.models,
+      requiresKey: request.requiresKey,
     });
     // 密钥单独走加密存储，不进数据库
     if (request.apiKey) setSecret(request.id, request.apiKey.trim());
@@ -306,10 +364,41 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
-  handle("session.setModel", (request) => {
+  handle("session.setModel", async (request) => {
     const provider = getProvider(request.providerId);
     if (!provider) throw new Error(`Provider 不存在：${request.providerId}`);
-    sessionManager.setModel(request.sessionId, provider, request.modelId);
+    // 草稿会话：选择只记在草稿上。它还没落库，UPDATE 会打在 0 行上（静默丢失）；
+    // 也不该为一个「还没发过消息的会话」拉起 worker——那正是草稿要避免的事。
+    // 记在草稿里的选择会在首次发消息落库时一并写出（见 materializeDraft）。
+    const draft = drafts.get(request.sessionId);
+    if (draft) {
+      draft.modelRef = `${provider.id}/${request.modelId}`;
+      return provider.requiresKey && !hasSecret(provider.id)
+        ? ({ ok: true, needsKey: true } as const)
+        : ({ ok: true } as const);
+    }
+    // 选中的就是没配密钥的服务（下拉里可能列出它，用户也可能是先选模型再填密钥）——
+    // 这不是错误，只是还不能跑；先把选择落库，让用户回到设置页去填密钥。
+    // 否则界面弹红、选项卡也不变，看上去就是「选不了模型」。
+    // 只对**确实需要密钥**的服务这么办：本地 / 自建 endpoint 本来就没有密钥，
+    // 按「缺密钥」处理会让它永远打不开。
+    if (provider.requiresKey && !hasSecret(provider.id)) {
+      setSessionModel(request.sessionId, `${provider.id}/${request.modelId}`);
+      return { ok: true, needsKey: true } as const;
+    }
+    await sessionManager.setModelOrReconnect(
+      request.sessionId,
+      provider,
+      request.modelId,
+      // 无 cwd 无法重建（worker 需要工作目录），此时只落库
+      request.cwd
+        ? () =>
+            openSessionWorker({
+              sessionId: request.sessionId,
+              cwd: request.cwd!,
+            })
+        : undefined,
+    );
     return { ok: true } as const;
   });
 
@@ -319,6 +408,9 @@ export function registerIpcHandlers(): void {
   });
 
   handle("session.compact", async (request) => {
+    // 与 session.prompt 同理：可能把 worker 拉起来，那就必须先有会话行——
+    // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上），下次打开会另起一份历史。
+    materializeDraft(request.sessionId);
     // 会话可能已被空闲回收；带 cwd 时自动重建后再投递（同 session.prompt），
     // 否则旧行为下会直接抛「会话未运行」——用户看到的只是“点了没反应”。
     if (request.cwd) {

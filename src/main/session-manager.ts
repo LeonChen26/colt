@@ -27,6 +27,17 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const READY_TIMEOUT_MS = Number(process.env.COLT_READY_TIMEOUT_MS ?? 120_000);
 /** 空闲回收扫描间隔 */
 const IDLE_SWEEP_MS = 60 * 1000;
+/**
+ * 发出 dispose 后等 worker 自行退出的宽限时长，超时强杀。
+ * dispose 只是一条消息，worker 正忙时可能迟迟不处理。
+ */
+const DISPOSE_GRACE_MS = 3 * 1000;
+/**
+ * 无需密钥的服务（ProviderConfig.requiresKey === false）启动 worker 时占位用的假密钥。
+ * 仅仅是喂给 pi-ai 的 openai-completions 层，它无法表达「这个服务不需要鉴权」，
+ * apiKey 为空会直接抛「No API key for provider」。本地服务一般不校验该请求头。
+ */
+const KEYLESS_PLACEHOLDER = "colt-local-no-key";
 
 interface WorkerEntry {
   sessionId: string;
@@ -51,6 +62,16 @@ interface WorkerEntry {
    * 界面停在「正在启动会话进程…」。
    */
   ready: Promise<void>;
+  /**
+   * 就绪**之前**收到的命令暂存队列。undefined 表示已就绪，命令直接下发。
+   *
+   * 条目在 fork 之后立刻进 `#workers`，而 worker 的 `init`（重放整份 JSONL，历史大时要好几秒）
+   * 才把 `state` 建好。这期间下发任何命令，worker 的 handler 都会在 `state` 就绪前收到，
+   * 从各 case 的 `if (!state)` 抛出「会话尚未初始化」——用户看到的就是「切模型报错」。
+   * 之所以攒而不丢：这些命令本来就该在 init 之后生效（切模型 / 发消息 / 中断），
+   * 丢掉才是更糟的行为（静默无响应）。攒着还能顺带修掉「打开会话后立刻发消息」的同类竞态。
+   */
+  pendingCommands?: WorkerCommand[];
   /**
    * 分支树查询的待决 promise（worker 以消息形式异步回复）。
    * 用队列而非单个回调：切会话 / 刷新按钮 / 分支导航都会触发查询，
@@ -452,7 +473,16 @@ export class SessionManager {
     this.#evictIfNeeded();
 
     const apiKey = getSecret(options.provider.id);
-    if (!apiKey) throw new Error(`尚未配置 ${options.provider.name} 的 API Key，请先在设置中填写。`);
+    // 需要密钥却没配 → 明确报错（界面在此之前已按 needsKey 引导去设置页）。
+    // 无需密钥的服务（本地 / 自建 endpoint）照常启动——按「必须有密钥」拦下它，
+    // 会让 ollama 这类服务永远打不开。
+    if (!apiKey && options.provider.requiresKey) {
+      throw new Error(`尚未配置 ${options.provider.name} 的 API Key，请先在设置中填写。`);
+    }
+    // 无需密钥时也得给 SDK 一个非空值：openai-completions 在 apiKey 为空时直接抛
+    // 「No API key for provider」——它分不清「本地服务不需要密钥」和「用户忘了填」。
+    // 本地服务一般不校验该请求头；真需要密钥的服务应保持 requiresKey 并正常填写。
+    const providerKey = apiKey ?? KEYLESS_PLACEHOLDER;
 
     // 诊断钩子（仅开发态）：指向故障注入脚本，用于验证就绪失败路径。
     // 打包后一律使用真实 worker，避免误配指向恶意脚本。
@@ -465,8 +495,8 @@ export class SessionManager {
         ...process.env,
         // 明文密钥只存在于 worker 进程环境中
         // 内置 DeepSeek 用官方约定的变量名，自定义 provider 用统一变量名
-        DEEPSEEK_API_KEY: options.provider.kind === "deepseek" ? apiKey : "",
-        COLT_PROVIDER_KEY: apiKey,
+        DEEPSEEK_API_KEY: options.provider.kind === "deepseek" ? providerKey : "",
+        COLT_PROVIDER_KEY: providerKey,
       },
     });
 
@@ -491,6 +521,8 @@ export class SessionManager {
       provider: options.provider,
       modelId: options.model,
       ready: readyDeferred.promise,
+      // 非空即表示「尚未就绪」：ready 一到就清空，命令恢复直接下发
+      pendingCommands: [],
       pendingBranches: [],
       abortEpoch: 0,
       modeEpoch: 0,
@@ -504,6 +536,11 @@ export class SessionManager {
         case "ready":
           // 持久化内核会话 ID，下次打开时续接历史
           setKernelSessionId(options.sessionId, message.kernelSessionId);
+          // 先补发暂存命令再放行等待方：顺序上「init 期间下发的」必须排在「就绪后下发的」之前。
+          // 此处 worker 已把 state 建好（它在 init 末尾才发 ready），补发是安全的。
+          const queued = entry.pendingCommands ?? [];
+          entry.pendingCommands = undefined;
+          for (const command of queued) entry.child.postMessage(command);
           readyDeferred.resolve();
           // 通知界面：worker 已就绪（侧栏据此把“休眠/中断”退回正常态）
           this.#emit("session.status", { sessionId: options.sessionId, state: "idle" });
@@ -524,7 +561,13 @@ export class SessionManager {
             sessionId: options.sessionId,
             message: message.message,
           });
-          if (message.fatal) readyDeferred.reject(new Error(message.message));
+          if (message.fatal) {
+            // init 失败：这个 worker 永远不会就绪。必须解除「暂存」标记，否则后续命令会被
+            // 静默攒着，界面**毫无反馈**——那比报错更难排查。复位后照旧下发给它，由 worker
+            // 自己报错（与本次修改前行为一致）。
+            entry.pendingCommands = undefined;
+            readyDeferred.reject(new Error(message.message));
+          }
           break;
         }
         case "fileChange":
@@ -660,7 +703,9 @@ export class SessionManager {
       if (text) console.error(`[worker ${options.sessionId.slice(0, 8)}]`, text);
     });
 
-    this.#post(options.sessionId, {
+    // 直接下发而不走 `#post`：`init` 是**引导**命令，它自己就是「让 worker 就绪」的那一步。
+    // 若也进 `#post`，会被「就绪前的命令暂存」逻辑攒起来永不发出——worker 永远不就绪。
+    child.postMessage({
       type: "init",
       sessionsRoot: this.#sessionsRoot(),
       cwd: options.cwd,
@@ -674,7 +719,7 @@ export class SessionManager {
         models: options.provider.models,
       },
       model: options.model,
-    });
+    } satisfies WorkerCommand);
 
     await readyDeferred.promise;
   }
@@ -682,7 +727,10 @@ export class SessionManager {
   #post(sessionId: string, command: WorkerCommand): void {
     const entry = this.#workers.get(sessionId);
     if (!entry) throw new Error(`会话未运行：${sessionId}`);
-    entry.child.postMessage(command);
+    // 「在池中」只代表进程已拉起，不代表能收命令：init 还在重放历史时下发，worker 会以
+    // 「会话尚未初始化」拒绝。就绪前一律暂存，由 ready 处理分支按序补发。
+    if (entry.pendingCommands) entry.pendingCommands.push(command);
+    else entry.child.postMessage(command);
     entry.lastActiveAt = Date.now();
   }
 
@@ -769,6 +817,38 @@ export class SessionManager {
       },
       modelId,
     });
+  }
+
+  /**
+   * 切换会话模型；worker 不在池中时先重建再下发。
+   *
+   * 必须先落库 `sessions.model_ref`：**不能**只依赖 worker 回 `modelChanged` 再存——
+   * 缺密钥时界面根本不会调 `session.open`（见 Conversation 的打开前言），会话没有 worker，
+   * 而用户恰恰是在这种时候最需要能预先把模型选好（选了 provider 才有机会去填它的密钥）。
+   * 旧行为下这条路径直接抛「会话未运行」，且模型欠账不落库：用户选了报错、重启又回到默认值，
+   * 看上去就是个死循环。
+   *
+   * 已落库 + 无 worker 时**不重建**：重建要花几百毫秒且要密钥，而切换模型本身
+   * 并不需要模型服务真的跑起来；下一次打开会话时 `session.open` 会带着新 model_ref 启动。
+   */
+  async setModelOrReconnect(
+    sessionId: string,
+    provider: ProviderConfig,
+    modelId: string,
+    recover: (() => Promise<void>) | undefined,
+  ): Promise<void> {
+    setSessionModel(sessionId, `${provider.id}/${modelId}`);
+    if (!this.#workers.has(sessionId)) {
+      // worker 不在池中：没给 recover（渲染层没传 cwd）就只落库，下次打开自会带上新模型；
+      // 给了 recover 才尝试当场拉起，以便用户能立即发送消息。
+      if (!recover) return;
+      await recover().catch((error: unknown) => {
+        // 重建失败不该把「已成功落库的模型切换」退化成报错：模型已经记下了，
+        // 下一轮打开会生效。只记日志，不让界面弹红。
+        console.error("[session] 切模型时重建 worker 失败，已仅落库", error);
+      });
+    }
+    if (this.#workers.has(sessionId)) this.setModel(sessionId, provider, modelId);
   }
 
   compact(sessionId: string): void {
@@ -873,6 +953,13 @@ export class SessionManager {
     } catch {
       entry.child.kill();
     }
+    // dispose 只是一条消息，worker 正忙时可能始终不处理它——那会留下一个仍然攥着
+    // 同一份会话 JSONL 的孤儿进程（dev 热重启下尤其容易发生），而内核要求 seq 跨行
+    // 严格递增，双写会让整份历史再也打不开。给一小段宽限后强杀兜底，
+    // 让「撤下 worker」是电平结果，而不是看它心情的边沿。
+    const forceKill = setTimeout(() => entry.child.kill(), DISPOSE_GRACE_MS);
+    forceKill.unref?.();
+    entry.child.once("exit", () => clearTimeout(forceKill));
   }
 
   /** 超出进程池上限时，回收最久未活动的空闲 worker */
@@ -913,8 +1000,12 @@ export class SessionManager {
       try {
         entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
       } catch {
-        entry.child.kill();
+        // 进程可能已经退出，无需再处理
       }
+      // 退出路径不能等宽限：主进程一走，宽限定时器随之消失，而孤儿 worker 仍握着
+      // 那个会话文件的写权限——下个实例一起来就成了「双写」。强杀的代价最多是丢掉
+      // 一条写了一半的事务，内核下次打开会按 torn 行修掉它。
+      entry.child.kill();
     }
     this.#workers.clear();
     this.#fileChangesCache.clear();

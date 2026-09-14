@@ -22,7 +22,7 @@ import {
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
-import { resolveSessionModel, splitModelRef } from "@shared/model-ref";
+import { displayModelRef, resolveSessionModel, splitModelRef } from "@shared/model-ref";
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand } from "../../lib/slash-command";
@@ -87,17 +87,29 @@ export function Conversation({
   cwd,
   sessionModelRef,
   providers,
+  onModelSelected,
 }: {
   sessionId: string;
   cwd: string;
   /** 会话上次选定的模型（"providerId/modelId"，未选过为 null），用于判断本次能否自动打开 */
   sessionModelRef: string | null;
   providers: ProviderConfig[];
+  /**
+   * 模型选择已落库。父组件需据此刷新会话的 model_ref——否则切走再回来（重挂载）
+   * 会退回旧值，用户又看到「选了没生效」。
+   */
+  onModelSelected?: (modelRef: string) => void;
 }): React.JSX.Element {
   const [view, setView] = useState<ConversationView | null>(null);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * 「还差一步就能用」的提示（黄），与真错误（红）分开：
+   * 选了尚未配密钥的服务、或没配密钥就打不开会话，都不是失败，只是需要用户去填密钥。
+   * 全塞进红色错误框，会让正常的第一步操作看上去像出了事故。
+   */
+  const [notice, setNotice] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [mode, setMode] = useState<ApprovalMode>("auto");
@@ -391,6 +403,7 @@ export function Conversation({
     let disposed = false;
     setOpening(true);
     setError(null);
+    setNotice(null);
     setApprovals([]);
 
     const offView = window.colt.on("session.view", (next) => {
@@ -411,15 +424,26 @@ export function Conversation({
         const current = await window.colt.invoke("approval.mode.get", { sessionId });
         if (!disposed) setMode(current.mode);
 
-        // 缺密钥是「注定失败」的打开：主进程会直接抛错。这里按同一套模型规则
-        // （shared/model-ref，与主进程同源）算出本次会用哪个 provider，
-        // 现取 providers.list 以拿到最新的密钥状态，没配密钥就不发 session.open——
-        // 既不产生一次必然失败的往返，也不把「还没配好」渲染成红色错误。
-        // 补好密钥后重新进入会话即正常打开。
+        // 缺密钥时**不**发 session.open（必然失败），但也不能就此静默返回：旧行为下
+        // 直接 return，界面停在空白态——发不出消息、看不到原因，切模型又报「会话未运行」，
+        // 三者叠加就是“选不了模型”那个死循环。
+        // 现在给一条可操作的提示，且是**黄**的提示不是红错——这只是还差一步填密钥。
         const providerList = await window.colt.invoke("providers.list", undefined);
         const { providerId } = resolveSessionModel(sessionModelRef, providerList);
         const target = providerList.find((item) => item.id === providerId);
-        if (target && !target.hasKey) return;
+        // 只有**确实需要密钥**的服务才拦：本地 / 自建 endpoint 没密钥也能跑
+        if (target && target.requiresKey && !target.hasKey) {
+          // 顺带取一份快照：**有** worker 时才拿得到（`session.view` 只从 worker 池取，
+          // 没有 worker 就是 null），无 worker 时历史确实显示不出来，只能提示原因。
+          const snapshot = await window.colt.invoke("session.view", { sessionId });
+          if (!disposed) {
+            if (snapshot) setView(snapshot);
+            setNotice(
+              `尚未配置 ${target.name} 的 API Key，暂时无法对话。请到设置中填写，或在上方切换到其他已配置的模型。`,
+            );
+          }
+          return;
+        }
 
         await window.colt.invoke("session.open", { sessionId, cwd });
         const snapshot = await window.colt.invoke("session.view", { sessionId });
@@ -589,13 +613,30 @@ export function Conversation({
       const { provider: providerId, model: modelId } = splitModelRef(value);
       if (!providerId || !modelId) return;
       setError(null);
+      setNotice(null);
       try {
-        await window.colt.invoke("session.setModel", { sessionId, providerId, modelId });
+        // 带 cwd：主进程据此在 worker 已被空闲回收时自愈重建（同 prompt / compact）
+        const result = await window.colt.invoke("session.setModel", {
+          sessionId,
+          providerId,
+          modelId,
+          cwd,
+        });
+        // 选择已落库（无 worker 时也只落库、不拉会话）。必须立刻把结果回写到上层缓存：
+        // 这种会话可能根本没有 worker，`view.model` 永远不会更新，界面会一直显示旧模型，
+        // 用户看到的就是「选了没反应」。
+        onModelSelected?.(`${providerId}/${modelId}`);
+        // 选中的服务还没配密钥：这不是失败，只是一步待办——用黄色提示而非红框，
+        // 免得用户对着一行红字反复重选。
+        if (result.needsKey) {
+          const name = providers.find((item) => item.id === providerId)?.name ?? providerId;
+          setNotice(`已选择 ${name}，但它尚未配置 API Key，请到设置中填写后再发送消息。`);
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [sessionId],
+    [sessionId, cwd, providers, onModelSelected],
   );
 
   const switchMode = useCallback(
@@ -621,18 +662,34 @@ export function Conversation({
   const running = view?.running ?? false;
   const changes = view?.fileChanges ?? [];
 
-  // 当前会话所用 provider 与模型
-  const { provider: currentProviderId, model: currentModelId } = splitModelRef(view?.model ?? "");
-  // 跨 provider 选择：列出所有已配置密钥的 provider 的模型，值带上 provider 前缀
+  // 当前会话所用 provider 与模型。
+  // 取值规则见 displayModelRef：**落库的选择优先**，但已失效时必须改显示「实际会用」的那个，
+  // 否则界面会一直展示一个永远不会被使用的模型（用户以为在用 A，实际跑的是 B）。
+  // 没有 worker 的会话（未打开 / 已空闲回收）根本没有 view，只认 view.model 会把
+  // 「已经选好并落库」显示成空——那正是「选不了模型」的来源。
+  const display = displayModelRef(sessionModelRef, providers, view?.model);
+  const selectedModelRef = display.modelRef;
+  const { provider: currentProviderId, model: currentModelId } = splitModelRef(selectedModelRef);
+  // 跨 provider 选择：列出**所有** provider 的模型，值带上 provider 前缀。
+  // **不过滤掉无密钥的 provider**：用户常常是先选定模型服务、再去设置里填它的密钥，
+  // 下拉里看不到就无从选起。选中无密钥项时主进程只落库不报错（回 needsKey），
+  // 前端给一条黄色提示引导去填密钥。
+  // 「未配置密钥」只对**确实需要密钥**的服务标注：本地 / 自建 endpoint 本就没有密钥，
+  // 给它挂上这个后缀会让人以为还得去配点什么。
   const modelOptions = providers.flatMap((provider) =>
-    provider.models.map((model) => ({ value: `${provider.id}/${model.id}`, label: model.name })),
+    provider.models.map((model) => ({
+      value: `${provider.id}/${model.id}`,
+      label:
+        provider.requiresKey && !provider.hasKey ? `${model.name}（未配置密钥）` : model.name,
+    })),
   );
+  // 会话头上显示的文案直接取「当前选中项」的标签，与下拉选项**同源**：
+  // 两处各算一遍必然漂移（冒烟实测过：选项写着「（未配置密钥）」，选中后抬头却把标记
+  // 丢了——那等于选完就不再提醒这个服务还没配密钥）。选项里找不到时（provider 被删、
+  // 模型下线、providers 尚未加载）回落到原始引用，至少让人看得出会话选的是什么。
   const currentModelLabel =
-    providers
-      .find((provider) => provider.id === currentProviderId)
-      ?.models.find((model) => model.id === currentModelId)?.name ??
-    view?.model ??
-    "—";
+    modelOptions.find((option) => option.value === selectedModelRef)?.label ??
+    (selectedModelRef || "—");
 
   // 上下文使用率：超过 70% 提示可压缩，超过 90% 转红
   const contextWindow =
@@ -763,7 +820,34 @@ export function Conversation({
             </div>
           )}
 
-          {view?.messages.length === 0 && !opening && !error && (
+          {notice && (
+            <div
+              data-conv-notice
+              className="mb-3 rounded-[8px] border border-warning/50 bg-warning-soft px-3 py-2 text-[12.5px] text-warning"
+            >
+              {notice}
+            </div>
+          )}
+
+          {/*
+            选定已失效（服务被删 / 模型下线）：抬头显示的是**实际会被使用**的模型，
+            因此要明说原来的选择去哪了，否则用户会以为自己切错了模型。
+          */}
+          {display.driftedFrom && (
+            <div
+              data-conv-drift
+              className="mb-3 rounded-[8px] border border-warning/50 bg-warning-soft px-3 py-2 text-[12.5px] text-warning"
+            >
+              原选定模型 {display.driftedFrom} 已不可用（服务或模型已被删除），本会话实际使用{" "}
+              {selectedModelRef}。可在上方切换其他模型。
+            </div>
+          )}
+
+          {/*
+            `view` 为 null（无 worker，如草稿会话）时也要显示空态：用 `?? 0` 兜底，
+            否则 null === 0 为 false，用户会看到一个既没有空态文案、也没有报错的空白区。
+          */}
+          {(view?.messages.length ?? 0) === 0 && !opening && !error && (
             <div className="flex h-full flex-col items-center justify-center gap-2.5">
               <div className="mb-1 text-[10px] uppercase tracking-[2px] text-text-muted">
                 Colt · 本地编码 Agent
@@ -983,10 +1067,15 @@ export function Conversation({
 
               <div className="cright flex shrink-0 items-center gap-2">
                 <Picker
-                  title="当前模型"
+                  title={
+                    modelOptions.length > 0
+                      ? "当前模型"
+                      : "没有可选的模型：请先到设置中添加模型服务并填写 API Key"
+                  }
                   value={`${currentProviderId}/${currentModelId}`}
                   label={currentModelLabel}
                   options={modelOptions}
+                  disabled={modelOptions.length === 0}
                   plain
                   className="model"
                   onChange={(value) => void switchModel(value)}
@@ -1144,6 +1233,7 @@ function Picker({
   options,
   icon,
   plain,
+  disabled,
   className,
   onChange,
 }: {
@@ -1153,6 +1243,8 @@ function Picker({
   options: { value: string; label: string; hint?: string }[];
   icon?: ReactNode;
   plain?: boolean;
+  /** 无选项时置灰：否则点下去没任何反馈，用户会当成“点了没反应” */
+  disabled?: boolean;
   className?: string;
   onChange: (value: string) => void;
 }): React.JSX.Element {
@@ -1173,12 +1265,14 @@ function Picker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
         title={title}
         className={cn(
           "cbtn flex h-7 items-center gap-1.5 rounded-[6px] border px-2 text-[12px] text-text-secondary transition",
           plain
             ? "border-transparent hover:border-transparent hover:bg-surface-overlay hover:text-text-primary"
             : "border-line hover:border-line-strong hover:text-text-primary",
+          disabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-text-secondary",
           className,
         )}
       >

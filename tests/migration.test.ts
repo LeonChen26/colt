@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 6;
+const LATEST = 7;
 
 let root: string;
 

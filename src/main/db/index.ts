@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS providers (
   kind TEXT NOT NULL,
   base_url TEXT NOT NULL,
   models_json TEXT NOT NULL,
+  /** 是否需要 API Key：0 表示本地 / 自建 endpoint 无需鉴权（见 ProviderConfig.requiresKey） */
+  requires_key INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
 );
 
@@ -126,7 +128,14 @@ CREATE TABLE IF NOT EXISTS settings (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
+
+/** 判断某表是否存在：迁移要兼容「早期形态」的旧库，某些表可能还没建 */
+function hasTable(instance: DatabaseSync, table: string): boolean {
+  return Boolean(
+    instance.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+  );
+}
 
 /** 判断某表是否已含某列 */
 function hasColumn(instance: DatabaseSync, table: string, column: string): boolean {
@@ -181,6 +190,16 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
       instance.exec(
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
       ),
+  },
+  {
+    // v7：provider 是否需要 API Key。默认 1，即旧库里的服务一律按「需要密钥」处理，
+    // 与升级前的行为完全一致；只有用户在设置里显式勾掉才变 0。
+    // 更早的库可能连 providers 表都还没有（SCHEMA 建表时已自带该列），此时跳过。
+    version: 7,
+    up: (instance) => {
+      if (!hasTable(instance, "providers")) return;
+      addColumnIfMissing(instance, "providers", "requires_key", "INTEGER NOT NULL DEFAULT 1");
+    },
   },
 ];
 
