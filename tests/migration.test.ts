@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 5;
+const LATEST = 6;
 
 let root: string;
 
@@ -195,6 +195,16 @@ describe("openDatabase 迁移", () => {
     // 建表成功即可查
     const row = db.prepare("SELECT COUNT(*) AS c FROM sessions").get() as { c: number };
     assert.equal(row.c, 0);
+  });
+
+  test("v6 为旧库补建 settings 表", () => {
+    seedLegacy(root, LEGACY_SCHEMA, 0);
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    const table = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
+      .get();
+    assert.ok(table, "settings 表应已建立");
   });
 
   test("新库 projects 含 root_key 且唯一索引生效", () => {

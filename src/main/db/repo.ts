@@ -490,3 +490,21 @@ export function listSessions(projectId?: string): SessionInfo[] {
   ) as unknown as SessionRow[];
   return rows.map(toSession);
 }
+
+/** 读取通用设置项；不存在时返回 undefined（由调用方决定默认值） */
+export function getSetting(key: string): string | undefined {
+  const row = getDatabase()
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(key) as unknown as { value: string } | undefined;
+  return row?.value;
+}
+
+/** 写入通用设置项（存在即覆盖） */
+export function setSetting(key: string, value: string): void {
+  getDatabase()
+    .prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .run(key, value);
+}

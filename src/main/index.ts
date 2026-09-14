@@ -94,6 +94,8 @@ app.whenReady().then(() => {
   // 首启检测必须在 openDatabase 之前：后者会创建 data 目录，掩盖“全新环境”的判断
   setFirstRunReport(inspectUserData(app.getPath("userData")));
   openDatabase(app.getPath("userData"));
+  // 审批策略设置需在库打开后才能读（sessionManager 是模块级单例，构造期库尚未就绪）
+  sessionManager.reloadAnalyzeCommandAllowlist();
   importKeyFromEnvIfMissing();
   registerIpcHandlers();
   sessionManager.startIdleReaper();

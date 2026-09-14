@@ -66,7 +66,7 @@ const MAX_ATTACHMENTS = 4;
 const MODE_OPTIONS: { value: ApprovalMode; label: string; hint: string }[] = [
   { value: "approval", label: "审批模式", hint: "只读命令放行，其余逐条确认" },
   { value: "auto", label: "自动审批模式", hint: "普通操作由大模型判定，仅高风险确认" },
-  { value: "full-access", label: "全权执行模式", hint: "一律放行，不做拦截" },
+  { value: "full-access", label: "全权执行模式", hint: "本会话内一律放行；已弹出的卡片仍需逐条确认" },
 ];
 
 const MODE_LABEL: Record<ApprovalMode, string> = {
@@ -395,7 +395,7 @@ export function Conversation({
 
     void (async () => {
       try {
-        // 会话级审批模式：与全局默认解耦
+        // 审批模式是会话级状态：读的是本会话的设定（无全局设定）
         const current = await window.banyan.invoke("approval.mode.get", { sessionId });
         if (!disposed) setMode(current.mode);
 

@@ -23,6 +23,7 @@ import {
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
+import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
 import { closeDatabase, openDatabase } from "../db";
@@ -245,11 +246,13 @@ export function registerIpcHandlers(): void {
   });
 
   handle("approval.mode.get", (request) => ({
-    mode: sessionManager.approvals.getMode(request?.sessionId),
+    mode: sessionManager.approvals.getMode(request.sessionId),
   }));
 
   handle("approval.mode.set", (request) => {
-    sessionManager.approvals.setMode(request.mode, request.sessionId);
+    // 走 SessionManager 而非直接改 store：除改模式外还要自增 modeEpoch，
+    // 让在飞的审批分析按新模式重新裁决
+    sessionManager.setApprovalMode(request.sessionId, request.mode);
     return { mode: sessionManager.approvals.getMode(request.sessionId) };
   });
 
@@ -265,6 +268,17 @@ export function registerIpcHandlers(): void {
   handle("approval.rules.clear", (request) => {
     sessionManager.approvals.clearRules(request.sessionId, request.kind);
     return { ok: true } as const;
+  });
+
+  handle("approval.analyzeConfig.get", () => ({
+    commands: getAnalyzeCommandAllowlist(),
+  }));
+
+  handle("approval.analyzeConfig.set", (request) => {
+    const commands = setAnalyzeCommandAllowlist(request.commands);
+    // 立即生效：把新白名单推给审批中枢，无需重启
+    sessionManager.reloadAnalyzeCommandAllowlist();
+    return { commands };
   });
 
   handle("providers.list", () => listProviders());

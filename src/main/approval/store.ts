@@ -26,7 +26,10 @@ export interface ApprovalDecision {
 }
 
 /** 审批等待上限的默认值（worker 未上报时兜底）：5 分钟 */
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** 会话未显式设定审批模式时的默认值（模式无全局设定，一律以会话为单位） */
+const DEFAULT_MODE: ApprovalMode = "auto";
 
 interface SessionState {
   projectRoot: string;
@@ -34,7 +37,7 @@ interface SessionState {
   rules: AllowRule[];
   /** 会话内记住的拒绝规则：命中即自动拒绝，不再打扰用户 */
   denyRules: AllowRule[];
-  /** 该会话显式设定的审批模式；未设定时回退全局默认 */
+  /** 该会话显式设定的审批模式；未设定时回退默认值 */
   mode?: ApprovalMode;
   /** 待审队列：与 worker 同寿命，进程没了即清空（阻塞在 before_tool 的调用方已消失） */
   pending: Map<string, ApprovalRequest>;
@@ -42,58 +45,58 @@ interface SessionState {
 
 export class ApprovalStore {
   private readonly sessions = new Map<string, SessionState>();
-  private mode: ApprovalMode = "auto";
   /** 规则 id 单调递增，仅在本进程内唯一即可（规则本身就不落盘） */
   #ruleSeq = 0;
+  /**
+   * 分析器可自动放行的命令白名单（全局设置项，非会话级）。
+   * undefined 表示「用 policy 的内置默认」；空数组表示关闭分析器自动放行。
+   */
+  #analyzeAllowlist?: readonly string[];
+
+  constructor(analyzeAllowlist?: readonly string[]) {
+    this.#analyzeAllowlist = analyzeAllowlist;
+  }
+
+  /** 覆盖分析器命令白名单（设置变更时由宿主调用） */
+  setAnalyzeCommandAllowlist(list?: readonly string[]): void {
+    this.#analyzeAllowlist = list;
+  }
 
   /** 给规则补一个稳定 id */
   #withId(rule: AllowRule): AllowRule {
     return rule.id !== undefined ? rule : { ...rule, id: `r${(this.#ruleSeq += 1)}` };
   }
 
-  /** 读取审批模式：传入 sessionId 时优先该会话的设定，否则为全局默认 */
-  getMode(sessionId?: string): ApprovalMode {
-    if (sessionId !== undefined) {
-      const state = this.sessions.get(sessionId);
-      if (state?.mode !== undefined) return state.mode;
-    }
-    return this.mode;
+  /** 读取某会话的审批模式；未设定时回退默认值（模式是严格的会话级状态，无全局设定） */
+  getMode(sessionId: string): ApprovalMode {
+    const state = this.sessions.get(sessionId);
+    return state?.mode ?? DEFAULT_MODE;
   }
 
   /**
-   * 设定审批模式。
-   * 传入 sessionId：只改该会话的设定；会话尚未登记时先建一个占位 state，
-   *   避免把「会话级」误写成全局默认（否则会污染其他会话）。
-   * 不传 sessionId：改全局默认，作为未单独设定会话的回退值。
+   * 设定某会话的审批模式，只影响该会话，其他会话不受任何影响。
+   * 会话尚未登记（worker 未起）时先建占位 state，register 时会保留这里的 mode。
    *
-   * 切到 full-access 时清空记忆的放行/拒绝规则：两者的语义都是代用户做后续
-   * 决定，在全权模式下已无意义；而拒绝规则优先级高于模式（见 evaluate 中 deny
+   * 切到 full-access 时清空**该会话**记忆的放行/拒绝规则：两者的语义都是代用户做后续
+   * 决定，在全权会话里已无意义；而拒绝规则优先级高于模式（见 evaluate 中 deny
    * 检查在 evaluateTool 之前），不清空会让用户切了全权仍被旧规则拦住，且界面
    * 无从解释。
    */
-  setMode(mode: ApprovalMode, sessionId?: string): void {
-    if (sessionId !== undefined) {
-      const state = this.sessions.get(sessionId);
-      if (state) {
-        state.mode = mode;
-        if (mode === "full-access") this.#forgetRules(state);
-      } else {
-        // 会话未登记（worker 未起）：建占位 state，register 时会保留这里的 mode
-        this.sessions.set(sessionId, {
-          projectRoot: "",
-          rules: [],
-          denyRules: [],
-          pending: new Map(),
-          mode,
-        });
-      }
+  setMode(mode: ApprovalMode, sessionId: string): void {
+    const state = this.sessions.get(sessionId);
+    if (state) {
+      state.mode = mode;
+      if (mode === "full-access") this.#forgetRules(state);
       return;
     }
-    this.mode = mode;
-    // 改全局默认同样清空各会话的记忆规则，避免旧规则继续压过新模式
-    if (mode === "full-access") {
-      for (const state of this.sessions.values()) this.#forgetRules(state);
-    }
+    // 会话未登记（worker 未起）：建占位 state，register 时会保留这里的 mode
+    this.sessions.set(sessionId, {
+      projectRoot: "",
+      rules: [],
+      denyRules: [],
+      pending: new Map(),
+      mode,
+    });
   }
 
   /** 清空某会话记忆的放行与拒绝规则 */
@@ -163,17 +166,19 @@ export class ApprovalStore {
       };
     }
 
+    const mode = state?.mode ?? DEFAULT_MODE;
     const verdict = evaluateTool(invocation, {
-      mode: state?.mode ?? this.mode,
+      mode,
       projectRoot,
       allowRules: state?.rules ?? [],
+      analyzeCommandAllowlist: this.#analyzeAllowlist,
     });
 
     if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
       console.log(
         `[approval] 判定 tool=${input.toolName} → ${verdict.decision}` +
           ` risk=${verdict.risk} reason=${verdict.reason}` +
-          ` mode=${this.mode} rules=${state?.rules.length ?? -1}` +
+          ` mode=${mode} rules=${state?.rules.length ?? -1}` +
           ` 已登记=${state !== undefined} root="${projectRoot}" args=${input.argsJson.slice(0, 80)}`,
       );
     }

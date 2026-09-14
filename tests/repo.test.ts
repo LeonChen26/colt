@@ -12,6 +12,7 @@ import {
   createSession,
   deleteSession,
   getSession,
+  getSetting,
   listProjectChanges,
   listProjects,
   listSessionFileChanges,
@@ -23,6 +24,7 @@ import {
   recordUsage,
   setKernelSessionId,
   setSessionModel,
+  setSetting,
   touchSession,
   upsertProject,
 } from "../src/main/db/repo.ts";
@@ -238,5 +240,19 @@ describe("file changes", () => {
     const list = listProjectChanges(project.id);
     assert.equal(list.length, 1);
     assert.equal(list[0]?.sessionTitle, "我的会话");
+  });
+});
+
+describe("settings", () => {
+  test("未设置时返回 undefined", () => {
+    assert.equal(getSetting("approval.analyzeCommandAllowlist"), undefined);
+  });
+
+  test("写入后可读回，且可覆盖", () => {
+    setSetting("approval.analyzeCommandAllowlist", JSON.stringify(["npm"]));
+    assert.equal(getSetting("approval.analyzeCommandAllowlist"), JSON.stringify(["npm"]));
+
+    setSetting("approval.analyzeCommandAllowlist", JSON.stringify([]));
+    assert.equal(getSetting("approval.analyzeCommandAllowlist"), JSON.stringify([]));
   });
 });

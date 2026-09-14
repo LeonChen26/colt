@@ -6,10 +6,11 @@ import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "el
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
-import type { BranchNode, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
-import { ApprovalStore } from "./approval/store";
+import { ApprovalStore, DEFAULT_TIMEOUT_MS } from "./approval/store";
+import { getAnalyzeCommandAllowlist } from "./approval/config";
 import { analyzeToolCall } from "./approval/analyzer";
 import { createDeferred } from "./lib/deferred";
 import { hostBridge } from "./host";
@@ -56,6 +57,17 @@ interface WorkerEntry {
    * 并发时单槽会让先到的请求永远拿不到结果（只能等到超时）。
    */
   pendingBranches: Array<(nodes: BranchNode[]) => void>;
+  /**
+   * 中断代数：每次用户中断自增。审批分析在飞行中跨越了中断时据此丢弃结果——
+   * 否则会在已中断的会话上留下无法解释的幽灵待审卡片，并让 worker 悬空等待。
+   */
+  abortEpoch: number;
+  /**
+   * 审批模式代数：用户改动审批模式时自增。审批分析在飞行中跨越了模式变更时据此
+   * 丢弃旧结论、按新模式重新裁决——否则切到 full-access 后仍会弹出待审卡片
+   * （与「本会话内一律放行」的语义矛盾）。
+   */
+  modeEpoch: number;
 }
 
 export class SessionManager {
@@ -64,6 +76,26 @@ export class SessionManager {
   readonly #pending = new Map<string, Promise<void>>();
   /** 审批状态中枢，与 worker 生命周期解耦 */
   readonly approvals = new ApprovalStore();
+
+  /**
+   * 从设置读取「分析器命令白名单」并应用到审批中枢。
+   * 启动（openDatabase 之后）与设置变更时各调一次；构造期数据库尚未打开，故不能放进构造函数。
+   */
+  reloadAnalyzeCommandAllowlist(): void {
+    this.approvals.setAnalyzeCommandAllowlist(getAnalyzeCommandAllowlist());
+  }
+
+  /**
+   * 设定会话审批模式（唯一入口，IPC 与内部都走这里）。
+   *
+   * 除改模式外还要自增 modeEpoch：在飞的审批分析据此判定「模式变了」，
+   * 改按新模式重新裁决（见 #analyzeThenReply）。仅当生效模式确有变化才自增。
+   */
+  setApprovalMode(sessionId: string, mode: ApprovalMode): void {
+    const entry = this.#workers.get(sessionId);
+    if (entry && this.approvals.getMode(sessionId) !== mode) entry.modeEpoch += 1;
+    this.approvals.setMode(mode, sessionId);
+  }
   /** 主进程侧的审批超时定时器，key 为 toolCallId；与 worker 的超时保持同步 */
   readonly #approvalTimers = new Map<string, NodeJS.Timeout>();
   /**
@@ -138,6 +170,8 @@ export class SessionManager {
     context: { invocation: { toolName: string; args: Record<string, unknown> }; projectRoot: string; reason: string },
   ): Promise<void> {
     const { toolCallId, toolName, argsJson } = message;
+    const abortEpoch = entry.abortEpoch;
+    const modeEpoch = entry.modeEpoch;
     const apiKey = getSecret(entry.provider.id);
     const result = await analyzeToolCall({
       toolName: context.invocation.toolName,
@@ -158,8 +192,62 @@ export class SessionManager {
     // 分析期间 worker 可能已被回收/替换，回给已死的进程毫无意义
     if (this.#workers.get(options.sessionId) !== entry) return;
 
-    if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
-      console.log(`[approval] 模型分析 ${toolName} allow=${result.allow} analyzed=${result.analyzed} reason=${result.reason}`);
+    // 审计留痕：分析器的每次结论都无条件落日志（含自动放行，也含随后被中断/模式变更丢弃的）。
+    // 分析结论可能被入参里的提示注入影响，事后可凭此发现「本不该放行却被放行」。
+    console.log(
+      `[approval:analyze] tool=${toolName} allow=${result.allow} analyzed=${result.analyzed} reason=${result.reason}`,
+    );
+
+    // 分析期间用户中断：直接作废这次授权（回一条拒绝让 worker 解除阻塞），不再入队——
+    // 否则中断后会凭空出现一张无法解释的待审卡片，且解除阻塞要等到 5 分钟超时
+    if (entry.abortEpoch !== abortEpoch) {
+      if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+        console.log(`[approval] 分析期间会话已中断，丢弃结果 ${toolCallId}`);
+      }
+      entry.child.postMessage({
+        type: "approvalResult",
+        toolCallId,
+        approved: false,
+        reason: "会话已中断，授权已取消。",
+      } satisfies WorkerCommand);
+      this.#emitPending(options.sessionId);
+      return;
+    }
+
+    // 分析期间审批模式被改：旧模式的结论不再适用，按新模式重新裁决。
+    // 少了这一步，切到 full-access 后仍会弹出一张待审卡片，与「本会话内一律放行」矛盾。
+    if (entry.modeEpoch !== modeEpoch) {
+      const mode = this.approvals.getMode(options.sessionId);
+      if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+        console.log(`[approval] 分析期间模式已改为 ${mode}，按新模式重新裁决 ${toolCallId}`);
+      }
+      if (mode === "full-access") {
+        entry.child.postMessage({
+          type: "approvalResult",
+          toolCallId,
+          approved: true,
+          reason: "会话已切换为全权执行模式，直接放行。",
+        } satisfies WorkerCommand);
+        this.#emitPending(options.sessionId);
+        return;
+      }
+      // approval（以及「auto → 其它 → auto」这种连环切换）：一律转人工——
+      // 既不让旧模式的结论生效，也不递归再调一次模型
+      const requeued = this.approvals.commitAnalyzed({
+        sessionId: options.sessionId,
+        toolCallId,
+        toolName,
+        argsJson,
+        now: Date.now(),
+        allow: false,
+        reason: "审批模式在分析期间发生变更，已转为人工确认。",
+        timeoutMs: message.timeoutMs,
+      });
+      if ("request" in requeued) {
+        this.#armApprovalTimer(entry, options.sessionId, toolCallId, message.timeoutMs);
+        this.#emitPending(options.sessionId);
+      }
+      return;
     }
 
     const outcome = this.approvals.commitAnalyzed({
@@ -200,6 +288,8 @@ export class SessionManager {
     toolCallId: string,
     timeoutMs: number,
   ): void {
+    // 兜底：worker 未上报 / 传了非法值时用默认 5 分钟，避免 setTimeout(undefined) 立即拒绝
+    const durationMs = timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
     const timer = setTimeout(() => {
       this.#approvalTimers.delete(toolCallId);
       const decision = this.approvals.resolve({
@@ -217,7 +307,7 @@ export class SessionManager {
         } satisfies WorkerCommand);
       }
       this.#emitPending(sessionId);
-    }, timeoutMs);
+    }, durationMs);
     timer.unref?.();
     this.#approvalTimers.set(toolCallId, timer);
   }
@@ -402,6 +492,8 @@ export class SessionManager {
       modelId: options.model,
       ready: readyDeferred.promise,
       pendingBranches: [],
+      abortEpoch: 0,
+      modeEpoch: 0,
     };
     this.#workers.set(options.sessionId, entry);
     // 登记项目根目录，审批策略靠它判断写入是否越界
@@ -474,7 +566,7 @@ export class SessionManager {
 
         case "approvalRequest": {
           if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
-            console.log(`[approval] main 收到请求 ${message.toolName} 模式=${this.approvals.getMode()}`);
+            console.log(`[approval] main 收到请求 ${message.toolName} 模式=${this.approvals.getMode(options.sessionId)}`);
           }
           // worker 正阻塞在 before_tool，无论走哪条分支都必须回一次答复
           const outcome = this.approvals.evaluate({
@@ -627,6 +719,9 @@ export class SessionManager {
   }
 
   abort(sessionId: string): void {
+    // 先记中断代数：在飞的审批分析据此判定作废（见 #analyzeThenReply）
+    const entry = this.#workers.get(sessionId);
+    if (entry) entry.abortEpoch += 1;
     this.#post(sessionId, { type: "abort" });
     // 中断后待决授权已无意义，立即作废，避免界面残留可点击的幽灵卡片
     this.cancelPending(sessionId);

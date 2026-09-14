@@ -234,6 +234,8 @@ export const IPC_CHANNELS = [
   "approval.rules.list",
   "approval.rules.remove",
   "approval.rules.clear",
+  "approval.analyzeConfig.get",
+  "approval.analyzeConfig.set",
   "session.branches",
   "session.navigate",
   "git.status",
@@ -363,14 +365,14 @@ export interface IpcInvokeMap {
     request: { sessionId: string } & ApprovalResolution;
     response: { ok: true };
   };
-  /** 读取审批模式（省略 sessionId 时为全局默认） */
+  /** 读取会话的审批模式（审批模式是会话级状态，无全局设定） */
   "approval.mode.get": {
-    request: { sessionId?: string };
+    request: { sessionId: string };
     response: { mode: ApprovalMode };
   };
-  /** 切换审批模式（省略 sessionId 时改全局默认，否则仅改该会话） */
+  /** 切换会话的审批模式，仅影响该会话 */
   "approval.mode.set": {
-    request: { mode: ApprovalMode; sessionId?: string };
+    request: { mode: ApprovalMode; sessionId: string };
     response: { mode: ApprovalMode };
   };
   /** 列出会话内已记忆的放行/拒绝规则 */
@@ -387,6 +389,19 @@ export interface IpcInvokeMap {
   "approval.rules.clear": {
     request: { sessionId: string; kind?: ApprovalRuleKind };
     response: { ok: true };
+  };
+  /**
+   * 读取「分析器自动放行的命令白名单」（审批策略，全局设置）。
+   * 返回的是生效值：从未配置过时为内置默认。
+   */
+  "approval.analyzeConfig.get": {
+    request: void;
+    response: { commands: string[] };
+  };
+  /** 保存命令白名单；传空列表即关闭分析器自动放行（moderate 操作一律转人工） */
+  "approval.analyzeConfig.set": {
+    request: { commands: string[] };
+    response: { commands: string[] };
   };
   /** 列出全部 provider */
   "providers.list": {

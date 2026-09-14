@@ -114,13 +114,19 @@ CREATE TABLE IF NOT EXISTS presets (
   thinking_level TEXT,
   updated_at INTEGER NOT NULL
 );
+
+/** 通用键值设置：审批策略等运行期可配置项（值统一存 JSON 字符串） */
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 /**
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 /** 判断某表是否已含某列 */
 function hasColumn(instance: DatabaseSync, table: string, column: string): boolean {
@@ -168,6 +174,13 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
   {
     version: 5,
     up: (instance) => migrateProjectsRootKey(instance),
+  },
+  {
+    version: 6,
+    up: (instance) =>
+      instance.exec(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      ),
   },
 ];
 

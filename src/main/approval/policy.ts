@@ -50,6 +50,11 @@ export interface PolicyConfig {
   projectRoot: string;
   /** 会话内已记忆的放行规则 */
   allowRules: AllowRule[];
+  /**
+   * 分析器可自动放行的命令首词白名单（未提供时用内置默认）。
+   * 只有结构上落在白名单内的 moderate 操作才允许交给分析器，其余一律人工确认。
+   */
+  analyzeCommandAllowlist?: readonly string[];
 }
 
 export interface ToolInvocation {
@@ -102,7 +107,7 @@ const COMPUTER_ACTION_TOOL = "computer_action";
  */
 const READONLY_COMMANDS = new Set([
   "ls", "pwd", "cat", "head", "tail", "wc", "echo", "date", "whoami",
-  "which", "type", "file", "stat", "du", "df", "env", "printenv",
+  "which", "type", "file", "stat", "du", "df", "printenv",
   "grep", "rg", "fd", "tree", "diff", "basename", "dirname",
   "true", "false", "printf", "seq", "uname", "id", "hostname",
 ]);
@@ -113,11 +118,11 @@ const READONLY_COMMANDS = new Set([
  */
 const MUTATING_ARGS: { command: string; pattern: RegExp; reason: string }[] = [
   { command: "find", pattern: /-(exec|execdir|delete|ok|okdir|fls|fprint|fprintf)\b/, reason: "find 带执行/删除/写出参数" },
-  { command: "sed", pattern: /(^|\s)-i/, reason: "sed 就地编辑会改写文件" },
+  { command: "sed", pattern: /(^|\s)(-i\b|--in-place\b)/, reason: "sed 就地编辑会改写文件" },
   { command: "xargs", pattern: /.*/, reason: "xargs 会把内容交给子命令执行" },
   { command: "tee", pattern: /.*/, reason: "tee 会写入文件" },
   { command: "awk", pattern: /system\s*\(|print.*>\s*\S/, reason: "awk 可调用 system 或写出文件" },
-  { command: "sort", pattern: /(^|\s)-o\b/, reason: "sort -o 会写出文件" },
+  { command: "sort", pattern: /(^|\s)(-o\b|--output\b)/, reason: "sort -o 会写出文件" },
   { command: "uniq", pattern: /\b\S+\s*$/, reason: "uniq 第二个参数是输出文件" },
 ];
 
@@ -127,10 +132,10 @@ const MUTATING_ARGS: { command: string; pattern: RegExp; reason: string }[] = [
  */
 const CONDITIONAL_READONLY = new Set(["find", "sed", "awk", "sort", "uniq"]);
 
-/** git 的只读子命令 */
+/** git 的只读子命令（config / remote / branch / tag / worktree / reflog 均可改写仓库状态，不入白名单） */
 const READONLY_GIT = new Set([
-  "status", "log", "diff", "show", "branch", "remote", "config", "blame", "describe",
-  "rev-parse", "ls-files", "shortlog", "cat-file", "reflog", "tag", "worktree",
+  "status", "log", "diff", "show", "blame", "describe",
+  "rev-parse", "ls-files", "shortlog", "cat-file",
 ]);
 
 /**
@@ -142,7 +147,7 @@ const READONLY_GIT = new Set([
  * 每条都附带给用户看的说明，避免只丢一个「危险」了事。
  */
 const DANGEROUS_PATTERNS: { pattern: RegExp; reason: string }[] = [
-  { pattern: /\brm\s+(-[a-zA-Z]*\s+)*-?[a-zA-Z]*[rf]/, reason: "递归或强制删除文件" },
+  { pattern: /\brm\b/, reason: "删除文件，可能不可恢复" },
   { pattern: /\brmdir\b/, reason: "删除目录" },
   { pattern: /\b(mkfs|fdisk|diskpart|format)\b/, reason: "磁盘格式化或分区操作" },
   { pattern: /\bdd\s+.*\bof=/, reason: "dd 直接写入设备或文件" },
@@ -164,7 +169,8 @@ const SENSITIVE_PATH_PATTERNS: { pattern: RegExp; reason: string }[] = [
   { pattern: /(^|\/)\.env($|\.|\/)/i, reason: "环境变量文件通常含密钥" },
   { pattern: /(^|\/)\.git\//, reason: "直接改动 git 内部目录" },
   { pattern: /(^|\/)\.ssh\//, reason: "SSH 凭据目录" },
-  { pattern: /(^|\/)(id_rsa|id_ed25519|\.pem|\.key|\.pfx)($|\/)/i, reason: "疑似私钥文件" },
+  { pattern: /(^|\/)(id_rsa|id_ed25519|id_ecdsa|id_dsa)($|\/)/i, reason: "SSH 私钥文件" },
+  { pattern: /\.(pem|key|pfx|p12|jks)$/i, reason: "疑似私钥或证书文件" },
   { pattern: /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/i, reason: "依赖锁文件" },
 ];
 
@@ -174,15 +180,49 @@ function normalizePath(value: string): string {
   return /^[a-zA-Z]:\//.test(slashed) ? slashed[0]!.toLowerCase() + slashed.slice(1) : slashed;
 }
 
-/** 判断路径是否位于根目录内（需按路径段比较，避免 /proj-evil 被当成 /proj 内） */
+/** 折叠相对路径中的 . 与 .. 段 */
+function collapseRelative(path: string): string {
+  const parts: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (parts.length > 0 && parts[parts.length - 1] !== "..") parts.pop();
+      else parts.push("..");
+      continue;
+    }
+    parts.push(segment);
+  }
+  return parts.join("/");
+}
+
+/** 折叠绝对路径中的 . 与 .. 段，保留盘符 / 前导斜杠，越到根即停在根 */
+function collapseAbsolute(path: string): string {
+  const prefix = path.match(/^([a-zA-Z]:)?\//)?.[0] ?? "";
+  const parts: string[] = [];
+  for (const segment of path.slice(prefix.length).split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+  return prefix + parts.join("/");
+}
+
+/** 判断路径是否位于根目录内（先折叠 . / .. 段，再按路径段比较，避免 /proj-evil 被当成 /proj 内） */
 export function isInside(root: string, target: string): boolean {
   const normalizedRoot = normalizePath(root).replace(/\/+$/, "");
   const normalizedTarget = normalizePath(target);
-  // 相对路径视为项目内
-  if (!/^([a-zA-Z]:)?\//.test(normalizedTarget)) return !normalizedTarget.startsWith("../");
-  return (
-    normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`)
-  );
+
+  // 相对路径：折叠后仍带前导 .. 即为越界
+  if (!/^([a-zA-Z]:)?\//.test(normalizedTarget)) {
+    const relative = collapseRelative(normalizedTarget);
+    return relative.length > 0 && relative !== ".." && !relative.startsWith("../");
+  }
+
+  const collapsed = collapseAbsolute(normalizedTarget);
+  return collapsed === normalizedRoot || collapsed.startsWith(`${normalizedRoot}/`);
 }
 
 /**
@@ -196,14 +236,19 @@ export function splitCommands(command: string): string[] {
     .filter((part) => part.length > 0);
 }
 
-/** 取命令首词，跳过前置的环境变量赋值 */
-function headWord(segment: string): string {
+/** 取命令首词原样（跳过前置的环境变量赋值，保留路径前缀） */
+function firstToken(segment: string): string {
   const tokens = segment.split(/\s+/).filter((token) => token.length > 0);
   for (const token of tokens) {
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
-    return token.replace(/^.*[/\\]/, "").toLowerCase();
+    return token;
   }
   return "";
+}
+
+/** 取命令首词，跳过前置的环境变量赋值，并剥离路径前缀后小写 */
+function headWord(segment: string): string {
+  return firstToken(segment).replace(/^.*[/\\]/, "").toLowerCase();
 }
 
 /**
@@ -216,6 +261,11 @@ export function assessCommand(command: string): { risk: RiskLevel; reason: strin
   // 1) 明确危险：抬到 dangerous（更醒目 + 免疫记忆规则）
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {
     if (pattern.test(command)) return { risk: "dangerous", reason };
+  }
+
+  // 命令 / 进程替换内的命令无法可靠拆分，一律不进只读白名单（拿不准就问）
+  if (/`|\$\((?!\()|<\(/.test(command)) {
+    return { risk: "moderate", reason: "命令包含命令替换或进程替换，无法证明无副作用" };
   }
 
   const segments = splitCommands(command);
@@ -235,6 +285,9 @@ export function assessCommand(command: string): { risk: RiskLevel; reason: strin
       const sub = segment.split(/\s+/).filter(Boolean)[1]?.toLowerCase() ?? "";
       if (!READONLY_GIT.has(sub)) {
         return { risk: "moderate", reason: `git ${sub || "（无子命令）"} 可能改写仓库状态` };
+      }
+      if (/--output\b/.test(segment)) {
+        return { risk: "moderate", reason: "git --output 会写出文件" };
       }
       continue;
     }
@@ -337,6 +390,79 @@ function buildSummary(invocation: ToolInvocation): string {
   return toolName;
 }
 
+/**
+ * 分析器可自动放行的命令首词白名单（内置默认值，可在设置里覆盖）。
+ *
+ * 只收「已知工具链的入口」——包管理器 / 构建 / 测试 / 静态检查 / VCS。
+ * 刻意**不收裸解释器**（node / python / sh 等）：那等于把任意代码执行交给模型裁决，
+ * 与「结构底线」的初衷相悖。需要时可自行在设置里添加。
+ */
+export const DEFAULT_ANALYZE_COMMAND_ALLOWLIST: readonly string[] = [
+  "npm", "pnpm", "yarn", "npx", "bun",
+  "tsc", "vite", "vitest", "jest", "eslint", "prettier",
+  "pytest", "ruff", "mypy", "uv", "poetry",
+  "go", "cargo", "make", "cmake", "gradle", "mvn", "dotnet",
+  "git",
+];
+
+/**
+ * 归一化用户填写的白名单：逐项去空白、小写、剥离路径前缀（便于粘贴 `/usr/bin/npm`），
+ * 去重并剔除空项。非数组或含非字符串项时按相应用例忽略，不抛错。
+ */
+export function normalizeAnalyzeAllowlist(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const name = item.trim().replace(/^.*[/\\]/, "").toLowerCase();
+    if (name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    result.push(name);
+  }
+  return result;
+}
+
+/**
+ * 分析器自动放行的「结构底线」：大模型的结论只能否决，不能授予。
+ *
+ * 只有能用**与自由文本无关的结构**刻画清楚、且本身低危的操作，才允许交给分析器裁决；
+ * 其余一律退回人工确认（fail-closed）。这样即便分析器被提示注入骗过，攻击载荷也必须
+ * 先长得像「项目内写文件 / 白名单命令的正常调用」才可能过关。
+ *
+ *   - 写入类工具：路径已由 assessToolRisk 证明在项目内且非敏感；
+ *   - 屏幕截图：无参数、无副作用，注入面为零；
+ *   - bash：全部分段的首词都是**裸命令名**（无路径前缀）且命中白名单，
+ *     且不含命令替换 / 反引号 / 进程替换 / 输出重定向。
+ */
+export function isAnalyzeEligible(
+  invocation: ToolInvocation,
+  allowlist: readonly string[] = DEFAULT_ANALYZE_COMMAND_ALLOWLIST,
+): boolean {
+  const { toolName, args } = invocation;
+  if (WRITE_TOOLS[toolName] !== undefined) return true;
+  if (toolName === COMPUTER_SCREENSHOT_TOOL) return true;
+  if (toolName !== "bash") return false;
+
+  const command = typeof args.command === "string" ? args.command : "";
+  // 替换/反引号里的命令不在首词白名单的可见范围内，一律不交给分析器
+  if (/`|\$\(|<\s*\(/.test(command)) return false;
+  // 输出重定向即写盘，结构上不再是「只跑一下工具链」
+  if (/(^|[^>])>{1,2}[^>]/.test(command)) return false;
+
+  const segments = splitCommands(command);
+  if (segments.length === 0) return false;
+
+  const allowed = new Set(allowlist);
+  return segments.every((segment) => {
+    const raw = firstToken(segment);
+    // 带路径前缀（`./mytool`、`/usr/bin/npm`、`..\x\npm`）一律不放行：
+    // 允许它等于允许执行项目里任意同名文件，白名单就失去意义了
+    if (raw.length === 0 || /[/\\]/.test(raw)) return false;
+    return allowed.has(raw.toLowerCase());
+  });
+}
+
 /** 判断已记忆的规则是否覆盖本次调用 */
 function matchedByRules(
   invocation: ToolInvocation,
@@ -388,8 +514,17 @@ export function evaluateTool(
     return { ...base, decision: "allow", risk: "safe", reason: assessed.reason };
   }
 
-  // 自动审批模式：白名单外的普通操作交给大模型分析；危险操作仍需人工确认
+  // 自动审批模式：白名单外的普通操作，先过「结构底线」再交给大模型分析；
+  // 结构上不属于已知低危形态的，以及危险操作，都退回人工确认
   if (config.mode === "auto" && assessed.risk === "moderate") {
+    if (!isAnalyzeEligible(invocation, config.analyzeCommandAllowlist)) {
+      return {
+        ...base,
+        decision: "ask",
+        risk: "moderate",
+        reason: `${assessed.reason}（不在自动放行的命令白名单内，需人工确认）`,
+      };
+    }
     return { ...base, decision: "analyze", risk: "moderate", reason: assessed.reason };
   }
 

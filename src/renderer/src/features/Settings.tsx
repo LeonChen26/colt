@@ -89,6 +89,82 @@ export function Settings(): React.JSX.Element {
             />
           ))}
         </div>
+
+        <ApprovalPolicySettings onSaved={notify} onError={fail} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 审批策略：分析器自动放行的命令白名单。
+ * 只在「自动审批模式」下生效——白名单内的命令才允许交给模型分析后自动放行，
+ * 其余一律弹窗确认。留空即关闭自动放行。
+ */
+function ApprovalPolicySettings({
+  onSaved,
+  onError,
+}: {
+  onSaved: (message: string) => void;
+  onError: (error: unknown) => void;
+}): React.JSX.Element {
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { commands } = await window.banyan.invoke("approval.analyzeConfig.get", undefined);
+        setText(commands.join("\n"));
+      } catch (e) {
+        onError(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [onError]);
+
+  const save = async (): Promise<void> => {
+    try {
+      const commands = text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const saved = await window.banyan.invoke("approval.analyzeConfig.set", { commands });
+      setText(saved.commands.join("\n"));
+      onSaved("审批白名单已保存");
+    } catch (e) {
+      onError(e);
+    }
+  };
+
+  return (
+    <div className="mt-6">
+      <h3 className="mb-1 text-sm">审批</h3>
+      <p className="mb-3 text-xs text-text-muted">
+        自动审批模式下，只有首词在此列表中的命令（如 npm / pytest / git）才会交给模型分析后自动放行；
+        其余操作一律弹窗确认。留空即关闭自动放行、全部转人工。
+      </p>
+      <div className="rounded-lg border border-line bg-surface-raised p-3">
+        <label className="mb-1 block text-xs text-text-muted">可自动放行的命令（每行一个）</label>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={6}
+          disabled={loading}
+          placeholder={"npm\npnpm\npytest\ngit"}
+          className="w-full resize-none rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition placeholder:text-text-muted focus:border-accent disabled:opacity-50"
+        />
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={loading}
+            className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            保存
+          </button>
+        </div>
       </div>
     </div>
   );
