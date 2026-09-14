@@ -10,8 +10,15 @@ import { ApprovalStore } from "../src/main/approval/store.ts";
 const SESSION = "s1";
 const ROOT = "E:/proj";
 
+/**
+ * 造一个全局默认设为 approval 的 store。
+ * 这些测试验证的是待审队列与记忆规则的生命周期，需要「普通操作逐条确认」
+ * 作为前提；全局默认已改为 auto，故在此显式降回 approval。设的是全局默认而非
+ * 会话级，避免污染「会话级模式独立于全局默认」这类用例。
+ */
 function store(): ApprovalStore {
   const instance = new ApprovalStore();
+  instance.setMode("approval");
   instance.register(SESSION, ROOT);
   return instance;
 }
@@ -45,9 +52,9 @@ function askBash(instance: ApprovalStore, toolCallId: string, now = 1): void {
 }
 
 describe("ApprovalStore 模式", () => {
-  test("默认审批模式，可切换", () => {
-    const instance = store();
-    assert.equal(instance.getMode(), "approval");
+  test("默认自动审批模式，可切换", () => {
+    const instance = new ApprovalStore();
+    assert.equal(instance.getMode(), "auto");
     instance.setMode("full-access");
     assert.equal(instance.getMode(), "full-access");
   });
@@ -60,8 +67,8 @@ describe("ApprovalStore 模式", () => {
     instance.setMode("auto", "s1");
 
     assert.equal(instance.getMode("s1"), "auto");
-    assert.equal(instance.getMode("s2"), "approval", "s2 应仍为全局默认");
-    assert.equal(instance.getMode(), "approval", "全局默认不应被改动");
+    assert.equal(instance.getMode("s2"), "auto", "s2 应仍为全局默认");
+    assert.equal(instance.getMode(), "auto", "全局默认不应被改动");
   });
 
   test("会话级模式独立于全局默认", () => {
@@ -109,8 +116,8 @@ describe("ApprovalStore 模式", () => {
     instance.setMode("auto", "not-registered-yet");
 
     assert.equal(instance.getMode("not-registered-yet"), "auto");
-    assert.equal(instance.getMode(), "approval", "全局默认不应被会话级设定改写");
-    assert.equal(instance.getMode("another-session"), "approval");
+    assert.equal(instance.getMode(), "auto", "全局默认不应被会话级设定改写");
+    assert.equal(instance.getMode("another-session"), "auto");
   });
 
   test("未登记会话预设的模式在首次 register 后保留", () => {
@@ -572,7 +579,7 @@ describe("ApprovalStore 生命周期", () => {
 
     instance.unregister(SESSION);
 
-    // state 已彻底移除，回退全局默认
+    // state 已彻底移除，回退全局默认（此用例的 store() 显式设了 approval）
     assert.equal(instance.getMode(SESSION), "approval");
   });
 
@@ -588,6 +595,7 @@ describe("ApprovalStore 生命周期", () => {
 
   test("不同会话的记忆互相隔离", () => {
     const instance = new ApprovalStore();
+    instance.setMode("approval");
     instance.register("s1", ROOT);
     instance.register("s2", ROOT);
 

@@ -42,7 +42,7 @@ interface SessionState {
 
 export class ApprovalStore {
   private readonly sessions = new Map<string, SessionState>();
-  private mode: ApprovalMode = "approval";
+  private mode: ApprovalMode = "auto";
   /** 规则 id 单调递增，仅在本进程内唯一即可（规则本身就不落盘） */
   #ruleSeq = 0;
 

@@ -96,7 +96,7 @@ export function Conversation({
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  const [mode, setMode] = useState<ApprovalMode>("approval");
+  const [mode, setMode] = useState<ApprovalMode>("auto");
   /** 跟随线联动：hover 工具卡片时高亮它碰的文件 */
   const [hoveredFile, setHoveredFile] = useState<string | null>(null);
   const [git, setGit] = useState<GitStatus | null>(null);
