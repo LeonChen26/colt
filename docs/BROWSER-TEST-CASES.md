@@ -87,6 +87,9 @@ snapshot 会给出 6 个可交互元素（`e1`~`e6`，序号取决于当时页�
 | A5 | `点「触发请求失败」，等一会儿后看网络` | `网络：共 4 个请求，问题 3 个（4xx 1 / 5xx 1 / 网络错误 1）`，逐条列出 `/api/missing`、`/api/boom` 与连接失败 |
 | A6 | `把视口设成 375x700，读正文；再恢复默认，再读正文` | 依次出现 `窄屏（移动端）布局` → `宽屏布局`（证明响应式重排真的发生） |
 | A7 | `点「打开新窗口」` | **不新开窗口**，当前窗口转到 `/popup.html`；控制台出现 `拦截新窗口请求，已在当前窗口打开：…` |
+| A8 | 看右栏浏览器页签**底部**的观测抽屉，依次点「控制台 / 网络 / 下载」；再点一次激活的页签 | 三个页签各带**问题计数**徽标（控制台 = error+warning、网络 = 4xx/5xx/网络错误、下载 = 条数）；抽屉列出与 A4/A5/B2 一致的内容；再点激活页签则收起正文，页面区域随之变高 |
+| A9 | 看右栏浏览器页签**顶部**的后退 / 前进 / 刷新三个按钮：先点页面里的「打开新窗口」跳到 `/popup.html`，再依次点后退 → 前进 → 刷新 | 后退回到 `/`、前进回到 `/popup.html`、刷新后仍停在同一页；按钮可用性跟着真实历史走——刚打开时后退灰、跳到第二页后可用、退到最早一页又变灰而前进变可用。**这一条由用户操作，不走审批**（审批裁决的是模型给出的工具入参） |
+| A10 | 让 agent 调一次视口联调（`browser_act viewport` 给 width/height，例如 1280×800），**故意不恢复**；看浏览器页签顶部 | 顶部出现 `联调视口 1280×800 · [恢复]` 标记（warning 边框 + 实心按钮，窄栏下文案会截断成「图标 + 恢复」但按钮一定在）；页面按该尺寸重排，**比停靠区大的部分看不到**（右侧被窗口边缘裁掉、下方压住观测抽屉）——这是刻意保留的联调状态，标记就是用来解释它的。点「恢复」→ 标记消失、页面回到按停靠区尺寸自适应 |
 
 ### 3.2 传输能力
 
@@ -145,7 +148,7 @@ npm run dev
 
 结论以 `.smoke-fixture.png.log` 为准（该模式**刻意不截图**：全程没让主窗口重绘，此时 `capturePage` 会把主进程拖住不返回）。
 
-### 4.1 断言清单（22 条）
+### 4.1 断言清单（25 条）
 
 | # | 断言 | 对应手动用例 |
 |---|---|---|
@@ -166,34 +169,66 @@ npm run dev
 | 15 | 页面收到文件名 | B4 |
 | 16 | downloads 记录到下载 | B2 |
 | 17 | console 回报下载完成 | B2 |
-| 18 | 下载文件已落盘 | B3 |
-| 19 | 弹窗在当前窗口接管 | A7 |
-| 20 | 弹窗拦截有提示 | A7 |
-| 21 | 未新开窗口 | A7 |
-| 22 | 关闭会话未抛未捕获异常 | C4 |
+| 18 | `browser.observe` 结构化控制台含 error 与 warning | A4 / A8 |
+| 19 | `browser.observe` 结构化网络含 404 / 500 / 网络错误 | A5 / A8 |
+| 20 | `browser.observe` 结构化下载含已落盘那条 | B2 / A8 |
+| 21 | 下载文件已落盘 | B3 |
+| 22 | 弹窗在当前窗口接管 | A7 |
+| 23 | 弹窗拦截有提示 | A7 |
+| 24 | 未新开窗口 | A7 |
+| 25 | 关闭会话未抛未捕获异常 | C4 |
+
+> 18–20 三条是 B2 加的。它们不重复验观测**内容**（那是 6–10 / 16–17 的活），
+> 只钉一件事：**抽屉的数据源与 `browser_read` 是同一份**。故断言直接比对结构化字段
+> （`level` / `statusCode` / `error` / `filename`）与上面那些文本判据是否一一对上——
+> 哪天 `observe` 换了数据源或漏了一类，这三条先红，而不是等到界面上「看着不太对」。
+> 它们必须排在弹窗那步**之前**：接管新窗口会 `capture.reset()`，清掉控制台与网络。
 
 ### 4.2 已实测结果
 
 ```
-✓ 22 项全部通过，末行输出 DONE
+✓ 25 项全部通过，末行输出 DONE
 夹具站：http://127.0.0.1:<随机端口>/
 refs：input=e1 下载=e2 弹窗=e3 控制台=e4 网络=e5 延迟=e6
 初始 console：控制台：共 1 条（error 0 / warning 1 / 其它 0）
   [warning] Electron Security Warning (Insecure Content-Security-Policy) … (sandbox_bundle:2)
 初始 network：网络：共 1 个请求，未发现失败（无 4xx/5xx 或网络错误）。
+observe：console 4 / network 5 / downloads 1
 ```
 
-**浏览器内嵌化后已复跑通过（2026-09）**：22/22 全部通过。其中三条最容易被这次重构打破的断言确认仍成立：
+**浏览器内嵌化后已复跑通过（2026-09）**：全部通过（当时 22 条，B2 后为 25 条）。其中三条最容易被这次重构打破的断言确认仍成立：
 
 | 断言 | 为什么会被打破 | 结论 |
 |---|---|---|
 | 12 / 13 viewport 窄屏 / 恢复宽屏 | 视口不再改窗口尺寸 | ✓ 改为给视图覆盖尺寸后，页面 resize 照常触发 |
-| 21 未新开窗口 | 载体从窗口换成视图 | ✓ 窗口数始终为 1 |
-| 22 关闭会话未抛未捕获异常 | 销毁路径从 `window.destroy()` 换成摘视图 + 关 webContents | ✓ 判活后销毁，无未捕获异常 |
+| 24 未新开窗口 | 载体从窗口换成视图 | ✓ 窗口数始终为 1 |
+| 25 关闭会话未抛未捕获异常 | 销毁路径从 `window.destroy()` 换成摘视图 + 关 webContents | ✓ 判活后销毁，无未捕获异常 |
 
 用例**不写死 ref 序号**：`refs` 一行只是本次实测，实际按元素文案认领。
 
-### 4.3 断言 22 的来历：为什么必须单独盯未捕获异常
+> **B1（用户前进 / 后退 / 刷新）的自动化断言不在这里**，而在**工作区端到端**（`dock` 模式）：
+> 它必须点界面上的按钮、走「渲染层 → IPC → `navigationHistory`」这条用户链路，判据取主进程读到的
+> **真实 URL**（见 `NEXT-PHASE.md` §5 第 3 条，`dock` 115/115）。`fixture` 模式直接驱动宿主、没有渲染层参与，
+> 验不了界面按钮的可用性。同批还覆盖了两条**只在界面上才看得见**的：原生视图与「页面区域」**逐像素**对齐
+> （含反复收起/展开 5 轮、**最窄 219 宽也各验一次**）、视口联调标记与「恢复」（**含「恢复」是否真的落在
+> 可视区内**——`document.elementFromPoint` 命中测试，只查 DOM 存在会把「被挤出窗口的假出口」判成通过）。
+>
+> ⚠️ **「超出 / 显示不全」有两种来源，先分清再动手**（用户复测「bing 页面还是超出了」时踩过）：
+> ① **原生视图比「页面区域」大**（`viewport` 覆盖）→ 被窗口边缘裁掉 / 压住抽屉；② **页面自己比视口宽**
+> → 页面内容被自身裁掉。判据：主进程读 `view.getBounds()` vs 渲染层读 `[data-browser-area]` 的
+> `getBoundingClientRect()`，两者相等即视图侧无责；再把**页面自己的 `innerWidth`** 与区域宽度对一下
+> （必须用**浏览器视图的 webContents** 读，用应用 UI 只会读到窗口宽度），相等就说明页面确实按停靠区重排了。
+>
+> ⚠️ **量 ② 时别用 `documentElement.scrollWidth`**：页面自带的 `overflow-x: hidden` 会把它钳到
+> `clientWidth`，于是永远「相等」——**一个必然为真的假阴性**。曾据此错判「bing 首页不会横向溢出」。
+> 要用 `document.body.scrollWidth`，或遍历全元素取 `getBoundingClientRect().right` 的最大值。
+> 实测（真实 bing 首页，`div.hp_body` 最小内容宽 768）：区域 819 / 799 装得下（`body.scrollWidth`
+> 804 / 784）；779 起溢出 4px，并随宽度收窄递增到 699 时的 84px。而 `<html>` 是 `overflow-x: hidden`，
+> **没有横向滚动条，被裁的部分用户够不到**——所以窄右栏下 ② 是真实存在的来源，不是「只能是 ①」。
+> （另有一层：右栏宽度上限 = 窗口内容宽 − 601（左栏 241 + 中栏下限 360），
+> 窗口窄于约 1384 时右栏永远到不了 783，这类桌面站点在窄窗口里天生装不下，与实现无关。）
+
+### 4.3 断言 25 的来历：为什么必须单独盯未捕获异常
 
 窗口 `closed` 回调是**异步**触发的，比用例记结论更晚。曾有一版 `closeSession` 在其中访问了已随窗口销毁的 `webContents`，于是：
 
@@ -218,6 +253,13 @@ refs：input=e1 下载=e2 弹窗=e3 控制台=e4 网络=e5 延迟=e6
 | 浏览器不再弹出独立窗口 | 已内嵌为右栏「浏览器」页签里的 `WebContentsView`；页面仍照常加载、观测与操作，只是画在窗口内 |
 | 下载文件名带 `1-` 前缀 | 统一加序号，避免页面反复用同名文件互相覆盖 |
 | 下载数达到 5 个后新的被取消 | 单会话条数上限；单文件另有 100MB 体积上限 |
+| 观测抽屉最多滞后约 1 秒 | 抽屉按 1s **轮询** `browser.observe`，不是逐条推送——console / network 事件可以很密集，逐条推会变成 IPC 洪泛；详见 `ObserveDrawer.tsx` 顶部注释 |
+| 控制台 / 网络条目会跨导航累积 | `CaptureBuffer.reset()` 只在「接管新窗口」时调用，普通导航不清空。给模型看的文本写的「自上次导航以来」是历史措辞，以实际缓冲为准 |
+| **视口联调设过之后，页面会一直按那个尺寸摆放** | `viewport` 覆盖**只在显式「恢复」时撤销**（导航、切页签都不清）。若覆盖比停靠区大，右侧被窗口边缘裁掉、下方压住观测抽屉——**这是刻意的联调状态，不是渲染坏了**：浏览器页签顶部会显示 `联调视口 ×` 标记与「恢复」按钮，点它即回到自适应。标记在窄栏下会把文案截断成「图标 + 恢复」，**按钮本身一定留在可视区内**（`dock` 用命中测试盯着这条） |
+| **原生视图偶尔与页面区域错位一小段** | 视图矩形是「电平」状态，而 ResizeObserver / window resize 是「边沿」触发；现已加每 400ms 重申兜底，错位最多存在 400ms。若仍看到持续错位，那就是新问题，先看 `dock` 的「逐像素对齐」断言 |
+| 用户点了后退 / 前进 / 刷新后，agent **不是立刻**知道 | 提示走内核的 `transform_context`，在**下一次模型请求前**注入——它只该让 agent「下次看页面前先知道手里那份过期了」，不该凭空开一轮去回应 |
+| agent 空闲时用户操作浏览器，什么都不发生 | 提示**只在 agent 正在跑时**转发（`sessionManager.notifyUserBrowserNavigation`）。空闲时没有任何操作会被过期页面误导，留一条提示会在很久以后的一轮里凭空出现、变成噪声 |
+| 用户操作浏览器**不弹审批** | 审批裁决的是**模型给出的工具入参**；这条链路每跳都由用户点击发起、没有模型参与。且内嵌页是真实 `WebContentsView`，用户本来就能直接点它 |
 
 ---
 
@@ -230,4 +272,7 @@ refs：input=e1 下载=e2 弹窗=e3 控制台=e4 网络=e5 延迟=e6
   - 用例实现：[smoke.ts](../src/main/smoke.ts) 的 `runFixture`
   - 被验证的实现：[browser-host.ts](../src/main/host/browser-host.ts) / [browser-observe.ts](../src/main/host/browser-observe.ts) / [browser-tool.ts](../src/worker/lib/browser-tool.ts)
   - 内嵌形态的渲染层：[WorkspaceDock.tsx](../src/renderer/src/features/Conversation/WorkspaceDock.tsx)（页签 + 页面区域上报）/ [Conversation/index.tsx](../src/renderer/src/features/Conversation/index.tsx)（⑦-F 自动切页签）
+  - 观测抽屉（B2）：[ObserveDrawer.tsx](../src/renderer/src/features/Conversation/ObserveDrawer.tsx)（UI）→ `browser.observe` → `HostBridge.browserObservation` → `BrowserHost.observe`
+  - 用户前进 / 后退 / 刷新（B1）：[WorkspaceDock.tsx](../src/renderer/src/features/Conversation/WorkspaceDock.tsx) 的 `data-browser-nav` 按钮 → `browser.navigate` → `HostBridge.browserNavigate` → `BrowserHost.navigate`（`navigationHistory`）；告知 agent 走 `browserNotice` → `sessionManager.notifyUserBrowserNavigation` → worker 的 `transform_context`
+  - 视口联调标记与恢复（B1 后续修复）：[WorkspaceDock.tsx](../src/renderer/src/features/Conversation/WorkspaceDock.tsx) 的 `data-browser-viewport` / `data-browser-viewport-reset` → `browser.viewport.reset` → `BrowserHost.resetViewport`；原生视图的矩形由 `browser.bounds`（含 400ms 重申）驱动 → `BrowserHost.setBounds` / `#applyBounds`
   - 纯逻辑单测：[tests/browser-observe.test.ts](../tests/browser-observe.test.ts) / [tests/approval.test.ts](../tests/approval.test.ts)
