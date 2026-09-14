@@ -206,6 +206,7 @@ export const IPC_CHANNELS = [
   "app.info",
   "firstRun.check",
   "firstRun.resolve",
+  "dialog.confirm",
   "project.pick",
   "project.list",
   "session.create",
@@ -279,6 +280,18 @@ export interface IpcInvokeMap {
   "firstRun.resolve": {
     request: { choice: FirstRunChoice };
     response: { ok: true; cleared: boolean };
+  };
+  /**
+   * 原生确认框（替代渲染层的 `window.confirm`）。
+   *
+   * 必须走主进程的 `dialog` 而不是 `window.confirm`：Chromium 的 JS 对话框被关掉之后，
+   * 页面会失去焦点——点输入框不出光标、也敲不进字符，直到窗口**失焦再重新聚焦**才恢复
+   * （用户表现为「删了个会话，输入框点不进去了；把窗口藏起来再打开又好了」）。
+   * 原生对话框不碰渲染层的焦点状态，关掉后由主进程显式把焦点还给发起窗口。
+   */
+  "dialog.confirm": {
+    request: { message: string; detail?: string; confirmLabel?: string };
+    response: { confirmed: boolean };
   };
   "project.pick": {
     request: void;

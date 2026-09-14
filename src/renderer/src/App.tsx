@@ -246,8 +246,15 @@ export default function App(): React.JSX.Element {
   /** 删除会话：确认 → 调后端 → 刷新列表并适时清空选中 */
   const deleteSession = useCallback(
     async (session: SessionInfo) => {
-      if (!window.confirm(`确定删除会话「${session.title}」？此操作不可恢复。`)) return;
       try {
+        // 走主进程的原生确认框，不用 `window.confirm`：后者的 JS 对话框关掉后会让页面
+        // 失去焦点（输入框点不出光标、敲不进字，需窗口失焦再聚焦才恢复）。
+        const { confirmed } = await window.colt.invoke("dialog.confirm", {
+          message: `确定删除会话「${session.title}」？`,
+          detail: "此操作不可恢复。",
+          confirmLabel: "删除",
+        });
+        if (!confirmed) return;
         await window.colt.invoke("session.delete", { sessionId: session.id });
         const list = await loadProjectSessions(session.projectId);
         setActiveSession((current) => {

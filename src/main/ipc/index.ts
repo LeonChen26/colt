@@ -1,7 +1,7 @@
 /**
  * IPC 路由：所有渲染进程调用的落点
  */
-import { app, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
@@ -116,6 +116,21 @@ function handle<C extends IpcChannel>(channel: C, handler: Handler<C>): void {
   ipcMain.handle(channel, async (_event, request) => handler(request));
 }
 
+/**
+ * 需要知道「谁在调用」的通道。
+ * 原生对话框必须挂在**发起窗口**上：不挂就会变成无父窗口的自由对话框，
+ * 模态关系与关掉后的焦点归还都无从谈起（见 dialog.confirm 的用途）。
+ */
+function handleWithSender<C extends IpcChannel>(
+  channel: C,
+  handler: (
+    sender: Electron.WebContents,
+    request: IpcInvokeMap[C]["request"],
+  ) => Promise<IpcInvokeMap[C]["response"]> | IpcInvokeMap[C]["response"],
+): void {
+  ipcMain.handle(channel, async (event, request) => handler(event.sender, request));
+}
+
 /** 会话的历史目录（真实 JSONL 由内核在其中按「转义后的 cwd + kernelId」生成） */
 function jsonlPathFor(projectId: string): string {
   return join(app.getPath("userData"), "sessions", projectId);
@@ -180,6 +195,39 @@ export function registerIpcHandlers(): void {
         console.error("[firstRun] 清空后重建数据库失败，将在下次访问时重试", error);
       }
     }
+  });
+
+  /**
+   * 原生确认框。
+   *
+   * 存在的唯一理由：渲染层的 `window.confirm` 是 **JS 对话框**，被关掉之后 Chromium
+   * 不让页面继续拿焦点——用户点输入框不出光标、敲不进字，必须让窗口失焦再回来才恢复。
+   * 换成主进程的 `dialog.showMessageBox` 后，渲染层全程不被阻塞，焦点也不被 JS 对话框
+   * 机制染指；返回前再显式把焦点还给发起窗口，收尾不留悬念。
+   *
+   * `noLink`：Windows 默认会把按钮渲染成「命令链接」大块样式，对这种二选一是纯噪音。
+   * 破坏性动作用 `defaultId = cancelId = 1`：回车/ESC 都落到「取消」，不该靠一次回车把数据删掉。
+   */
+  handleWithSender("dialog.confirm", async (sender, request) => {
+    const owner = BrowserWindow.fromWebContents(sender);
+    const options: Electron.MessageBoxOptions = {
+      type: "warning",
+      noLink: true,
+      buttons: [request.confirmLabel ?? "确定", "取消"],
+      defaultId: 1,
+      cancelId: 1,
+      title: "Colt",
+      message: request.message,
+      detail: request.detail,
+    };
+    const { response } = owner
+      ? await dialog.showMessageBox(owner, options)
+      : await dialog.showMessageBox(options);
+    if (owner && !owner.isDestroyed()) {
+      owner.focus();
+      owner.webContents.focus();
+    }
+    return { confirmed: response === 0 };
   });
 
   handle("project.pick", async () => {
