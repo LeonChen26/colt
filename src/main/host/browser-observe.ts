@@ -6,6 +6,18 @@
  * agent 就会基于错误信息继续往下做。
  */
 import { join } from "node:path";
+import type {
+  BrowserNavAction,
+  ConsoleEntry,
+  DownloadEntry,
+  NetworkEntry,
+} from "@shared/protocol";
+
+/**
+ * 观测条目的类型定义在 `@shared/protocol`——渲染层的观测抽屉（B2）要渲染同一份数据，
+ * 契约只能有一处。这里转出去，让 `./browser-observe` 继续作为本模块既有调用方的导入点。
+ */
+export type { ConsoleEntry, DownloadEntry, NetworkEntry };
 
 /** 单会话每类观测的保留上限，超出丢弃最旧的 */
 export const CAPTURE_LIMIT = 300;
@@ -15,41 +27,6 @@ export const MAX_DOWNLOADS_PER_SESSION = 5;
 
 /** 单个文件的体积上限，超过即取消，避免被页面拖着把磁盘写满 */
 export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
-
-export interface DownloadEntry {
-  /** 落盘后的文件名（带序号前缀，避免同名互相覆盖） */
-  filename: string;
-  /** 落盘的绝对路径 */
-  path: string;
-  /** 触发下载的 URL */
-  url: string;
-  bytes: number;
-  /** completed / cancelled / interrupted */
-  state: string;
-  /** 未完成时的原因，如体积超限被取消 */
-  note?: string;
-}
-
-export interface ConsoleEntry {
-  /** info / warning / error / debug */
-  level: string;
-  message: string;
-  /** 日志来源地址 */
-  source: string;
-  /** 日志来源行号，未知为 0 */
-  line: number;
-}
-
-export interface NetworkEntry {
-  url: string;
-  method: string;
-  /** mainFrame / xhr / script / image 等 */
-  resourceType: string;
-  /** 请求失败（未拿到响应）时的错误描述，如 net::ERR_CONNECTION_REFUSED */
-  error?: string;
-  /** 拿到响应时的状态码 */
-  statusCode?: number;
-}
 
 /** 单会话的观测缓冲：控制台 + 网络 + 下载 */
 export class CaptureBuffer {
@@ -99,6 +76,24 @@ export class CaptureBuffer {
 
   downloadsText(limit = MAX_DOWNLOADS_PER_SESSION): string {
     return formatDownloads(this.#downloads, limit);
+  }
+
+  /**
+   * 结构化快照（B2 的 `browser.observe` 用）。
+   *
+   * 返回**副本**而不是内部数组：调用方（IPC 序列化）不该拿到能改到缓冲的引用，
+   * 否则一次误改就会污染后续 agent 读到的观测。
+   */
+  consoleEntries(): ConsoleEntry[] {
+    return [...this.#console];
+  }
+
+  networkEntries(): NetworkEntry[] {
+    return [...this.#network];
+  }
+
+  downloadEntries(): DownloadEntry[] {
+    return [...this.#downloads];
   }
 }
 
@@ -442,6 +437,27 @@ export function formatDownloadNotice(entry: DownloadEntry): string {
     return `已下载文件：${entry.filename}（${formatBytes(entry.bytes)}）→ ${entry.path}`;
   }
   return `下载未完成（${entry.state}）：${entry.filename}${entry.note ? `，${entry.note}` : ""}`;
+}
+
+/**
+ * 用户手动导航后写给 agent 的一句提示（B1）。
+ *
+ * 它是**环境提示而不是用户发言**：不写进 transcript（走内核的 transform_context，
+ * 只影响下一次模型请求），因此对话与分支树里不会凭空多出一轮，也不会被摘要当成真实历史。
+ * 文案要给到「该怎么做」——只说「页面变了」，模型仍可能接着用旧的 ref 操作。
+ */
+export function formatNavigationNotice(
+  action: BrowserNavAction,
+  url: string,
+  title: string,
+): string {
+  const label = action === "back" ? "后退" : action === "forward" ? "前进" : "刷新";
+  const where = url.length > 0 ? url : "about:blank";
+  return (
+    `【系统提示】用户在本次运行期间手动操作了浏览器（${label}），当前页面为 ${where}` +
+    `${title.length > 0 ? `（${title}）` : ""}。` +
+    "你之前掌握的元素 ref 与页面内容可能已经过期，继续操作前请先用 browser_read 的 snapshot 重新确认页面。"
+  );
 }
 
 /** 下载列表：文件名、状态、落盘路径与来源，末尾给一句下一步提示 */

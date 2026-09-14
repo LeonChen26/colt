@@ -32,13 +32,14 @@ import {
 } from "electron";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { BrowserRect, BrowserViewState } from "@shared/protocol";
+import type { BrowserNavAction, BrowserObservation, BrowserRect, BrowserViewState } from "@shared/protocol";
 import type { HostResult } from "@shared/worker-protocol";
 import {
   CaptureBuffer,
   clampWaitTimeout,
   exceedsDownloadSize,
   formatDownloadNotice,
+  formatNavigationNotice,
   formatWaitResult,
   isFileInput,
   isWaitMode,
@@ -166,6 +167,13 @@ function typeScript(ref: string, text: string): string {
   })()`;
 }
 
+/** 用户手动导航的结果：给渲染层的新状态，以及（页面真变了时）给 agent 的提示 */
+export interface BrowserNavigation {
+  state: BrowserViewState;
+  /** 给 agent 的环境提示；没有实际导航（已到头）时为空串 */
+  notice: string;
+}
+
 export class BrowserHost {
   readonly #sessions = new Map<string, SessionBrowser>();
   /** webContents.id → sessionId：把 partition 级网络/下载事件收敛到对应会话 */
@@ -210,13 +218,108 @@ export class BrowserHost {
   /** 读取视图状态（渲染层挂载时对齐已加载的视图） */
   stateOf(sessionId: string): BrowserViewState {
     const entry = this.#sessions.get(sessionId);
-    if (entry === undefined) return { sessionId, loaded: false, url: "", title: "" };
+    if (entry === undefined) {
+      return {
+        sessionId,
+        loaded: false,
+        url: "",
+        title: "",
+        canGoBack: false,
+        canGoForward: false,
+        viewport: null,
+      };
+    }
     const contents = entry.view.webContents;
+    const history = contents.navigationHistory;
     return {
       sessionId,
       loaded: true,
       url: contents.getURL(),
       title: contents.getTitle(),
+      canGoBack: history.canGoBack(),
+      canGoForward: history.canGoForward(),
+      viewport: entry.viewport === null ? null : { ...entry.viewport },
+    };
+  }
+
+  /**
+   * 撤销「视口联调」覆盖（用户在浏览器头部点「恢复」）。
+   *
+   * 覆盖是**持久**状态：只有显式撤销才结束（导航、切页签都不清），
+   * 所以必须给用户一个出口——否则 agent 忘了恢复，面板就一直按那个尺寸摆放。
+   */
+  resetViewport(sessionId: string): BrowserViewState {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) throw new Error("浏览器尚未加载，没有可恢复的视口");
+    entry.viewport = null;
+    this.#applyBounds(sessionId);
+    // 推给界面：头部据此收起「视口 × 恢复」标记
+    this.#emitState(sessionId, true);
+    return this.stateOf(sessionId);
+  }
+
+  /**
+   * 用户手动导航（B1）：后退 / 前进 / 刷新。
+   *
+   * 与 `handle()` 那条 agent 链路**刻意分开**：它不接受任意 URL、不做 upload 这类落到本地磁盘的动作，
+   * 只做浏览器本身就有的三个浏览动作——因此没有「越界」可言，也就不需要审批
+   * （审批裁决的是模型给出的工具入参，而这里根本没有模型参与）。
+   *
+   * 但页面确实被换掉了，agent 手里那份「页面是什么样」随之过期，故同时给出 `notice`，
+   * 由调用方（IPC 层）转给 worker 告知 agent。
+   *
+   * 已经到头（退无可退 / 进无可进）时不动作、也不产生提示：页面没变，没什么可告知的。
+   */
+  navigate(sessionId: string, action: BrowserNavAction): BrowserNavigation {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) throw new Error("浏览器尚未加载，无法后退 / 前进 / 刷新");
+    const contents = entry.view.webContents;
+    if (contents.isDestroyed()) throw new Error("浏览器视图已销毁");
+    const history = contents.navigationHistory;
+
+    if (action === "back" && !history.canGoBack()) {
+      return { state: this.stateOf(sessionId), notice: "" };
+    }
+    if (action === "forward" && !history.canGoForward()) {
+      return { state: this.stateOf(sessionId), notice: "" };
+    }
+
+    // 目的页从历史里**现取**：goBack()/goForward() 是异步的，此后再读 getURL() 拿到的还是旧页面，
+    // 那样提示里写的地址就是错的——写错比不写更糟。上面已按 canGoBack/canGoForward 保证下标在界内。
+    const index = history.getActiveIndex();
+    const targetIndex = action === "back" ? index - 1 : action === "forward" ? index + 1 : index;
+    const target = history.getEntryAtIndex(targetIndex);
+
+    if (action === "back") history.goBack();
+    else if (action === "forward") history.goForward();
+    else contents.reload();
+
+    return {
+      // 这里读到的是**发起时**的状态；真正的新状态由 did-navigate 随后推送
+      state: this.stateOf(sessionId),
+      notice: formatNavigationNotice(action, target.url, target.title),
+    };
+  }
+
+  /**
+   * 观测快照（B2）：控制台 / 网络 / 下载三份结构化缓冲。
+   *
+   * 与 `browser_read` 的 console/network/downloads 读的是**同一份** `CaptureBuffer`——
+   * 抽屉不是另一套数据源，只是把同一份观测用 UI 呈现出来（⑦-A「现场」那一半）。
+   * 会话还没建过浏览器视图时返回空快照 + `loaded: false`，而不是抛错：
+   * 「还没开始」和「开始了但没有输出」在界面上必须能区分。
+   */
+  observe(sessionId: string): BrowserObservation {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) {
+      return { sessionId, loaded: false, console: [], network: [], downloads: [] };
+    }
+    return {
+      sessionId,
+      loaded: true,
+      console: entry.capture.consoleEntries(),
+      network: entry.capture.networkEntries(),
+      downloads: entry.capture.downloadEntries(),
     };
   }
 
@@ -224,7 +327,15 @@ export class BrowserHost {
    * 按「视口覆盖 > 渲染层矩形 > 兜底矩形」摆放视图。
    *
    * viewport 覆盖存在时只改尺寸、锚点仍取矩形左上角，这样响应式联调的页面宽度
-   * 与真实停靠位置一致；渲染层一旦重新上报（用户改了布局），覆盖即让位于真实布局。
+   * 与真实停靠位置一致。
+   *
+   * ⚠️ 覆盖**不会**因为渲染层重新上报而让位——它只在显式「恢复」时撤销。
+   * （此处原注释写「渲染层一旦重新上报，覆盖即让位于真实布局」，与实现相反，已订正。）
+   * 这一点很要紧：渲染层现在每 400ms 会重申一次矩形，若覆盖真的让位，联调功能就会当场失效；
+   * 反过来，覆盖不退出的代价是它会**持久**盖住布局，所以尺寸必须报给界面
+   * （`BrowserViewState.viewport`），由头部显示并提供「恢复」入口——
+   * 实测覆盖 1280×800、停靠区 823×643 时，右侧 209px 被窗口边缘裁掉、下方 157px 压住观测抽屉，
+   * 而从界面上完全看不出这是联调尺寸，只会以为渲染坏了。
    */
   #applyBounds(sessionId: string): void {
     const entry = this.#sessions.get(sessionId);
@@ -252,7 +363,15 @@ export class BrowserHost {
     if (this.#onState === undefined) return;
     const state = loaded
       ? this.stateOf(sessionId)
-      : ({ sessionId, loaded: false, url: "", title: "" } satisfies BrowserViewState);
+      : ({
+          sessionId,
+          loaded: false,
+          url: "",
+          title: "",
+          canGoBack: false,
+          canGoForward: false,
+          viewport: null,
+        } satisfies BrowserViewState);
     this.#onState(state);
   }
 
@@ -570,6 +689,9 @@ export class BrowserHost {
         // 恢复默认 = 撤销覆盖，交还给渲染层上报的布局。
         entry.viewport = resolution.restored ? null : { ...resolution.size };
         this.#applyBounds(sessionId);
+        // 覆盖是**持久**状态且会让原生视图与停靠区不一致，所以界面必须知道它变了——
+        // 头部要据此显示「视口 1280×800 · 恢复」，否则用户只会看到一个像渲染坏了的面板。
+        this.#emitState(sessionId, true);
         // 用实际生效值回话：与旧实现一致，别把请求值当成结果
         const bounds = entry.view.getBounds();
         return {

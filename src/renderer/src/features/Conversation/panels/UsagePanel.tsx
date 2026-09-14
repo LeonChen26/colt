@@ -8,13 +8,7 @@ import { ICON } from "@/lib/icon";
 import type { SessionUsage } from "@shared/protocol";
 import { SidePanelShell } from "./SidePanelShell";
 
-export function UsagePanel({
-  sessionId,
-  onClose,
-}: {
-  sessionId: string;
-  onClose: () => void;
-}): React.JSX.Element {
+export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Element {
   const [usage, setUsage] = useState<SessionUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +42,6 @@ export function UsagePanel({
       isEmpty={records.length === 0}
       empty="还没有用量记录。发起对话后，每次模型调用都会记录在此。"
       onRefresh={() => void load()}
-      onClose={onClose}
       summary={
         totals && totals.calls > 0 ? (
           <div className="shrink-0 border-b border-line px-3 py-2 text-xs text-text-secondary">

@@ -87,6 +87,92 @@ export interface BrowserViewState {
   loaded: boolean;
   url: string;
   title: string;
+  /**
+   * 能否后退 / 前进（B1）。
+   *
+   * 由主进程从 `webContents.navigationHistory` 现读，渲染层**只据此决定按钮可用性**，
+   * 不自己维护一份历史——那必然与真实 webContents 的历史走偏（页面内的 JS 跳转、
+   * 重定向都会改历史，渲染层看不见）。
+   */
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /**
+   * 是否处于「视口联调」状态（agent 的 `browser_act viewport` 设过尺寸且**未恢复**）。
+   *
+   * 覆盖生效时页面按这个尺寸重排，而原生视图的摆放锚点仍是页面区域左上角——
+   * 于是覆盖尺寸一旦大于停靠区，多出的部分既看不到（被窗口边缘裁掉）又看着像渲染坏了。
+   * 它是**只在显式「恢复」时才撤销**的持久状态，因此必须报给界面：头部要显示它、并提供撤销入口。
+   */
+  viewport: { width: number; height: number } | null;
+}
+
+/**
+ * 用户在界面里对浏览器发起的导航动作（B1）。
+ *
+ * 仅这三种：它们是**浏览**动作，不改变页面内容也不触及本地文件/磁盘，
+ * 因此与 agent 发起的 `browser_act`（走审批）不同——用户自己点浏览器的后退键，
+ * 本来就是「直接操作这个浏览器」，没有可审批的对象（审批的是模型给出的入参）。
+ */
+export type BrowserNavAction = "back" | "forward" | "reload";
+
+/**
+ * 浏览器观测条目（B2）。类型定义放在共享契约里，是因为**两侧都要用**：
+ * 主进程的 `CaptureBuffer` 采集它，渲染层的观测抽屉渲染它。
+ *
+ * 刻意保留结构化字段而不是复用给模型的格式化文本：抽屉要按级别染色、按状态分组，
+ * 而那段文本是**为模型压缩过**的（问题优先、去重、截断），拿来做 UI 会丢信息。
+ */
+
+/** 控制台条目 */
+export interface ConsoleEntry {
+  /** info / warning / error / debug */
+  level: string;
+  message: string;
+  /** 日志来源地址 */
+  source: string;
+  /** 日志来源行号，未知为 0 */
+  line: number;
+}
+
+/** 网络条目 */
+export interface NetworkEntry {
+  url: string;
+  method: string;
+  /** mainFrame / xhr / script / image 等 */
+  resourceType: string;
+  /** 请求失败（未拿到响应）时的错误描述，如 net::ERR_CONNECTION_REFUSED */
+  error?: string;
+  /** 拿到响应时的状态码 */
+  statusCode?: number;
+}
+
+/** 下载条目 */
+export interface DownloadEntry {
+  /** 落盘后的文件名（带序号前缀，避免同名互相覆盖） */
+  filename: string;
+  /** 落盘的绝对路径 */
+  path: string;
+  /** 触发下载的 URL */
+  url: string;
+  bytes: number;
+  /** completed / cancelled / interrupted */
+  state: string;
+  /** 未完成时的原因，如体积超限被取消 */
+  note?: string;
+}
+
+/**
+ * 一次观测快照（`browser.observe` 的返回）：控制台 + 网络 + 下载三份结构化缓冲。
+ *
+ * `loaded` 为 false 表示该会话还没建过浏览器视图——此时三份都是空数组，
+ * 渲染层据此区分「还没开始」与「开始了但确实没有输出」。
+ */
+export interface BrowserObservation {
+  sessionId: string;
+  loaded: boolean;
+  console: ConsoleEntry[];
+  network: NetworkEntry[];
+  downloads: DownloadEntry[];
 }
 
 /** 会话（索引信息，本体在 JSONL） */
@@ -153,7 +239,24 @@ export const IPC_CHANNELS = [
   "git.status",
   "browser.bounds",
   "browser.state.get",
+  "browser.observe",
+  "browser.navigate",
+  "browser.viewport.reset",
+  "file.read",
 ] as const;
+
+/**
+ * 项目内文件的预览内容（`file.read` 的返回）。
+ *
+ * 用判别联合而不是「统一带 text」，是因为不同形态在界面上的呈现完全不同：
+ * 文本要渲染、图片要给 dataUrl、二进制与超大只给提示——渲染层据此分流，
+ * 不必去猜「这段字符串到底是不是内容」。
+ */
+export type FileReadResult =
+  | { kind: "text"; text: string; size: number }
+  | { kind: "image"; dataUrl: string; size: number }
+  | { kind: "binary"; size: number }
+  | { kind: "too-large"; size: number; limit: number };
 
 /** 渲染进程 → 主进程的调用通道契约（类型真源） */
 export interface IpcInvokeMap {
@@ -342,6 +445,55 @@ export interface IpcInvokeMap {
   "browser.state.get": {
     request: { sessionId: string };
     response: BrowserViewState;
+  };
+  /**
+   * 读取浏览器观测快照（B2）：控制台 / 网络 / 下载三份结构化缓冲。
+   *
+   * 渲染层按 1s 轮询（只在「浏览器」页签挂载时），而不是由主进程逐条推送——
+   * 页面产生的 console/network 事件可以非常密集，逐条推会变成 IPC 洪泛；
+   * 而抽屉展示的是「缓冲区的当前样子」，轮询语义上更贴合，也不改 agent 那条读取路径。
+   */
+  "browser.observe": {
+    request: { sessionId: string };
+    response: BrowserObservation;
+  };
+  /**
+   * 用户手动操作内嵌浏览器（B1）：后退 / 前进 / 刷新。
+   *
+   * 与 agent 的 `browser_act` 分开，是因为**发起方不同**：这条链路的每一跳都由用户的点击触发，
+   * 所以不走审批（审批裁决的是模型给出的工具入参）；也因此它必须**告知 agent**——
+   * 页面已经不是 agent 离开时那一页了，继续按旧页面操作会出错（见 sessionManager.notifyUserBrowserNavigation）。
+   *
+   * 返回**发起时读到**的视图状态。导航是异步的，完成后的状态由随后推送的 `browser.state`
+   * 给出（did-navigate 时读到的就是新页面的历史）；返回值主要覆盖「点了没动作」的情形——
+   * 比如已经退到底了再点后退，不会产生任何事件，此时渲染层靠它把按钮态保持正确。
+   */
+  "browser.navigate": {
+    request: { sessionId: string; action: BrowserNavAction };
+    response: BrowserViewState;
+  };
+  /**
+   * 撤销「视口联调」覆盖（用户在浏览器头部点「恢复」）。
+   *
+   * 与 agent 的 `browser_act viewport`（不给尺寸即恢复）是同一件事，只是发起方变成了用户：
+   * 覆盖是**持久**状态，只有显式撤销才结束，所以必须给用户一个入口——
+   * 否则 agent 忘了恢复，用户就只能看着一个「像渲染坏了」的面板，无从下手。
+   */
+  "browser.viewport.reset": {
+    request: { sessionId: string };
+    response: BrowserViewState;
+  };
+  /**
+   * 读取**项目内**文件用于预览。
+   *
+   * 路径**必须落在项目内**（相对路径按项目根展开；绝对路径也收，同样要落在项目内——
+   * 工具入参里的 path 由模型给出，可能是绝对路径）。根由主进程按 sessionId → 项目查出来，
+   * 渲染层无从指定——否则等于把任意读盘能力交给渲染层（而渲染层会渲染 agent 生成的 Markdown）。
+   * 越界在**任何 fs 访问之前**即被拒。校验与上限见 `src/main/file-read.ts`。
+   */
+  "file.read": {
+    request: { sessionId: string; path: string };
+    response: FileReadResult;
   };
 }
 

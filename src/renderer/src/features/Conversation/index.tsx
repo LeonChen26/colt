@@ -21,24 +21,33 @@ import {
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
-import type { ApprovalMode, ApprovalRequest, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, ApprovalRequest, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
 import { splitModelRef } from "@shared/model-ref";
 import { cn } from "../../lib/utils";
+import { runStateOf } from "../../lib/format";
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
-import { ChangesPanel } from "./panels/ChangesPanel";
-import { UsagePanel } from "./panels/UsagePanel";
-import { ToolsPanel } from "./panels/ToolsPanel";
-import { RulesPanel } from "./panels/RulesPanel";
 import { ApprovalCard } from "./ApprovalCard";
-import { DOCK_SUGGEST_WIDTH, WorkspaceDock, type DockView } from "./WorkspaceDock";
+import {
+  createDockInstance,
+  defaultDockInstances,
+  DOCK_COLLAPSED_WIDTH,
+  DOCK_DEFAULT_KIND,
+  DOCK_DEFAULT_WIDTH,
+  isDockClosable,
+  WorkspaceDock,
+  type DockInstance,
+  type DockKind,
+} from "./WorkspaceDock";
 import type { ReactNode } from "react";
-
-/** 右侧面板多选一 */
-type SidePanel = "none" | "changes" | "usage" | "tools" | "rules";
 
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
 const STALE_IDLE_SEC = 30;
+
+/** 右栏宽度下限（规则 ⑦-B）：允许拖到接近折叠条，「正在处理」这类窄内容也够用 */
+const MIN_DOCK_WIDTH = 220;
+/** 中栏可读下限：右栏最宽只能到「可用宽度 − 360」，否则会话流无法阅读（规则 ⑦-B） */
+const MIN_CENTER_WIDTH = 360;
 
 /** 待发送的图片附件；data 为不含 data URI 前缀的 base64（pi 的 ImageContent 约定） */
 interface Attachment {
@@ -86,34 +95,199 @@ export function Conversation({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
-  const [panel, setPanel] = useState<SidePanel>("none");
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [mode, setMode] = useState<ApprovalMode>("approval");
   /** 跟随线联动：hover 工具卡片时高亮它碰的文件 */
   const [hoveredFile, setHoveredFile] = useState<string | null>(null);
   const [git, setGit] = useState<GitStatus | null>(null);
-  /** 右栏工作区当前页签（默认「正在处理」，规则 ⑦-E） */
-  const [dockTab, setDockTab] = useState<DockView>("follow");
+  /** 右栏工作区**已打开**的视图实例（⑦-B：页签可以很多；启动时挂上既有两个） */
+  const [dockInstances, setDockInstances] = useState<DockInstance[]>(defaultDockInstances);
+  /** 当前激活实例的 id（默认落在「正在处理」，规则 ⑦-E） */
+  const [dockActiveId, setDockActiveId] = useState<string>(DOCK_DEFAULT_KIND);
+  /** 「文件」视图要预览的目标（A3-2）；null = 尚未打开过文件；seq 用于「同一文件再点一次也重读」 */
+  const [dockFile, setDockFile] = useState<{ path: string; seq: number } | null>(null);
   /** 内嵌浏览器视图状态（loaded 为 false 表示尚未创建 WebContents） */
   const [browser, setBrowser] = useState<BrowserViewState | null>(null);
   /** 右栏可用宽度：用于把「建议宽度」钳制到不挤压中栏（⑦-B 中栏下限 360px） */
   const [dockSpace, setDockSpace] = useState(0);
+  /** 用户拖拽后的右栏宽度；null = 尚未拖过（此时才用视图建议值，规则 ⑦-B） */
+  const [dockWidthUser, setDockWidthUser] = useState<number | null>(null);
+  /** 是否正在拖拽右栏把手（用于驱动光标与选中抑制） */
+  const [dockDragging, setDockDragging] = useState(false);
+  /** 右栏是否折叠为 44px 图标条（规则 ⑦-E：可折叠，但不提供完全关闭） */
+  const [dockCollapsed, setDockCollapsed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** 工作区根节点：量它才能知道右栏能宽到哪 */
   const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * 拖拽起点。startX 是按下时的指针横坐标，startWidth 是按下时的**实际**右栏宽度。
+   * 两者刻意分开存——别把「当前宽度」和「位移」揉进一个数里（AGENTS.md 3.3 的翻车点）。
+   */
+  const dockDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  /** 当前生效的右栏宽度，供拖拽开始时取起点，避免闭包读到旧值 */
+  const dockWidthRef = useRef(0);
   /** 是否已自动切过一次浏览器页签（规则 ⑦-F 只在「首次使用」切） */
   const browserAutoSwitchedRef = useRef(false);
 
+  /** 当前激活实例的 kind —— 决定渲染哪个视图、以及用哪个建议宽度 */
+  const dockActiveKind =
+    dockInstances.find((item) => item.id === dockActiveId)?.kind ?? DOCK_DEFAULT_KIND;
+
+  /** 激活某个**已打开**的实例 */
+  const activateDockInstance = useCallback((id: string) => {
+    setDockActiveId(id);
+  }, []);
+
   /**
-   * 右栏宽度：视图切换只给**建议值**（⑦-B），并按可用空间钳制，
-   * 保证中栏不被挤到 360px 以下（那会让会话流无法阅读）。
+   * 打开某类视图并激活它（⑦-F 用：agent 动到哪个视图的对象就切过去）。
+   * 单例模型下 `createDockInstance` 的 id 取 kind，故重复调用**不会重复建页签**。
+   */
+  const ensureDockInstance = useCallback((kind: DockKind) => {
+    const instance = createDockInstance(kind);
+    setDockInstances((list) =>
+      list.some((item) => item.id === instance.id) ? list : [...list, instance],
+    );
+    setDockActiveId(instance.id);
+  }, []);
+
+  /**
+   * 关闭某个页签（A3-3）。
+   *
+   * ⑦-E 的「默认视图不可关闭」是**规则**，所以守卫就放在这里，而不是只靠「不渲染关闭按钮」——
+   * 规则不该依赖调用方自觉。关掉当前激活项时要把激活位交还给默认视图，
+   * 否则右栏会指向一个已不存在的实例。
+   *
+   * 关闭即**丢弃该视图的状态**（文件目标清空）：于是从「+」重新打开「文件」回到空态，
+   * 与「关掉一个页签」的直觉一致，而不是留着一个看不见的旧目标。
+   */
+  const closeDockInstance = useCallback(
+    (id: string) => {
+      const target = dockInstances.find((item) => item.id === id);
+      if (target === undefined || !isDockClosable(target.kind)) return;
+      setDockInstances((list) => list.filter((item) => item.id !== id));
+      setDockActiveId((active) => (active === id ? DOCK_DEFAULT_KIND : active));
+      if (target.kind === "file") setDockFile(null);
+    },
+    [dockInstances],
+  );
+
+  /**
+   * 打开某类视图页签并展开右栏（A3-5）：② 会话头的「改动 / 用量 / 工具 / 规则」与
+   * 「正在处理」里的「查看全部改动」都走这里。
+   *
+   * 必须**同时展开**右栏：只切页签而右栏还收着，等于点了没反应（同 ⑦-F / A3-2 的 openFile）。
+   */
+  const openDockKind = useCallback(
+    (kind: DockKind) => {
+      ensureDockInstance(kind);
+      setDockCollapsed(false);
+    },
+    [ensureDockInstance],
+  );
+
+  /**
+   * 打开文件预览（A3-2）：点「正在处理」里的文件路径走这里。
+   *
+   * `seq` 每次自增，保证**同一路径再点一次也会重读**——agent 可能刚改过它，
+   * 只比较路径的话第二次点击不会有任何反应（React 认为状态没变）。
+   */
+  const openFile = useCallback(
+    (path: string) => {
+      setDockFile((prev) => ({ path, seq: (prev?.seq ?? 0) + 1 }));
+      openDockKind("file");
+    },
+    [openDockKind],
+  );
+
+  /** 重读当前预览的文件（agent 可能刚改过它） */
+  const reloadFile = useCallback(() => {
+    setDockFile((prev) => (prev === null ? prev : { ...prev, seq: prev.seq + 1 }));
+  }, []);
+
+  /**
+   * 用户操作内嵌浏览器（B1：后退 / 前进 / 刷新）。
+   *
+   * 不走审批：这条链路由用户的点击发起，没有模型参与，也就没有可裁决的入参。
+   * 这里**不写回**返回值——`browser.navigate` 给的是**发起时**的状态，而导航是异步的；
+   * 真正的新状态由主进程在 did-navigate 时经 `browser.state` 推回来（上面的订阅已处理）。
+   */
+  const browserNav = useCallback(
+    (action: BrowserNavAction) => {
+      void window.banyan.invoke("browser.navigate", { sessionId, action }).catch(() => undefined);
+    },
+    [sessionId],
+  );
+
+  /**
+   * 撤销 agent 留下的「视口联调」覆盖（用户点浏览器头部的「恢复」）。
+   *
+   * 覆盖是持久状态，只有显式撤销才结束；不给这个出口，用户就只能看着一个
+   * 比停靠区更大、右侧被窗口裁掉、下方压住观测抽屉的面板而不知道该怎么办。
+   * 与 agent 的 `browser_act viewport`（不给尺寸即恢复）是同一件事，只是发起方是用户。
+   */
+  const resetBrowserViewport = useCallback(() => {
+    void window.banyan.invoke("browser.viewport.reset", { sessionId }).catch(() => undefined);
+  }, [sessionId]);
+
+  /**
+   * 右栏宽度（规则 ⑦-B）：**只由用户拖拽决定**。
+   * 没有拖拽时用**统一默认宽度**（`DOCK_DEFAULT_WIDTH`）——不按页签取建议值，
+   * 否则切页签就会改宽度、中栏跟着重排。一旦拖过，`dockWidthUser` 优先，其余一律不覆盖它。
+   * 无论来源如何，都按当前可用空间钳制，保证中栏不被挤到 360px 以下、右栏也不越界。
    */
   const dockWidth = useMemo(() => {
-    const suggestion = DOCK_SUGGEST_WIDTH[dockTab];
-    if (dockSpace <= 0) return suggestion;
-    return Math.max(220, Math.min(suggestion, dockSpace - 360));
-  }, [dockTab, dockSpace]);
+    // 折叠态优先：宽度固定为图标条宽度，用户拖拽值保留在 dockWidthUser 里，展开时恢复
+    if (dockCollapsed) return DOCK_COLLAPSED_WIDTH;
+    const base = dockWidthUser ?? DOCK_DEFAULT_WIDTH;
+    if (dockSpace <= 0) return base;
+    const max = Math.max(MIN_DOCK_WIDTH, dockSpace - MIN_CENTER_WIDTH);
+    return Math.min(Math.max(MIN_DOCK_WIDTH, base), max);
+  }, [dockCollapsed, dockWidthUser, dockSpace]);
+
+  useEffect(() => {
+    dockWidthRef.current = dockWidth;
+  }, [dockWidth]);
+
+  /** 把任意宽度钳到 [220, 可用宽度 − 360]；窗口过窄时上限回退到下限，不与下限打架 */
+  const clampDockWidth = useCallback((px: number): number => {
+    const space = rootRef.current?.clientWidth ?? 0;
+    if (space <= 0) return Math.max(MIN_DOCK_WIDTH, px);
+    const max = Math.max(MIN_DOCK_WIDTH, space - MIN_CENTER_WIDTH);
+    return Math.min(Math.max(MIN_DOCK_WIDTH, px), max);
+  }, []);
+
+  const onDockGripDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dockDragRef.current = { startX: event.clientX, startWidth: dockWidthRef.current };
+    setDockDragging(true);
+  }, []);
+
+  /** 双击把手：丢弃用户宽度，回到统一默认宽度 */
+  const resetDockWidth = useCallback(() => setDockWidthUser(null), []);
+
+  // 拖拽期间在 window 上跟随指针：把手指移出把手（甚至出窗口）也不会丢事件（原型同款做法）。
+  // 位移计算见 AGENTS.md 3.3：只对「位移」取负，宽度本身恒正。
+  useEffect(() => {
+    if (!dockDragging) return;
+    const onMove = (event: MouseEvent): void => {
+      const start = dockDragRef.current;
+      if (start === null) return;
+      // 把手在中栏↔右栏边界上：向左拖（dx<0）→ 右栏变宽，向右拖（dx>0）→ 变窄
+      const next = start.startWidth - (event.clientX - start.startX);
+      setDockWidthUser(clampDockWidth(next));
+    };
+    const onUp = (): void => setDockDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.classList.add("resizing");
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("resizing");
+    };
+  }, [dockDragging, clampDockWidth]);
 
   // 心跳：运行期间每秒重渲染，驱动「已耗时 / 最后活动」显示
   const [now, setNow] = useState(() => Date.now());
@@ -154,18 +328,25 @@ export function Conversation({
 
   // 内嵌浏览器：订阅视图状态；agent 首次使用浏览器时自动切到「浏览器」页签（规则 ⑦-F）。
   // ⑦-C（视野跳跃为零）在此场景优先于 ⑦-D（不抢焦）——新现场的开始必须被看到。
+  // 若右栏当时是折叠态，同时展开它：只切页签而右栏还收着，等于没被看到。
   useEffect(() => {
     let disposed = false;
     browserAutoSwitchedRef.current = false;
     setBrowser(null);
-    setDockTab("follow");
+    // 会话切换：页签集合与激活项都回到初始（与 A1 的宽度语义一致，不做持久化）
+    setDockInstances(defaultDockInstances());
+    setDockActiveId(DOCK_DEFAULT_KIND);
+    // 文件预览目标也清掉：路径是相对本会话工作目录的，跨会话沿用会指向别的项目
+    setDockFile(null);
 
     const apply = (next: BrowserViewState): void => {
       if (disposed) return;
       setBrowser(next);
       if (next.loaded && !browserAutoSwitchedRef.current) {
         browserAutoSwitchedRef.current = true;
-        setDockTab("browser");
+        // 幂等：已打开就只激活，不会重复建页签
+        ensureDockInstance("browser");
+        setDockCollapsed(false);
       }
       if (!next.loaded) browserAutoSwitchedRef.current = false;
     };
@@ -183,7 +364,7 @@ export function Conversation({
       disposed = true;
       off();
     };
-  }, [sessionId]);
+  }, [sessionId, ensureDockInstance]);
 
   // 量工作区可用宽度，用于把右栏「建议宽度」钳制到不挤压中栏
   useLayoutEffect(() => {
@@ -392,10 +573,6 @@ export function Conversation({
     [sessionId],
   );
 
-  const togglePanel = useCallback((target: SidePanel) => {
-    setPanel((value) => (value === target ? "none" : target));
-  }, []);
-
   // toolCallId → 工具输出，供工具卡片展开时查阅
   const resultMap = useMemo(() => {
     const map = new Map<string, { output: string; isError: boolean }>();
@@ -441,6 +618,14 @@ export function Conversation({
   // 「长时间无事件」：运行中但迟迟没有新事件，如实提示可中断
   const stale = running && lastActivity > 0 && idleSec > STALE_IDLE_SEC;
 
+  /**
+   * ⑥ 的状态段（C1 / C2）。运行中之外，只有**中断**与**失败**值得单独留一行——
+   * 正常跑完与「还没跑过」一样是「空闲」（判定见 `runStateOf`）。
+   * 状态是**电平**不是边沿：它会一直留到下一轮开始（v3 §6 要求结束时「清除所有转圈」，但没说要清掉状态本身）。
+   */
+  const runState = runStateOf(running, view?.lastRun ?? null);
+  const runError = view?.lastRun?.error ?? null;
+
   // 输入框自适应增高
   const resizeInput = useCallback(() => {
     const node = inputRef.current;
@@ -457,7 +642,7 @@ export function Conversation({
     // 用网格而不是嵌套，确保输入区不会横向伸到工作区下方（高保真的分栏模型）。
     <div
       ref={rootRef}
-      className="grid h-full grid-rows-[auto_1fr_auto] overflow-hidden"
+      className="relative grid h-full grid-rows-[auto_1fr_auto] overflow-hidden"
       style={{ gridTemplateColumns: `minmax(0, 1fr) ${dockWidth}px` }}
     >
       <div className="conv-head col-start-1 row-start-1 flex shrink-0 items-center justify-between gap-2 border-b border-line px-3.5 py-2">
@@ -507,32 +692,33 @@ export function Conversation({
           )}
           {changes.length > 0 && (
             <PanelToggle
-              active={panel === "changes"}
+              active={dockActiveKind === "changes"}
               icon={<FileDiff {...ICON.sm} />}
               label={`改动 ${changes.length}`}
-              onClick={() => togglePanel("changes")}
+              title="在右栏查看本次会话的文件改动与 diff"
+              onClick={() => openDockKind("changes")}
             />
           )}
           <PanelToggle
-            active={panel === "usage"}
+            active={dockActiveKind === "usage"}
             icon={<Coins {...ICON.sm} />}
             label="用量"
-            title="查看本次会话的用量历史"
-            onClick={() => togglePanel("usage")}
+            title="在右栏查看本次会话的用量历史"
+            onClick={() => openDockKind("usage")}
           />
           <PanelToggle
-            active={panel === "tools"}
+            active={dockActiveKind === "tools"}
             icon={<Wrench {...ICON.sm} />}
             label="工具"
-            title="查看本次会话的工具调用历史"
-            onClick={() => togglePanel("tools")}
+            title="在右栏查看本次会话的工具调用历史"
+            onClick={() => openDockKind("tools")}
           />
           <PanelToggle
-            active={panel === "rules"}
+            active={dockActiveKind === "rules"}
             icon={<ShieldCheck {...ICON.sm} />}
             label="规则"
-            title="查看并管理本次会话记住的审批规则"
-            onClick={() => togglePanel("rules")}
+            title="在右栏查看并管理本次会话记住的审批规则"
+            onClick={() => openDockKind("rules")}
           />
         </div>
       </div>
@@ -588,6 +774,7 @@ export function Conversation({
                 resultMap={resultMap}
                 changes={changes}
                 onHoverFile={setHoveredFile}
+                onOpenFile={openFile}
               />
             ))}
 
@@ -609,6 +796,7 @@ export function Conversation({
                     args={tool.args}
                     running
                     result={{ output: tool.output, isError: false }}
+                    onOpenFile={openFile}
                   />
                 ))}
               </AssistantRow>
@@ -636,13 +824,6 @@ export function Conversation({
             </button>
           )}
         </div>
-
-        {panel === "changes" && (
-          <ChangesPanel changes={changes} onClose={() => setPanel("none")} />
-        )}
-        {panel === "usage" && <UsagePanel sessionId={sessionId} onClose={() => setPanel("none")} />}
-        {panel === "tools" && <ToolsPanel sessionId={sessionId} onClose={() => setPanel("none")} />}
-        {panel === "rules" && <RulesPanel sessionId={sessionId} onClose={() => setPanel("none")} />}
       </div>
 
       <div className="conv-center col-start-1 row-start-3 min-w-0 shrink-0">
@@ -826,8 +1007,9 @@ export function Conversation({
 
             <span className="h-[12px] w-px bg-line" />
 
-            <span className="flex items-center gap-2.5">
-              {running ? (
+            {/* data-run-state 是「这一段是 ⑥ 的运行状态」的稳定标记（给冒烟读状态用） */}
+            <span data-run-state={runState} className="flex items-center gap-2.5">
+              {runState === "running" ? (
                 <>
                   <span className="flex items-center gap-1.5">
                     <span className={cn("live-dot", stale && "stale-dot")} />
@@ -842,7 +1024,25 @@ export function Conversation({
                   {stale && <span className="text-warning">似乎卡住了，可中断</span>}
                 </>
               ) : (
-                <span>空闲</span>
+                // 非运行态：静止的点 + 文字。点的颜色跟着语义走（灰=静止，红=失败），
+                // 但颜色只是辅助——旁边永远有文字（v3 §5「颜色必须配文字」）。
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className={cn("live-dot", runState === "failed" ? "danger-dot" : "idle-dot")}
+                  />
+                  <span className={cn("shrink-0", runState === "failed" && "text-danger")}>
+                    {runState === "aborted" ? "已中断" : runState === "failed" ? "已失败" : "空闲"}
+                  </span>
+                  {/* 失败原因就地可读，不必去消息流里翻；窄栏按容器查询收紧，悬停看全文 */}
+                  {runState === "failed" && runError !== null && (
+                    <span
+                      className="lb-err truncate font-mono text-[11px] text-danger-fg"
+                      title={runError}
+                    >
+                      {runError}
+                    </span>
+                  )}
+                </span>
               )}
             </span>
           </div>
@@ -855,12 +1055,39 @@ export function Conversation({
           sessionId={sessionId}
           view={view}
           highlightPath={hoveredFile}
-          onOpenChanges={() => setPanel("changes")}
+          onOpenChanges={() => openDockKind("changes")}
+          onOpenFile={openFile}
           browser={browser}
-          tab={dockTab}
-          onTab={setDockTab}
+          onBrowserNav={browserNav}
+          onResetViewport={resetBrowserViewport}
+          file={dockFile}
+          onReloadFile={reloadFile}
+          instances={dockInstances}
+          activeId={dockActiveId}
+          onActivate={activateDockInstance}
+          onCloseInstance={closeDockInstance}
+          onOpenKind={ensureDockInstance}
+          collapsed={dockCollapsed}
+          onToggleCollapse={() => setDockCollapsed((value) => !value)}
         />
       </div>
+
+      {/* 中栏 ↔ 右栏拖拽把手（规则 ⑦-B：右栏宽度只由用户拖拽决定）。
+          绝对定位、不参与网格布局，浮在两栏分隔线上：right 取当前右栏宽度，
+          再右移半个身位（translateX 50%）让把手中心正落在边界上。
+          折叠态不渲染：图标条不需要调宽，也不该出现拖拽命中区。 */}
+      {!dockCollapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽调整右栏宽度"
+          title="拖拽调整右栏宽度（双击复位）"
+          onMouseDown={onDockGripDown}
+          onDoubleClick={resetDockWidth}
+          className={cn("dock-grip", dockDragging && "dragging")}
+          style={{ right: dockWidth, transform: "translateX(50%)" }}
+        />
+      )}
     </div>
   );
 }

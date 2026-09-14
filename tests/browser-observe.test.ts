@@ -18,6 +18,7 @@ import {
   formatConsole,
   formatDownloadNotice,
   formatDownloads,
+  formatNavigationNotice,
   formatNetwork,
   formatWaitResult,
   isFileInput,
@@ -315,6 +316,31 @@ describe("formatBytes", () => {
 function download(partial: Partial<DownloadEntry> & { filename: string }): DownloadEntry {
   return { path: `/dl/${partial.filename}`, url: "https://a.com/x", bytes: 1024, state: "completed", ...partial };
 }
+
+describe("formatNavigationNotice（用户手动导航后告知 agent）", () => {
+  test("三种动作各自点名，并带上目的页地址与标题", () => {
+    const back = formatNavigationNotice("back", "https://a.com/prev", "上一页");
+    assert.match(back, /后退/);
+    assert.match(back, /https:\/\/a\.com\/prev/);
+    assert.match(back, /上一页/);
+    assert.match(formatNavigationNotice("forward", "https://a.com/next", ""), /前进/);
+    assert.match(formatNavigationNotice("reload", "https://a.com/x", ""), /刷新/);
+  });
+
+  test("要它「重新确认页面」而不是「回应本条」", () => {
+    const text = formatNavigationNotice("back", "https://a.com/prev", "上一页");
+    // 标成系统提示：它会被塞进模型请求，但不该被理解成用户说的话
+    assert.match(text, /系统提示/);
+    // 必须给到下一步动作，否则模型仍会拿着旧 ref 继续操作
+    assert.match(text, /snapshot/);
+  });
+
+  test("缺地址 / 标题时不留空壳括注", () => {
+    const text = formatNavigationNotice("reload", "", "");
+    assert.match(text, /about:blank/);
+    assert.doesNotMatch(text, /（）/);
+  });
+});
 
 describe("formatDownloadNotice", () => {
   test("完成时给出文件名、体积与落盘路径", () => {

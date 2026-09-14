@@ -1,6 +1,10 @@
 /**
- * 右侧面板的公共外壳：头部标题 + 刷新 + 收起，以及加载/空态的统一呈现。
- * 各具体面板（改动/用量/工具）只需提供内容与状态。
+ * 面板的公共外壳：头部标题 + 刷新，以及加载/空态的统一呈现。
+ * 各具体面板（改动/用量/工具/规则）只需提供内容与状态。
+ *
+ * A3-5：外壳不再自带 `aside` / 边框 / 固定宽度，也不再提供「收起」——
+ * 这些面板已迁入 ⑦ 工作区容器，**关闭由页签上的 × 负责**（同一件事只留一个出口）。
+ * 头部保留（对齐高保真 `.dock-head`）：标题与刷新是面板自己的工具行。
  */
 import type { ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
@@ -14,57 +18,41 @@ export function SidePanelShell({
   meta,
   /** 头部与内容之间的可选摘要条 */
   summary,
-  width = 360,
   loading,
   error,
   empty,
   isEmpty,
   onRefresh,
-  onClose,
   children,
 }: {
   title: string;
   icon: ReactNode;
   meta?: ReactNode;
   summary?: ReactNode;
-  width?: number;
   loading: boolean;
   error: string | null;
   /** 空态文案 */
   empty: ReactNode;
   isEmpty: boolean;
   onRefresh: () => void;
-  onClose: () => void;
   children: ReactNode;
 }): React.JSX.Element {
   return (
-    <aside
-      className="flex shrink-0 flex-col border-l border-line bg-surface-raised"
-      style={{ width }}
-    >
+    <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-line px-3 py-2">
         <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
           {icon}
           {title}
           {meta}
         </span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="text-text-muted transition hover:text-text-primary"
-            title="刷新"
-          >
-            <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-xs text-text-muted transition hover:text-text-primary"
-          >
-            收起
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="text-text-muted transition hover:text-text-primary"
+          title="刷新"
+        >
+          <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
+        </button>
       </div>
 
       {error && (
@@ -86,6 +74,6 @@ export function SidePanelShell({
           children
         )}
       </div>
-    </aside>
+    </div>
   );
 }

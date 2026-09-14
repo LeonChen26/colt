@@ -637,6 +637,25 @@ export class SessionManager {
     this.#post(sessionId, { type: "steer", text });
   }
 
+  /**
+   * 把「用户手动操作了浏览器（后退 / 前进 / 刷新）」告知 agent（B1）。
+   *
+   * **不走审批**：审批裁决的是**模型给出的工具入参**（见 approval/policy.ts），
+   * 而这条链路上的每一跳都由用户的点击发起，没有模型参与，也就没有可裁决的对象——
+   * 用户直接点自己屏幕上那个浏览器的后退键，本来就无需谁批准。
+   *
+   * 但页面确实被换掉了，agent 手里那份「页面长什么样」随之过期，它接着按旧页面点击 / 输入就会做错事。
+   * 所以这里把它转给 worker，由 worker 在下一次模型请求前注入一条环境提示（不写进 transcript）。
+   *
+   * **只在 agent 正在跑时转**：这条提示的全部意义，是保护一个在飞的运行不被过期页面误导；
+   * 空闲时没有任何操作会踩到这个坑，留一条提示反而会在很久以后的一轮里凭空出现、变成噪声。
+   */
+  notifyUserBrowserNavigation(sessionId: string, text: string): void {
+    const entry = this.#workers.get(sessionId);
+    if (!entry || !entry.running) return;
+    entry.child.postMessage({ type: "browserNotice", text } satisfies WorkerCommand);
+  }
+
   setModel(sessionId: string, provider: ProviderConfig, modelId: string): void {
     // 同步到 entry，审批分析器跟着切换后的模型走
     const entry = this.#workers.get(sessionId);

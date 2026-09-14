@@ -3,6 +3,7 @@
  *
  * 布局对齐高保真：助手消息用左侧 46px 角色列 + 正文列；用户消息右对齐，
  * 角色标签在右。工具卡片走语义化图标 + 路径 + 增删行数 + 耗时 + 内嵌 diff。
+ * 工具卡里若副标题**就是该工具操作的文件**，则该路径可点 → onOpenFile（A3-2「点任意文件路径」）。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -47,11 +48,14 @@ export function MessageBubble({
   resultMap,
   changes,
   onHoverFile,
+  onOpenFile,
 }: {
   message: ViewMessage;
   resultMap: Map<string, ToolResult>;
   changes: ViewFileChange[];
   onHoverFile?: (path: string | null) => void;
+  /** 点工具卡里的文件路径 → 在右栏预览它（A3-2） */
+  onOpenFile?: (path: string) => void;
 }): React.JSX.Element | null {
   // 工具结果已合并进各自的工具卡片，不再单独成条
   if (message.role === "toolResult") return null;
@@ -90,6 +94,7 @@ export function MessageBubble({
           result={resultMap.get(call.id)}
           change={matchChangeByPath(changes, parseArgsJson(call.args).path)}
           onHoverFile={onHoverFile}
+          onOpenFile={onOpenFile}
         />
       ))}
     </AssistantRow>
@@ -198,6 +203,7 @@ export function ToolCard({
   change,
   running,
   onHoverFile,
+  onOpenFile,
 }: {
   name: string;
   args: string;
@@ -206,6 +212,8 @@ export function ToolCard({
   change?: ViewFileChange;
   running?: boolean;
   onHoverFile?: (path: string | null) => void;
+  /** 点副标题里的文件路径 → 在右栏预览它（A3-2） */
+  onOpenFile?: (path: string) => void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(Boolean(running));
   const parsed = useMemo(() => parseArgsJson(args), [args]);
@@ -216,6 +224,18 @@ export function ToolCard({
   const hasStat = change !== undefined && (change.addedLines > 0 || change.removedLines > 0);
   // 工具条副标题（路径 / 命令）：超长时截断，仅在截断时挂 title 悬停展示完整内容
   const subtitleText = change?.path ?? subtitle;
+  /**
+   * 副标题若**就是这个工具操作的文件**，则可点开预览（A3-2「点任意文件路径」）。
+   *
+   * 判定刻意用「展示文本 === 路径」而不是「有 path 参数」：grep / glob 这类工具的副标题
+   * 可以是搜索模式（`command ?? path`），点一个模式却打开文件会让人错愕——所见即所点。
+   * 有改动记录时以记录里的相对路径为准（那是 `toRelative(cwd, …)` 的产物，最可信）。
+   *
+   * 路径可能是绝对路径（模型给的），主进程照样收——只要落在项目内（见 `src/main/file-read.ts`）。
+   */
+  const previewPath =
+    change?.path ?? (path !== undefined && path === subtitle ? path : undefined);
+  const clickable = previewPath !== undefined;
   const subtitleRef = useRef<HTMLSpanElement>(null);
   const [subtitleTruncated, setSubtitleTruncated] = useState(false);
   useEffect(() => {
@@ -237,23 +257,42 @@ export function ToolCard({
       onMouseEnter={() => onHoverFile?.(path ?? null)}
       onMouseLeave={() => onHoverFile?.(null)}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-surface-overlay/50"
-      >
-        <ChevronRight
-          {...ICON.sm}
-          className={cn("shrink-0 text-text-muted transition-transform", open && "rotate-90")}
-        />
-        <span className="shrink-0 text-text-muted">{icon}</span>
-        <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
-          {name}
-        </span>
+      {/* 行容器用 div：路径要成为**独立**可点目标，而 <button> 里嵌 <button> 是非法结构 */}
+      <div className="flex w-full items-center gap-2 px-3 py-2 transition hover:bg-surface-overlay/50">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          title={open ? "收起" : "展开"}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <ChevronRight
+            {...ICON.sm}
+            className={cn("shrink-0 text-text-muted transition-transform", open && "rotate-90")}
+          />
+          <span className="shrink-0 text-text-muted">{icon}</span>
+          <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
+            {name}
+          </span>
+        </button>
         <span
           ref={subtitleRef}
-          title={subtitleTruncated ? subtitleText : undefined}
-          className="w-[320px] shrink-0 truncate font-mono text-[11.5px] text-text-secondary"
+          title={clickable ? `点击预览 ${previewPath}` : subtitleTruncated ? subtitleText : undefined}
+          role={clickable ? "button" : undefined}
+          tabIndex={clickable ? 0 : undefined}
+          onClick={clickable ? () => onOpenFile?.(previewPath) : undefined}
+          onKeyDown={
+            clickable
+              ? (event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  onOpenFile?.(previewPath);
+                }
+              : undefined
+          }
+          className={cn(
+            "w-[320px] shrink-0 truncate font-mono text-[11.5px] text-text-secondary",
+            clickable && "cursor-pointer hover:text-text-primary hover:underline",
+          )}
         >
           {subtitleText ?? ""}
         </span>
@@ -280,7 +319,7 @@ export function ToolCard({
             )
           ) : null}
         </span>
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-line bg-surface p-2">

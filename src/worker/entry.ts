@@ -24,6 +24,7 @@ import type {
   ConversationView,
   ViewFileChange,
   ViewMessage,
+  ViewRunOutcome,
   ViewRunningTool,
   ViewToolResult,
   WorkerBranchNode,
@@ -77,6 +78,14 @@ const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 /** 已完成的工具调用耗时（toolCallId → ms），供工具卡片展示；有上限避免无界增长 */
 const toolDurations = new Map<string, number>();
 const TOOL_DURATION_LIMIT = 512;
+
+/**
+ * 用户手动操作浏览器（前进 / 后退 / 刷新）的提示队列，等下一次模型请求前注入。
+ *
+ * 不直接 `send` 给界面、也不走 `steer`：它既不是用户发言、也不该触发新一轮运行，
+ * 只是告诉模型「你手里那份页面状态已经过期了」。注入点与理由见 init 里的 transform_context。
+ */
+const pendingBrowserNotices: string[] = [];
 
 function rememberDuration(toolCallId: string, durationMs: number | null): void {
   if (durationMs === null) return;
@@ -154,6 +163,20 @@ function toImageContent(
 }
 
 /** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
+/**
+ * 把内核的「最近一次操作结果」投影成 ⑥ 需要的**运行终态**（C1）。
+ *
+ * 只认 `kind === "run"`：压缩 / 导航也会写 `lastResult`，但它们在状态条上答非所问
+ * （用户问的是「我刚交办的那件事怎么样了」）。没有跑过、或最近一次是别的操作 → `null` → 「空闲」。
+ */
+function projectLastRun(result: LaneSnapshot["lastResult"]): ViewRunOutcome | null {
+  if (result === undefined || result.kind !== "run") return null;
+  return {
+    status: result.status,
+    ...(result.error !== undefined ? { error: result.error.message } : {}),
+  };
+}
+
 function project(
   snapshot: LaneSnapshot,
   meta: {
@@ -268,6 +291,7 @@ function project(
     // 而 run_start 写入的恰是 "open"（表示「进行中的操作」而非「已完成」），
     // 用它判定会把整个运行期误判为空闲。
     running: operation !== null,
+    lastRun: projectLastRun(snapshot.lastResult),
     queuedCount: snapshot.queues?.length ?? 0,
     faulted: Boolean(snapshot.faulted),
     stats: {
@@ -405,6 +429,21 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     if (decision.approved) return undefined;
     // terminate 不置位：只拦这一次调用，让模型知悉后自行调整，不终止整个对话
     return { block: { reason: decision.reason } };
+  });
+
+  // 用户手动操作浏览器（前进 / 后退 / 刷新）→ 告知 agent。
+  //
+  // 用 transform_context 而不是 steer / prompt：这两种都会**开启或插入一轮**，让 agent 去回应，
+  // 而这里要的只是「它下次看页面之前先知道自己看到的那份可能过期了」。
+  // transform_context 是内核为此准备的扩展点（按注释：把应用自定义的信息转成模型上下文），
+  // 每个模型请求前都会跑一次、返回的 messages 只作用于**这一次请求**，故不写进 transcript——
+  // 否则对话与分支树里会凭空多出一轮「用户说……」的假历史，还会被压缩摘要当成真实对话。
+  harness.hooks.on("transform_context", (event) => {
+    if (pendingBrowserNotices.length === 0) return undefined;
+    const text = pendingBrowserNotices.splice(0, pendingBrowserNotices.length).join("\n");
+    return {
+      messages: [...event.messages, { role: "user", content: text, timestamp: Date.now() }],
+    };
   });
 
   // 纵深防御：若有影响性工具执行完却没经过闸门，说明拦截链路漏了。
@@ -573,6 +612,14 @@ async function handle(command: WorkerCommand): Promise<void> {
     case "steer": {
       if (!state) throw new Error("会话尚未初始化");
       await state.lane.steer(command.text, toImageContent(command.images), context);
+      return;
+    }
+
+    // 用户手动导航：只暂存，绝不在这里发起运行。
+    // 注入时机是「下一次模型请求前」（init 里的 transform_context），所以 agent 空闲时
+    // 这条提示会一直躺着直到它下次开口——不会凭空把 agent 叫醒。
+    case "browserNotice": {
+      pendingBrowserNotices.push(command.text);
       return;
     }
 

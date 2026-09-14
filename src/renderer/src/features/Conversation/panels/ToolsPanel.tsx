@@ -10,13 +10,7 @@ import { formatArgs } from "../../../lib/format";
 import { cn } from "../../../lib/utils";
 import { SidePanelShell } from "./SidePanelShell";
 
-export function ToolsPanel({
-  sessionId,
-  onClose,
-}: {
-  sessionId: string;
-  onClose: () => void;
-}): React.JSX.Element {
+export function ToolsPanel({ sessionId }: { sessionId: string }): React.JSX.Element {
   const [calls, setCalls] = useState<ToolCallRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +50,6 @@ export function ToolsPanel({
       isEmpty={calls.length === 0}
       empty="还没有工具调用。Agent 使用 read/write/edit/bash 时会记录在此。"
       onRefresh={() => void load()}
-      onClose={onClose}
     >
       {calls.map((call) => (
         <div

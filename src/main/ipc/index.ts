@@ -13,6 +13,7 @@ import type { FirstRunReport } from "@shared/protocol";
 import {
   createSession,
   deleteSession,
+  getProject,
   getSession,
   listProjectChanges,
   listProjects,
@@ -23,6 +24,7 @@ import {
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
 import { hostBridge } from "../host";
+import { readFileWithin } from "../file-read";
 import { closeDatabase, openDatabase } from "../db";
 import { deleteSecret, hasSecret, maskSecret, setSecret } from "../secrets";
 import {
@@ -317,6 +319,27 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
   handle("browser.state.get", (request) => hostBridge.browserState(request.sessionId));
+  // 浏览器观测快照：与 browser_read 读同一份缓冲，只读、不触发任何动作
+  handle("browser.observe", (request) => hostBridge.browserObservation(request.sessionId));
+  // 用户手动导航（B1）：不走审批——发起方是用户、不是模型，没有可裁决的入参；
+  // 但要把「页面已经不是你离开时那页」告知正在跑的 agent（见 sessionManager 上的说明）。
+  handle("browser.navigate", (request) => {
+    const { state, notice } = hostBridge.browserNavigate(request.sessionId, request.action);
+    if (notice.length > 0) sessionManager.notifyUserBrowserNavigation(request.sessionId, notice);
+    return state;
+  });
+  // 撤销 agent 留下的视口联调覆盖（B1 排查中发现的问题）：覆盖是持久状态，
+  // 只有显式撤销才结束，用户必须有个出口，否则面板会一直按那个尺寸摆放、看着像渲染坏了。
+  handle("browser.viewport.reset", (request) => hostBridge.browserResetViewport(request.sessionId));
+
+  // 根**只由主进程推导**：渲染层给 sessionId 与相对路径，绝不给根
+  handle("file.read", (request) => {
+    const session = getSession(request.sessionId);
+    if (session === undefined) throw new Error("会话不存在");
+    const project = getProject(session.projectId);
+    if (project === undefined) throw new Error("项目不存在");
+    return readFileWithin(project.rootPath, request.path);
+  });
 }
 
 /** 首启时若环境变量里有 key 且尚未配置，则自动导入一次，方便开发 */

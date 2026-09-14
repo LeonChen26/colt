@@ -1,33 +1,26 @@
 /**
- * 右侧文件改动面板：列表选择 + unified patch 预览。
+ * 「改动」视图：列表选择 + unified patch 预览。
  * 数据来自当前的会话视图（fileChanges 已由主进程以数据库为真源回填）。
+ *
+ * A3-5：由中栏浮层面板迁入 ⑦ 工作区容器——不再是自带边框/固定宽度的 `aside`，
+ * 关闭交给页签上的 ×（同一件事只留一个出口）。
  */
 import { useState } from "react";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import { DiffView } from "../../../components/DiffView";
 import { cn } from "../../../lib/utils";
 
-export function ChangesPanel({
-  changes,
-  onClose,
-}: {
-  changes: ViewFileChange[];
-  onClose: () => void;
-}): React.JSX.Element {
+export function ChangesPanel({ changes }: { changes: ViewFileChange[] }): React.JSX.Element {
   const [selected, setSelected] = useState<string | null>(changes.at(-1)?.id ?? null);
   const current = changes.find((item) => item.id === selected) ?? changes.at(-1);
 
   return (
-    <aside className="flex w-[420px] shrink-0 flex-col border-l border-line bg-surface-raised">
+    <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-line px-3 py-2">
         <span className="text-xs font-medium text-text-secondary">文件改动</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-xs text-text-muted transition hover:text-text-primary"
-        >
-          收起
-        </button>
+        {changes.length > 0 && (
+          <span className="text-[10.5px] text-text-muted">{changes.length} 处</span>
+        )}
       </div>
 
       <div className="max-h-44 shrink-0 overflow-y-auto border-b border-line p-2">
@@ -64,6 +57,6 @@ export function ChangesPanel({
           </p>
         )}
       </div>
-    </aside>
+    </div>
   );
 }

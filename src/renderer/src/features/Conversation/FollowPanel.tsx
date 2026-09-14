@@ -8,7 +8,8 @@
  *   2. 本次改动 —— 文件数 + 增删行数汇总（点「查看全部改动」打开改动面板）
  *
  * 数据全部来自 ConversationView，无需额外 IPC。
- * hover 工具卡片时通过 highlightPath 高亮它碰的文件（对齐设计的跟随联动）。
+ * hover 工具卡片时通过 highlightPath 高亮它碰的文件（对齐设计的跟随联动）；
+ * 点「最近改动的文件」里的路径 → onOpenFile，由上层在「文件」视图里预览（A3-2）。
  */
 import { useState, type ReactNode } from "react";
 import { ChevronDown, Eye, FileEdit, FileDiff } from "lucide-react";
@@ -85,10 +86,13 @@ export function FollowPanel({
   view,
   highlightPath,
   onOpenChanges,
+  onOpenFile,
 }: {
   view: ConversationView | null;
   highlightPath?: string | null;
   onOpenChanges: () => void;
+  /** 点文件路径 → 在「文件」视图里预览它（A3-2） */
+  onOpenFile: (path: string) => void;
 }): React.JSX.Element {
   const [collapsed, setCollapsed] = useState({ agent: false, changes: false });
   const changes = view?.fileChanges ?? [];
@@ -161,13 +165,15 @@ export function FollowPanel({
               </p>
             ) : (
               files.map((file) => (
-                <div
+                <button
                   key={file.path}
+                  type="button"
+                  onClick={() => onOpenFile(file.path)}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-[6px] px-2 py-1.5 transition",
+                    "flex w-full items-center gap-1.5 rounded-[6px] px-2 py-1.5 text-left transition hover:bg-surface-overlay",
                     samePath(file.path, highlightPath ?? null) && "bg-surface-overlay",
                   )}
-                  title={file.path}
+                  title={`点击预览 ${file.path}`}
                 >
                   {file.kind === "edit" ? (
                     <FileEdit {...ICON.xs} className="shrink-0 text-text-muted" />
@@ -186,7 +192,7 @@ export function FollowPanel({
                     )}
                     <span className="text-text-muted">{ago(file.timestamp)}</span>
                   </span>
-                </div>
+                </button>
               ))
             )}
           </div>

@@ -1,11 +1,17 @@
 /**
- * 渲染层纯函数测试：ANSI 解析、diff 行分类、参数格式化。
+ * 渲染层纯函数测试：ANSI 解析、diff 行分类、参数格式化、改动文件折树、⑥ 运行状态判定。
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { parseAnsi } from "../src/renderer/src/lib/ansi.ts";
 import { classifyDiffLine } from "../src/renderer/src/lib/diff.ts";
-import { formatArgs } from "../src/renderer/src/lib/format.ts";
+import { formatArgs, runStateOf } from "../src/renderer/src/lib/format.ts";
+import {
+  buildFileTree,
+  countTreeFiles,
+  isProjectRelative,
+} from "../src/renderer/src/lib/file-tree.ts";
+import type { ViewFileChange } from "@shared/worker-protocol";
 
 describe("parseAnsi", () => {
   test("无转义时返回单个原样片段", () => {
@@ -80,5 +86,148 @@ describe("formatArgs", () => {
 
   test("空串原样返回", () => {
     assert.equal(formatArgs(""), "");
+  });
+});
+
+describe("runStateOf", () => {
+  test("运行中优先于任何终态", () => {
+    assert.equal(runStateOf(true, null), "running");
+    assert.equal(runStateOf(true, { status: "failed", error: "boom" }), "running");
+  });
+
+  test("用户中断 → aborted", () => {
+    assert.equal(runStateOf(false, { status: "aborted" }), "aborted");
+  });
+
+  test("异常结束 → failed（带着 / 不带 error 都算）", () => {
+    assert.equal(runStateOf(false, { status: "failed", error: "请求超时" }), "failed");
+    assert.equal(runStateOf(false, { status: "failed" }), "failed");
+  });
+
+  test("正常跑完与「还没跑过」一样回到空闲", () => {
+    assert.equal(runStateOf(false, { status: "completed" }), "idle");
+    assert.equal(runStateOf(false, null), "idle");
+  });
+
+  test("declined 不产生专门的终态（run 不会产出它）", () => {
+    assert.equal(runStateOf(false, { status: "declined" }), "idle");
+  });
+});
+
+/** 造一条改动记录；名字统一用小写，避免 localeCompare 在大小写上产生环境差异 */
+const change = (path: string, timestamp = 0): ViewFileChange => ({
+  id: path,
+  path,
+  kind: "edit",
+  patch: null,
+  addedLines: 1,
+  removedLines: 0,
+  timestamp,
+});
+
+describe("isProjectRelative", () => {
+  test("项目内相对路径可用（含子目录、反斜杠）", () => {
+    assert.equal(isProjectRelative("package.json"), true);
+    assert.equal(isProjectRelative("src/main/a.ts"), true);
+    assert.equal(isProjectRelative("src\\main\\a.ts"), true);
+  });
+
+  test("绝对路径不可用（四种写法）", () => {
+    assert.equal(isProjectRelative("C:/x/y.txt"), false);
+    assert.equal(isProjectRelative("C:\\x\\y.txt"), false);
+    assert.equal(isProjectRelative("/tmp/x.txt"), false);
+    assert.equal(isProjectRelative("\\\\server\\share\\x.txt"), false);
+  });
+
+  test(".. 逃逸不可用", () => {
+    assert.equal(isProjectRelative("../x.txt"), false);
+    assert.equal(isProjectRelative("a/../../b.txt"), false);
+  });
+
+  test("空白不可用", () => {
+    assert.equal(isProjectRelative("   "), false);
+    assert.equal(isProjectRelative(""), false);
+  });
+});
+
+describe("buildFileTree", () => {
+  test("根下文件平铺为文件节点", () => {
+    const tree = buildFileTree([change("package.json"), change("readme.md")]);
+    assert.deepEqual(
+      tree.map((node) => [node.name, node.change !== undefined]),
+      [
+        ["package.json", true],
+        ["readme.md", true],
+      ],
+    );
+  });
+
+  test("同目录文件折进同一个目录节点", () => {
+    const tree = buildFileTree([change("src/a.ts"), change("src/b.ts")]);
+    assert.equal(tree.length, 1);
+    assert.equal(tree[0]?.name, "src");
+    assert.equal(tree[0]?.change, undefined);
+    assert.deepEqual(
+      tree[0]?.children.map((node) => node.name),
+      ["a.ts", "b.ts"],
+    );
+  });
+
+  test("多层目录逐段建链，叶子带上完整相对路径", () => {
+    const tree = buildFileTree([change("src/main/ipc/index.ts")]);
+    const leaf = tree[0]?.children[0]?.children[0]?.children[0];
+    assert.equal(tree[0]?.name, "src");
+    assert.equal(tree[0]?.children[0]?.name, "main");
+    assert.equal(tree[0]?.children[0]?.children[0]?.name, "ipc");
+    assert.equal(leaf?.path, "src/main/ipc/index.ts");
+  });
+
+  test("目录排在文件前面，同级按名字升序", () => {
+    const tree = buildFileTree([change("zeta.ts"), change("alpha.ts"), change("docs/x.md")]);
+    assert.deepEqual(
+      tree.map((node) => node.name),
+      ["docs", "alpha.ts", "zeta.ts"],
+    );
+  });
+
+  test("绝对路径被排除——不可预览的条目不该出现在树里", () => {
+    const tree = buildFileTree([
+      change("C:\\other\\secret.txt"),
+      change("/tmp/x.txt"),
+      change("ok.ts"),
+    ]);
+    assert.deepEqual(
+      tree.map((node) => node.name),
+      ["ok.ts"],
+    );
+  });
+
+  test(".. 逃逸被排除", () => {
+    const tree = buildFileTree([change("../escape.txt"), change("a/../../b.txt"), change("ok.ts")]);
+    assert.deepEqual(
+      tree.map((node) => node.name),
+      ["ok.ts"],
+    );
+  });
+
+  test("反斜杠归一为层级", () => {
+    const tree = buildFileTree([change("src\\main\\a.ts")]);
+    assert.equal(tree[0]?.name, "src");
+    assert.equal(tree[0]?.children[0]?.name, "main");
+  });
+
+  test("同一路径重复出现只保留最新一条", () => {
+    const tree = buildFileTree([change("a.ts", 1), change("a.ts", 9)]);
+    assert.equal(countTreeFiles(tree), 1);
+    assert.equal(tree[0]?.change?.timestamp, 9);
+  });
+
+  test("空输入得到空树", () => {
+    assert.deepEqual(buildFileTree([]), []);
+  });
+
+  test("countTreeFiles 统计可预览文件数", () => {
+    const tree = buildFileTree([change("a.ts"), change("src/b.ts"), change("src/c.ts")]);
+    assert.equal(countTreeFiles(tree), 3);
   });
 });

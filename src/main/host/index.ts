@@ -4,10 +4,10 @@
  * 这是「worker 持 Agent、main 持能力」之间的唯一入口。新增能力（如桌面控制）只需
  * 在这里加一个分支与一个 host 模块，worker 侧的契约保持不变。
  */
-import type { BrowserViewState } from "@shared/protocol";
+import type { BrowserNavAction, BrowserObservation, BrowserViewState } from "@shared/protocol";
 import type { HostCapability, HostResult } from "@shared/worker-protocol";
 import type { BrowserWindow } from "electron";
-import { BrowserHost } from "./browser-host";
+import { BrowserHost, type BrowserNavigation } from "./browser-host";
 import { ComputerHost } from "./computer-host";
 
 export interface HostRequest {
@@ -42,6 +42,21 @@ export class HostBridge {
   /** 读取会话的内嵌浏览器状态 */
   browserState(sessionId: string): BrowserViewState {
     return this.#browser.stateOf(sessionId);
+  }
+
+  /** 用户手动导航（B1）：后退 / 前进 / 刷新 */
+  browserNavigate(sessionId: string, action: BrowserNavAction): BrowserNavigation {
+    return this.#browser.navigate(sessionId, action);
+  }
+
+  /** 撤销 agent 留下的视口联调覆盖（用户在浏览器头部点「恢复」） */
+  browserResetViewport(sessionId: string): BrowserViewState {
+    return this.#browser.resetViewport(sessionId);
+  }
+
+  /** 读取会话的浏览器观测快照（B2：控制台 / 网络 / 下载） */
+  browserObservation(sessionId: string): BrowserObservation {
+    return this.#browser.observe(sessionId);
   }
 
   async handle(request: HostRequest): Promise<HostResult> {

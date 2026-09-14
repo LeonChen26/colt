@@ -200,6 +200,78 @@ body {
   box-shadow: none !important;
 }
 
+/* ---------- ⑥ 运行状态段（C1 / C2） ---------- */
+/* 空闲 / 已中断：静止的灰点。与运行中的脉动绿点同尺寸、同位置，
+   一眼能看出「它没在动」——这正是 ⑥-B「停止走字本身就是信号」要的表达。 */
+.idle-dot {
+  background: var(--color-text-muted) !important;
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+/* 已失败：静止的红点（v3 §5 配色：红 = 危险 / 失败）。同样不呼吸——它已经不活了。 */
+.danger-dot {
+  background: var(--color-danger) !important;
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+/* 失败摘要：单行截断、悬停看全文（与右栏地址栏同款处理）。窄栏收紧，别把状态条撑爆。 */
+.lb-err {
+  max-width: 240px;
+}
+
+/* ============================================================
+   中栏 ↔ 右栏拖拽把手（规则 ⑦-B：右栏宽度只由用户拖拽决定）
+   浮在两栏分隔线上：9px 命中区、1px 可见指示线，净占位为 0。
+   ============================================================ */
+.dock-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 40;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: transparent;
+}
+/* 可见指示线：仅 hover / 拖动时亮起，平时不可见 */
+.dock-grip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.14s;
+}
+.dock-grip:hover::after,
+.dock-grip.dragging::after {
+  background: var(--color-accent-dim);
+}
+/* 拖拽期间：全局改光标并抑制选中，避免拖动时误选文本 */
+body.resizing,
+body.resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* ============================================================
+   「文件」视图（A3-4）：预览左 + 本次改动树右（对齐高保真 .file-view）
+   本栏是命名容器——右栏最窄可拖到 220px，200px 的树会把预览挤到没法看，
+   故栅格窄过阈值时整棵树隐藏，预览拿回全部宽度。
+   ============================================================ */
+.file-view {
+  container: fileview / inline-size;
+}
+@container fileview (max-width: 520px) {
+  .fv-tree {
+    display: none;
+  }
+}
+
 .conv-center {
   container: center / inline-size;
 }
@@ -234,6 +306,9 @@ body {
   .cbtn.model .lbl {
     display: inline;
     max-width: 78px;
+  }
+  .lb-err {
+    max-width: 120px;
   }
 }
 @container center (max-width: 520px) {

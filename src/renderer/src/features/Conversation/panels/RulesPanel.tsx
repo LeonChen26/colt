@@ -24,13 +24,7 @@ function describeRule(rule: ApprovalRuleView): { scope: string; detail: string |
   return { scope: `同参数 ${tool}`, detail: detail || null };
 }
 
-export function RulesPanel({
-  sessionId,
-  onClose,
-}: {
-  sessionId: string;
-  onClose: () => void;
-}): React.JSX.Element {
+export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Element {
   const [rules, setRules] = useState<ApprovalRuleView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +160,6 @@ export function RulesPanel({
       isEmpty={rules.length === 0}
       empty="本次会话还没有记住任何规则。在审批卡片上选「本会话内始终允许」或「始终拒绝」时会记在这里。"
       onRefresh={() => void load()}
-      onClose={onClose}
     >
       <div className="mb-3 text-[10.5px] leading-relaxed text-text-muted">
         规则仅存于内存，以会话为单位存活：删除会话或退出应用即失效。

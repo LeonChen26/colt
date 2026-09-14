@@ -1,7 +1,7 @@
 /**
  * 展示层的格式化辅助函数。
  */
-import type { ViewFileChange } from "@shared/worker-protocol";
+import type { ViewFileChange, ViewRunOutcome } from "@shared/worker-protocol";
 
 /** 把 JSON 字符串美化缩进；解析失败时原样返回 */
 export function formatArgs(raw: string): string {
@@ -10,6 +10,13 @@ export function formatArgs(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/** 体积：B / KB / MB 三档即可，展示场景不需要更细 */
+export function formatBytes(value: number): string {
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
 }
 
 /** 解析工具入参 JSON；失败或非对象时返回空对象 */
@@ -23,6 +30,25 @@ export function parseArgsJson(raw: string): Record<string, unknown> {
     // 入参非 JSON 时按无参处理
   }
   return {};
+}
+
+/** ⑥ 状态段的取值；除 `running` 外都是「静止态」，区别只在文案与点的颜色 */
+export type RunState = "running" | "aborted" | "failed" | "idle";
+
+/**
+ * 由 `running` 与最近一轮终态推出 ⑥ 状态段的取值（C1 / C2）。
+ *
+ * 只有**中断**与**失败**值得单独留一行：正常跑完（`completed`）与「还没跑过」（`lastRun === null`）
+ * 都是「空闲」——状态条不该为一次正常的结束留痕。
+ *
+ * 抽成纯函数是为了能单测：这段判定是 C1 的全部行为，而 ⑥ 目前没有任何冒烟覆盖
+ * （`fixture` 只跑浏览器能力、`dock` 只跑右栏）。
+ */
+export function runStateOf(running: boolean, lastRun: ViewRunOutcome | null): RunState {
+  if (running) return "running";
+  if (lastRun?.status === "aborted") return "aborted";
+  if (lastRun?.status === "failed") return "failed";
+  return "idle";
 }
 
 /**

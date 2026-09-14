@@ -55,6 +55,22 @@ export interface ViewFileChange {
   timestamp: number;
 }
 
+/**
+ * 一轮**运行**的终态（C1）。投影自内核 `LaneSnapshot.lastResult`，只取 `kind === "run"` 的那些——
+ * 压缩 / 导航的终态不该影响 ⑥ 上「这次任务怎么样了」这一问。
+ *
+ * ⚠️ 别拿 `faulted` 表达这件事：那是 harness 的 `fault` 事件（会话级硬故障，且内核从不复位它），
+ * 与「这一轮跑完没有、怎么结束的」是两回事。终态只有 `run_end.status` 说得清：
+ * 用户中断走 `session.abort` → `aborted`，异常 → `failed`，跑完 → `completed`。
+ *
+ * （`declined` 是终端状态的全集里的一员，属授权类操作；`run` 不会产出它，渲染层按「无特殊终态」处理。）
+ */
+export interface ViewRunOutcome {
+  status: "completed" | "declined" | "aborted" | "failed";
+  /** 仅 `failed` 时有值；摘要展示由渲染层负责 */
+  error?: string;
+}
+
 /** 会话视图：渲染层唯一的数据结构 */
 export interface ConversationView {
   sessionId: string;
@@ -79,6 +95,12 @@ export interface ConversationView {
   runningTools: ViewRunningTool[];
   /** 是否有进行中的操作 */
   running: boolean;
+  /**
+   * 最近一轮运行的终态；`null` = 本会话还没跑过任何一轮。
+   * ⑥ 据此把「空闲 / 已中断 / 已失败」分开（C1）——正常跑完（`completed`）与「没跑过」一样回到「空闲」，
+   * 只有中断与失败才值得在状态条上单独留一行。
+   */
+  lastRun: ViewRunOutcome | null;
   /** 排队中的消息条数（steer / followUp） */
   queuedCount: number;
   faulted: boolean;
@@ -131,6 +153,14 @@ export type WorkerCommand =
   | { type: "compact" }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
+  /**
+   * 用户手动操作了浏览器（B1：后退 / 前进 / 刷新），把这件事告知 agent。
+   *
+   * 与 `steer` 的区别是**它不是用户说的话、也不该触发新一轮运行**：
+   * worker 把它暂存，在下一次模型请求前用内核的 `transform_context` 注入，
+   * 因此不落进 transcript（对话与分支树不会凭空多出一轮）。
+   */
+  | { type: "browserNotice"; text: string }
   /** 主进程对一条审批的答复，worker 据此决定放行还是阻断 */
   | { type: "approvalResult"; toolCallId: string; approved: boolean; reason?: string }
   /** 主进程对一次宿主能力调用的答复（成功） */

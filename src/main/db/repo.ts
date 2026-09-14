@@ -91,6 +91,18 @@ export function listProjects(): Project[] {
   return rows.map(toProject);
 }
 
+/**
+ * 读取单个项目。
+ * 用途：把会话解析到它的工作目录——`sessions` 表故意不存 cwd，根只在项目上，
+ * 于是「读项目内文件」的根只能由主进程经 `sessionId → project_id → root_path` 推出。
+ */
+export function getProject(projectId: string): Project | undefined {
+  const row = getDatabase()
+    .prepare("SELECT * FROM projects WHERE id = ?")
+    .get(projectId) as unknown as ProjectRow | undefined;
+  return row ? toProject(row) : undefined;
+}
+
 export function createSession(projectId: string, jsonlPath: string, presetId?: string): SessionInfo {
   const db = getDatabase();
   const now = Date.now();
