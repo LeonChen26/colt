@@ -5,7 +5,7 @@ import { app, dialog, ipcMain } from "electron";
 import { join } from "node:path";
 import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap } from "@shared/protocol";
-import { splitModelRef } from "@shared/model-ref";
+import { resolveSessionModel } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
 import { readGitStatus } from "../git";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
@@ -36,9 +36,6 @@ import {
   saveProvider,
 } from "../providers";
 
-/** 默认模型 */
-const DEFAULT_MODEL = "deepseek-v4-flash";
-
 /** app.whenReady 阶段采集的首启报告，供渲染层首屏查询（需早于 openDatabase） */
 let firstRunReport: FirstRunReport | null = null;
 
@@ -54,25 +51,19 @@ type Handler<C extends IpcChannel> = (
 /**
  * 解析会话应使用的 provider/model（带失效回退）并启动（或复用）worker。
  * session.open 与 session.prompt 的自动重连共用，保证两处模型选择一致。
+ * 模型选择规则收敛在 shared/model-ref，渲染层用同一函数判断「能否自动打开」。
  */
 async function openSessionWorker(input: {
   sessionId: string;
   cwd: string;
   model?: string;
 }): Promise<void> {
-  // 模型优先级：显式传入 > 会话上次选定 > 内置 DeepSeek 默认，形如 "providerId/modelId"
-  const raw =
-    input.model ?? getSession(input.sessionId)?.modelRef ?? `${BUILTIN_DEEPSEEK.id}/${DEFAULT_MODEL}`;
-  let { provider: providerId, model: modelId } = splitModelRef(raw, BUILTIN_DEEPSEEK.id);
-
-  // 持久化的 modelRef 可能已失效（provider 被删、模型下线），退回内置默认，
-  // 否则会话将因 provider 找不到而永久打不开
-  let provider = getProvider(providerId);
-  if (!provider || !provider.models.some((item) => item.id === modelId)) {
-    providerId = BUILTIN_DEEPSEEK.id;
-    modelId = DEFAULT_MODEL;
-    provider = BUILTIN_DEEPSEEK;
-  }
+  const providers = listProviders();
+  const { providerId, modelId } = resolveSessionModel(
+    input.model ?? getSession(input.sessionId)?.modelRef,
+    providers,
+  );
+  const provider = providers.find((item) => item.id === providerId) ?? BUILTIN_DEEPSEEK;
 
   await sessionManager.ensureWorker({
     sessionId: input.sessionId,
@@ -140,11 +131,25 @@ export function registerIpcHandlers(): void {
    * fresh 需要先关闭数据库连接再删文件，删完重新建库；import 直接沿用现有库。
    */
   handle("firstRun.resolve", (request) => {
-    // 先关连接再删文件，随后重建空白库供本次会话使用
-    if (request.choice === "fresh") closeDatabase();
-    const result = applyFirstRunChoice(app.getPath("userData"), request.choice);
-    if (request.choice === "fresh") openDatabase(app.getPath("userData"));
-    return result;
+    const userDataPath = app.getPath("userData");
+    // import：直接沿用现有库，无需动连接
+    if (request.choice !== "fresh") return applyFirstRunChoice(userDataPath, request.choice);
+
+    // 先关连接再删文件，否则 Windows 下文件被占用删不掉
+    closeDatabase();
+    try {
+      return applyFirstRunChoice(userDataPath, request.choice);
+    } finally {
+      // 无论清空是否成功，都必须把库恢复到可用状态：清空半途失败时，
+      // 「沿用（可能已不完整的）旧数据」也远好过「整场会话没有库」——后者会让此后
+      // 每个依赖库的 IPC 都持续报「数据库尚未初始化」。
+      // 此处若再失败也不掩盖上面真正的失败原因，getDatabase 会在下次访问时自愈重试。
+      try {
+        openDatabase(userDataPath);
+      } catch (error) {
+        console.error("[firstRun] 清空后重建数据库失败，将在下次访问时重试", error);
+      }
+    }
   });
 
   handle("project.pick", async () => {

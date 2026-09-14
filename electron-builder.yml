@@ -18,7 +18,7 @@ asarUnpack:
   - node_modules/@earendil-works/**
 
 win:
-  icon: build/icon.png
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]

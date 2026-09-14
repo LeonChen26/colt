@@ -3,6 +3,7 @@
  * 密钥不存这里，统一走 secrets.ts（safeStorage 加密）
  */
 import type { ModelOption, ProviderConfig } from "@shared/protocol";
+import { BUILTIN_PROVIDER_ID } from "@shared/model-ref";
 import { DEEPSEEK_MODELS } from "@earendil-works/pi-ai/providers/deepseek.models";
 import { getDatabase } from "./db";
 import { hasSecret } from "./secrets";
@@ -22,7 +23,7 @@ function builtinModels(): ModelOption[] {
 
 /** 内置 DeepSeek：模型表由 pi-ai 自带，此处只列可选项供 UI 展示 */
 export const BUILTIN_DEEPSEEK: ProviderConfig = {
-  id: "deepseek",
+  id: BUILTIN_PROVIDER_ID,
   name: "DeepSeek",
   kind: "deepseek",
   baseUrl: "https://api.deepseek.com",

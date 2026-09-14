@@ -10,7 +10,6 @@ import {
   Settings as SettingsIcon,
   Sun,
   Trash2,
-  Trees,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
@@ -98,11 +97,18 @@ export default function App(): React.JSX.Element {
     })();
   }, []);
 
-  // 离开设置页时重新拉取 provider，让模型下拉及时反映改动
+  // 离开设置页时重新拉取 provider 与密钥状态：既让模型下拉及时反映改动，
+  // 也让「未配置密钥」的黄色提示在配好之后立刻消失（否则要重启才更新）
   useEffect(() => {
-    if (mainView !== "settings") {
-      void window.colt.invoke("providers.list", undefined).then(setProviders);
-    }
+    if (mainView === "settings") return;
+    void (async () => {
+      const [providerList, secrets] = await Promise.all([
+        window.colt.invoke("providers.list", undefined),
+        window.colt.invoke("secrets.status", undefined),
+      ]);
+      setProviders(providerList);
+      setSecretReady(secrets.deepseek);
+    })();
   }, [mainView]);
 
   // 全局监听会话视图：后台会话也能刷新标题、消息数与运行状态
@@ -245,7 +251,6 @@ export default function App(): React.JSX.Element {
       )}
       <header className="flex h-[42px] shrink-0 items-center justify-between border-b border-line bg-surface-raised px-3.5">
         <div className="flex items-center gap-2">
-          <Trees {...ICON.lg} className="text-text-primary" />
           <span className="text-[13.5px] font-semibold tracking-[.2px] text-text-primary">
             Colt
           </span>
@@ -391,6 +396,7 @@ export default function App(): React.JSX.Element {
               key={activeSession.id}
               sessionId={activeSession.id}
               cwd={activeProject.rootPath}
+              sessionModelRef={activeSession.modelRef}
               providers={providers}
             />
           ) : (

@@ -22,7 +22,7 @@ import {
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
-import { splitModelRef } from "@shared/model-ref";
+import { resolveSessionModel, splitModelRef } from "@shared/model-ref";
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { Markdown } from "../../components/Markdown";
@@ -84,10 +84,13 @@ function formatTokens(value: number): string {
 export function Conversation({
   sessionId,
   cwd,
+  sessionModelRef,
   providers,
 }: {
   sessionId: string;
   cwd: string;
+  /** 会话上次选定的模型（"providerId/modelId"，未选过为 null），用于判断本次能否自动打开 */
+  sessionModelRef: string | null;
   providers: ProviderConfig[];
 }): React.JSX.Element {
   const [view, setView] = useState<ConversationView | null>(null);
@@ -398,6 +401,16 @@ export function Conversation({
         // 审批模式是会话级状态：读的是本会话的设定（无全局设定）
         const current = await window.colt.invoke("approval.mode.get", { sessionId });
         if (!disposed) setMode(current.mode);
+
+        // 缺密钥是「注定失败」的打开：主进程会直接抛错。这里按同一套模型规则
+        // （shared/model-ref，与主进程同源）算出本次会用哪个 provider，
+        // 现取 providers.list 以拿到最新的密钥状态，没配密钥就不发 session.open——
+        // 既不产生一次必然失败的往返，也不把「还没配好」渲染成红色错误。
+        // 补好密钥后重新进入会话即正常打开。
+        const providerList = await window.colt.invoke("providers.list", undefined);
+        const { providerId } = resolveSessionModel(sessionModelRef, providerList);
+        const target = providerList.find((item) => item.id === providerId);
+        if (target && !target.hasKey) return;
 
         await window.colt.invoke("session.open", { sessionId, cwd });
         const snapshot = await window.colt.invoke("session.view", { sessionId });

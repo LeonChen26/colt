@@ -5,7 +5,7 @@ import { app, BrowserWindow, shell } from "electron";
 import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { registerIpcHandlers, importKeyFromEnvIfMissing, setFirstRunReport } from "./ipc";
-import { openDatabase, closeDatabase } from "./db";
+import { openDatabase, shutdownDatabase } from "./db";
 import { inspectUserData } from "./first-run";
 import { hostBridge } from "./host";
 import { sessionManager } from "./session-manager";
@@ -135,5 +135,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   sessionManager.disposeAll();
-  closeDatabase();
+  // 退出用 shutdownDatabase 而非 closeDatabase：后者保留自愈所需的路径，
+  // 会让退出过程中的残余调用把库又建出来
+  shutdownDatabase();
 });

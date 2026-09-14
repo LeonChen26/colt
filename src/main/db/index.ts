@@ -248,6 +248,13 @@ function migrateProjectsRootKey(instance: DatabaseSync): void {
 
 let db: DatabaseSync | undefined;
 
+/**
+ * 最近一次 openDatabase 的 userData 路径，供「连接丢失后自愈」使用（见 getDatabase）。
+ * 它必须早于任何文件系统操作就记下：开库失败（目录刚被清空、文件被占用、被杀软扫描）
+ * 也要留住路径，下次访问才能重试，而不是把整场会话钉死在「没有库」上。
+ */
+let reopenUserDataPath: string | undefined;
+
 /** 判断工作台库是否已初始化（以 sessions 表是否存在为标志） */
 function hasExistingSchema(instance: DatabaseSync): boolean {
   const row = instance
@@ -282,6 +289,8 @@ function migrate(instance: DatabaseSync, from: number): void {
 /** 打开（并按需建表、迁移）工作台数据库 */
 export function openDatabase(userDataPath: string): DatabaseSync {
   if (db) return db;
+  // 先记路径再动文件系统：下面任一步失败，都要留下可重试的凭据
+  reopenUserDataPath = userDataPath;
   const dir = join(userDataPath, "data");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "colt.db");
@@ -307,12 +316,35 @@ export function openDatabase(userDataPath: string): DatabaseSync {
   return instance;
 }
 
+/**
+ * 取当前连接。连接不在时**惰性重开**，而不是直接抛错。
+ *
+ * 背景：「清空重来」链路会先 closeDatabase 再删目录、随后重开，中途任一步失败
+ * （目录刚被清空、文件被占用、被杀软扫描）都会让连接停在「已关闭」。若这里只会抛错，
+ * 此后每个依赖库的 IPC 都会持续报「数据库尚未初始化」，一次瞬时故障被放大成整场会话不可用。
+ * 惰性重开把「一次失败」降级为「这一次失败」：下次访问自动重试。
+ *
+ * 只有从未 openDatabase 过（没有路径可依）才视为真正的调用错误。
+ */
 export function getDatabase(): DatabaseSync {
-  if (!db) throw new Error("数据库尚未初始化，请先调用 openDatabase()");
-  return db;
+  if (db) return db;
+  if (reopenUserDataPath) return openDatabase(reopenUserDataPath);
+  throw new Error("数据库尚未初始化，请先调用 openDatabase()");
 }
 
+/** 关闭连接，但保留自愈能力：下次 getDatabase 仍能凭记住的路径重开 */
 export function closeDatabase(): void {
   db?.close();
   db = undefined;
+}
+
+/**
+ * 进程退出前关闭连接，并放弃自愈能力。
+ * 与 closeDatabase 分开是为了让「退出」有明确语义：退出后再有残余调用，
+ * 不该把库又建出来（closeDatabase 保留路径，是为运行期的自愈服务）。
+ */
+export function shutdownDatabase(): void {
+  db?.close();
+  db = undefined;
+  reopenUserDataPath = undefined;
 }
