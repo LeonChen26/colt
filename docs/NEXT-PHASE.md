@@ -648,7 +648,7 @@
    # 终端 2（先停掉占用 5173 的开发实例）
    $env:COLT_SMOKE=".smoke-fixture.png"   # 只给文件名，产物固定落在 out/ 下
    $env:COLT_SMOKE_MODE="fixture"
-   npm run dev        # npm start（preview）亦可
+   npm run dev        # 必须 dev：启动器被 import.meta.env.DEV 守卫，preview/打包态一律不含它
    ```
    看 `out/.smoke-fixture.png.log` 末行是否 `通过 25/25`
 3. **工作区界面端到端（改右栏 ⑦ / ⑥ 必跑）**：`dock` 模式在主进程里驱动渲染层、**真派发鼠标事件**模拟拖拽，

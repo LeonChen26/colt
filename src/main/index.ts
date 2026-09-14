@@ -28,22 +28,6 @@ function appNameSetup(): void {
   app.setPath("userData", join(app.getPath("appData"), "Colt"));
 }
 
-/**
- * 冒烟产物目录：编译后的主进程位于 out/main，向上一级即 out/。
- * 产物（截图 / 日志）一律落在这里，不再散到仓库根目录；out/ 已被 .gitignore
- * 覆盖、且随构建重建，所以这些文件天然是「生成物」而非需要手工清理的垃圾。
- */
-const SMOKE_OUT_DIR = join(__dirname, "..");
-
-/**
- * 把 COLT_SMOKE 归一化成 out/ 下的产物路径。
- * 该变量现在只表示**文件名**——即便传进来的是绝对路径，也只取其 basename，
- * 目录固定为 out/。
- */
-function smokeArtifactPath(name: string): string {
-  return join(SMOKE_OUT_DIR, basename(name) || ".smoke.png");
-}
-
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
@@ -65,30 +49,37 @@ function createWindow(): BrowserWindow {
 
   window.on("ready-to-show", () => {
     window.show();
-    // 冒烟自检：COLT_SMOKE 给出产物文件名时，跑完流程自动退出。
-    // 产物路径统一归一到 out/（见 smokeArtifactPath），不会落到仓库根目录。
-    // 打包后一律不启用（与 worker 覆盖同一条原则）：该装置只为开发期验收，
-    // 其 chunk 也未随包分发（见 electron-builder.yml 的 files 排除项）。
-    const smokeName = process.env.COLT_SMOKE;
-    const smokeTarget = smokeName ? smokeArtifactPath(smokeName) : undefined;
-    if (smokeTarget && isDev && !smokeStarted) {
-      smokeStarted = true;
-      // 动态导入失败（构建产物缺失 / 语法错误）必须落盘可见，
-      // 否则表现为「窗口正常但冒烟一声不响」，极难排查。
-      void import("./smoke")
-        .then(({ runSmoke }) => runSmoke(window, smokeTarget))
-        .catch((error: unknown) => {
-          console.error("[SMOKE] 加载失败", error);
-          try {
-            writeFileSync(
-              `${smokeTarget}.log`,
-              `[SMOKE] 加载失败 ${error instanceof Error ? error.stack : String(error)}\n`,
-              "utf8",
-            );
-          } catch {
-            // 兜底日志写不出去也没别的办法
-          }
-        });
+
+    // 冒烟自检：**仅开发期**。用 import.meta.env.DEV 守卫，生产构建会把整段
+    // （含环境变量名与路径计算）树摇掉——包里不残留这套装置的任何痕迹，
+    // 也就不会出现「打包后仍存在一个可被环境变量激活的入口」。
+    if (import.meta.env.DEV) {
+      // COLT_SMOKE 只表达文件名，目录固定为 out/（编译后主进程在 out/main，上一级即 out/）；
+      // 即便传绝对路径也只取 basename，冒烟不再往仓库根目录丢文件。
+      const smokeArtifactPath = (name: string): string =>
+        join(__dirname, "..", basename(name) || ".smoke.png");
+
+      const smokeName = process.env.COLT_SMOKE;
+      if (smokeName && !smokeStarted) {
+        smokeStarted = true;
+        const smokeTarget = smokeArtifactPath(smokeName);
+        // 动态导入失败（构建产物缺失 / 语法错误）必须落盘可见，
+        // 否则表现为「窗口正常但冒烟一声不响」，极难排查。
+        void import("./smoke")
+          .then(({ runSmoke }) => runSmoke(window, smokeTarget))
+          .catch((error: unknown) => {
+            console.error("[SMOKE] 加载失败", error);
+            try {
+              writeFileSync(
+                `${smokeTarget}.log`,
+                `[SMOKE] 加载失败 ${error instanceof Error ? error.stack : String(error)}\n`,
+                "utf8",
+              );
+            } catch {
+              // 兜底日志写不出去也没别的办法
+            }
+          });
+      }
     }
   });
 

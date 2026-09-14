@@ -11,10 +11,6 @@ directories:
 files:
   - out/**/*
   - package.json
-  # 冒烟自检是开发期装置（src/main/smoke.ts，约 16KB），不随包分发。
-  # 它由 main 动态 import 成独立 chunk，故按 chunk 名剔除；打包产物里
-  # 不会再有该文件，入口的 !app.isPackaged 判断保证也不会去加载它。
-  - "!out/main/chunks/smoke-*"
 
 # pi 内核被 externalize，必须随包分发
 asar: true
