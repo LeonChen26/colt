@@ -46,3 +46,23 @@ export function resolveSessionModel(
   const fallback = splitModelRef(BUILTIN_DEFAULT_MODEL_REF, BUILTIN_PROVIDER_ID);
   return { providerId: fallback.provider, modelId: fallback.model };
 }
+
+/**
+ * 是否**存在任一**「可用」的模型服务：已配置密钥、且至少有一个可选用模型。
+ *
+ * 界面提示「尚未配置 API Key」的判据必须用它，而不是只看内置 DeepSeek：
+ * 用户只配了 OpenAI 兼容服务、内置 DeepSeek 空着时照样能正常对话，
+ * 按内置项判定会一直挂着一条黄色警告，属于假报错。
+ * 反过来，配了密钥但没填模型的服务也开不了会话，不该算可用。
+ */
+export function hasUsableProvider(providers: ProviderConfig[]): boolean {
+  return providers.some((item) => item.hasKey === true && item.models.length > 0);
+}
+
+/**
+ * 取第一个可用 provider 的 id（用于提示文案）：没有则返回 undefined。
+ * 内置项在列表最前，因此全都能用时提示仍指向 DeepSeek，与此前观感一致。
+ */
+export function firstUsableProvider(providers: ProviderConfig[]): ProviderConfig | undefined {
+  return providers.find((item) => item.hasKey === true && item.models.length > 0);
+}

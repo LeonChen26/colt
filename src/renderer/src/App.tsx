@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
+import { hasUsableProvider } from "@shared/model-ref";
 import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } from "@shared/protocol";
 import { BranchTree } from "./features/BranchTree";
 import { Conversation } from "./features/Conversation";
@@ -39,7 +40,12 @@ export default function App(): React.JSX.Element {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
-  const [secretReady, setSecretReady] = useState<boolean | null>(null);
+  /**
+   * 是否已有「可用的模型服务」（任一 provider 配了密钥且填了模型）。
+   * 不能用「内置 DeepSeek 是否配了密钥」代替：只配 OpenAI 兼容服务时同样能对话，
+   * 按内置项判定会让黄色警告一直挂着（假报错）。
+   */
+  const [modelServiceReady, setModelServiceReady] = useState<boolean | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [mainView, setMainView] = useState<MainView>("chat");
   const [firstRun, setFirstRun] = useState<FirstRunReport | null>(null);
@@ -76,16 +82,15 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [envReport, projectList, secrets, providerList] = await Promise.all([
+        const [envReport, projectList, providerList] = await Promise.all([
           window.colt.invoke("env.check", undefined),
           window.colt.invoke("project.list", undefined),
-          window.colt.invoke("secrets.status", undefined),
           window.colt.invoke("providers.list", undefined),
         ]);
         setEnv(envReport);
         setProjects(projectList);
-        setSecretReady(secrets.deepseek);
         setProviders(providerList);
+        setModelServiceReady(hasUsableProvider(providerList));
         if (projectList.length > 0) setActiveProject(projectList[0]!);
 
         // 首启引导：仅在尚未完成引导时弹出（已完成则直接进主界面）
@@ -102,12 +107,9 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     if (mainView === "settings") return;
     void (async () => {
-      const [providerList, secrets] = await Promise.all([
-        window.colt.invoke("providers.list", undefined),
-        window.colt.invoke("secrets.status", undefined),
-      ]);
+      const providerList = await window.colt.invoke("providers.list", undefined);
       setProviders(providerList);
-      setSecretReady(secrets.deepseek);
+      setModelServiceReady(hasUsableProvider(providerList));
     })();
   }, [mainView]);
 
@@ -237,13 +239,14 @@ export default function App(): React.JSX.Element {
             setFirstRun(null);
             // 选择「清空重来」后历史项目/会话已删，需重新拉取；并同步密钥状态
             void (async () => {
-              const [projectList, secrets] = await Promise.all([
+              const [projectList, providerList] = await Promise.all([
                 window.colt.invoke("project.list", undefined),
-                window.colt.invoke("secrets.status", undefined),
+                window.colt.invoke("providers.list", undefined),
               ]);
               setProjects(projectList);
               setActiveProject(projectList[0] ?? null);
-              setSecretReady(secrets.deepseek);
+              setProviders(providerList);
+              setModelServiceReady(hasUsableProvider(providerList));
               if (choice === "fresh") setActiveSession(null);
             })();
           }}
@@ -381,9 +384,10 @@ export default function App(): React.JSX.Element {
             </div>
           )}
 
-          {secretReady === false && (
+          {modelServiceReady === false && (
             <div className="m-3.5 rounded-[8px] border border-warning/50 bg-warning-soft px-3.5 py-3 text-[12.5px] text-warning">
-              尚未配置 DeepSeek API Key，无法开始对话。
+              尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
+              DeepSeek 或自建的 OpenAI 兼容服务均可）。
             </div>
           )}
 

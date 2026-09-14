@@ -7,6 +7,8 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   BUILTIN_DEFAULT_MODEL_REF,
+  firstUsableProvider,
+  hasUsableProvider,
   resolveSessionModel,
   splitModelRef,
 } from "../src/shared/model-ref.ts";
@@ -86,5 +88,38 @@ describe("resolveSessionModel", () => {
       providerId: "deepseek",
       modelId: "deepseek-v4",
     });
+  });
+});
+
+/**
+ * 「是否已有可用模型服务」的判定。
+ * 界面黄条（尚未配置 API Key）用它决定是否显示——只看内置 DeepSeek 会在
+ * 「只配了 OpenAI 兼容服务」时误报，本用例即锁住该回归。
+ */
+describe("hasUsableProvider", () => {
+  /** 带密钥状态的 provider */
+  function withKey(base: ProviderConfig, hasKey: boolean): ProviderConfig {
+    return { ...base, hasKey };
+  }
+
+  test("只配了 OpenAI 兼容服务（内置 DeepSeek 空着）也算就绪", () => {
+    const providers = [withKey(DEEPSEEK, false), withKey(CUSTOM, true)];
+    assert.equal(hasUsableProvider(providers), true);
+    assert.equal(firstUsableProvider(providers)?.id, "custom");
+  });
+
+  test("一个都没配密钥时未就绪", () => {
+    assert.equal(hasUsableProvider([withKey(DEEPSEEK, false), withKey(CUSTOM, false)]), false);
+    assert.equal(hasUsableProvider([]), false);
+    assert.equal(firstUsableProvider([]), undefined);
+  });
+
+  test("配了密钥但没填模型的服务不算可用（照样开不了会话）", () => {
+    const empty = { ...provider("empty", []), hasKey: true };
+    assert.equal(hasUsableProvider([empty]), false);
+  });
+
+  test("内置项在前，全都可用时提示仍指向 DeepSeek", () => {
+    assert.equal(firstUsableProvider([withKey(DEEPSEEK, true), withKey(CUSTOM, true)])?.id, "deepseek");
   });
 });
