@@ -1,13 +1,18 @@
 /**
  * 右栏工作区容器（规则 ⑦-B）：以**页签**切换视图。
  *
- * 「正在处理」是默认视图（⑦-E，常驻不可关闭）；「浏览器」是 agent 动作对象的投影（⑦-A / ⑦-C）；
- * 「文件」是点文件路径后按需打开的预览（A3-2，只在打开过文件后才出现页签）。
+ * 「正在处理」是默认视图（⑦-E，常驻不可关闭）；「浏览器」是 agent 动作对象的投影（⑦-A / ⑦-C）。
  *
- * A3-5：原先挂在中栏的四个观测/管理面板（改动 / 用量 / 工具 / 规则）**迁入本容器**——
+ * A3-5：原先挂在中栏的观测 / 管理面板（改动 / 统计（原「用量」）/ 规则）**迁入本容器**——
  * 它们本来只是「我想看的附属内容」，正是 ⑦ 的定义（「以及我想看的任何附属内容」），
  * 放在中栏会挤掉叙事主线，还造成「改动面板 vs 代码变更视图」两处实现同一个东西。
  * 迁入后**只有页签这一个载体**：面板自身不再有「收起」（关闭由页签的 × 负责）。
+ * ⑦-H（v1.31）又取消了一个：原「工具」视图的聚合与明细都并入「统计」。
+ *
+ * ⑦-G（v1.32）：原「改动」「文件」**两个页签整个取消**，成为「正在处理」的下钻
+ * （清单 → diff → 内容，见 `ChangeDrilldown`）——用户不需要知道「该去改动页签还是文件页签」。
+ * 故本容器现在只有四个 kind，且**只管「在不在下钻」，不管下钻到哪一层**：
+ * 层内跳转是那个组件自己的事，绕一圈回到这里再下去只会让状态两处维护。
  *
  * 页签可**关闭**（A3-3），但**只有可关闭的视图才有「+」菜单这条重新打开的路径**——
  * 「可关闭」与「菜单里能打开」是同一个集合，结构上就不可能出现「关了回不来」的死局；
@@ -19,36 +24,32 @@
  *   2. 切到别的页签 / 组件卸载时上报 null，让主进程隐藏原生视图——
  *      否则原生视图会一直浮在界面上，盖住别的页签内容（原生视图不参与 DOM 叠层）。
  */
+
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
+  ChartColumn,
   ChevronLeft,
   ChevronRight,
-  Coins,
-  FileDiff,
-  FileText,
   Globe,
   MonitorSmartphone,
   Plus,
   RotateCw,
   ShieldCheck,
-  Wrench,
   X,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { BrowserNavAction, BrowserViewState } from "@shared/protocol";
 import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
-import { FilePanel } from "./FilePanel";
 import { FollowPanel } from "./FollowPanel";
 import { ObserveDrawer } from "./ObserveDrawer";
-import { ChangesPanel } from "./panels/ChangesPanel";
+import { ChangeDrilldown, type DrillEntry } from "./panels/ChangeDrilldown";
 import { RulesPanel } from "./panels/RulesPanel";
-import { ToolsPanel } from "./panels/ToolsPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 
 /** 视图类型（kind）：决定页签里渲染什么内容 */
-export type DockKind = "follow" | "browser" | "file" | "changes" | "usage" | "tools" | "rules";
+export type DockKind = "follow" | "browser" | "usage" | "rules";
 
 /**
  * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「正在处理」只是默认视图）。
@@ -56,7 +57,7 @@ export type DockKind = "follow" | "browser" | "file" | "changes" | "usage" | "to
  * 当前每种 kind 只有单例，故 `id === kind`；「同 kind 多实例」的能力见
  * `docs/NEXT-PHASE.md` 的「事 B」——届时 id 改为独立生成即可，**调用方只认 id**。
  *
- * 注：「文件」视图要预览哪个文件暂由容器外的 `file` 传入（单例下够用）；
+ * 注：「要看文件」的请求由容器外的 `fileRequest` 传入（单例下够用）；
  * 多实例时该目标会随实例走，届时并入本结构。
  */
 export interface DockInstance {
@@ -89,13 +90,14 @@ const DOCK_KIND_META: Record<
 > = {
   follow: { label: "正在处理", Icon: Activity, closable: false },
   browser: { label: "浏览器", Icon: Globe, closable: true, desc: "浏览及调试网页" },
-  file: { label: "文件", Icon: FileText, closable: true, desc: "浏览与预览任务文件" },
-  // A3-5 迁入的四个观测 / 管理面板：
-  // 标签沿用产品既有措辞（「改动 N」「用量」「工具」「规则」），不改成设计稿的「代码变更」，
-  // 免得同一件东西在 ② 与 ⑦ 上出现两套叫法。
-  changes: { label: "改动", Icon: FileDiff, closable: true, desc: "本次会话的文件改动与 diff" },
-  usage: { label: "用量", Icon: Coins, closable: true, desc: "每次模型调用的 token 与费用" },
-  tools: { label: "工具", Icon: Wrench, closable: true, desc: "本次会话的工具调用历史" },
+  // A3-5 迁入、⑦-H / ⑦-G 收敛后剩下的两个附属面板：「统计」「规则」。
+  // 标签沿用产品既有措辞（不改成设计稿的「代码变更」），免得同一件东西在 ② 与 ⑦ 上出现两套叫法——
+  // 故 ⑦-H 把「用量」改名「统计」时，② 的按钮与本表的页签标签**同批**改（v1.30）。
+  // ⑦-H 第三步（v1.31）把原「工具」视图**取消了**：它的聚合（次数 / 耗时 / 失败排行）
+  // 与明细**都**并进了「统计」，故本表不再有 `tools`——它不是被藏起来，而是没有这个视图了。
+  // ⑦-G（v1.32）同理取消了 `changes` 与 `file`：两者都是「本次改动」的不同粒度，
+  // 合并成了「正在处理」的下钻（`ChangeDrilldown`），不再是并列页签。
+  usage: { label: "统计", Icon: ChartColumn, closable: true, desc: "本次会话的用量、工具调用与失败统计" },
   rules: { label: "规则", Icon: ShieldCheck, closable: true, desc: "本次会话记住的审批规则" },
 };
 
@@ -109,7 +111,7 @@ export function isDockClosable(kind: DockKind): boolean {
  * 这样「可关闭」与「有重新打开的出口」在结构上恒等，将来也漏不掉。
  *
  * 只列**产品里真的存在**的视图：高保真稿的菜单还画了终端 / 任务摘要 / 代码变更，
- * 但那三种在 ⑦ 里**并不存在**（代码变更是独立的侧栏面板，不是页签），
+ * 但那三种在 ⑦ 里**并不存在**（⑦-G 之后「代码变更」是「正在处理」的下钻，不是页签），
  * 列进来就是点了没反应的死菜单项——宁可少列（同 ⑦-F 那次「死控件」的教训）。
  */
 const DOCK_MENU_KINDS: DockKind[] = (Object.keys(DOCK_KIND_META) as DockKind[]).filter(
@@ -123,10 +125,9 @@ const DOCK_MENU_KINDS: DockKind[] = (Object.keys(DOCK_KIND_META) as DockKind[]).
  * 于是**切页签就会改宽度**：中栏跟着忽宽忽窄、内容反复重排，是纯粹的视觉噪声。
  * 现统一为一个值——切页签不再改变宽度，宽度只可能因用户拖拽或窗口缩放而变。
  *
- * 取 544（原「浏览器」的建议值），因为它是各类视图里较宽的那个需求：
- * 「文件」视图的双栏树要求 ≥520 才显示（见 `styles.css` 的 `@container fileview`）、
- * 「浏览器」也需要足够宽度。取「满足最宽需求」的那个值，窄视图只是略宽；
- * 反过来取窄值会让这两类视图当场不可用（树被容器查询隐藏、页面被挤窄）。
+ * 取 544（原「浏览器」的建议值）：各类视图里以它最宽——页面挤窄了当场不可用，
+ * 而下钻出的 diff 与文件预览也都需要横向空间。取「满足最宽需求」的那个值，
+ * 窄视图只是略宽；反过来取窄值会让浏览器视图当场不可用。
  */
 export const DOCK_DEFAULT_WIDTH = 544;
 
@@ -236,11 +237,8 @@ export function WorkspaceDock({
   sessionId,
   view,
   highlightPath,
-  onOpenChanges,
-  onOpenFile,
   browser,
-  file,
-  onReloadFile,
+  fileRequest,
   onBrowserNav,
   onResetViewport,
   instances,
@@ -254,18 +252,16 @@ export function WorkspaceDock({
   sessionId: string;
   view: ConversationView | null;
   highlightPath?: string | null;
-  onOpenChanges: () => void;
-  /** 点「正在处理」里的文件路径：打开「文件」视图并预览它（A3-2） */
-  onOpenFile: (path: string) => void;
   browser: BrowserViewState | null;
   /** 用户点后退 / 前进 / 刷新（B1）；发起方是用户，不走审批 */
   onBrowserNav: (action: BrowserNavAction) => void;
   /** 用户点「恢复」撤销 agent 留下的视口联调覆盖 */
   onResetViewport: () => void;
-  /** 「文件」视图当前要预览的目标；null = 尚未打开过文件 */
-  file: { path: string; seq: number } | null;
-  /** 重读当前文件（agent 可能刚改过它） */
-  onReloadFile: () => void;
+  /**
+   * 「要看某个文件」的请求（A3-2：点消息流工具卡上的路径）——`seq` 变化即重读。
+   * ⑦-G 之后它不再切「文件」页签，而是**让「正在处理」落到下钻的内容层**。
+   */
+  fileRequest: { path: string; seq: number } | null;
   /** 已打开的视图实例（⑦-B：页签可以很多） */
   instances: DockInstance[];
   /** 当前激活实例的 id */
@@ -281,6 +277,23 @@ export function WorkspaceDock({
 }): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * 「正在处理」是否处在下钻中；null = 停在 follow 层。
+   * 这里**只记「在不在下钻」与「怎么进来的」**，下钻到哪一层由 `ChangeDrilldown` 自己维护——
+   * 层内跳转（清单↔diff↔内容）不该绕一圈回到容器再下来。
+   */
+  const [drillEntry, setDrillEntry] = useState<DrillEntry | null>(null);
+
+  // 「要看某个文件」→ 进下钻的**内容层**（原 A3-2 的入口，行为等价，只是不再切页签）
+  useEffect(() => {
+    if (fileRequest === null) return;
+    setDrillEntry({ layer: "content", path: fileRequest.path, token: fileRequest.seq });
+  }, [fileRequest]);
+
+  // 换会话时退出下钻：否则会停在上一个会话的文件上（那是另一个项目的路径）
+  useEffect(() => {
+    setDrillEntry(null);
+  }, [sessionId]);
 
   // 点菜单外 / 按 Esc 收起「+」菜单。
   // 菜单**不能**挂在页签行里——那一行是 overflow-x-auto，绝对定位的菜单会被裁掉；
@@ -312,7 +325,6 @@ export function WorkspaceDock({
   const activeInstance = instances.find((item) => item.id === activeId) ?? instances[0];
   const activeKind = activeInstance?.kind ?? DOCK_DEFAULT_KIND;
   const showBrowser = activeKind === "browser";
-  const showFile = activeKind === "file";
   const url = browser?.url ?? "";
   /**
    * 页面区域是否应该存在。折叠时**不给矩形**：原生视图浮在渲染层之上，
@@ -602,28 +614,25 @@ export function WorkspaceDock({
             </div>
           )}
         </div>
-      ) : showFile ? (
-        <FilePanel
-          sessionId={sessionId}
-          target={file}
-          changes={view?.fileChanges ?? []}
-          onOpenFile={onOpenFile}
-          onReload={onReloadFile}
-        />
-      ) : activeKind === "changes" ? (
-        <ChangesPanel changes={view?.fileChanges ?? []} />
       ) : activeKind === "usage" ? (
         <UsagePanel sessionId={sessionId} />
-      ) : activeKind === "tools" ? (
-        <ToolsPanel sessionId={sessionId} />
       ) : activeKind === "rules" ? (
         <RulesPanel sessionId={sessionId} />
+      ) : drillEntry !== null ? (
+        /* 下钻中（⑦-G）：清单 → diff → 内容。只在「正在处理」这一页签内成立 */
+        <ChangeDrilldown
+          sessionId={sessionId}
+          changes={view?.fileChanges ?? []}
+          entry={drillEntry}
+          highlightPath={highlightPath}
+          menuOpen={menuOpen}
+          onExit={() => setDrillEntry(null)}
+        />
       ) : (
         <FollowPanel
           view={view}
           highlightPath={highlightPath}
-          onOpenChanges={onOpenChanges}
-          onOpenFile={onOpenFile}
+          onOpenChanges={() => setDrillEntry({ layer: "list" })}
         />
       )}
     </aside>

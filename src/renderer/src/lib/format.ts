@@ -52,6 +52,34 @@ export function runStateOf(running: boolean, lastRun: ViewRunOutcome | null): Ru
 }
 
 /**
+ * 判断某个路径与「hover 中」的路径是不是同一个文件（⑦-A 的现场联动）。
+ *
+ * 两边的写法可能不一致（改动记录是相对路径、工具入参常是绝对路径），故用后缀兜底；
+ * 空路径一律不算命中，否则「没有 path 参数的工具」会被当成命中万物。
+ * ⑦-G 的清单层抽出来后，`FollowPanel` 与 `ChangeDrilldown` 共用这一份。
+ */
+export function samePath(path: string, highlight: string | null): boolean {
+  if (!highlight || path === "") return false;
+  const normalized = highlight.replaceAll("\\", "/");
+  return normalized === path || normalized.endsWith(`/${path}`) || normalized.endsWith(path);
+}
+
+/**
+ * 相对时间：刚刚 / Ns 前 / Nm 前 / Nh 前。
+ *
+ * ⑦-G 的「正在处理」与「改动清单」都要写「N 秒前动过」，故抽到共用的格式化模块里
+ * （原先只在 `FollowPanel` 内有一份私有实现）。`now` 可注入，便于单测。
+ */
+export function formatAgo(ts: number, now: number = Date.now()): string {
+  const sec = Math.max(0, Math.floor((now - ts) / 1000));
+  if (sec < 2) return "刚刚";
+  if (sec < 60) return `${sec}s 前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m 前`;
+  return `${Math.floor(min / 60)}h 前`;
+}
+
+/**
  * 在改动列表里倒序找同路径的最近一次改动。
  * 入参路径可能是绝对路径而改动记录是相对路径，故用后缀匹配兜底。
  */

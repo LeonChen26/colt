@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<!--
+  ================================================================
+  Banyan Work · 概念稿：右栏「工作现场」重组（高保真）
+  ================================================================
+
+  状态：概念稿，**并非当前产品实现**。用于讨论「正在处理 / 本次改动 / 改动 / 文件」
+        四者重叠该怎么收，不是能力清单、不是施工图。
+
+  本稿要验证的命题（见对话结论）：
+    1. 「正在处理」只回答**此刻**——只列进行中的动作，已完成的不在这里重复一遍。
+       这是全应用独一份的信息，也是「它是活的还是死了」的唯一判据。
+    2. 「本次改动」从**可折叠区段**降级为窄栏底部的**一行常驻总账**。
+       它不是区段，是一条持久状态：既有信息量，又保留「空」的可能。
+    3. 「改动」与「文件」两个页签合成**一个东西的连续下钻**：
+       总账 → 清单（按文件分组）→ diff（行级）→ 文件内容（结果）。
+       用户不需要知道「该去改动页签还是文件页签」，只需要知道「想看得更细」。
+    4. 数字口径统一：总账写「7 处 · 5 文件 +128 −34」，
+       不再让同一屏出现「3 文件」和「7 处」两个都叫「文件」的数。
+
+  ✔ 已定稿的两条（用户 2026-09 确认，已写进 UI-REGIONS.md 规则 ⑦-G / ⑦-H）：
+    · 总账只在「正在处理」视图的底部，**不另立视图、也不固定在右栏底部**。
+      它属于「正在处理」，跟着该视图出现、随切页签消失——切到其他页签时，
+      用户在别的现场，「这次会话改了多少」不是他要看的东西。
+    · 「正在处理」= 进行中的动作（此刻）+ 本次改动总账（累计）两段，
+      两个时态、互不重复；已完成的内容下沉到清单层，不在这里再列一遍。
+    · 附属视图**给结论不给流水**：原「用量」页签**更名为「统计」**，并吸收「工具」的聚合。
+      改名理由：「用量」在**收窄自己**（它只盖得住费用与 tokens，「工具调用次数」「耗时排行」都不是用量）；
+      「统计」涵盖「凡从会话数据聚合出来的数」。会话头按钮 4 → 2。
+
+  ⚠ 本稿尚未回答的问题：清单层吸收目录结构后，若将来要做**整项目树**
+    （含未动过的文件），它将无处安放——需另立页签，不要与清单混做。
+    产品当前的决定是不做整项目树（A3-4），故本稿不画。
+
+  与当前产品的差异（读此稿时务必区分）：
+    本稿                                       | 产品现状
+    ------------------------------------------|--------------------------------
+    正在处理只有「进行中动作」+ 底部总账        | 段一列最近改动文件、段二为可折叠汇总
+    无「本次改动」独立区段                     | FollowPanel 有 agent/changes 两个可折叠段
+    无「改动」页签，清单层是点总账进入的下钻    | 「改动」是独立可关闭页签（A3-5）
+    无「文件」页签，内容层是清单再下钻          | 「文件」是独立可关闭页签（A3-2）
+    清单层带目录树 + 分组折叠                  | 改动面板平铺每条 change；文件树只列改动过
+    同一文件多次编辑折叠成「×N」               | 改动面板一个 change 一行（同文件重复出现）
+    总账写「7 处 · 5 文件」双口径              | 段二只写「N 文件」（与改动面板的「N 处」打架）
+
+  ⚠️ 本稿刻意**不画**的东西（免得被当成需求）：
+    - 终端 / 任务摘要（产品未实现，见 NEXT-PHASE §3.2）
+    - 整项目树 / 搜索框（产品已决定不做，见 A3-4）
+    - 视图宽度系数表（产品已改为全局统一 544，见 v1.24）
+    - 「停靠 / 弹出」（方向未定，见 N4）
+
+  模型：本稿是「视觉 + 意图」参考，不是能力清单。做入口前先确认产品里这东西真的存在。
+  ================================================================
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Banyan · 右栏「工作现场」重组 高保真</title>
+<style>
+  /* 视觉令牌与 prototype-work-browser-hifi.html 完全一致，保证同源可比 */
+  :root, [data-theme="dark"] {
+    --surface:#0a0c0f; --surface-raised:#11141a; --surface-overlay:#161a21;
+    --surface-input:#0e1116; --surface-code:#07090c;
+    --border:#20262f; --border-strong:#2c333d;
+    --text-primary:#e8ebf0; --text-secondary:#98a2b3; --text-muted:#666f7a;
+    --accent:#c9ced6; --accent-soft:rgba(201,206,214,.10); --accent-dim:#7d8694;
+    --accent-fg:#0a0c0f; --accent-hover:#ffffff;
+    --success:#3fb950; --success-soft:rgba(63,185,80,.12); --success-fg:#7ee787;
+    --warning:#d29922; --warning-soft:rgba(210,153,34,.12);
+    --danger:#f85149; --danger-soft:rgba(248,81,73,.12); --danger-fg:#ff9d95;
+    --code-keyword:#e8b98a; --code-string:#a3cfa6; --code-comment:#6a7280;
+    --code-number:#c9a9d4; --code-function:#d6dae1; --code-prop:#9fb6cf;
+    --shadow-1:0 1px 2px rgba(0,0,0,.3); --shadow-2:0 4px 16px rgba(0,0,0,.4);
+    --r-sm:6px; --r-md:8px; --r-lg:12px;
+    --w-dock:420px;
+  }
+  [data-theme="light"] {
+    --surface:#ffffff; --surface-raised:#f7f8f9; --surface-overlay:#eef0f2;
+    --surface-input:#ffffff; --surface-code:#f4f5f7;
+    --border:#e3e6ea; --border-strong:#cdd2d9;
+    --text-primary:#1a1d21; --text-secondary:#565f6b; --text-muted:#8b929c;
+    --accent:#2b3138; --accent-soft:rgba(43,49,56,.06); --accent-dim:#6b7480;
+    --accent-fg:#ffffff; --accent-hover:#3a4149;
+    --success:#1a7f37; --success-soft:rgba(26,127,55,.08); --success-fg:#1a7f37;
+    --warning:#9a6700; --warning-soft:rgba(154,103,0,.08);
+    --danger:#cf222e; --danger-soft:rgba(207,34,46,.08); --danger-fg:#cf222e;
+    --code-keyword:#a05a00; --code-string:#116329; --code-comment:#8b929c;
+    --code-number:#7a4d92; --code-function:#1a1d21; --code-prop:#3a5266;
+    --shadow-1:0 1px 2px rgba(0,0,0,.06); --shadow-2:0 4px 16px rgba(0,0,0,.10);
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    background:var(--surface); color:var(--text-primary);
+    font-family:"Inter","Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+    font-size:13px; -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .mono { font-family:"JetBrains Mono","Cascadia Code",Consolas,ui-monospace,monospace; }
+  svg.ico { width:16px; height:16px; flex:none; fill:none; stroke:currentColor;
+    stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+  svg.ico.sm { width:14px; height:14px; }
+  button { font-family:inherit; font-size:inherit; cursor:pointer; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:5px;
+    border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--text-muted); background-clip:padding-box; }
+  .add { color:var(--success-fg); }
+  .del { color:var(--danger-fg); }
+
+  /* ============ 页面骨架：左中右三栏 + 中间是会话 ============ */
+  .app { display:flex; flex-direction:column; height:100%; }
+  .titlebar {
+    flex:none; height:38px; display:flex; align-items:center; gap:10px;
+    padding:0 12px; border-bottom:1px solid var(--border); background:var(--surface-raised);
+  }
+  .titlebar .dot { width:11px; height:11px; border-radius:50%; }
+  .titlebar .brand { font-size:12.5px; font-weight:600; }
+  .titlebar .sp { flex:1; }
+  .tbtn {
+    height:24px; padding:0 9px; border-radius:var(--r-sm); border:1px solid var(--border);
+    background:transparent; color:var(--text-secondary); font-size:11.5px;
+    display:inline-flex; align-items:center; gap:5px;
+  }
+  .tbtn:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .tbtn.on { background:var(--accent-soft); color:var(--text-primary); border-color:var(--border-strong); }
+
+  .main { flex:1; min-height:0; display:flex; }
+
+  /* 左：会话列表 */
+  .sidebar {
+    flex:none; width:212px; background:var(--surface-raised);
+    border-right:1px solid var(--border); display:flex; flex-direction:column;
+  }
+  .sb-head { flex:none; padding:10px 12px 6px; font-size:11px; font-weight:650;
+    letter-spacing:.5px; text-transform:uppercase; color:var(--text-muted); }
+  .sb-item { padding:7px 12px; font-size:12px; color:var(--text-secondary); cursor:default; }
+  .sb-item.on { background:var(--surface-overlay); color:var(--text-primary); font-weight:550; }
+  .sb-item .sub { font-size:10.5px; color:var(--text-muted); margin-top:2px; }
+
+  /* 中：会话叙事（④）——本稿只做背景，不细画 */
+  .center { flex:1; min-width:0; display:flex; flex-direction:column; background:var(--surface); }
+  .ch-head {
+    flex:none; display:flex; align-items:center; gap:8px; padding:9px 14px;
+    border-bottom:1px solid var(--border);
+  }
+  .ch-head .nm { font-size:12.5px; font-weight:550; }
+  .chip {
+    font-size:10.5px; padding:1px 7px; border-radius:99px;
+    border:1px solid var(--border); color:var(--text-muted);
+  }
+  .chat { flex:1; min-height:0; overflow-y:auto; padding:14px; }
+  .msg { margin-bottom:14px; }
+  .msg .who { font-size:10.5px; color:var(--text-muted); margin-bottom:4px;
+    text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
+  .msg .bubble { font-size:12.5px; line-height:1.7; color:var(--text-secondary); }
+  .msg.user .bubble { color:var(--text-primary); font-weight:500; }
+  .tcard {
+    margin:8px 0; border:1px solid var(--border); border-radius:var(--r-sm);
+    background:var(--surface-raised); overflow:hidden;
+  }
+  .tcard .th { display:flex; align-items:center; gap:6px; padding:6px 9px;
+    font-size:11.5px; color:var(--text-secondary); }
+  .tcard .th .tname { font-weight:600; }
+  .tcard .th .tpath {
+    font-family:"JetBrains Mono",Consolas,monospace; color:var(--text-muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;
+  }
+  .tcard .th .sp { flex:1; }
+  .tcard .th .mut { font-size:10.5px; color:var(--text-muted); flex:none; }
+  .composer {
+    flex:none; border-top:1px solid var(--border); padding:10px 12px; background:var(--surface-raised);
+  }
+  .composer .box {
+    border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface-input);
+    padding:9px 11px; font-size:12px; color:var(--text-muted);
+  }
+
+  /* ============ 右栏：工作现场 ============ */
+  .dock {
+    flex:none; width:var(--w-dock); display:flex; flex-direction:column;
+    background:var(--surface-raised); border-left:1px solid var(--border); position:relative;
+  }
+  .dock-tabs {
+    flex:none; display:flex; align-items:center; gap:2px; padding:6px 8px 0;
+    border-bottom:1px solid var(--border); overflow-x:auto; scrollbar-width:none;
+  }
+  .dock-tabs::-webkit-scrollbar { height:0; }
+  .dock-tab {
+    flex:none; display:flex; align-items:center; gap:6px; height:28px; padding:0 9px;
+    border-bottom:2px solid transparent; color:var(--text-muted); font-size:12px;
+    white-space:nowrap; background:transparent; border-left:none; border-right:none; border-top:none;
+  }
+  .dock-tab:hover { color:var(--text-secondary); }
+  .dock-tab.on { color:var(--text-primary); border-bottom-color:var(--accent); font-weight:550; }
+  .dock-tab .tcount {
+    font-size:10px; padding:0 5px; border-radius:99px;
+    background:var(--surface-overlay); color:var(--text-muted); font-weight:600;
+  }
+  .dock-tab.on .tcount { background:var(--accent-soft); color:var(--text-primary); }
+  .dock-tab .tclose {
+    width:14px; height:14px; display:inline-flex; align-items:center; justify-content:center;
+    border-radius:3px; border:none; background:transparent; color:var(--text-muted);
+    opacity:0; transition:opacity .12s; padding:0;
+  }
+  .dock-tab:hover .tclose { opacity:1; }
+  .dock-tab .tclose:hover { background:var(--border-strong); color:var(--text-primary); }
+  .dock-tab .dot-live {
+    width:6px; height:6px; border-radius:50%; background:var(--success);
+    animation:pulse 2s infinite;
+  }
+  #dockAdd {
+    flex:none; margin-left:auto; width:26px; height:26px; border-radius:var(--r-sm);
+    border:none; background:transparent; color:var(--text-muted);
+    display:inline-flex; align-items:center; justify-content:center;
+  }
+  #dockAdd:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  @keyframes pulse {
+    0%   { box-shadow:0 0 0 0 rgba(63,185,80,.45); }
+    70%  { box-shadow:0 0 0 5px rgba(63,185,80,0); }
+    100% { box-shadow:0 0 0 0 rgba(63,185,80,0); }
+  }
+  .dock-body { flex:1; min-height:0; display:flex; flex-direction:column; }
+
+  /* ---------- 形态 A：跟随（进行时） ---------- */
+  .live-head {
+    flex:none; display:flex; align-items:center; gap:6px;
+    padding:9px 12px 4px; font-size:11px; font-weight:650;
+    letter-spacing:.5px; text-transform:uppercase; color:var(--text-muted);
+  }
+  .live-head .sp { flex:1; }
+  .live-head .cnt { font-size:10.5px; font-weight:500; letter-spacing:0;
+    text-transform:none; color:var(--text-muted); }
+
+  /* 进行中的动作 —— 本稿里唯一允许出现在「正在处理」的内容 */
+  .act { flex:1; min-height:0; padding:5px 8px 10px; overflow-y:auto; }
+  .act-idle { flex:1; min-height:0; }
+  .act-row { padding:7px 8px; border-radius:var(--r-sm); }
+  .act-row:hover { background:var(--surface-overlay); }
+  .act-top { display:flex; align-items:center; gap:7px; }
+  .act-dot {
+    width:6px; height:6px; border-radius:50%; background:var(--success); flex:none;
+    animation:pulse 2s infinite;
+  }
+  .act-name {
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px;
+    color:var(--text-primary); font-weight:550;
+  }
+  .act-kind {
+    font-size:10px; padding:0 5px; border-radius:3px; flex:none;
+    background:var(--accent-soft); color:var(--text-secondary);
+  }
+  .act-time { margin-left:auto; font-size:10.5px; color:var(--text-muted); flex:none; }
+  .act-sub {
+    margin-top:3px; padding-left:13px; font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:10.5px; color:var(--text-muted); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap;
+  }
+  /* 进行中的进度条：让「它还活着」比闪烁更可信 */
+  .act-bar { margin-top:5px; padding-left:13px; }
+  .act-bar .track { height:2px; border-radius:2px; background:var(--border); overflow:hidden; }
+  .act-bar .fill {
+    height:100%; width:38%; border-radius:2px; background:var(--success);
+    animation:slide 2.4s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0%   { transform:translateX(-100%); }
+    100% { transform:translateX(320%); }
+  }
+
+  /* 空态：本稿的**核心**——空闲必须能被看见 */
+  .act-idle {
+    padding:26px 20px; text-align:center; display:flex; flex-direction:column;
+    align-items:center; gap:3px;
+  }
+  .act-idle .ic {
+    width:34px; height:34px; border-radius:50%; display:flex; align-items:center;
+    justify-content:center; background:var(--surface-overlay); color:var(--text-muted);
+    margin-bottom:8px;
+  }
+  .act-idle .t { font-size:12.5px; color:var(--text-secondary); }
+  .act-idle .s { font-size:11.5px; line-height:1.6; color:var(--text-muted); max-width:250px; }
+
+  /* 底部常驻总账：由「本次改动」段二降级而来（一行，不是区段） */
+  .ledger {
+    flex:none; border-top:1px solid var(--border);
+    background:var(--surface); display:flex; align-items:center; gap:8px;
+    width:100%; padding:9px 12px; border-left:none; border-right:none; border-bottom:none;
+    text-align:left;
+  }
+  .ledger:hover { background:var(--surface-overlay); }
+  .ledger .lic { flex:none; color:var(--text-muted); display:inline-flex; }
+  .ledger .lmain { flex:1; min-width:0; display:flex; align-items:baseline; gap:6px; }
+  .ledger .ltitle { font-size:11px; font-weight:650; letter-spacing:.4px;
+    text-transform:uppercase; color:var(--text-muted); }
+  /* 双口径：处数（改动次数）与文件数都写出来，不再打架 */
+  .ledger .lnum { font-size:12px; color:var(--text-secondary); }
+  .ledger .lnum b { color:var(--text-primary); font-weight:600; }
+  .ledger .lgo {
+    flex:none; display:inline-flex; align-items:center; gap:4px;
+    font-size:11.5px; color:var(--text-muted);
+  }
+  .ledger:hover .lgo { color:var(--text-primary); }
+  .ledger.empty { cursor:default; }
+  .ledger.empty:hover { background:var(--surface); }
+  .ledger.empty .lnum { color:var(--text-muted); }
+
+  /* ---------- 形态 B：清单层（总账点开的默认落点） ---------- */
+  .crumb {
+    flex:none; display:flex; align-items:center; gap:7px; padding:8px 12px;
+    border-bottom:1px solid var(--border); font-size:11.5px; color:var(--text-muted);
+  }
+  .crumb .back {
+    display:inline-flex; align-items:center; gap:4px; border:none; background:transparent;
+    color:var(--text-muted); padding:2px 5px; border-radius:4px;
+  }
+  .crumb .back:hover { background:var(--surface-overlay); color:var(--text-primary); }
+  .crumb .cur { color:var(--text-primary); font-weight:550; }
+  .crumb .sp { flex:1; }
+  .crumb .gsum { font-size:11px; color:var(--text-secondary); }
+  .crumb .gsum b { color:var(--text-primary); font-weight:600; }
+
+  .list { flex:1; min-height:0; overflow-y:auto; padding:6px 6px 10px; }
+  /* 分组：按目录折一层，目录只是弱化的标签行，不占交互成本 */
+  .grp { margin:2px 0 6px; }
+  .grp-head {
+    display:flex; align-items:center; gap:6px; padding:5px 7px;
+    font-size:10.5px; color:var(--text-muted);
+    font-family:"JetBrains Mono",Consolas,monospace;
+  }
+  .grp-head .sp { flex:1; }
+  .grp-head .gn { flex:none; }
+
+  .fcard {
+    display:flex; align-items:flex-start; gap:8px; width:100%;
+    padding:7px 8px; border-radius:var(--r-sm); border:none; background:transparent;
+    text-align:left;
+  }
+  .fcard:hover { background:var(--surface-overlay); }
+  .fcard .caret { flex:none; color:var(--text-muted); display:inline-flex; margin-top:2px;
+    transition:transform .15s; }
+  .fcard.open .caret { transform:rotate(90deg); }
+  .fcard .fmark {
+    flex:none; margin-top:1px; font-size:9.5px; font-weight:700; padding:1px 5px;
+    border-radius:3px; background:var(--warning-soft); color:var(--warning);
+  }
+  .fcard .fmark.add { background:var(--success-soft); color:var(--success-fg); }
+  .fcard .fcol { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .fcard .fname {
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px;
+    color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .fcard .fsub { display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--text-muted); }
+  /* 同一文件多次编辑：折叠成 ×N，而不是平铺 N 行 */
+  .fcard .fx {
+    font-size:10px; padding:0 5px; border-radius:99px;
+    background:var(--surface-overlay); color:var(--text-muted); font-weight:600;
+  }
+  .fcard .fstat { flex:none; display:flex; align-items:center; gap:6px; font-size:10.5px;
+    margin-top:2px; }
+  .fcard .fdiff {
+    flex:none; display:inline-flex; align-items:center; gap:4px; margin-top:2px;
+    font-size:10.5px; color:var(--text-muted); border:1px solid var(--border);
+    border-radius:4px; padding:1px 6px;
+  }
+  .fcard:hover .fdiff { border-color:var(--border-strong); color:var(--text-primary); }
+
+  /* 展开后的该文件改动清单（同一文件的历史 patch） */
+  .fdetail { margin:2px 0 8px 24px; border-left:1px solid var(--border); padding-left:10px; }
+  .fhist {
+    display:flex; align-items:center; gap:7px; padding:4px 6px; border-radius:4px;
+    font-size:10.5px; color:var(--text-muted); width:100%; border:none; background:transparent;
+    text-align:left;
+  }
+  .fhist:hover { background:var(--surface-overlay); }
+  .fhist .hn { color:var(--text-secondary); font-family:"JetBrains Mono",Consolas,monospace; }
+  .fhist .sp { flex:1; }
+  .fhist.on { background:var(--accent-soft); color:var(--text-primary); }
+
+  /* ---------- 形态 C：diff（行级） ---------- */
+  .dv-head {
+    flex:none; display:flex; align-items:center; gap:7px; padding:7px 10px;
+    border-bottom:1px solid var(--border); background:var(--surface-raised);
+  }
+  .dv-head .p {
+    flex:1; min-width:0; font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px;
+    color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .dv-seg { flex:none; display:flex; border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+  .dv-seg button {
+    border:none; background:transparent; color:var(--text-muted);
+    font-size:10.5px; padding:2px 8px;
+  }
+  .dv-seg button.on { background:var(--accent-soft); color:var(--text-primary); font-weight:600; }
+  .dv-body {
+    flex:1; min-height:0; overflow:auto; background:var(--surface-code);
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px; line-height:1.75;
+    padding:6px 0;
+  }
+  .dl { display:flex; padding:0 10px; white-space:pre; }
+  .dl .ln { flex:none; width:30px; text-align:right; margin-right:10px;
+    color:var(--text-muted); user-select:none; }
+  .dl .code { color:var(--text-secondary); }
+  .dl.add { background:rgba(63,185,80,.10); }
+  .dl.add .code { color:var(--success-fg); }
+  .dl.del { background:rgba(248,81,73,.10); }
+  .dl.del .code { color:var(--danger-fg); }
+  .dl.hunk { background:var(--surface-overlay); color:var(--text-muted); }
+  .dl.hunk .code { color:var(--text-muted); font-size:11px; }
+
+  /* ---------- 形态 D：文件内容（结果） ---------- */
+  .fv-bar {
+    flex:none; display:flex; align-items:center; gap:7px; padding:7px 10px;
+    border-bottom:1px solid var(--border);
+  }
+  .fv-bar .p {
+    flex:1; min-width:0; font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px;
+    color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .fv-bar .mut { flex:none; font-size:10.5px; color:var(--text-muted); }
+  .fv-code {
+    flex:1; min-height:0; overflow:auto; background:var(--surface-code);
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:11.5px; line-height:1.75;
+    padding:8px 12px; white-space:pre; color:var(--text-secondary);
+  }
+  .fd { display:flex; padding:0 4px; border-radius:3px; }
+  .fd.hit { background:var(--warning-soft); }
+  .fd .ln { flex:none; width:30px; text-align:right; margin-right:12px;
+    color:var(--text-muted); user-select:none; }
+  .k { color:var(--code-keyword); } .s { color:var(--code-string); }
+  .c { color:var(--code-comment); } .n { color:var(--code-number); }
+  .fn { color:var(--code-function); } .pr { color:var(--code-prop); }
+
+  /* 底部：常驻总账在**所有**形态下都在（这是本稿的主张之一） */
+  .dock-foot {
+    flex:none; display:flex; align-items:center; gap:8px; padding:6px 12px;
+    border-top:1px solid var(--border); font-size:10.5px; color:var(--text-muted);
+  }
+  .dock-foot .sp { flex:1; }
+
+  /* ============ 说明栏（稿子自带的注解，不是产品 UI） ============ */
+  .note {
+    position:fixed; left:12px; bottom:12px; z-index:50; width:300px;
+    background:var(--surface-overlay); border:1px solid var(--border-strong);
+    border-radius:var(--r-md); padding:10px 12px; box-shadow:var(--shadow-2);
+    font-size:11.5px; line-height:1.65; color:var(--text-secondary);
+  }
+  .note.min .nb { display:none; }
+  .note .ntoggle {
+    position:absolute; top:6px; right:8px; border:none; background:transparent;
+    color:var(--text-muted); font-size:11px; padding:2px 5px; border-radius:3px;
+  }
+  .note .ntoggle:hover { background:var(--surface-raised); color:var(--text-primary); }
+  .note b { color:var(--text-primary); }
+  .note .nh { display:flex; align-items:center; gap:6px; font-size:10.5px; font-weight:700;
+    letter-spacing:.5px; text-transform:uppercase; color:var(--text-muted); margin-bottom:5px; }
+  .note code {
+    font-family:"JetBrains Mono",Consolas,monospace; font-size:10.5px;
+    background:var(--surface-code); padding:1px 4px; border-radius:3px; color:var(--text-primary);
+  }
+  /* ---------- 形态 E：统计（聚合，不是流水） ---------- */
+  .use-body { flex:1; min-height:0; overflow-y:auto; padding:10px 12px 14px; }
+  .use-kpis { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px; }
+  .kpi {
+    border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface);
+    padding:8px 10px;
+  }
+  .kpi .kl { font-size:10.5px; color:var(--text-muted); }
+  .kpi .kv { font-size:16px; font-weight:600; color:var(--text-primary); margin-top:2px;
+    font-family:"JetBrains Mono",Consolas,monospace; }
+  .kpi .ks { font-size:10.5px; color:var(--text-muted); margin-top:2px; }
+
+  .use-sect { margin-bottom:14px; }
+  .use-sect .sh {
+    display:flex; align-items:baseline; gap:7px; margin-bottom:7px;
+    font-size:10.5px; font-weight:650; letter-spacing:.5px; text-transform:uppercase;
+    color:var(--text-muted);
+  }
+  .use-sect .sh .sp { flex:1; }
+  .use-sect .sh .hn { font-size:10.5px; font-weight:500; letter-spacing:0; text-transform:none; }
+
+  /* 聚合行：名字 + 条形 + 数值 + 占比 —— 条形让「谁贵」一眼可见 */
+  .agg {
+    display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:var(--r-sm);
+  }
+  .agg:hover { background:var(--surface-overlay); }
+  .agg .an {
+    flex:none; width:82px; font-family:"JetBrains Mono",Consolas,monospace;
+    font-size:11px; color:var(--text-primary); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap;
+  }
+  .agg .ab { flex:1; min-width:0; height:5px; border-radius:3px; background:var(--border); overflow:hidden; }
+  .agg .ab i { display:block; height:100%; border-radius:3px; background:var(--accent-dim); }
+  .agg .ab i.warn { background:var(--warning); }
+  .agg .ab i.hot { background:var(--danger); }
+  .agg .av {
+    flex:none; width:74px; text-align:right; font-size:10.5px; color:var(--text-secondary);
+    font-family:"JetBrains Mono",Consolas,monospace;
+  }
+  .agg .ap { flex:none; width:34px; text-align:right; font-size:10px; color:var(--text-muted); }
+  /* 排名条数很多时：只给前几名，而不是全量平铺 */
+  .agg-more {
+    display:block; width:100%; text-align:left; padding:4px 6px; border:none;
+    background:transparent; color:var(--text-muted); font-size:10.5px;
+  }
+  .agg-more:hover { color:var(--text-primary); }
+
+  /* 明细：默认折叠 —— 聚合是主，流水是次 */
+  .use-fold {
+    display:flex; align-items:center; gap:6px; width:100%; padding:6px 6px;
+    border:none; background:transparent; color:var(--text-muted);
+    font-size:11px; text-align:left;
+  }
+  .use-fold:hover { color:var(--text-primary); }
+  .use-fold .caret { display:inline-flex; transition:transform .15s; }
+  .use-fold.open .caret { transform:rotate(90deg); }
+  .use-row {
+    display:flex; align-items:center; gap:7px; padding:4px 6px;
+    font-size:10.5px; color:var(--text-muted);
+    font-family:"JetBrains Mono",Consolas,monospace;
+  }
+  .use-row .sp { flex:1; }
+  .use-row .rn { color:var(--text-secondary); }
+
+  .agg.clickable { cursor:pointer; }
+  .agg.clickable:hover { background:var(--surface-overlay); }
+  .agg.clickable.on { background:var(--accent-soft); }
+  .agg .ago {
+    flex:none; width:12px; display:inline-flex; color:var(--text-muted);
+    opacity:0; transition:opacity .12s;
+  }
+  .agg.clickable:hover .ago { opacity:1; }
+
+  /* 明细筛选条：并入的前提——明细必须能按维度筛，否则只是换地方堆放 */
+  .use-filters {
+    display:flex; align-items:center; gap:5px; padding:5px 6px 7px; flex-wrap:wrap;
+  }
+  .use-filters .fch {
+    font-size:10px; padding:2px 7px; border-radius:99px;
+    border:1px solid var(--border); background:transparent; color:var(--text-muted);
+  }
+  .use-filters .fch:hover { border-color:var(--border-strong); color:var(--text-primary); }
+  .use-filters .fch.on { background:var(--accent-soft); color:var(--text-primary); font-weight:600; }
+  .use-filters .fch.fail.on { background:var(--danger-soft); color:var(--danger-fg); border-color:var(--danger); }
+  .use-filters .sp { flex:1; }
+  .use-filters .hint { font-size:10px; color:var(--text-muted); }
+
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<svg style="display:none">
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-file-diff" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 11v6M9 14h6"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-file-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.6 5.1A9.9 9.9 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.9"/><path d="M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7a9.9 9.9 0 0 0 4-.8"/><path d="M2 2l20 20"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 16h7"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8.5-8 9.5C7.5 20.5 4 17 4 12V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-coins" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0 5 5l-9 9-5-5z"/><path d="M4 20l3-1"/></symbol>
+  <symbol id="i-bar" viewBox="0 0 24 24"><path d="M4 20V10M12 20V4M20 20v-7"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+  <symbol id="i-corner-up-left" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></symbol>
+</svg>
+
+<div class="app">
+  <!-- 标题栏：切换三种演示状态（稿子自带控件，非产品 UI） -->
+  <div class="titlebar">
+    <span class="dot" style="background:#f85149"></span>
+    <span class="dot" style="background:#d29922"></span>
+    <span class="dot" style="background:#3fb950"></span>
+    <span class="brand" style="margin-left:6px">Banyan · 右栏「工作现场」重组</span>
+    <span class="sp"></span>
+    <span style="font-size:11px;color:var(--text-muted)">演示状态：</span>
+    <button class="tbtn on" data-scene="running">① 进行中</button>
+    <button class="tbtn" data-scene="idle">② 空闲</button>
+    <button class="tbtn" data-scene="drill">③ 下钻（清单 → diff）</button>
+    <button class="tbtn" data-scene="usage">④ 统计（聚合）</button>
+    <button class="tbtn" id="themeBtn">切换主题</button>
+  </div>
+
+  <div class="main">
+    <!-- 左：会话列表 -->
+    <aside class="sidebar">
+      <div class="sb-head">会话</div>
+      <div class="sb-item on">右栏三处内容重叠
+        <div class="sub">运行中 · 5 个文件</div>
+      </div>
+      <div class="sb-item">browser-host 视口联调
+        <div class="sub">2 小时前</div>
+      </div>
+      <div class="sb-item">夹具服务端 e2e
+        <div class="sub">昨天</div>
+      </div>
+    </aside>
+
+    <!-- 中：会话叙事（背景，不细画） -->
+    <div class="center">
+      <div class="ch-head">
+        <span class="nm">右栏三处内容重叠</span>
+        <span class="chip mono">E:/code/opensource/banyan</span>
+        <span class="chip">main</span>
+      </div>
+      <div class="chat">
+        <div class="msg user">
+          <div class="who">你</div>
+          <div class="bubble">从产品角度分析，正在处理里的内容、改动、文件，这三部分重叠情况。</div>
+        </div>
+        <div class="msg">
+          <div class="who">助手</div>
+          <div class="bubble">三处唯一真正重复的是「文件路径 + 增删行数」这张列表，它被渲染了三遍。</div>
+          <div class="tcard">
+            <div class="th">
+              <svg class="ico sm" style="width:13px;height:13px;color:var(--text-muted)"><use href="#i-file-edit"/></svg>
+              <span class="tname">edit</span>
+              <span class="tpath">docs/UI-REGIONS.md</span>
+              <span class="sp"></span>
+              <span class="mut"><span class="add">+18</span> <span class="del">−6</span></span>
+              <span class="mut">刚刚</span>
+            </div>
+          </div>
+          <div class="tcard">
+            <div class="th">
+              <svg class="ico sm" style="width:13px;height:13px;color:var(--text-muted)"><use href="#i-terminal"/></svg>
+              <span class="tname">bash</span>
+              <span class="tpath">npm run typecheck</span>
+              <span class="sp"></span>
+              <span class="mut">运行中</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="composer"><div class="box">继续输入…</div></div>
+    </div>
+
+    <!-- ============ 右：工作现场 ============ -->
+    <aside class="dock">
+      <!-- 页签：本稿主张只剩「正在处理」+「浏览器」两个常驻入口，
+           改动/文件不再是并列页签（它们成了「正在处理」的下钻） -->
+      <div class="dock-tabs">
+        <button class="dock-tab on" id="tabFollow" style="border-bottom:2px solid var(--accent)">
+          <svg class="ico sm" style="width:13px;height:13px"><use href="#i-activity"/></svg>
+          正在处理
+          <span class="dot-live" id="tabLive"></span>
+        </button>
+        <button class="dock-tab">
+          <svg class="ico sm" style="width:13px;height:13px"><use href="#i-globe"/></svg>
+          浏览器
+        </button>
+        <button class="dock-tab" id="tabUsage">
+          <svg class="ico sm" style="width:13px;height:13px"><use href="#i-bar"/></svg>
+          统计
+        </button>
+        <button class="dock-tab" id="tabRules">
+          <svg class="ico sm" style="width:13px;height:13px"><use href="#i-shield"/></svg>
+          规则
+        </button>
+        <button id="dockAdd" title="新增视图"><svg class="ico sm" style="width:14px;height:14px"><use href="#i-plus"/></svg></button>
+      </div>
+
+      <div class="dock-body">
+        <!-- ===== 形态 A：跟随（进行时）===== -->
+        <div id="viewFollow" class="dock-body">
+          <div class="live-head">
+            <span>Agent 正在处理</span>
+            <span class="sp"></span>
+            <span class="cnt" id="liveCnt">2 个动作进行中</span>
+          </div>
+
+          <!-- 进行中（场景①）：只列**此刻**在跑的动作 -->
+          <div class="act" id="actRunning">
+            <div class="act-row">
+              <div class="act-top">
+                <span class="act-dot"></span>
+                <span class="act-name">bash</span>
+                <span class="act-kind">执行</span>
+                <span class="act-time">刚刚</span>
+              </div>
+              <div class="act-sub">npm run typecheck</div>
+              <div class="act-bar"><div class="track"><div class="fill"></div></div></div>
+            </div>
+            <div class="act-row">
+              <div class="act-top">
+                <span class="act-dot"></span>
+                <span class="act-name">edit</span>
+                <span class="act-kind">改文件</span>
+                <span class="act-time">3s 前</span>
+              </div>
+              <div class="act-sub">docs/UI-REGIONS.md</div>
+            </div>
+            <div class="act-row">
+              <div class="act-top">
+                <span class="act-dot"></span>
+                <span class="act-name">read</span>
+                <span class="act-kind">读文件</span>
+                <span class="act-time">5s 前</span>
+              </div>
+              <div class="act-sub">src/main/host/browser-host.ts</div>
+            </div>
+          </div>
+
+          <!-- 空闲（场景②）：本稿的**核心主张**——「空」必须能被看见 -->
+          <div class="act-idle hidden" id="actIdle">
+            <div class="ic"><svg class="ico" style="width:17px;height:17px"><use href="#i-clock"/></svg></div>
+            <p class="t">会话空闲</p>
+            <p class="s">Agent 没有正在进行的操作。它不再碰你的代码，可以放心离开。</p>
+          </div>
+
+          <!-- 底部常驻总账：由「本次改动」段二降级为一行 -->
+          <button class="ledger" id="ledger">
+            <span class="lic"><svg class="ico sm" style="width:13px;height:13px"><use href="#i-file-diff"/></svg></span>
+            <span class="lmain">
+              <span class="ltitle">本次改动</span>
+              <span class="lnum"><b>7</b> 处 · <b>5</b> 文件
+                <span class="add" style="margin-left:4px">+128</span>
+                <span class="del">−34</span></span>
+            </span>
+            <span class="lgo">查看全部 <svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+          </button>
+        </div>
+
+        <!-- ===== 形态 B：清单层 ===== -->
+        <div id="viewList" class="dock-body hidden">
+          <div class="crumb">
+            <button class="back" data-back><svg class="ico sm" style="width:12px;height:12px"><use href="#i-arrow-left"/></svg>正在处理</button>
+            <svg class="ico sm" style="width:11px;height:11px;opacity:.5"><use href="#i-chevron-right"/></svg>
+            <span class="cur">本次改动</span>
+            <span class="sp"></span>
+            <span class="gsum"><b>7</b> 处 · <b>5</b> 文件 <span class="add">+128</span> <span class="del">−34</span></span>
+          </div>
+
+          <div class="list" id="listBody">
+            <!-- 目录分组只是弱标签：既保留目录结构，又不额外消耗一次点击 -->
+            <div class="grp">
+              <div class="grp-head"><span class="gn">docs/</span><span class="sp"></span><span>2 文件</span></div>
+
+              <button class="fcard open" data-file="docs/UI-REGIONS.md">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="fmark">M</span>
+                <span class="fcol">
+                  <span class="fname">UI-REGIONS.md</span>
+                  <span class="fsub"><span class="fx">×3</span>编辑 · 12s 前</span>
+                </span>
+                <span class="fstat"><span class="add">+46</span> <span class="del">−12</span></span>
+              </button>
+              <!-- 同一文件多次编辑：折叠成 ×3，展开才见历史 —— 这是清单层独有的信息 -->
+              <div class="fdetail" data-detail="docs/UI-REGIONS.md">
+                <button class="fhist on"><span class="hn">#3 12s 前</span><span class="sp"></span><span class="add">+18</span> <span class="del">−6</span></button>
+                <button class="fhist"><span class="hn">#2 2m 前</span><span class="sp"></span><span class="add">+22</span> <span class="del">−4</span></button>
+                <button class="fhist"><span class="hn">#1 5m 前</span><span class="sp"></span><span class="add">+6</span> <span class="del">−2</span></button>
+              </div>
+
+              <button class="fcard" data-file="docs/NEXT-PHASE.md">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="fmark">M</span>
+                <span class="fcol">
+                  <span class="fname">NEXT-PHASE.md</span>
+                  <span class="fsub">编辑 · 40s 前</span>
+                </span>
+                <span class="fstat"><span class="add">+34</span> <span class="del">−8</span></span>
+              </button>
+            </div>
+
+            <div class="grp">
+              <div class="grp-head"><span class="gn">src/renderer/src/features/Conversation/</span><span class="sp"></span><span>3 文件</span></div>
+
+              <button class="fcard" data-file="FollowPanel.tsx">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="fmark">M</span>
+                <span class="fcol">
+                  <span class="fname">FollowPanel.tsx</span>
+                  <span class="fsub"><span class="fx">×2</span>编辑 · 1m 前</span>
+                </span>
+                <span class="fstat"><span class="add">+31</span> <span class="del">−74</span></span>
+              </button>
+
+              <button class="fcard" data-file="WorkspaceDock.tsx">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="fmark">M</span>
+                <span class="fcol">
+                  <span class="fname">WorkspaceDock.tsx</span>
+                  <span class="fsub">编辑 · 2m 前</span>
+                </span>
+                <span class="fstat"><span class="add">+14</span> <span class="del">−9</span></span>
+              </button>
+
+              <button class="fcard" data-file="ChangesPanel.tsx">
+                <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="fmark add">A</span>
+                <span class="fcol">
+                  <span class="fname">ChangeLedger.tsx</span>
+                  <span class="fsub">新建 · 3m 前</span>
+                </span>
+                <span class="fstat"><span class="add">+23</span> <span class="del">−0</span></span>
+              </button>
+            </div>
+
+            <!-- 越界路径：清单层就过滤掉，不留死条目 -->
+            <div class="grp-head" style="padding:8px 7px;color:var(--text-muted);font-family:inherit;font-size:10.5px">
+              已隐藏 1 个项目外文件（不可预览）
+            </div>
+          </div>
+
+          <button class="ledger" data-back>
+            <span class="lic"><svg class="ico sm" style="width:13px;height:13px"><use href="#i-corner-up-left"/></svg></span>
+            <span class="lmain"><span class="lnum">返回「正在处理」</span></span>
+          </button>
+        </div>
+
+        <!-- ===== 形态 C：diff ===== -->
+        <div id="viewDiff" class="dock-body hidden">
+          <div class="crumb">
+            <button class="back" data-list><svg class="ico sm" style="width:12px;height:12px"><use href="#i-arrow-left"/></svg>本次改动</button>
+            <svg class="ico sm" style="width:11px;height:11px;opacity:.5"><use href="#i-chevron-right"/></svg>
+            <span class="cur mono" style="font-size:11px">UI-REGIONS.md</span>
+            <span class="sp"></span>
+          </div>
+          <div class="dv-head">
+            <span class="p">docs/UI-REGIONS.md</span>
+            <span class="dv-seg">
+              <button class="on">历史 3</button>
+              <button>最新</button>
+            </span>
+            <button class="fcard" style="width:auto;padding:2px 7px;border:1px solid var(--border);border-radius:5px;display:inline-flex;align-items:center;gap:4px;margin:0" data-content>
+              <svg class="ico sm" style="width:12px;height:12px;color:var(--text-muted)"><use href="#i-file-text"/></svg>
+              <span style="font-size:10.5px;color:var(--text-muted)">看文件</span>
+            </button>
+          </div>
+          <div class="dv-body">
+            <div class="dl hunk"><span class="ln"></span><span class="code">@@ -182,10 +182,16 @@ ### ⑦ 右栏 · 工作区（Workspace）</span></div>
+            <div class="dl"><span class="ln">182</span><span class="code"> | **默认视图** | **正在处理**（agent 正在读 / 改哪些文件） |</span></div>
+            <div class="dl"><span class="ln">183</span><span class="code"> | **其他视图** | 浏览器、Markdown 阅读器…… |</span></div>
+            <div class="dl del"><span class="ln">184</span><span class="code">-| **正在处理**（默认） | agent 正在读 / 改哪些文件 |</span></div>
+            <div class="dl del"><span class="ln">185</span><span class="code">-| **文件** | 系统文件浏览 | 项目里有什么 |</span></div>
+            <div class="dl add"><span class="ln">184</span><span class="code">+| **正在处理**（默认） | **此刻**在跑的动作（进行时） | 它是活的吗 |</span></div>
+            <div class="dl add"><span class="ln">185</span><span class="code">+| **本次改动**（总账） | 这次会话改了哪些文件 | 改了多少 |</span></div>
+            <div class="dl add"><span class="ln">186</span><span class="code">+| **改动清单** | 文件分组 + 历史 patch | 改了几次 |</span></div>
+            <div class="dl add"><span class="ln">187</span><span class="code">+| **文件内容** | 结果本身 | 改成什么样 |</span></div>
+            <div class="dl"><span class="ln">188</span><span class="code"> </span></div>
+            <div class="dl"><span class="ln">189</span><span class="code"> &gt; 三处唯一真正重复的是「路径 + 增删行数」这张列表。</span></div>
+          </div>
+          <button class="ledger" data-list>
+            <span class="lic"><svg class="ico sm" style="width:13px;height:13px"><use href="#i-file-diff"/></svg></span>
+            <span class="lmain">
+              <span class="ltitle">本次改动</span>
+              <span class="lnum"><b>7</b> 处 · <b>5</b> 文件
+                <span class="add" style="margin-left:4px">+128</span>
+                <span class="del">−34</span></span>
+            </span>
+            <span class="lgo">返回清单 <svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+          </button>
+        </div>
+
+        <!-- ===== 形态 D：文件内容 ===== -->
+        <div id="viewFile" class="dock-body hidden">
+          <div class="crumb">
+            <button class="back" data-diff><svg class="ico sm" style="width:12px;height:12px"><use href="#i-arrow-left"/></svg>diff</button>
+            <svg class="ico sm" style="width:11px;height:11px;opacity:.5"><use href="#i-chevron-right"/></svg>
+            <span class="cur">文件内容</span>
+            <span class="sp"></span>
+          </div>
+          <div class="fv-bar">
+            <span class="p">docs/UI-REGIONS.md</span>
+            <span class="mut">38.2 KB</span>
+          </div>
+          <div class="fv-code"># UI 区域定义
+
+<span class="c">## ⑦ 右栏 · 工作区（Workspace）</span>
+
+<span class="k">| 项 | 内容 |</span>
+| **回答** | Agent 正在操作的**对象**长什么样？ |
+| **定位** | **一个可插拔的容器**，不是某个专用栏 |
+| **默认视图** | **正在处理** |
+
+<span class="c">### 定义要点</span>
+
+右栏**就是工作区**，「正在处理」只是它的默认视图。
+
+<span class="k">> 规则 ⑦-A</span>：⑦ 是「现场」，④ 是「叙述」。
+<span class="k">> 规则 ⑦-E</span>：默认视图必须常驻可见，不可关闭，但可折叠。</div>
+          <div class="dock-foot">
+            <span class="mono">E:/code/opensource/banyan</span>
+            <span class="sp"></span>
+            <span>ESC 返回</span>
+          </div>
+        </div>
+
+        <!-- ===== 形态 E：统计（KPI + 聚合排行，不是流水） ===== -->
+        <div id="viewUsage" class="dock-body hidden">
+          <div class="use-body">
+            <!-- KPI：先把结论摆出来 -->
+            <div class="use-kpis">
+              <div class="kpi">
+                <div class="kl">总费用</div>
+                <div class="kv">$1.2840</div>
+                <div class="ks">本次会话</div>
+              </div>
+              <div class="kpi">
+                <div class="kl">模型调用</div>
+                <div class="kv">42</div>
+                <div class="ks">次</div>
+              </div>
+              <div class="kpi">
+                <div class="kl">输入 / 输出</div>
+                <div class="kv">1.24M<span style="font-size:11px;color:var(--text-muted)"> / 86.4K</span></div>
+                <div class="ks">tokens</div>
+              </div>
+              <div class="kpi">
+                <div class="kl">缓存命中</div>
+                <div class="kv">612K</div>
+                <div class="ks">占输入 49%</div>
+              </div>
+            </div>
+
+            <!-- 聚合一：按模型分组（占比可见） -->
+            <div class="use-sect">
+              <div class="sh"><span>按模型</span><span class="sp"></span><span class="hn">42 次调用</span></div>
+              <div class="agg">
+                <span class="an">claude-sonnet</span>
+                <span class="ab"><i style="width:78%"></i></span>
+                <span class="av">$1.0030</span>
+                <span class="ap">78%</span>
+              </div>
+              <div class="agg">
+                <span class="an">claude-haiku</span>
+                <span class="ab"><i style="width:19%"></i></span>
+                <span class="av">$0.2460</span>
+                <span class="ap">19%</span>
+              </div>
+              <div class="agg">
+                <span class="an">gpt-5-mini</span>
+                <span class="ab"><i style="width:3%"></i></span>
+                <span class="av">$0.0350</span>
+                <span class="ap">3%</span>
+              </div>
+            </div>
+
+            <!-- 聚合二：工具调用排行 —— 原来「工具」页签的核心需求 -->
+            <div class="use-sect">
+              <div class="sh"><span>工具调用次数</span><span class="sp"></span><span class="hn">共 128 次 · 3 失败</span></div>
+              <div class="agg clickable" data-filter-tool="read">
+                <span class="ago"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="an">read</span>
+                <span class="ab"><i style="width:100%"></i></span>
+                <span class="av">52 次</span>
+                <span class="ap">41%</span>
+              </div>
+              <div class="agg clickable" data-filter-tool="edit">
+                <span class="ago"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="an">edit</span>
+                <span class="ab"><i style="width:58%"></i></span>
+                <span class="av">30 次</span>
+                <span class="ap">23%</span>
+              </div>
+              <div class="agg clickable" data-filter-tool="bash">
+                <span class="ago"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="an">bash</span>
+                <span class="ab"><i class="warn" style="width:42%"></i></span>
+                <span class="av">22 次</span>
+                <span class="ap">17%</span>
+              </div>
+              <button class="agg-more">还有 5 种工具（24 次）▾</button>
+            </div>
+
+            <!-- 聚合三：耗时排行（最慢的先看） -->
+            <div class="use-sect">
+              <div class="sh"><span>工具耗时排行</span><span class="sp"></span><span class="hn">累计 4m12s</span></div>
+              <div class="agg clickable" data-filter-tool="bash">
+                <span class="ago"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="an">bash</span>
+                <span class="ab"><i class="hot" style="width:100%"></i></span>
+                <span class="av">2m38s</span>
+                <span class="ap">63%</span>
+              </div>
+              <div class="agg clickable" data-filter-tool="browser_act">
+                <span class="ago"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="an">browser_act</span>
+                <span class="ab"><i class="warn" style="width:41%"></i></span>
+                <span class="av">1m04s</span>
+                <span class="ap">25%</span>
+              </div>
+              <div class="agg clickable" data-filter-tool="edit">
+                <span class="ago"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+                <span class="an">edit</span>
+                <span class="ab"><i style="width:12%"></i></span>
+                <span class="av">18.4s</span>
+                <span class="ap">7%</span>
+              </div>
+            </div>
+
+            <!-- 明细：**带筛选**，否则「并入」只是换地方堆放（见 ⑦-H） -->
+            <button class="use-fold" id="usageDetailToggle">
+              <span class="caret"><svg class="ico sm" style="width:12px;height:12px"><use href="#i-chevron-right"/></svg></span>
+              按轮次明细 <span id="detailCount" style="color:var(--text-muted)">（128 条）</span>
+            </button>
+            <div class="hidden" id="usageDetail">
+              <div class="use-filters">
+                <button class="fch on" data-filter="all">全部 128</button>
+                <button class="fch fail" data-filter="fail">只看失败 3</button>
+                <button class="fch" data-filter="bash">bash 22</button>
+                <button class="fch" data-filter="edit">edit 30</button>
+                <span class="sp"></span>
+                <span class="hint">从排行行点入可自动筛</span>
+              </div>
+              <div data-tool="bash"><div class="use-row"><span class="rn">bash</span><span class="sp"></span><span>npm run typecheck</span><span>12.4s · 失败</span></div></div>
+              <div data-tool="bash"><div class="use-row"><span class="rn">bash</span><span class="sp"></span><span>npm test</span><span>8.1s</span></div></div>
+              <div data-tool="read"><div class="use-row"><span class="rn">read</span><span class="sp"></span><span>src/main/smoke.ts</span><span>0.2s</span></div></div>
+              <div data-tool="edit"><div class="use-row"><span class="rn">edit</span><span class="sp"></span><span>docs/UI-REGIONS.md</span><span>0.4s</span></div></div>
+              <div data-tool="browser_act"><div class="use-row"><span class="rn">browser_act</span><span class="sp"></span><span>click #submit</span><span>3.2s</span></div></div>
+              <div data-tool="read"><div class="use-row"><span class="rn">read</span><span class="sp"></span><span>AGENTS.md</span><span>0.3s</span></div></div>
+              <div class="use-row" style="padding:6px;color:var(--text-muted)">…（只展示前 6 条示意）</div>
+            </div>
+          </div>
+
+          <div class="dock-foot">
+            <span>数据来自本地 DB（重启后仍可回看）</span>
+            <span class="sp"></span>
+            <span>非实时监控</span>
+          </div>
+        </div>
+
+        <!-- 形态 A 的底部：总账已在上方内联，这里只放路径脚注 -->
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div class="note" id="note">
+  <button class="ntoggle" id="noteToggle">收起</button>
+  <div class="nh">本稿要验证的六条</div>
+  <div class="nb">
+  ① 「正在处理」只回答<b>此刻</b>——进行中的动作才在这里，已完成的下沉到总账<br>
+  ② 总账是<b>一行常驻状态</b>，不是可折叠区段；空闲时它仍在<br>
+  ③ 清单 → diff → 内容是<b>一个东西的下钻</b>，不再分成「改动」「文件」两个页签<br>
+  ④ <b>附属视图给结论不给流水</b>：「统计」= KPI + 按模型/工具次数的<b>聚合排行</b> + 可筛的「明细」<br>
+  ⑤ <b>点排行行 → 明细自动筛成该维度</b>（并入的前提：明细可筛，否则只是换地方堆放）<br>
+  ⑥ 会话头按钮 <b>4 个 → 2 个</b>：删「改动」（总账接管）、删「工具」（并入「统计」）<br>
+  <span style="color:var(--text-muted)">点顶部按钮切场景；点排行行看筛选联动。</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $  = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
+  const views = { follow: $("#viewFollow"), list: $("#viewList"), diff: $("#viewDiff"), file: $("#viewFile"), usage: $("#viewUsage") };
+  /** 页签行的激活态：用于把「正在处理」的激活样式移到「统计」上 */
+  const tabs = { follow: $("#tabFollow"), usage: $("#tabUsage") };
+
+  function setTab(kind) {
+    for (const [k, el] of Object.entries(tabs)) {
+      if (!el) continue;
+      el.classList.toggle("on", k === kind);
+      el.style.borderBottomColor = k === kind ? "var(--accent)" : "transparent";
+    }
+  }
+
+  function show(name) {
+    for (const [k, el] of Object.entries(views)) el.classList.toggle("hidden", k !== name);
+    if (name === "usage") setTab("usage");
+    else setTab("follow");
+  }
+
+  // 场景切换：① 进行中 / ② 空闲 / ③ 下钻
+  $$("[data-scene]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $$("[data-scene]").forEach((b) => b.classList.toggle("on", b === btn));
+      const scene = btn.dataset.scene;
+      if (scene === "running") {
+        show("follow");
+        $("#actRunning").classList.remove("hidden");
+        $("#actIdle").classList.add("hidden");
+        $("#liveCnt").textContent = "3 个动作进行中";
+        $("#tabLive").classList.remove("hidden");
+      } else if (scene === "idle") {
+        show("follow");
+        $("#actRunning").classList.add("hidden");
+        $("#actIdle").classList.remove("hidden");
+        $("#liveCnt").textContent = "空闲";
+        $("#tabLive").classList.add("hidden");
+      } else if (scene === "usage") {
+        show("usage");
+      } else {
+        show("list");
+      }
+    });
+  });
+
+  // 总账 → 清单
+  $$(".ledger:not(.empty)").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.currentTarget.dataset.back !== undefined) { show("follow"); return; }
+      if (el.hasAttribute("data-list")) { show("list"); return; }
+      if (el.hasAttribute("data-diff")) { show("diff"); return; }
+      show("list");
+    });
+  });
+  $$("[data-back]").forEach((el) => el.addEventListener("click", () => show("follow")));
+  $$("[data-list]").forEach((el) => el.addEventListener("click", () => show("list")));
+  $$("[data-diff]").forEach((el) => el.addEventListener("click", () => show("diff")));
+  $$("[data-content]").forEach((el) => el.addEventListener("click", () => show("file")));
+
+  // 清单：点文件卡 → 展开/收起历史；点历史 → 进 diff
+  $$(".fcard").forEach((card) => {
+    card.addEventListener("click", () => {
+      const name = card.dataset.file;
+      if (!name) return;
+      const detail = document.querySelector(`[data-detail="${CSS.escape(name)}"]`);
+      if (detail) { detail.classList.toggle("hidden"); card.classList.toggle("open"); return; }
+      show("diff");
+    });
+  });
+  $$(".fhist").forEach((h) => {
+    h.addEventListener("click", (e) => {
+      e.stopPropagation();
+      $$(".fhist").forEach((x) => x.classList.toggle("on", x === h));
+      show("diff");
+    });
+  });
+
+  // 主题
+  $("#themeBtn").addEventListener("click", () => {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === "dark" ? "light" : "dark";
+  });
+
+  // 说明栏收起
+  $("#noteToggle").addEventListener("click", () => {
+    const note = $("#note");
+    note.classList.toggle("min");
+    $("#noteToggle").textContent = note.classList.contains("min") ? "展开" : "收起";
+  });
+
+  // 「统计」页签：旧实现是流水列表，本稿改为 KPI + 聚合排行（原「用量」，2026-09 改名）
+  $("#tabUsage").addEventListener("click", () => show("usage"));
+  $("#tabFollow").addEventListener("click", () => show("follow"));
+  // 统计页：点排行行 → 展开明细并自动筛成该维度（并入的前提：明细可筛）
+  const detailFilters = $$(".use-filters .fch");
+
+  function applyFilter(key) {
+    detailFilters.forEach((b) => b.classList.toggle("on", b.dataset.filter === key));
+    $$("#usageDetail [data-tool]").forEach((row) => {
+      const show = key === "all" || row.dataset.tool === key;
+      row.classList.toggle("hidden", !show);
+    });
+    $("#detailCount").textContent = key === "all" ? "（128 条）" : `（已筛：${key}）`;
+  }
+
+  function openDetail(key) {
+    $("#usageDetail").classList.remove("hidden");
+    $("#usageDetailToggle").classList.add("open");
+    applyFilter(key);
+  }
+
+  detailFilters.forEach((b) => b.addEventListener("click", () => applyFilter(b.dataset.filter)));
+
+  $$("[data-filter-tool]").forEach((row) => {
+    row.addEventListener("click", () => {
+      $$("[data-filter-tool]").forEach((r) => r.classList.toggle("on", r === row));
+      openDetail(row.dataset.filterTool);
+    });
+  });
+
+  $("#usageDetailToggle").addEventListener("click", () => {
+    $("#usageDetail").classList.toggle("hidden");
+    $("#usageDetailToggle").classList.toggle("open");
+  });
+
+  // 键盘：ESC 逐层回退
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!views.file.classList.contains("hidden")) return show("diff");
+    if (!views.diff.classList.contains("hidden")) return show("list");
+    if (!views.list.classList.contains("hidden")) return show("follow");
+  });
+})();
+</script>
+</body>
+</html>

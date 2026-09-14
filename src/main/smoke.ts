@@ -3,16 +3,19 @@
  * basic：建项目 → 建会话 → 真实对话 → 截图
  * advanced：多会话并行 → 分支查询 → navigateTree 分叉 → 截图
  * fixture：以本地夹具站为靶子，不开模型跑完浏览器能力（观测 + 上传下载 + 弹窗拦截）
- * dock：工作区（右栏）界面行为——折叠/展开、拖拽调宽与上下限、宽度记忆、⑦-F 自动展开、点文件路径→预览、
- *       页签关闭与「+」新增视图、本次改动树、面板迁入页签（A3-5）、观测抽屉（B2）、
+ * dock：工作区（右栏）界面行为——折叠/展开、拖拽调宽与上下限、宽度记忆、⑦-F 自动展开、
+ *       ⑦-G 的「正在处理」（进行中的动作 + 底部总账）与它的下钻（清单 → diff → 内容）、
+ *       点文件路径 → 下钻内容层（工具卡入口）、页签关闭与「+」新增视图、
+ *       面板迁入页签（A3-5 / ⑦-H / ⑦-G：「工具」「改动」「文件」三个视图都取消后只剩统计与规则）、
+ *       观测抽屉（B2）与它的**条目详情**（N1：点行展开完整字段 + 复制到剪贴板）、
  *       浏览器前进/后退/刷新（B1），以及 ⑥ Live Bar 的运行状态段（C1/C2：已中断 / 已失败 / 空闲）
  */
-import { app, BrowserWindow, nativeImage, WebContentsView } from "electron";
+import { app, BrowserWindow, clipboard, nativeImage, WebContentsView } from "electron";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { upsertProject, createSession, getProject } from "./db/repo";
 import { hostBridge } from "./host";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HostResult } from "@shared/worker-protocol";
 // 夹具站与「手动体验」共用同一份页面（scripts/fixture-server.mjs 是唯一数据源），
 // 以 port 0 在进程内拉起，跑完即关，用例因此不依赖任何外部站点
@@ -185,7 +188,8 @@ async function runBasic(
   })()`);
   await sleep(800);
 
-  // 可选：打开右侧某个面板（用量 / 工具），便于验收截图覆盖该面板
+  // 可选：打开右侧某个面板，便于验收截图覆盖该面板。按**会话头按钮文案**匹配（现在是「统计 / 规则」）——
+  // 「改动」「工具」的会话头入口已按 ⑦-H 删除，需要时从 ⑦ 的「+」菜单开。
   const panel = process.env.BANYAN_SMOKE_PANEL;
   if (panel) {
     await run(`(() => {
@@ -371,23 +375,27 @@ async function runFixture(projectRoot: string, log: (message: string) => void): 
  *   1) 在主进程里用 executeJavaScript 驱动渲染层 DOM，并**真派发鼠标事件**模拟拖拽；
  *   2) 读主进程侧 WebContentsView 的 `getVisible()`——折叠是否真的收起视图，只有它说了算。
  *
- * A3-2 的「点文件路径 → 预览」用**真实的事件通道**（`session.view`）推一个**受控视图**，
- * 让「正在处理」里出现可点的文件行、消息流里出现可点的工具卡路径：不跑模型，但走的是产品里
- * 一模一样的那条链路（事件 → 行/卡 → 点击 → `file.read` → 预览）。
+ * ⑦-G 的「正在处理」（进行中的动作 + 底部总账）同样用**真实的事件通道**（`session.view`）推一个
+ * **受控视图**来驱动：不跑模型，但走的是产品里一模一样的那条链路（事件 → DOM → 点击 → 落点）。
+ * ⑦-G 第四步之后「点文件路径 → 预览」落进「正在处理」的下钻**内容层**（工具卡是唯一入口），
+ * 而「本次改动」成了同一处的下钻**清单层**——原「改动」「文件」两个页签都已取消，
+ * 故这两件事在同一段里连起来验：总账 → 清单 → diff → 内容，再逐层退回去。
  * 越界路径与「工具卡传绝对路径」也顺带钉一下。
  *
  * A3-3 的「页签关闭 + 「+」新增视图」同样在这里验：关闭**激活**页签后激活位是否交还默认视图、
- * 关闭「文件」后重开是否回到空态、以及**关闭「浏览器」后原生视图是否真的收起 / 重开是否重新可见**
- * （最后这条又是截图看不见的——原生视图的可见性只有主进程知道）。
+ * 以及**关闭「浏览器」后原生视图是否真的收起 / 重开是否重新可见**
+ * （这条又是截图看不见的——原生视图的可见性只有主进程知道）。
  *
- * A3-4 的「本次改动树」验三件容易出错的：树的目录分组是否正确、**越界条目是否被排除**
- * （放进去就是死条目）、以及**窄栏时容器查询是否把树真的隐藏了**（隐藏靠 `display:none`，
- * 元素仍在 DOM 里，所以必须问 `getComputedStyle` 而不是 `querySelector`）。
+ * A3-4 的「清单层」验三件容易出错的：目录分组是否正确（一层目录标签，不是可折叠树）、
+ * **越界条目是否被排除并如实计数**（放进去就是死条目）、以及**逐层回退是否真的回得去**
+ * （面包屑 / 底部「返回」/ ESC 三条出口）。
+ * 原「本次改动树」的窄栏容器查询已随树一起作废（`styles.css` 里的 `.file-view` / `fv-tree` 已删）。
  *
- * A3-5 的「面板迁入页签」验的是**迁移动到位**：② 的四个入口点下去之后，面板真的渲染在 ⑦ 内
- * （按工作区正文判定，而非断言某个 class）、页签数量随之增加、四个新页签都能关且能重开；
+ * A3-5 的「面板迁入页签」验的是**迁移动到位**：② 的入口点下去之后，面板真的渲染在 ⑦ 内
+ * （按工作区正文判定，而非断言某个 class）、页签数量随之增加、新页签都能关且能重开；
  * 最硬的一条是 **`aside` 数不变**——迁入前每开一个面板就会多一个中栏浮层 `aside`，
- * 迁入后多开 4 个面板 `aside` 数仍与开局一致。
+ * 迁入后多开面板 `aside` 数仍与开局一致。
+ * ⑦-H / ⑦-G 之后 ② 只剩「统计 / 规则」两个入口，⑦ 的「+」菜单也只剩三项。
  *
  * 不调用模型、不产生计费；浏览器靶子复用夹具站（port 0，跑完即关）。
  *
@@ -525,8 +533,9 @@ async function runDock(
   };
 
   /**
-   * 点「正在处理」里路径为 path 的文件行。
-   * 用 title 做**精确匹配**（FollowPanel 的标题是 `点击预览 <path>`），
+   * 点「正在处理」里路径为 path 的文件行——⑦-G 之后这个函数只用来**断言该行已经不在了**：
+   * 段一不再列已完成文件（硬约束一），文件行的入口改为下钻（清单 → 内容）。
+   * 用 title 做**精确匹配**（旧 FollowPanel 的文件行标题是 `点击预览 <path>`），
    * 避免用文本包含匹配时被别的行或路径前缀误中。
    */
   const clickFileRow = (path: string): Promise<boolean> =>
@@ -542,16 +551,49 @@ async function runDock(
       return true;
     })()`);
 
-  /** 读「文件」视图状态：被预览的路径、是否渲染文本、正文是否含指定片段、拒绝原因、空态 */
+  /**
+   * 读「正在处理」底部的**总账**（⑦-G：由「本次改动」段二降级而来的一行状态）。
+   * `clickable` 按标签判定：有改动时是 `button`（进入清单的出口），没有改动时是 `div`
+   * ——「空」时**不给**一个点了没反应的出口（那正是死控件）。
+   * `idle` 读段一的空态标记：面板必须能显示「空」（⑦-E 的安全判断），这条得能验。
+   */
+  const ledgerProbe = (): Promise<{
+    present: boolean;
+    text: string;
+    clickable: boolean;
+    idle: boolean;
+  }> =>
+    run(`(() => {
+      const aside = [...document.querySelectorAll("aside")].find((a) =>
+        a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+      const el = aside ? aside.querySelector("[data-follow-ledger]") : null;
+      if (!el) return { present: false, text: "", clickable: false, idle: false };
+      return {
+        present: true,
+        text: (el.textContent ?? "").replace(/\\s+/g, " ").trim(),
+        clickable: el.tagName === "BUTTON",
+        idle: aside.querySelector("[data-follow-empty]") !== null,
+      };
+    })()`);
+
+  /** 点「正在处理」底部的总账（⑦-G 进入清单的出口） */
+  const clickLedger = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const aside = [...document.querySelectorAll("aside")].find((a) =>
+        a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+      const el = aside ? aside.querySelector("[data-follow-ledger]") : null;
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /**
+   * 读下钻**内容层**的文件预览状态：被预览的路径、是否渲染文本、正文是否含指定片段、拒绝原因。
+   * ⑦-G 之后内容层挂在「正在处理」的下钻里，故 `[data-file-view]` 只在内容层出现。
+   */
   const fileProbe = (
     needle: string,
-  ): Promise<{
-    path: string | null;
-    hasText: boolean;
-    hasNeedle: boolean;
-    errorShown: boolean;
-    emptyShown: boolean;
-  }> =>
+  ): Promise<{ path: string | null; hasText: boolean; hasNeedle: boolean; errorShown: boolean }> =>
     run(`(() => {
       const root = document.querySelector("[data-file-view]");
       const body = document.body.innerText;
@@ -560,7 +602,6 @@ async function runDock(
         hasText: document.querySelector("[data-file-text]") !== null,
         hasNeedle: ${JSON.stringify(needle)}.length > 0 && body.includes(${JSON.stringify(needle)}),
         errorShown: body.includes("无法预览该文件"),
-        emptyShown: body.includes("还没有打开文件"),
       };
     })()`);
 
@@ -590,29 +631,73 @@ async function runDock(
     })()`);
 
   /**
-   * 读「本次改动」树：目录路径、文件路径。
-   * **按可见性判定**而不是存在性——窄栏时树是被容器查询 `display:none` 掉的，
-   * 元素还在 DOM 里，`querySelector` 照样能找到，所以必须问 `getComputedStyle`。
+   * 读「正在处理」的**下钻**状态（⑦-G）：当前在哪一层、面包屑上有哪几段、清单里有什么。
+   *
+   * 层用 `data-drill` 认（`list` / `diff` / `content`），不在下钻时整个容器不存在。
+   * 清单的目录与文件分别用 `data-clist-dir` / `data-clist-file` 读——**不靠文本**，
+   * 否则文件名恰好出现在别处（如 diff 正文）就会误判。
+   * `hidden` 直接读容器上的属性值：越界条目被丢掉这件事必须**如实显示**，
+   * 只断言「它不在列表里」是不够的（静默丢数据比不显示更可疑）。
    */
-  const treeProbe = (): Promise<{ present: boolean; dirs: string[]; files: string[] }> =>
+  const drillProbe = (): Promise<{
+    layer: string;
+    crumbs: string[];
+    back: boolean;
+    dirs: string[];
+    files: string[];
+    revisions: string[];
+    hidden: number;
+    diffRevisions: string[];
+  }> =>
     run(`(() => {
-      const tree = document.querySelector("[data-file-tree]");
-      if (tree === null || getComputedStyle(tree).display === "none") {
-        return { present: false, dirs: [], files: [] };
-      }
+      const root = document.querySelector("[data-drill]");
+      const attrAll = (selector, name) =>
+        [...document.querySelectorAll(selector)].map((el) => el.getAttribute(name));
       return {
-        present: true,
-        dirs: [...tree.querySelectorAll("[data-tree-dir]")].map((b) =>
-          b.getAttribute("data-tree-dir")),
-        files: [...tree.querySelectorAll("[data-tree-file]")].map((b) =>
-          b.getAttribute("data-tree-file")),
+        layer: root ? (root.getAttribute("data-drill") ?? "") : "",
+        crumbs: attrAll("[data-drill-crumb]", "data-drill-crumb"),
+        back: document.querySelector("[data-drill-back]") !== null,
+        dirs: attrAll("[data-clist-dir]", "data-clist-dir"),
+        files: attrAll("[data-clist-file]", "data-clist-file"),
+        revisions: attrAll("[data-clist-rev]", "data-clist-rev"),
+        hidden: Number(
+          document.querySelector("[data-clist-hidden]")?.getAttribute("data-clist-hidden") ?? "0",
+        ),
+        diffRevisions: attrAll("[data-drill-rev]", "data-drill-rev"),
       };
     })()`);
 
-  /** 点树里 path 对应的文件节点 */
-  const clickTreeFile = (path: string): Promise<boolean> =>
+  /** 点清单里 path 对应的文件卡 */
+  const clickListFile = (path: string): Promise<boolean> =>
     run<boolean>(`(() => {
-      const el = document.querySelector(${JSON.stringify(`[data-tree-file="${path}"]`)});
+      const el = document.querySelector(${JSON.stringify(`[data-clist-file="${path}"]`)});
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /** diff 层右上「看文件」→ 内容层 */
+  const clickDrillContent = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector("[data-drill-content]");
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /** 各层底部那一行「返回」 */
+  const clickDrillBack = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector("[data-drill-back]");
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /** 面包屑上某一段（`follow` / `list`） */
+  const clickCrumb = (marker: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector(${JSON.stringify(`[data-drill-crumb="${marker}"]`)});
       if (!el) return false;
       el.click();
       return true;
@@ -634,7 +719,7 @@ async function runDock(
 
   /**
    * 点 ② 会话头（`.conv-head`）里的按钮。必须**限定在会话头内**——
-   * 「用量 / 工具 / 规则 / 改动」这些字样在 ⑦ 的页签上也有一份，全文档查会点错。
+   * 「统计 / 规则」这些字样在 ⑦ 的页签上也有一份，全文档查会点错。
    */
   const clickInHead = (matcher: string): Promise<boolean> =>
     run<boolean>(`(() => {
@@ -687,6 +772,88 @@ async function runDock(
     run<boolean>(`(() => {
       const el = document.querySelector(${JSON.stringify(`[data-obs-tab="${tab}"]`)});
       if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /** 点观测抽屉里某页签中文本含 needle 的那一行（整行可点 = 展开 / 收起详情，N1） */
+  const clickObsRow = (tab: string, needle: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const rows = [...document.querySelectorAll(${JSON.stringify(`[data-obs-row="${tab}"]`)})];
+      const el = rows.find((row) => (row.innerText || "").includes(${JSON.stringify(needle)}));
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /**
+   * 读展开的「条目详情」（N1）：字段值、**哪些字段被截断了**、详情是否真的落在抽屉可视区内。
+   *
+   * 「没被截断」不靠 class 名判断，而是量 `scrollWidth <= clientWidth + 1`——
+   * 被 `truncate` 的元素必然超宽，这是个**可判定**的事实（同 §5 第 ⑤ 条「只验会变、不验相等」的教训）。
+   * 另外把详情顶端是否在可视区内一并读出：正文只有 132px 高，展开后若不自动滚进来，
+   * 用户点了会**看不出发生了什么**（`AGENTS.md` §3.6 那类「点了没反应」）。
+   */
+  const obsDetailProbe = (): Promise<{
+    present: boolean;
+    count: number;
+    fields: Record<string, string>;
+    truncated: string[];
+    copyButton: boolean;
+    visibleInBody: boolean;
+    rectTop: number;
+    rectBottom: number;
+    bodyTop: number;
+    bodyBottom: number;
+    scrollTop: number;
+  }> =>
+    run(`(() => {
+      const empty = {
+        present: false, count: 0, fields: {}, truncated: [], copyButton: false,
+        visibleInBody: false, rectTop: 0, rectBottom: 0, bodyTop: 0, bodyBottom: 0, scrollTop: 0,
+      };
+      const details = [...document.querySelectorAll("[data-obs-detail]")];
+      const detail = details[0];
+      if (detail === undefined) return empty;
+      const fields = {};
+      const truncated = [];
+      for (const el of detail.querySelectorAll("[data-obs-field]")) {
+        const label = el.getAttribute("data-obs-field");
+        fields[label] = el.textContent || "";
+        if (el.scrollWidth > el.clientWidth + 1) truncated.push(label);
+      }
+      const body = document.querySelector("[data-obs-body]");
+      if (body === null) return empty;
+      const box = body.getBoundingClientRect();
+      const rect = detail.getBoundingClientRect();
+      return {
+        present: true,
+        count: details.length,
+        fields,
+        truncated,
+        copyButton: detail.querySelector("[data-obs-copy]") !== null,
+        visibleInBody: rect.top >= box.top - 1 && rect.top < box.bottom - 2,
+        rectTop: Math.round(rect.top),
+        rectBottom: Math.round(rect.bottom),
+        bodyTop: Math.round(box.top),
+        bodyBottom: Math.round(box.bottom),
+        scrollTop: Math.round(body.scrollTop),
+      };
+    })()`);
+
+  /**
+   * 点详情段里的「复制」：先把它滚进可视区，再做**命中测试**——
+   * 「在 DOM 里」不等于「用户点得到」（§5 第 ⑥ 条那个新变种：查得到、`click()` 也"命中"，
+   * 但它已经被挤出可视区了）。
+   */
+  const clickObsCopy = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector("[data-obs-copy]");
+      if (!el) return false;
+      el.scrollIntoView({ block: "nearest" });
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (hit !== el && !el.contains(hit)) return false;
       el.click();
       return true;
     })()`);
@@ -837,25 +1004,24 @@ async function runDock(
     checks.push(["折叠态下加载浏览器 → 自动展开", autoExpanded.collapsed === false]);
     checks.push(["自动展开后原生视图可见", await waitVisible(true)]);
 
-    // ---- A3-2：点文件路径 → 预览 ----
-    // 走**真实的事件通道**推一个受控视图（不跑模型），让「正在处理」里出现可点的文件行；
-    // 其中一条故意是越界路径，用来在 UI 上钉住「根由主进程推导」这条安全边界。
-    log("[A3-2] 推受控会话视图：让「正在处理」出现文件行（含一条越界路径）");
+    // ---- 受控会话视图：⑦-G 的「正在处理」与 A3-2 的「点文件路径 → 预览」都靠它驱动 ----
+    // 走**真实的事件通道**推一个受控视图（不跑模型）：`fileChanges` 三条（其中一条故意越界，
+    // 用来钉住「根由主进程推导」这条安全边界）、`messages` 两张工具卡（一张根内、一张根外）。
+    log("[受控视图] 推 session.view：3 条改动（含一条越界）+ 两张工具卡（根内 / 根外）");
     const rootPath = getProject(projectId)?.rootPath ?? process.cwd();
     const previewRel = "package.json";
-    // 子目录里的真实文件：用来验「树按目录分组」，也是「点树里的文件 → 预览」的靶子
+    // 子目录里的真实文件：用来验「清单按目录分组」，也是「清单里点文件 → diff → 内容」的靶子
     const treeRel = "src/main/file-read.ts";
-    const previewBody = readFileSync(join(rootPath, previewRel), "utf8");
-    // 取该文件里第一行够长的内容片段作为「内容确实渲染了」的判据（不写死具体字样）
-    const previewMarker = (
-      previewBody.split("\n").find((line) => line.trim().length >= 8) ?? ""
-    ).trim();
     // 工具卡（消息流 ④）里的路径用**绝对路径**驱动：read 的 path 常是绝对路径，
     // 顺带钉住「主进程收绝对路径、但仍须落在项目根内」这条边界
     const toolAbsPath = join(rootPath, "tsconfig.json");
     const toolMarker = (
       readFileSync(toolAbsPath, "utf8").split("\n").find((line) => line.trim().length >= 8) ?? ""
     ).trim();
+    // 根**外**的绝对路径（⑦-G 之后越界条目在界面上已无可点入口：段一不再列文件行、
+    // 文件树按 `isProjectRelative` 排除它），故改由**工具卡**驱动——模型确实会给出这种路径，
+    // 「主进程拒绝 + 视图给出可读原因」这条不能因为入口搬家而掉出冒烟。
+    const outsideAbsPath = resolve(rootPath, "..", "banyan-smoke-outside", "escape.txt");
     const stamp = Date.now();
     const fakeChange = (id: string, path: string, at: number): Record<string, unknown> => ({
       id,
@@ -888,6 +1054,13 @@ async function runDock(
               args: JSON.stringify({ path: toolAbsPath }),
               durationMs: 8,
             },
+            {
+              // 项目根**外**的路径：工具卡照旧可点，但主进程必须拒绝（越界）
+              id: "smoke-call-2",
+              name: "read",
+              args: JSON.stringify({ path: outsideAbsPath }),
+              durationMs: 6,
+            },
           ],
         },
       ],
@@ -917,50 +1090,77 @@ async function runDock(
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
 
-    // 文件行只在「正在处理」里，先切过去
+    // ---- ⑦-G：「正在处理」= 进行中的动作 + 底部总账 ----
+    // 受控视图里 runningTools 为空、fileChanges 三条（两条项目内 + 一条越界），
+    // 正好钉住两件事：段一**不再**列已完成文件（于是能显示「空」），总账是**一行**双口径。
+    log("[⑦-G] 「正在处理」：段一只列进行中的动作，底部常驻一行总账");
     await clickInDock(`b.textContent.trim() === "正在处理"`);
     await sleep(300);
+    checks.push([
+      "段一不再列已完成文件（旧文件行已移除，⑦-G 硬约束一）",
+      (await clickFileRow(previewRel)) === false,
+    ]);
+    const ledger0 = await ledgerProbe();
+    checks.push([
+      "底部总账写「N 处 · M 文件」双口径（3 条改动 / 3 个路径）",
+      ledger0.present && ledger0.text.includes("3 处 · 3 文件"),
+    ]);
+    checks.push(["无进行中的动作时能显示「空」（空闲空态仍在）", ledger0.idle]);
+    checks.push(["有改动时总账可点（进入清单的出口）", ledger0.clickable]);
+    log(`  总账：${ledger0.text}`);
 
-    checks.push(["点文件行命中（受控视图里有该行）", await clickFileRow(previewRel)]);
-    await sleep(700);
-    const fileOpened = await fileProbe(previewMarker);
-    const afterOpen = await probe();
-    checks.push(["点路径后激活「文件」页签", afterOpen.activeLabel === "文件"]);
-    checks.push(["打开文件新增一个页签（共 3 个）", afterOpen.tabCount === 3]);
-    checks.push(["文件视图渲染了文本内容", fileOpened.hasText && fileOpened.hasNeedle]);
-    checks.push(["文件视图记录了被预览的路径", fileOpened.path === previewRel]);
-    log(
-      `  预览：path=${fileOpened.path}，渲染文本=${fileOpened.hasText}，命中片段=${fileOpened.hasNeedle}`,
-    );
+    // 点总账 → 下钻的**清单层**（⑦-G 第四步：不再切到「改动」页签——那个页签已经没有了，
+    // 故这里的关键判据是「落到清单层」而不是「多了一个页签」，页签数应当**纹丝不动**）
+    checks.push(["点总账命中", await clickLedger()]);
+    await sleep(500);
+    const listFromLedger = await drillProbe();
+    checks.push([
+      "点总账 → 进入下钻清单层（面包屑出现「正在处理」，页签数不变）",
+      listFromLedger.layer === "list" &&
+        listFromLedger.crumbs.includes("follow") &&
+        (await probe()).tabCount === 2,
+    ]);
 
-    // 切走再切回：内容不丢（FilePanel 重挂载后按上层持有的目标重读）
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
-    await sleep(300);
-    checks.push(["切走后文件视图不再渲染内容", (await fileProbe(previewMarker)).hasText === false]);
-    await clickInDock(`b.textContent.trim() === "文件"`);
-    await sleep(700);
-    checks.push(["切回文件页签内容仍在", (await fileProbe(previewMarker)).hasNeedle]);
-    checks.push(["切页签不改变页签数量（仍 3 个）", (await probe()).tabCount === 3]);
-
-    // 越界路径：主进程拒绝 → 视图给出可读原因
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
-    await sleep(300);
-    checks.push(["越界文件行可点", await clickFileRow("../escape.txt")]);
-    await sleep(700);
-    const denied = await fileProbe("");
-    checks.push(["越界路径被拒并给出原因", denied.errorShown && denied.path === "../escape.txt"]);
-
-    // ---- A3-2 续：工具卡（消息流 ④）里的文件路径同样可点 ----
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
-    await sleep(300);
-    checks.push(["切回「正在处理」后文件视图已卸载", (await fileProbe("")).hasText === false]);
+    // ---- A3-2：点文件路径 → 预览 ----
+    // ⑦-G 把两个入口收进同一处下钻：工具卡（④）的路径直接落**内容层**，
+    // 与上一步的清单层是同一条面包屑上的两个位置。「文件」页签已不存在。
+    log("[A3-2] 工具卡（消息流 ④）里的文件路径 → 下钻内容层");
     checks.push(["工具卡路径可点（入参是绝对路径）", await clickPreviewByTitle(toolAbsPath)]);
     await sleep(700);
     const fromTool = await fileProbe(toolMarker);
-    checks.push(["点工具卡路径 → 激活「文件」页签", (await probe()).activeLabel === "文件"]);
-    checks.push(["工具卡路径原样送出（绝对路径）", fromTool.path === toolAbsPath]);
-    checks.push(["根内绝对路径同样渲染出内容", fromTool.hasText && fromTool.hasNeedle]);
+    checks.push([
+      "点工具卡路径 → 落在「正在处理」的下钻内容层",
+      (await probe()).activeLabel === "正在处理" && (await drillProbe()).layer === "content",
+    ]);
+    checks.push(["内容层记录了被预览的路径", fromTool.path === toolAbsPath]);
+    checks.push(["根内绝对路径渲染出内容", fromTool.hasText && fromTool.hasNeedle]);
     log(`  工具卡预览：path=${fromTool.path}，渲染文本=${fromTool.hasText}，命中片段=${fromTool.hasNeedle}`);
+
+    // 切走再切回：下钻状态由容器持有（不属于某个页签的重挂载），故切回来还在原处
+    await clickInDock(`b.textContent.trim() === "浏览器"`);
+    await sleep(500);
+    checks.push(["切走后下钻内容不再渲染", (await fileProbe(toolMarker)).hasText === false]);
+    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    await sleep(700);
+    checks.push(["切回「正在处理」下钻内容仍在", (await fileProbe(toolMarker)).hasNeedle]);
+    checks.push(["切页签不改变页签数量（仍 2 个）", (await probe()).tabCount === 2]);
+
+    // 根**外**的路径：工具卡照旧可点，但主进程必须拒绝，且视图要给出可读原因。
+    // （⑦-G 之后越界条目在界面上已无可点入口，故这条改由工具卡驱动，见 outsideAbsPath 的说明。）
+    checks.push(["根外绝对路径的工具卡可点", await clickPreviewByTitle(outsideAbsPath)]);
+    await sleep(700);
+    const denied = await fileProbe("");
+    checks.push([
+      "越界路径被拒并给出原因（主进程拒绝 → 视图可读原因）",
+      denied.errorShown && denied.path === outsideAbsPath,
+    ]);
+    log(`  越界预览：path=${denied.path}，给出原因=${denied.errorShown}`);
+
+    // 退出下钻，把「正在处理」还原成后续用例依赖的基线（段一 + 总账）。
+    // 该文件不在改动清单里，故 goUp 会**跳过空的清单层**直接回到「正在处理」（⑦-G 的层设计）。
+    checks.push(["点「返回」退出下钻", await clickDrillBack()]);
+    await sleep(300);
+    checks.push(["退出后不再有下钻容器", (await drillProbe()).layer === ""]);
 
     // ---- C1 / C2：⑥ 的运行状态段（运行中 / 已中断 / 已失败 / 空闲）----
     // 走与上面同一条**真实事件通道**推终态。判据是渲染层真的把内核终态翻译成了那个状态，
@@ -1013,15 +1213,14 @@ async function runDock(
     checks.push(["⑥ 复位后回到空闲", (await liveProbe()).state === "idle"]);
 
     // ---- A3-3：页签关闭 + 「+」新增视图 ----
-    // 此刻 3 个页签（正在处理 / 浏览器 / 文件），激活在「文件」
+    // 此刻 2 个页签（正在处理 / 浏览器）——⑦-G 取消「改动」「文件」后，
+    // 「正在处理」是唯一常驻视图，「浏览器」是唯一默认可关闭的页签。
     log("[A3-3] 页签关闭与「+」新增视图");
     const dock0 = await probe();
     checks.push(["展开态有「+」新增视图入口", dock0.addButton]);
     checks.push([
       "关闭按钮只出现在可关闭页签上（默认视图没有，⑦-E）",
-      dock0.tabClose.length === 2 &&
-        dock0.tabClose.includes("关闭浏览器") &&
-        dock0.tabClose.includes("关闭文件"),
+      dock0.tabClose.length === 1 && dock0.tabClose.includes("关闭浏览器"),
     ]);
 
     // 「+」菜单：只列产品里真有的视图；点菜单外即收
@@ -1029,11 +1228,19 @@ async function runDock(
     await sleep(300);
     const menu = await probe();
     checks.push([
-      "「+」菜单列出全部可重开的视图（A3-5 后含四个面板，共 6 个）",
-      menu.menuItems.length === 6 &&
-        ["browser", "file", "changes", "usage", "tools", "rules"].every((kind) =>
-          menu.menuItems.includes(kind),
-        ),
+      "「+」菜单只列真的存在的视图（⑦-H 取消「工具」、⑦-G 取消「改动」「文件」后共 3 项）",
+      menu.menuItems.length === 3 &&
+        ["browser", "usage", "rules"].every((kind) => menu.menuItems.includes(kind)),
+    ]);
+    // 三个被取消的 kind 都**不是被藏起来**：只断言「菜单里少一项」不够——
+    // 要确认它们连打开都打不开（否则就是一个点了没反应的死菜单项）。
+    // `tools` 并入「统计」（⑦-H 第三步）；`changes` / `file` 并入下钻（⑦-G 第四步）。
+    checks.push([
+      "「工具」「改动」「文件」都已不是可打开的视图（kind 已移除，不是藏起来）",
+      ["tools", "changes", "file"].every((kind) => !menu.menuItems.includes(kind)) &&
+        (await clickMenuItem("tools")) === false &&
+        (await clickMenuItem("changes")) === false &&
+        (await clickMenuItem("file")) === false,
     ]);
     await run(`(() => {
       document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -1042,117 +1249,126 @@ async function runDock(
     await sleep(250);
     checks.push(["点菜单外即收起「+」菜单", (await probe()).menuItems.length === 0]);
 
-    // 关闭**当前激活**的页签：数量减 1，激活位交还默认视图
-    await clickInDock(`b.getAttribute("aria-label") === "关闭文件"`);
-    await sleep(400);
-    const afterCloseFile = await probe();
-    checks.push([
-      "关闭激活的「文件」→ 页签减 1 且激活位交还「正在处理」",
-      afterCloseFile.tabCount === 2 && afterCloseFile.activeLabel === "正在处理",
-    ]);
-    checks.push(["关闭后文件视图已卸载", (await fileProbe("")).hasText === false]);
-
-    // 「+」重新打开「文件」：关闭即丢弃该视图状态，故回到**空态**
-    await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
-    await sleep(300);
-    await clickMenuItem("file");
-    await sleep(400);
-    const reopenedFile = await probe();
-    const emptiedFile = await fileProbe("");
-    checks.push([
-      "「+」重新打开「文件」→ 页签回到 3 且为空态（旧目标随关闭丢弃）",
-      reopenedFile.tabCount === 3 &&
-        reopenedFile.activeLabel === "文件" &&
-        emptiedFile.emptyShown,
-    ]);
-
-    // 关掉「浏览器」：原生视图必须收起；再用「+」开回来必须重新可见（「关了能回来」）
+    // 关闭**当前激活**的页签：数量减 1、激活位交还默认视图、原生视图必须收起
     await clickInDock(`b.textContent.trim() === "浏览器"`);
     await sleep(500);
     checks.push(["激活「浏览器」后原生视图可见", await waitVisible(true)]);
     await clickInDock(`b.getAttribute("aria-label") === "关闭浏览器"`);
     await sleep(400);
-    checks.push(["关闭「浏览器」后页签减 1", (await probe()).tabCount === 2]);
+    const afterCloseBrowser = await probe();
+    checks.push([
+      "关闭激活的「浏览器」→ 页签减 1 且激活位交还「正在处理」",
+      afterCloseBrowser.tabCount === 1 && afterCloseBrowser.activeLabel === "正在处理",
+    ]);
     checks.push(["关闭「浏览器」后原生视图已收起（getVisible=false）", await waitVisible(false)]);
 
+    // 「+」重新打开「浏览器」：关了必须能回来（⑦-E 的出口保证），且原生视图重新可见
     await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
     await sleep(300);
     await clickMenuItem("browser");
     await sleep(500);
     checks.push([
-      "「+」重新打开「浏览器」→ 页签回到 3 且原生视图重新可见",
-      (await probe()).tabCount === 3 && (await waitVisible(true)),
+      "「+」重新打开「浏览器」→ 页签回到 2 且原生视图重新可见",
+      (await probe()).tabCount === 2 && (await waitVisible(true)),
     ]);
 
-    // ---- A3-4：文件视图的「本次改动」树（范围 A） ----
-    // 此刻「文件」是刚被「+」打开、还没选过文件的状态——正是树要当出口的那个场景
-    log("[A3-4] 文件视图的「本次改动」树");
-    await clickInDock(`b.textContent.trim() === "文件"`);
-    await sleep(400);
-    const tree = await treeProbe();
+    // ---- A3-4：下钻的清单层（⑦-G 取代原「本次改动」树）----
+    // 受控视图里 3 条改动：package.json（根）、../escape.txt（越界）、src/main/file-read.ts。
+    // 故清单应为「根 + src/main」两组、两个文件、隐藏 1 条越界——树没有了，
+    // 但「目录分组」与「越界排除」这两条原判据要在新载体上继续钉住。
+    log("[A3-4] 清单层：目录分组 / 越界排除 / 逐层下钻与回退");
+    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    await sleep(300);
+    checks.push(["点总账进入清单层", await clickLedger()]);
+    await sleep(500);
+    const list0 = await drillProbe();
     checks.push([
-      "「+」打开「文件」未选文件时：空态与树并存（树就是空态的出口）",
-      tree.present && (await fileProbe("")).emptyShown,
+      "清单按目录分组（根 + src/main），文件用项目内相对路径归组",
+      list0.layer === "list" &&
+        list0.dirs.includes("") &&
+        list0.dirs.includes("src/main") &&
+        list0.files.includes(previewRel) &&
+        list0.files.includes(treeRel),
     ]);
     checks.push([
-      "树按目录分组（src / src/main 目录 + 叶子文件）",
-      tree.dirs.includes("src") &&
-        tree.dirs.includes("src/main") &&
-        tree.files.includes(previewRel) &&
-        tree.files.includes(treeRel),
+      "越界条目不在清单里，且如实说明隐藏了几条（⑦-4：放进去就是死条目）",
+      !list0.files.some((path) => path.includes("escape")) && list0.hidden === 1,
     ]);
     checks.push([
-      "树排除了不可预览的越界条目（⑦-4：放进去就是死条目）",
-      ![...tree.dirs, ...tree.files].some((path) => path.includes("escape")),
+      "清单头部只算项目内（2 处 · 2 文件）——与总账同一套双口径，去掉越界后各自收敛",
+      await dockHas("2 处 · 2 文件"),
     ]);
+    log(
+      `  清单：目录 ${JSON.stringify(list0.dirs)}，文件 ${JSON.stringify(list0.files)}，隐藏 ${list0.hidden}`,
+    );
 
-    checks.push(["点树里的文件", await clickTreeFile(treeRel)]);
+    // 清单 → diff：点文件卡（该文件只改过一次，故直接进 diff，不展开历史）
+    checks.push(["点清单里的文件卡进入 diff 层", await clickListFile(treeRel)]);
+    await sleep(500);
+    const diff0 = await drillProbe();
+    checks.push([
+      "diff 层：面包屑含「正在处理」/ 可点的「本次改动」/ 当前文件三段",
+      diff0.layer === "diff" &&
+        diff0.crumbs.includes("follow") &&
+        diff0.crumbs.includes("list") &&
+        diff0.crumbs.includes("current"),
+    ]);
+    checks.push(["每层底部都有「返回」出口", diff0.back]);
+
+    // diff → 内容：点右上「看文件」
+    checks.push(["点 diff 右上「看文件」进入内容层", await clickDrillContent()]);
     await sleep(700);
-    const fromTree = await fileProbe("");
+    const fromList = await fileProbe("");
     checks.push([
-      "点树里的文件 → 预览切换到该文件",
-      fromTree.path === treeRel && fromTree.hasText,
+      "内容层渲染的就是清单里点的那份文件",
+      (await drillProbe()).layer === "content" && fromList.path === treeRel && fromList.hasText,
     ]);
-    log(`  树预览：path=${fromTree.path}，渲染文本=${fromTree.hasText}`);
+    log(`  清单下钻预览：path=${fromList.path}，渲染文本=${fromList.hasText}`);
 
-    // 窄栏自动让位（容器查询兜底）：拖到最窄时整棵树隐藏，预览照旧
-    await dragGrip(10000);
-    await sleep(300);
-    const narrowDock = await probe();
-    checks.push([
-      "右栏拖到最窄（220）时整棵树隐藏、预览照旧",
-      narrowDock.width === 220 &&
-        (await treeProbe()).present === false &&
-        (await fileProbe("")).hasText,
-    ]);
-    await dragGrip(-10000);
-    await sleep(300);
-    checks.push([
-      "右栏拉宽后树回来",
-      (await probe()).width > 520 && (await treeProbe()).present,
-    ]);
+    // 逐层回退：ESC（内容 → diff）、底部「返回」（diff → 清单）、面包屑（清单 → 正在处理）。
+    // 三条出口分别验一次，避免「只有一条路能回去」这种半吊子实现蒙混过关。
+    await run(`(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      return true;
+    })()`);
+    await sleep(400);
+    checks.push(["ESC 从内容层退回 diff 层", (await drillProbe()).layer === "diff"]);
+    checks.push(["点底部「返回」命中", await clickDrillBack()]);
+    await sleep(400);
+    checks.push(["「返回」从 diff 层回到清单层", (await drillProbe()).layer === "list"]);
+    checks.push(["点面包屑「正在处理」命中", await clickCrumb("follow")]);
+    await sleep(400);
+    checks.push(["面包屑退回「正在处理」（退出下钻）", (await drillProbe()).layer === ""]);
 
-    // ---- A3-5：中栏的四个观测 / 管理面板迁入 ⑦ 页签 ----
+    // ---- A3-5：中栏的观测 / 管理面板迁入 ⑦ 页签 ----
     // 迁入前它们在**中栏**另起一个 aside（同一件事两处实现、两套入口）；迁入后
     // 只有「页签」这一个载体，② 的入口与「+」菜单都只是打开同一个页签的快捷方式。
-    log("[A3-5] 面板迁入页签（改动 / 用量 / 工具 / 规则）");
+    // ⑦-H 先把 ② 的按钮从 4 个收敛到 2 个：删「改动」（总账接管）、删「工具」（聚合并入「统计」）；
+    // ⑦-G 再把「改动」「文件」两个 kind 整个取消（并入下钻）——故 ② 只剩「统计 / 规则」。
+    log("[A3-5 / ⑦-H / ⑦-G] 面板迁入页签；② 会话头只剩「统计 / 规则」；「改动」「文件」「工具」都不再是视图");
     const beforeA35 = await probe();
-    checks.push(["（前置）此刻共 3 个页签（正在处理 / 浏览器 / 文件）", beforeA35.tabCount === 3]);
+    checks.push(["（前置）此刻共 2 个页签（正在处理 / 浏览器）", beforeA35.tabCount === 2]);
 
-    checks.push(["② 会话头有「用量」入口且点击命中", await clickInHead(`b.textContent.trim() === "用量"`)]);
+    // 删掉的入口**不能只是画没了**：这里断言它们在会话头里已经点不到
+    checks.push([
+      "② 会话头不再有「改动」入口（下钻取代，⑦-G）",
+      (await clickInHead(`b.textContent.trim().startsWith("改动")`)) === false,
+    ]);
+    checks.push([
+      "② 会话头不再有「工具」入口（聚合并入「统计」）",
+      (await clickInHead(`b.textContent.trim() === "工具"`)) === false,
+    ]);
+
+    checks.push(["② 会话头有「统计」入口且点击命中", await clickInHead(`b.textContent.trim() === "统计"`)]);
     await sleep(500);
     const usageDock = await probe();
     checks.push([
-      "点「用量」→ 新增页签并激活，且面板渲染在 ⑦ 内",
-      usageDock.tabCount === 4 && usageDock.activeLabel === "用量" && (await dockHas("用量历史")),
+      "点「统计」→ 新增页签并激活，面板渲染在 ⑦ 内（页签名同为「统计」）",
+      usageDock.tabCount === 3 && usageDock.activeLabel === "统计" && (await dockHas("会话统计")),
     ]);
-
-    checks.push(["② 会话头有「工具」入口且点击命中", await clickInHead(`b.textContent.trim() === "工具"`)]);
-    await sleep(500);
-    checks.push([
-      "点「工具」→ 激活「工具」页签且渲染工具调用面板",
-      (await probe()).activeLabel === "工具" && (await dockHas("工具调用")),
-    ]);
+    // 面板**本体**（不只是头部标题）确实画出来了。本场景不跑模型，故 usage / toolCalls 都为空，
+    // 它应当是空态——聚合内容在这里喂不了数据，改由 `tests/lib.test.ts` 的纯函数单测覆盖。
+    checks.push(["「统计」面板渲染出空态（本场景没有模型 / 工具调用）", await dockHas("还没有统计数据")]);
 
     checks.push(["② 会话头有「规则」入口且点击命中", await clickInHead(`b.textContent.trim() === "规则"`)]);
     await sleep(500);
@@ -1161,47 +1377,41 @@ async function runDock(
       (await probe()).activeLabel === "规则" && (await dockHas("审批规则")),
     ]);
 
-    checks.push(["② 会话头有「改动」入口且点击命中", await clickInHead(`b.textContent.trim().startsWith("改动")`)]);
-    await sleep(500);
-    const changesDock = await probe();
+    // ⑦-H / ⑦-G 起，「工具」「改动」「文件」三个页签都**不存在了**，故这一段不再有
+    // 「从『+』菜单打开某个面板」这一步——它们的消失已在上面的「+」菜单断言里钉住。
+    const dockA35 = await probe();
     checks.push([
-      "点「改动」→ 激活「改动」页签且渲染文件改动面板",
-      changesDock.activeLabel === "改动" && (await dockHas("文件改动")),
-    ]);
-    checks.push([
-      "四个迁入的页签都可关闭（关闭由页签负责，面板内不再有「收起」）",
-      ["关闭改动", "关闭用量", "关闭工具", "关闭规则"].every((label) =>
-        changesDock.tabClose.includes(label),
-      ),
+      "两个迁入的页签都可关闭（关闭由页签负责，面板内不再有「收起」）",
+      ["关闭统计", "关闭规则"].every((label) => dockA35.tabClose.includes(label)),
     ]);
     // 关键判据：多开面板**不再新增 aside**（中栏浮层已消失）
     checks.push([
-      "中栏不再有浮层面板（多开 4 个面板后 aside 数不变）",
-      changesDock.asideCount === beforeA35.asideCount,
+      "中栏不再有浮层面板（多开 2 个面板后 aside 数不变）",
+      dockA35.asideCount === beforeA35.asideCount,
     ]);
-    log(`  迁入后：页签 ${changesDock.tabCount} 个，aside ${changesDock.asideCount} 个`);
+    log(`  迁入后：页签 ${dockA35.tabCount} 个，aside ${dockA35.asideCount} 个`);
 
-    // 关闭「改动」：页签减 1、激活位交还默认视图、面板内容随之卸载
-    await clickInDock(`b.getAttribute("aria-label") === "关闭改动"`);
+    // 关闭「规则」：页签减 1、激活位交还默认视图、面板内容随之卸载
+    await clickInDock(`b.getAttribute("aria-label") === "关闭规则"`);
     await sleep(400);
     const closedA35 = await probe();
     checks.push([
-      "关闭「改动」→ 页签减 1 且激活位交还「正在处理」",
-      closedA35.tabCount === 6 && closedA35.activeLabel === "正在处理",
+      "关闭「规则」→ 页签减 1 且激活位交还「正在处理」",
+      closedA35.tabCount === 3 && closedA35.activeLabel === "正在处理",
     ]);
-    checks.push(["关闭后改动面板已卸载", (await dockHas("文件改动")) === false]);
+    checks.push(["关闭后规则面板已卸载", (await dockHas("审批规则")) === false]);
 
-    // 「+」重开「改动」：四个新页签都满足「关了能回来」（⑦-E 的出口保证）
+    // 「+」重开「规则」：迁入的页签都满足「关了能回来」（⑦-E 的出口保证）
     await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
     await sleep(300);
-    await clickMenuItem("changes");
+    await clickMenuItem("rules");
     await sleep(500);
     const reopenedA35 = await probe();
     checks.push([
-      "「+」重开「改动」→ 页签回到 7 且面板重新渲染",
-      reopenedA35.tabCount === 7 &&
-        reopenedA35.activeLabel === "改动" &&
-        (await dockHas("文件改动")),
+      "「+」重开「规则」→ 页签回到 4 且面板重新渲染",
+      reopenedA35.tabCount === 4 &&
+        reopenedA35.activeLabel === "规则" &&
+        (await dockHas("审批规则")),
     ]);
 
     // ---- B2：浏览器观测抽屉（控制台 / 网络 / 下载）----
@@ -1295,6 +1505,107 @@ async function runDock(
     await clickObsTab("console");
     await sleep(600);
     checks.push(["再点一次 → 正文回来", (await obsProbe()).collapsed === false]);
+
+    // ---- N1：观测条目的「详情」----
+    // 这一屏最常被问的是「刚才那个请求为什么失败」。概览行里 URL / 路径都是截断的
+    // （原先只能靠原生 tooltip 兜底），所以点开一条看**完整字段**——而「完整」的判据不看 class，
+    // 而是量 `scrollWidth <= clientWidth + 1`：被 truncate 的元素必然超宽，这是个可判定的事实。
+    log("[N1] 观测条目详情：点行展开字段表 + 复制");
+    const consoleNeedle = "夹具：这是一条脚本报错";
+    checks.push(["点控制台那条报错行（整行可点）", await clickObsRow("console", consoleNeedle)]);
+    await sleep(300);
+    const consoleDetail = await obsDetailProbe();
+    checks.push([
+      "控制台详情：给出**完整来源 URL**（概览里只有文件名），且只展开这一条",
+      consoleDetail.present &&
+        consoleDetail.count === 1 &&
+        consoleDetail.fields["消息"] === consoleNeedle &&
+        (consoleDetail.fields["来源"] ?? "").startsWith("http://127.0.0.1:"),
+    ]);
+    checks.push([
+      "控制台详情：长值没被截断，且带复制入口",
+      consoleDetail.copyButton && consoleDetail.truncated.length === 0,
+    ]);
+    log(`  控制台详情：${JSON.stringify(consoleDetail.fields)}`);
+    checks.push(["再点同一行 → 详情收起", await clickObsRow("console", consoleNeedle)]);
+    await sleep(250);
+    checks.push(["收起后详情已从 DOM 移除", (await obsDetailProbe()).present === false]);
+
+    // 下载：概览里的路径是截断的（只有 tooltip），展开后要给**绝对路径**
+    checks.push(["切到「下载」页签", await clickObsTab("downloads")]);
+    await sleep(400);
+    checks.push(["点那一条下载", await clickObsRow("downloads", payloadName)]);
+    await sleep(300);
+    const downloadDetail = await obsDetailProbe();
+    checks.push([
+      "下载详情：绝对路径完整可读（不被截断），并给出体积 / 状态",
+      downloadDetail.present &&
+        (downloadDetail.fields["路径"] ?? "").includes("browser-downloads") &&
+        (downloadDetail.fields["路径"] ?? "").endsWith(payloadName) &&
+        (downloadDetail.fields["大小"] ?? "") !== "" &&
+        downloadDetail.fields["状态"] === "completed" &&
+        downloadDetail.truncated.length === 0,
+    ]);
+    log(`  下载详情路径：${downloadDetail.fields["路径"]}`);
+
+    // 网络：三条请求（404 / 500 / 连接被拒）。点**最后一条**——它的详情必定落在 132px 的正文之外，
+    // 正好验「展开后自动滚进可视区」：否则用户点了只会看到箭头转了，内容在视野之外。
+    checks.push(["切到「网络」页签", await clickObsTab("network")]);
+    await sleep(400);
+    checks.push(["点被拒的那条请求（列表最后一条）", await clickObsRow("network", "refused")]);
+    await sleep(400);
+    const refusedDetail = await obsDetailProbe();
+    checks.push([
+      "网络详情：完整 URL + 失败原因，且**自动滚进了可视区**",
+      refusedDetail.present &&
+        refusedDetail.visibleInBody &&
+        (refusedDetail.fields["URL"] ?? "").includes("/refused") &&
+        // 与 fixture 模式同一条纪律：只认 `net::ERR_` 前缀。
+        // 具体是 REFUSED 还是 UNSAFE_PORT（9 端口在 Chromium 的受限名单里）由内核决定，
+        // 写死具体码就是在断言 Chromium 的实现细节，换个端口就红。
+        (refusedDetail.fields["错误"] ?? "").startsWith("net::ERR_") &&
+        refusedDetail.fields["状态码"] === undefined &&
+        refusedDetail.truncated.length === 0,
+    ]);
+    log(
+      `  网络详情：错误=${refusedDetail.fields["错误"]}，` +
+        `截断=${JSON.stringify(refusedDetail.truncated)}，` +
+        `详情 ${refusedDetail.rectTop}~${refusedDetail.rectBottom} vs 正文 ` +
+        `${refusedDetail.bodyTop}~${refusedDetail.bodyBottom}，scrollTop=${refusedDetail.scrollTop}`,
+    );
+
+    // 单开：点了另一条，前一条自动收起（正文只有 132px，展开多条只会互相挤出去）
+    checks.push(["再点 404 那条", await clickObsRow("network", "/api/missing")]);
+    await sleep(400);
+    const missingDetail = await obsDetailProbe();
+    checks.push([
+      "一次只展开一条（前一条已收起），状态码 404 原样给出、不留空的「错误」行",
+      missingDetail.count === 1 &&
+        missingDetail.fields["状态码"] === "404" &&
+        missingDetail.fields["错误"] === undefined,
+    ]);
+
+    // 复制：真的写进系统剪贴板（渲染层调 `navigator.clipboard`，这里从**主进程**读回来核对）。
+    // ⚠️ 写剪贴板要求**文档处于聚焦状态**（Chromium 的硬规则）：真实用户点这个按钮时窗口必然聚焦，
+    // 而冒烟跑到这里时焦点还在终端上——不先聚焦，`writeText` 的 promise 会直接 reject、静默失败。
+    window.focus();
+    window.webContents.focus();
+    await sleep(200);
+    checks.push(["点「复制」（先命中测试，确认它真的在可视区那一层）", await clickObsCopy()]);
+    await sleep(300);
+    const clipboardText = await clipboard.readText();
+    checks.push([
+      "复制写出的是完整字段文本（含 URL 与状态码），不是概览里那行的截断版",
+      clipboardText.includes("URL：") &&
+        clipboardText.includes("/api/missing") &&
+        clipboardText.includes("状态码：404"),
+    ]);
+    log(`  剪贴板首行：${clipboardText.split("\n")[0] ?? ""}`);
+
+    // 换页签即收起上一条的展开：否则切回来会突然弹出一条，像是自己冒出来的
+    checks.push(["切回「控制台」页签", await clickObsTab("console")]);
+    await sleep(400);
+    checks.push(["换页签后没有残留的展开详情", (await obsDetailProbe()).present === false]);
 
     // ---- 原生视图必须**精确覆盖**「页面区域」----
     // 截图看不见这一条（原生视图浮在渲染层之上，截图里它就是页面本身），但错位的后果很显眼：
@@ -1399,6 +1710,7 @@ async function runDock(
     ]);
     const overArea = await readAreaRect();
     const overView = browserView()?.getBounds();
+    log(`  覆盖：区域 ${JSON.stringify(overArea)} 视图 ${JSON.stringify(overView)}`);
     checks.push([
       "覆盖确实比停靠区大（即用户看到的「超出、被窗口裁掉」）",
       overArea !== null &&
@@ -1408,9 +1720,11 @@ async function runDock(
     ]);
     // 覆盖必须**真的落到页面上**：判据取页面自己的 innerWidth，而不是我们设的视图宽度。
     // 页面按 1280 重排，正是「页面比停靠区宽、右侧被窗口边缘切掉」的来源——用户那张截图就是它。
+    // 读数写进断言文案：这一条一旦变红，红在「设了多大 / 量到多少 / 区域多宽」哪一段必须一眼可见。
+    const iwOverride = await pageInnerWidth();
     checks.push([
-      "覆盖尺寸真的落到页面（页面 innerWidth = 1280，而非停靠区宽度）",
-      (await pageInnerWidth()) === 1280,
+      `覆盖尺寸真的落到页面（页面 innerWidth=${iwOverride}，期望 1280）`,
+      iwOverride === 1280,
     ]);
 
     // 点「恢复」也走命中测试取到的那个元素：跟真人点击同一条路径，
@@ -1431,7 +1745,7 @@ async function runDock(
     const afterReset = await readAreaRect();
     const iwAfterReset = await pageInnerWidth();
     checks.push([
-      "「恢复」后页面重新按停靠区宽度重排（页面 innerWidth 回到区域宽度）",
+      `「恢复」后页面重新按停靠区宽度重排（页面 innerWidth=${iwAfterReset}，区域宽=${afterReset?.width}）`,
       afterReset !== null && iwAfterReset !== null && Math.abs(iwAfterReset - afterReset.width) <= 1,
     ]);
 

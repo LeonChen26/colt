@@ -1,14 +1,15 @@
 /**
  * 对话面板：消息流 + 流式文本 + 工具实时输出 + 状态栏（Live Bar）+ 右侧面板编排。
- * 具体的改动/用量/工具/分支面板已拆到 panels/ 与 BranchTree。
+ * 具体的改动 / 统计 / 工具 / 分支面板已拆到 panels/ 与 BranchTree。
+ * 会话头（②）的入口按 ⑦-H 收敛为**两个**（统计 / 规则）：「改动」由「正在处理」底部的总账接管（⑦-G）、
+ * 「工具」的聚合与明细都并入「统计」；两者仍可从 ⑦ 的「+」菜单打开（删的是入口，不是能力）。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  ChartColumn,
   ChevronDown,
-  Coins,
-  FileDiff,
   Folder,
   GitBranch,
   ImagePlus,
@@ -16,7 +17,6 @@ import {
   ShieldCheck,
   Shrink,
   Square,
-  Wrench,
   X,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
@@ -104,7 +104,8 @@ export function Conversation({
   const [dockInstances, setDockInstances] = useState<DockInstance[]>(defaultDockInstances);
   /** 当前激活实例的 id（默认落在「正在处理」，规则 ⑦-E） */
   const [dockActiveId, setDockActiveId] = useState<string>(DOCK_DEFAULT_KIND);
-  /** 「文件」视图要预览的目标（A3-2）；null = 尚未打开过文件；seq 用于「同一文件再点一次也重读」 */
+  /** 「要看某个文件」的请求（A3-2）；null = 尚未点过；seq 用于「同一文件再点一次也重读」。
+   *  ⑦-G 之后它不再切「文件」页签，而是让「正在处理」落到下钻的**内容层**。 */
   const [dockFile, setDockFile] = useState<{ path: string; seq: number } | null>(null);
   /** 内嵌浏览器视图状态（loaded 为 false 表示尚未创建 WebContents） */
   const [browser, setBrowser] = useState<BrowserViewState | null>(null);
@@ -158,8 +159,8 @@ export function Conversation({
    * 规则不该依赖调用方自觉。关掉当前激活项时要把激活位交还给默认视图，
    * 否则右栏会指向一个已不存在的实例。
    *
-   * 关闭即**丢弃该视图的状态**（文件目标清空）：于是从「+」重新打开「文件」回到空态，
-   * 与「关掉一个页签」的直觉一致，而不是留着一个看不见的旧目标。
+   * ⑦-G 之后不再需要「关闭即清空文件目标」：那个目标已经不在页签上，
+   * 而是「正在处理」的下钻状态（随会话切换自愈，见 `WorkspaceDock`）。
    */
   const closeDockInstance = useCallback(
     (id: string) => {
@@ -167,16 +168,15 @@ export function Conversation({
       if (target === undefined || !isDockClosable(target.kind)) return;
       setDockInstances((list) => list.filter((item) => item.id !== id));
       setDockActiveId((active) => (active === id ? DOCK_DEFAULT_KIND : active));
-      if (target.kind === "file") setDockFile(null);
     },
     [dockInstances],
   );
 
   /**
-   * 打开某类视图页签并展开右栏（A3-5）：② 会话头的「改动 / 用量 / 工具 / 规则」与
-   * 「正在处理」里的「查看全部改动」都走这里。
+   * 打开某类视图页签并展开右栏（A3-5）：② 会话头的「统计 / 规则」（⑦-H 后只剩这两个）
+   * 以及 ⑦ 的「+」菜单都走这里。
    *
-   * 必须**同时展开**右栏：只切页签而右栏还收着，等于点了没反应（同 ⑦-F / A3-2 的 openFile）。
+   * 必须**同时展开**右栏：只切页签而右栏还收着，等于点了没反应（同 ⑦-F）。
    */
   const openDockKind = useCallback(
     (kind: DockKind) => {
@@ -191,19 +191,17 @@ export function Conversation({
    *
    * `seq` 每次自增，保证**同一路径再点一次也会重读**——agent 可能刚改过它，
    * 只比较路径的话第二次点击不会有任何反应（React 认为状态没变）。
+   *
+   * ⑦-G：不再打开「文件」页签，而是切回**「正在处理」**并由容器把下钻落到内容层——
+   * 文件与「本次改动」本就是同一个东西的不同粒度，不该分成两个并列页签让用户选。
    */
   const openFile = useCallback(
     (path: string) => {
       setDockFile((prev) => ({ path, seq: (prev?.seq ?? 0) + 1 }));
-      openDockKind("file");
+      openDockKind(DOCK_DEFAULT_KIND);
     },
     [openDockKind],
   );
-
-  /** 重读当前预览的文件（agent 可能刚改过它） */
-  const reloadFile = useCallback(() => {
-    setDockFile((prev) => (prev === null ? prev : { ...prev, seq: prev.seq + 1 }));
-  }, []);
 
   /**
    * 用户操作内嵌浏览器（B1：后退 / 前进 / 刷新）。
@@ -690,28 +688,12 @@ export function Conversation({
               压缩上下文
             </button>
           )}
-          {changes.length > 0 && (
-            <PanelToggle
-              active={dockActiveKind === "changes"}
-              icon={<FileDiff {...ICON.sm} />}
-              label={`改动 ${changes.length}`}
-              title="在右栏查看本次会话的文件改动与 diff"
-              onClick={() => openDockKind("changes")}
-            />
-          )}
           <PanelToggle
             active={dockActiveKind === "usage"}
-            icon={<Coins {...ICON.sm} />}
-            label="用量"
-            title="在右栏查看本次会话的用量历史"
+            icon={<ChartColumn {...ICON.sm} />}
+            label="统计"
+            title="在右栏查看本次会话的统计（费用、用量、工具调用与失败）"
             onClick={() => openDockKind("usage")}
-          />
-          <PanelToggle
-            active={dockActiveKind === "tools"}
-            icon={<Wrench {...ICON.sm} />}
-            label="工具"
-            title="在右栏查看本次会话的工具调用历史"
-            onClick={() => openDockKind("tools")}
           />
           <PanelToggle
             active={dockActiveKind === "rules"}
@@ -1055,13 +1037,10 @@ export function Conversation({
           sessionId={sessionId}
           view={view}
           highlightPath={hoveredFile}
-          onOpenChanges={() => openDockKind("changes")}
-          onOpenFile={openFile}
           browser={browser}
           onBrowserNav={browserNav}
           onResetViewport={resetBrowserViewport}
-          file={dockFile}
-          onReloadFile={reloadFile}
+          fileRequest={dockFile}
           instances={dockInstances}
           activeId={dockActiveId}
           onActivate={activateDockInstance}
