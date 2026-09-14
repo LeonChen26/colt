@@ -78,10 +78,10 @@ export default function App(): React.JSX.Element {
     void (async () => {
       try {
         const [envReport, projectList, secrets, providerList] = await Promise.all([
-          window.banyan.invoke("env.check", undefined),
-          window.banyan.invoke("project.list", undefined),
-          window.banyan.invoke("secrets.status", undefined),
-          window.banyan.invoke("providers.list", undefined),
+          window.colt.invoke("env.check", undefined),
+          window.colt.invoke("project.list", undefined),
+          window.colt.invoke("secrets.status", undefined),
+          window.colt.invoke("providers.list", undefined),
         ]);
         setEnv(envReport);
         setProjects(projectList);
@@ -90,7 +90,7 @@ export default function App(): React.JSX.Element {
         if (projectList.length > 0) setActiveProject(projectList[0]!);
 
         // 首启引导：仅在尚未完成引导时弹出（已完成则直接进主界面）
-        const report = await window.banyan.invoke("firstRun.check", undefined);
+        const report = await window.colt.invoke("firstRun.check", undefined);
         if (!report.onboardingDone) setFirstRun(report);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -101,14 +101,14 @@ export default function App(): React.JSX.Element {
   // 离开设置页时重新拉取 provider，让模型下拉及时反映改动
   useEffect(() => {
     if (mainView !== "settings") {
-      void window.banyan.invoke("providers.list", undefined).then(setProviders);
+      void window.colt.invoke("providers.list", undefined).then(setProviders);
     }
   }, [mainView]);
 
   // 全局监听会话视图：后台会话也能刷新标题、消息数与运行状态
   // （若只靠当前会话的回调，未选中的会话永远停在「新会话」）
   useEffect(() => {
-    return window.banyan.on("session.view", (view) => {
+    return window.colt.on("session.view", (view) => {
       const firstUser = view.messages.find((item) => item.role === "user");
       setSessionsByProject((map) => {
         const next = new Map(map);
@@ -146,7 +146,7 @@ export default function App(): React.JSX.Element {
 
   // 全局监听会话进程状态：worker 停止/崩溃后侧栏要能看出来，否则界面看上去“会话还在”
   useEffect(() => {
-    return window.banyan.on("session.status", ({ sessionId, state }) => {
+    return window.colt.on("session.status", ({ sessionId, state }) => {
       setOfflineSessions((map) => {
         const next = new Map(map);
         if (state === "dormant" || state === "crashed") {
@@ -162,7 +162,7 @@ export default function App(): React.JSX.Element {
 
   /** 拉取某项目的会话列表并写入缓存；force 时重拉 */
   const loadProjectSessions = useCallback(async (projectId: string) => {
-    const list = await window.banyan.invoke("session.list", { projectId });
+    const list = await window.colt.invoke("session.list", { projectId });
     setSessionsByProject((map) => new Map(map).set(projectId, list));
     return list;
   }, []);
@@ -182,9 +182,9 @@ export default function App(): React.JSX.Element {
 
   const pickProject = useCallback(async () => {
     try {
-      const project = await window.banyan.invoke("project.pick", undefined);
+      const project = await window.colt.invoke("project.pick", undefined);
       if (!project) return;
-      setProjects(await window.banyan.invoke("project.list", undefined));
+      setProjects(await window.colt.invoke("project.list", undefined));
       setActiveProject(project);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -194,7 +194,7 @@ export default function App(): React.JSX.Element {
   const newSession = useCallback(async () => {
     if (!activeProject) return;
     try {
-      const session = await window.banyan.invoke("session.create", {
+      const session = await window.colt.invoke("session.create", {
         projectId: activeProject.id,
       });
       await loadProjectSessions(activeProject.id);
@@ -209,7 +209,7 @@ export default function App(): React.JSX.Element {
     async (session: SessionInfo) => {
       if (!window.confirm(`确定删除会话「${session.title}」？此操作不可恢复。`)) return;
       try {
-        await window.banyan.invoke("session.delete", { sessionId: session.id });
+        await window.colt.invoke("session.delete", { sessionId: session.id });
         const list = await loadProjectSessions(session.projectId);
         setActiveSession((current) => {
           if (current?.id !== session.id) return current;
@@ -232,8 +232,8 @@ export default function App(): React.JSX.Element {
             // 选择「清空重来」后历史项目/会话已删，需重新拉取；并同步密钥状态
             void (async () => {
               const [projectList, secrets] = await Promise.all([
-                window.banyan.invoke("project.list", undefined),
-                window.banyan.invoke("secrets.status", undefined),
+                window.colt.invoke("project.list", undefined),
+                window.colt.invoke("secrets.status", undefined),
               ]);
               setProjects(projectList);
               setActiveProject(projectList[0] ?? null);
@@ -247,7 +247,7 @@ export default function App(): React.JSX.Element {
         <div className="flex items-center gap-2">
           <Trees {...ICON.lg} className="text-text-primary" />
           <span className="text-[13.5px] font-semibold tracking-[.2px] text-text-primary">
-            Banyan
+            Colt
           </span>
         </div>
         <div className="flex items-center gap-2">

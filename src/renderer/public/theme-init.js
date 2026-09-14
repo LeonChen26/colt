@@ -4,7 +4,7 @@
  */
 (function () {
   try {
-    var stored = localStorage.getItem("banyan.theme");
+    var stored = localStorage.getItem("colt.theme");
     var theme =
       stored === "dark" || stored === "light" || stored === "system" ? stored : "dark";
     document.documentElement.setAttribute("data-theme", theme);

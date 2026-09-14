@@ -139,7 +139,7 @@ export type WorkerCommand =
       type: "init";
       sessionsRoot: string;
       cwd: string;
-      /** Banyan 自有的会话 ID，投影与路由均以它为准 */
+      /** Colt 自有的会话 ID，投影与路由均以它为准 */
       externalSessionId: string;
       /** 内核 JSONL 会话 ID，有则续接历史，无则新建 */
       kernelSessionId?: string;

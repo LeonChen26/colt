@@ -1,5 +1,5 @@
 /**
- * 首启检测：判断本机是否留有历史安装残留（%APPDATA%\Banyan）。
+ * 首启检测：判断本机是否留有历史安装残留（%APPDATA%\Colt）。
  *
  * 用途：
  * - 全新环境 → 渲染层走首次运行引导；
@@ -26,7 +26,7 @@ function flagPath(userDataPath: string): string {
 }
 
 function dbPath(userDataPath: string): string {
-  return join(userDataPath, "data", "banyan.db");
+  return join(userDataPath, "data", "colt.db");
 }
 
 function secretsPath(userDataPath: string): string {

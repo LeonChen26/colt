@@ -64,7 +64,7 @@ export function FilePreview({
     let disposed = false;
     setLoading(true);
     setError(null);
-    void window.banyan
+    void window.colt
       .invoke("file.read", { sessionId, path })
       .then((next) => {
         if (!disposed) setResult(next);

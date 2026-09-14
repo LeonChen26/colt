@@ -1,7 +1,7 @@
 /**
  * 审批规则面板：查看并管理会话内记忆的放行 / 拒绝规则。
  *
- * 这些规则只存在于主进程内存、以 Banyan 会话为单位存活（不落盘），
+ * 这些规则只存在于主进程内存、以 Colt 会话为单位存活（不落盘），
  * 一旦记错就会表现为「明明没点拒绝却总被拦」或「本该询问却不再问」，
  * 且此前没有任何入口能看到它们。本面板补齐这个可观测性缺口。
  */
@@ -34,7 +34,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
     setLoading(true);
     setError(null);
     try {
-      const next = await window.banyan.invoke("approval.rules.list", { sessionId });
+      const next = await window.colt.invoke("approval.rules.list", { sessionId });
       setRules(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -52,7 +52,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
       setBusy(true);
       setError(null);
       try {
-        await window.banyan.invoke("approval.rules.remove", { sessionId, ruleId });
+        await window.colt.invoke("approval.rules.remove", { sessionId, ruleId });
         // 本地同步移除，省一次往返；失败时下面的 load 会纠正
         setRules((list) => list.filter((rule) => rule.id !== ruleId));
       } catch (e) {
@@ -70,7 +70,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
       setBusy(true);
       setError(null);
       try {
-        await window.banyan.invoke("approval.rules.clear", { sessionId, kind });
+        await window.colt.invoke("approval.rules.clear", { sessionId, kind });
         setRules((list) => (kind === undefined ? [] : list.filter((rule) => rule.kind !== kind)));
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

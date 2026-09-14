@@ -94,8 +94,8 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
     try {
       // 两个既有 IPC 并发取；任一失败都进同一个错误分支（缺一个都画不出完整结论）
       const [usage, toolCalls] = await Promise.all([
-        window.banyan.invoke("usage.list", { sessionId }),
-        window.banyan.invoke("toolCalls.list", { sessionId }),
+        window.colt.invoke("usage.list", { sessionId }),
+        window.colt.invoke("toolCalls.list", { sessionId }),
       ]);
       setRecords(usage.records);
       setCalls(toolCalls);

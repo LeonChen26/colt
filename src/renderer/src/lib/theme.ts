@@ -9,7 +9,7 @@
 
 export type Theme = "dark" | "light" | "system";
 
-const STORAGE_KEY = "banyan.theme";
+const STORAGE_KEY = "colt.theme";
 
 /** 读取持久化主题；无有效值时默认暗色（对齐高保真，暗色是设计基调） */
 export function loadTheme(): Theme {

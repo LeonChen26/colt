@@ -3,7 +3,7 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// Banyan 构建配置：main / preload / renderer 三端
+// Colt 构建配置：main / preload / renderer 三端
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],

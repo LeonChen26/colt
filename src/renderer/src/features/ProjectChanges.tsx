@@ -17,7 +17,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
     () => async () => {
       setLoading(true);
       try {
-        const list = await window.banyan.invoke("changes.list", { projectId });
+        const list = await window.colt.invoke("changes.list", { projectId });
         setChanges(list);
         setSelected((current) => current ?? list[0]?.id ?? null);
       } finally {

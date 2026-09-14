@@ -212,7 +212,7 @@ export function Conversation({
    */
   const browserNav = useCallback(
     (action: BrowserNavAction) => {
-      void window.banyan.invoke("browser.navigate", { sessionId, action }).catch(() => undefined);
+      void window.colt.invoke("browser.navigate", { sessionId, action }).catch(() => undefined);
     },
     [sessionId],
   );
@@ -225,7 +225,7 @@ export function Conversation({
    * 与 agent 的 `browser_act viewport`（不给尺寸即恢复）是同一件事，只是发起方是用户。
    */
   const resetBrowserViewport = useCallback(() => {
-    void window.banyan.invoke("browser.viewport.reset", { sessionId }).catch(() => undefined);
+    void window.colt.invoke("browser.viewport.reset", { sessionId }).catch(() => undefined);
   }, [sessionId]);
 
   /**
@@ -306,7 +306,7 @@ export function Conversation({
   useEffect(() => {
     let disposed = false;
     const refresh = (): void => {
-      void window.banyan
+      void window.colt
         .invoke("git.status", { cwd })
         .then((next) => {
           if (!disposed) setGit(next);
@@ -350,12 +350,12 @@ export function Conversation({
     };
 
     // 挂载时对齐：本组件卸载期间（切会话）该会话可能已经加载过浏览器
-    void window.banyan
+    void window.colt
       .invoke("browser.state.get", { sessionId })
       .then(apply)
       .catch(() => undefined);
 
-    const off = window.banyan.on("browser.state", (state) => {
+    const off = window.colt.on("browser.state", (state) => {
       if (state.sessionId === sessionId) apply(state);
     });
     return () => {
@@ -381,14 +381,14 @@ export function Conversation({
     setError(null);
     setApprovals([]);
 
-    const offView = window.banyan.on("session.view", (next) => {
+    const offView = window.colt.on("session.view", (next) => {
       if (disposed || next.sessionId !== sessionId) return;
       setView(next);
     });
-    const offError = window.banyan.on("session.error", (payload) => {
+    const offError = window.colt.on("session.error", (payload) => {
       if (!disposed && payload.sessionId === sessionId) setError(payload.message);
     });
-    const offApproval = window.banyan.on("approval.pending", (payload) => {
+    const offApproval = window.colt.on("approval.pending", (payload) => {
       if (disposed || payload.sessionId !== sessionId) return;
       setApprovals(payload.requests);
     });
@@ -396,14 +396,14 @@ export function Conversation({
     void (async () => {
       try {
         // 审批模式是会话级状态：读的是本会话的设定（无全局设定）
-        const current = await window.banyan.invoke("approval.mode.get", { sessionId });
+        const current = await window.colt.invoke("approval.mode.get", { sessionId });
         if (!disposed) setMode(current.mode);
 
-        await window.banyan.invoke("session.open", { sessionId, cwd });
-        const snapshot = await window.banyan.invoke("session.view", { sessionId });
+        await window.colt.invoke("session.open", { sessionId, cwd });
+        const snapshot = await window.colt.invoke("session.view", { sessionId });
         if (!disposed && snapshot) setView(snapshot);
         // 重新打开时可能已有堆积的待审，需主动拉一次
-        const pending = await window.banyan.invoke("approval.list", { sessionId });
+        const pending = await window.colt.invoke("approval.list", { sessionId });
         if (!disposed) setApprovals(pending);
       } catch (e) {
         if (!disposed) setError(e instanceof Error ? e.message : String(e));
@@ -419,7 +419,7 @@ export function Conversation({
       offApproval();
       // 卸载时释放该会话的 worker。运行中会被主进程拒绝，交给空闲回收兼顾；
       // 重新打开时靠 JSONL 重放恢复，代价仅是一次启动延迟。
-      void window.banyan.invoke("session.close", { sessionId }).catch(() => undefined);
+      void window.colt.invoke("session.close", { sessionId }).catch(() => undefined);
     };
   }, [sessionId, cwd]);
 
@@ -453,7 +453,7 @@ export function Conversation({
       // 乐观移除：主进程随后会推全量待审覆盖
       setApprovals((list) => list.filter((item) => item.toolCallId !== toolCallId));
       try {
-        await window.banyan.invoke("approval.resolve", {
+        await window.colt.invoke("approval.resolve", {
           sessionId,
           toolCallId,
           approved: input.approved,
@@ -514,7 +514,7 @@ export function Conversation({
     setAttachments([]);
     setError(null);
     try {
-      await window.banyan.invoke("session.prompt", {
+      await window.colt.invoke("session.prompt", {
         sessionId,
         text,
         images: images.length > 0 ? images : undefined,
@@ -528,7 +528,7 @@ export function Conversation({
 
   const abort = useCallback(async () => {
     try {
-      await window.banyan.invoke("session.abort", { sessionId });
+      await window.colt.invoke("session.abort", { sessionId });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -537,7 +537,7 @@ export function Conversation({
   const compact = useCallback(async () => {
     setError(null);
     try {
-      await window.banyan.invoke("session.compact", { sessionId });
+      await window.colt.invoke("session.compact", { sessionId });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -550,7 +550,7 @@ export function Conversation({
       if (!providerId || !modelId) return;
       setError(null);
       try {
-        await window.banyan.invoke("session.setModel", { sessionId, providerId, modelId });
+        await window.colt.invoke("session.setModel", { sessionId, providerId, modelId });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -562,7 +562,7 @@ export function Conversation({
     async (next: ApprovalMode) => {
       setError(null);
       try {
-        const result = await window.banyan.invoke("approval.mode.set", { mode: next, sessionId });
+        const result = await window.colt.invoke("approval.mode.set", { mode: next, sessionId });
         setMode(result.mode);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -723,13 +723,13 @@ export function Conversation({
           {view?.messages.length === 0 && !opening && !error && (
             <div className="flex h-full flex-col items-center justify-center gap-2.5">
               <div className="mb-1 text-[10px] uppercase tracking-[2px] text-text-muted">
-                Banyan · 本地编码 Agent
+                Colt · 本地编码 Agent
               </div>
               <h2 className="m-0 text-[22px] font-semibold tracking-[-.3px] text-text-primary">
                 今天要修哪个 bug？
               </h2>
               <p className="m-0 text-[12.5px] text-text-secondary">
-                描述你想做的事，Banyan 会先给你一份计划。
+                描述你想做的事，Colt 会先给你一份计划。
               </p>
               <div className="mt-3 flex max-w-[560px] flex-wrap justify-center gap-2">
                 {["修复登录超时", "给 utils 补单测", "把日志换成 pino", "解释这段代码"].map(

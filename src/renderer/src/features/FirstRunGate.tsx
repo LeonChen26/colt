@@ -26,7 +26,7 @@ export function FirstRunGate({
     setBusy(choice);
     setError(null);
     try {
-      await window.banyan.invoke("firstRun.resolve", { choice });
+      await window.colt.invoke("firstRun.resolve", { choice });
       onResolved(choice);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -40,12 +40,12 @@ export function FirstRunGate({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-[520px] max-w-[92vw] rounded-xl border border-line bg-surface-raised p-6 shadow-2xl">
         <h1 className="text-lg font-semibold text-text-primary">
-          {historical ? "检测到历史数据" : "欢迎使用 Banyan"}
+          {historical ? "检测到历史数据" : "欢迎使用 Colt"}
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-text-secondary">
           {historical
-            ? "本机已存在 Banyan 的工作台数据。请选择是继续沿用，还是清空后重新开始。"
-            : "Banyan 是桌面 Agent 工作台。开始前请确认运行环境满足要求，随后即可打开项目目录与 Agent 对话。"}
+            ? "本机已存在 Colt 的工作台数据。请选择是继续沿用，还是清空后重新开始。"
+            : "Colt 是桌面 Agent 工作台。开始前请确认运行环境满足要求，随后即可打开项目目录与 Agent 对话。"}
         </p>
 
         <div className="mt-4 rounded-lg border border-line bg-surface p-3 text-xs">

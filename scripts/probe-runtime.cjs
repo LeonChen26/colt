@@ -1,4 +1,4 @@
-// Banyan 运行时探针：确认 Electron 内置 Node 版本与 node:sqlite 可用性
+// Colt 运行时探针：确认 Electron 内置 Node 版本与 node:sqlite 可用性
 // 作者：陕耀云栈WorkMate
 const { app } = require("electron");
 
@@ -30,9 +30,9 @@ app.whenReady().then(() => {
       const { DatabaseSync } = sqlite.mod;
       const db = new DatabaseSync(":memory:");
       db.exec("CREATE TABLE probe (id INTEGER PRIMARY KEY, name TEXT)");
-      db.exec("INSERT INTO probe (name) VALUES ('banyan')");
+      db.exec("INSERT INTO probe (name) VALUES ('colt')");
       const row = db.prepare("SELECT name FROM probe WHERE id = 1").get();
-      report.nodeSqliteRoundTrip = row && row.name === "banyan";
+      report.nodeSqliteRoundTrip = row && row.name === "colt";
       db.close();
     } catch (error) {
       report.nodeSqliteRoundTrip = false;
@@ -44,8 +44,8 @@ app.whenReady().then(() => {
   const { utilityProcess } = require("electron");
   report.utilityProcessAvailable = typeof utilityProcess?.fork === "function";
 
-  console.log("BANYAN_PROBE_BEGIN");
+  console.log("COLT_PROBE_BEGIN");
   console.log(JSON.stringify(report, null, 2));
-  console.log("BANYAN_PROBE_END");
+  console.log("COLT_PROBE_END");
   app.quit();
 });

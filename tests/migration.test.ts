@@ -17,7 +17,7 @@ let root: string;
 
 beforeEach(() => {
   closeDatabase();
-  root = mkdtempSync(join(tmpdir(), "banyan-migrate-"));
+  root = mkdtempSync(join(tmpdir(), "colt-migrate-"));
 });
 
 afterEach(() => {
@@ -40,7 +40,7 @@ function seedLegacy(
   version = 0,
 ): void {
   mkdirSync(join(userDataPath, "data"), { recursive: true });
-  const raw = new DatabaseSync(join(userDataPath, "data", "banyan.db"));
+  const raw = new DatabaseSync(join(userDataPath, "data", "colt.db"));
   for (const sql of statements) raw.exec(sql);
   raw.exec(`PRAGMA user_version = ${version}`);
   raw.close();
@@ -152,7 +152,7 @@ describe("openDatabase 迁移", () => {
   test("旧库带存量用量数据升级：数据不丢，唯一索引仍能建立", () => {
     seedLegacy(root, LEGACY_SCHEMA, 0);
     // 存量行的 kernel_usage_id 均为 NULL，依赖 SQLite「多个 NULL 互不相等」才能建唯一索引
-    const raw = new DatabaseSync(join(root, "data", "banyan.db"));
+    const raw = new DatabaseSync(join(root, "data", "colt.db"));
     for (let i = 0; i < 5; i += 1) {
       raw
         .prepare(
@@ -229,9 +229,9 @@ describe("openDatabase 迁移", () => {
            updated_at INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0,
            status TEXT NOT NULL DEFAULT 'active')`,
         // 同一目录的三种写法
-        `INSERT INTO projects VALUES ('p1','banyan','E:/code/banyan',100,100)`,
-        `INSERT INTO projects VALUES ('p2','banyan','e:\\code\\banyan',200,300)`,
-        `INSERT INTO projects VALUES ('p3','banyan','E:\\code\\banyan',150,150)`,
+        `INSERT INTO projects VALUES ('p1','colt','E:/code/colt',100,100)`,
+        `INSERT INTO projects VALUES ('p2','colt','e:\\code\\colt',200,300)`,
+        `INSERT INTO projects VALUES ('p3','colt','E:\\code\\colt',150,150)`,
         `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status)
            VALUES ('s2','p2','会话2','x',1,1,0,'active')`,
         `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status)
@@ -250,7 +250,7 @@ describe("openDatabase 迁移", () => {
     assert.equal(projects.length, 1, "三处写法应合并为一条项目");
     // 保留 last_opened_at 最新的 p2
     assert.equal(projects[0]?.id, "p2");
-    assert.equal(projects[0]?.root_key, "e:/code/banyan");
+    assert.equal(projects[0]?.root_key, "e:/code/colt");
 
     const sessions = db.prepare("SELECT project_id FROM sessions ORDER BY id").all() as unknown as {
       project_id: string;

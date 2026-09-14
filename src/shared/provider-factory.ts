@@ -40,7 +40,7 @@ export function buildProvider(config: ProviderBuildConfig): ReturnType<typeof de
     id: config.id,
     name: config.name,
     baseUrl: config.baseUrl,
-    auth: { apiKey: envApiKeyAuth(`${config.name} API key`, ["BANYAN_PROVIDER_KEY"]) },
+    auth: { apiKey: envApiKeyAuth(`${config.name} API key`, ["COLT_PROVIDER_KEY"]) },
     models: config.models.map((option) => ({
       id: option.id,
       name: option.name,

@@ -563,8 +563,8 @@ const networkEntry = (over: Partial<NetworkEntry> = {}): NetworkEntry => ({
 
 /** 造一条下载记录 */
 const downloadEntry = (over: Partial<DownloadEntry> = {}): DownloadEntry => ({
-  filename: "1-banyan-payload.txt",
-  path: "C:\\Users\\me\\AppData\\browser-downloads\\s1\\1-banyan-payload.txt",
+  filename: "1-colt-payload.txt",
+  path: "C:\\Users\\me\\AppData\\browser-downloads\\s1\\1-colt-payload.txt",
   url: "http://127.0.0.1:8123/payload.txt",
   bytes: 2048,
   state: "completed",
@@ -614,7 +614,7 @@ describe("观测条目详情（N1）", () => {
   test("下载：绝对路径 + 体积沿用既有格式化口径", () => {
     const entry = downloadEntry();
     const fields = downloadFields(entry);
-    assert.equal(fieldOf(fields, "文件"), "1-banyan-payload.txt");
+    assert.equal(fieldOf(fields, "文件"), "1-colt-payload.txt");
     assert.equal(fieldOf(fields, "路径"), entry.path);
     assert.equal(fieldOf(fields, "大小"), "2.0 KB");
     assert.equal(fieldOf(fields, "状态"), "completed");
@@ -642,7 +642,7 @@ describe("观测条目详情（N1）", () => {
     // 同一批下载里同名不同路径的两条必须能分别展开
     assert.notEqual(
       downloadRowKey(downloadEntry()),
-      downloadRowKey(downloadEntry({ path: "C:\\other\\1-banyan-payload.txt" })),
+      downloadRowKey(downloadEntry({ path: "C:\\other\\1-colt-payload.txt" })),
     );
     assert.notEqual(networkRowKey(networkEntry()), networkRowKey(networkEntry({ statusCode: 500 })));
   });

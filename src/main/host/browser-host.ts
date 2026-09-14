@@ -65,7 +65,7 @@ const ERR_ABORTED = -3;
  * 同时与主应用的 defaultSession 隔离——网络/下载观测因此不必再靠 webContentsId
  * 把应用自身的流量剔除出去。
  */
-const BROWSER_PARTITION = "persist:banyan-browser";
+const BROWSER_PARTITION = "persist:colt-browser";
 /**
  * 渲染层尚未上报矩形时的兜底视口。
  * 自动化冒烟（runFixture）直接驱动宿主、没有渲染层参与，页面仍需一个非退化视口
@@ -93,16 +93,16 @@ interface SessionBrowser {
 const SNAPSHOT_SCRIPT = `(() => {
   const selector = 'a,button,input,select,textarea,[role="button"],[role="link"],[contenteditable="true"]';
   const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 200);
-  let seq = Number(window.__banyanRefSeq || 0);
+  let seq = Number(window.__coltRefSeq || 0);
   const lines = nodes.map((el) => {
-    let ref = el.getAttribute('data-banyan-ref');
-    if (!ref) { seq += 1; ref = 'e' + seq; el.setAttribute('data-banyan-ref', ref); }
+    let ref = el.getAttribute('data-colt-ref');
+    if (!ref) { seq += 1; ref = 'e' + seq; el.setAttribute('data-colt-ref', ref); }
     const raw = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.innerText || el.value || '';
     const name = String(raw).replace(/\\s+/g, ' ').trim().slice(0, 80);
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
     return '[' + ref + '] ' + role + ' "' + name + '"';
   });
-  window.__banyanRefSeq = seq;
+  window.__coltRefSeq = seq;
   return 'URL: ' + location.href + '\\nTITLE: ' + document.title + '\\n' + lines.join('\\n');
 })()`;
 
@@ -138,7 +138,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
 }
 
 function clickScript(ref: string): string {
-  const selector = JSON.stringify(`[data-banyan-ref="${ref}"]`);
+  const selector = JSON.stringify(`[data-colt-ref="${ref}"]`);
   return `(() => {
     const el = document.querySelector(${selector});
     if (!el) return '未找到元素 ${ref}，请重新执行 snapshot';
@@ -150,7 +150,7 @@ function clickScript(ref: string): string {
 }
 
 function typeScript(ref: string, text: string): string {
-  const selector = JSON.stringify(`[data-banyan-ref="${ref}"]`);
+  const selector = JSON.stringify(`[data-colt-ref="${ref}"]`);
   const value = JSON.stringify(text);
   return `(() => {
     const el = document.querySelector(${selector});
@@ -610,7 +610,7 @@ export class BrowserHost {
       const document = await cdp.sendCommand("DOM.getDocument", { depth: 0 });
       const found = await cdp.sendCommand("DOM.querySelector", {
         nodeId: document.root.nodeId,
-        selector: `[data-banyan-ref="${ref}"]`,
+        selector: `[data-colt-ref="${ref}"]`,
       });
       if (!found.nodeId) throw new Error(`未找到元素 ${ref}，请重新执行 snapshot`);
 

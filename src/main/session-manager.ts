@@ -24,7 +24,7 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
  * 但一旦超过就说明 worker 卡住再也发不出 ready，必须拒绝等待方，
  * 否则 session.open 永久 pending，界面停在「正在启动会话进程…」。
  */
-const READY_TIMEOUT_MS = Number(process.env.BANYAN_READY_TIMEOUT_MS ?? 120_000);
+const READY_TIMEOUT_MS = Number(process.env.COLT_READY_TIMEOUT_MS ?? 120_000);
 /** 空闲回收扫描间隔 */
 const IDLE_SWEEP_MS = 60 * 1000;
 
@@ -140,7 +140,7 @@ export class SessionManager {
     remember?: "signature" | "tool";
     deny?: "signature" | "tool";
   }): void {
-    if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+    if (process.env.COLT_APPROVAL_DEBUG === "1") {
       console.log(`[approval] 界面处置 ${input.toolCallId} approved=${input.approved}`);
     }
     this.#clearApprovalTimer(input.toolCallId);
@@ -201,7 +201,7 @@ export class SessionManager {
     // 分析期间用户中断：直接作废这次授权（回一条拒绝让 worker 解除阻塞），不再入队——
     // 否则中断后会凭空出现一张无法解释的待审卡片，且解除阻塞要等到 5 分钟超时
     if (entry.abortEpoch !== abortEpoch) {
-      if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+      if (process.env.COLT_APPROVAL_DEBUG === "1") {
         console.log(`[approval] 分析期间会话已中断，丢弃结果 ${toolCallId}`);
       }
       entry.child.postMessage({
@@ -218,7 +218,7 @@ export class SessionManager {
     // 少了这一步，切到 full-access 后仍会弹出一张待审卡片，与「本会话内一律放行」矛盾。
     if (entry.modeEpoch !== modeEpoch) {
       const mode = this.approvals.getMode(options.sessionId);
-      if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+      if (process.env.COLT_APPROVAL_DEBUG === "1") {
         console.log(`[approval] 分析期间模式已改为 ${mode}，按新模式重新裁决 ${toolCallId}`);
       }
       if (mode === "full-access") {
@@ -457,16 +457,16 @@ export class SessionManager {
     // 诊断钩子（仅开发态）：指向故障注入脚本，用于验证就绪失败路径。
     // 打包后一律使用真实 worker，避免误配指向恶意脚本。
     const workerPath =
-      (!app.isPackaged && process.env.BANYAN_WORKER_OVERRIDE) || join(__dirname, "worker.js");
+      (!app.isPackaged && process.env.COLT_WORKER_OVERRIDE) || join(__dirname, "worker.js");
     const child = utilityProcess.fork(workerPath, [], {
-      serviceName: `banyan-session-${options.sessionId.slice(0, 8)}`,
+      serviceName: `colt-session-${options.sessionId.slice(0, 8)}`,
       stdio: "pipe",
       env: {
         ...process.env,
         // 明文密钥只存在于 worker 进程环境中
         // 内置 DeepSeek 用官方约定的变量名，自定义 provider 用统一变量名
         DEEPSEEK_API_KEY: options.provider.kind === "deepseek" ? apiKey : "",
-        BANYAN_PROVIDER_KEY: apiKey,
+        COLT_PROVIDER_KEY: apiKey,
       },
     });
 
@@ -565,7 +565,7 @@ export class SessionManager {
           break;
 
         case "approvalRequest": {
-          if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+          if (process.env.COLT_APPROVAL_DEBUG === "1") {
             console.log(`[approval] main 收到请求 ${message.toolName} 模式=${this.approvals.getMode(options.sessionId)}`);
           }
           // worker 正阻塞在 before_tool，无论走哪条分支都必须回一次答复

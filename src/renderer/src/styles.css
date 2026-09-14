@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ============================================================
-   Banyan 设计令牌
+   Colt 设计令牌
    暗色为默认；data-theme="light" 覆盖为亮色；data-theme="system" 跟随系统。
    组件只引用令牌，不写死颜色，主题切换全部联动。
    ============================================================ */
@@ -169,7 +169,7 @@ body {
 }
 
 /* 运行中呼吸点 */
-@keyframes banyan-pulse {
+@keyframes colt-pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.45);
   }
@@ -181,7 +181,7 @@ body {
   }
 }
 .pulse-dot {
-  animation: banyan-pulse 2s infinite;
+  animation: colt-pulse 2s infinite;
 }
 .live-dot {
   display: inline-block;
@@ -190,7 +190,7 @@ body {
   height: 6px;
   border-radius: 50%;
   background: var(--color-success);
-  animation: banyan-pulse 2s infinite;
+  animation: colt-pulse 2s infinite;
 }
 
 /* 心跳转「似乎卡住」：琥珀、停止呼吸 */

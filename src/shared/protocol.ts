@@ -1,5 +1,5 @@
 /**
- * Banyan IPC 契约（单一真源）
+ * Colt IPC 契约（单一真源）
  * 主进程、预加载、渲染进程共享此定义。
  */
 
@@ -29,7 +29,7 @@ export interface EnvReport {
 
 /** 首次运行 / 历史数据检测结果 */
 export interface FirstRunReport {
-  /** 是否存在历史数据目录（%APPDATA%\Banyan 已存在） */
+  /** 是否存在历史数据目录（%APPDATA%\Colt 已存在） */
   hasHistoricalData: boolean;
   /** 历史数据库文件是否存在 */
   hasDatabase: boolean;
@@ -712,7 +712,7 @@ export interface ApprovalResolution {
 }
 
 /** 预加载脚本暴露给渲染进程的 API 形状 */
-export interface BanyanApi {
+export interface ColtApi {
   invoke<C extends IpcChannel>(channel: C, request: IpcRequest<C>): Promise<IpcResponse<C>>;
   on<E extends IpcEventName>(event: E, handler: (payload: IpcEventPayload<E>) => void): () => void;
 }

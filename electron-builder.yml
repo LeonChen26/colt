@@ -1,7 +1,7 @@
 # electron-builder 配置：仅 Windows 目标
-appId: com.banyan.app
-productName: Banyan
-copyright: Copyright © 2026 Banyan
+appId: com.colt.app
+productName: Colt
+copyright: Copyright © 2026 Colt
 
 directories:
   output: release
@@ -36,7 +36,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Banyan
+  shortcutName: Colt
   # 自定义 NSIS 脚本：安装前检测历史安装（见 build/installer.nsh）
   include: build/installer.nsh
   installerLanguages:

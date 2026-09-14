@@ -21,7 +21,7 @@ const MAIN_PAGE = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>Banyan 夹具页</title>
+<title>Colt 夹具页</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 24px; line-height: 1.6; }
   #layout { margin-top: 8px; padding: 8px; background: #e8f5e9; }
@@ -29,7 +29,7 @@ const MAIN_PAGE = `<!doctype html>
 </style>
 </head>
 <body>
-  <h1>Banyan 夹具页</h1>
+  <h1>Colt 夹具页</h1>
   <p>用于本地验证浏览器能力，不依赖外部网络。</p>
 
   <h2>布局</h2>
@@ -94,7 +94,7 @@ const POPUP_PAGE = `<!doctype html>
   <p>若你看到的仍是浏览器窗口里的同一页，说明弹窗已被拦截并在当前窗口打开。</p>
 </body></html>`;
 
-const DOWNLOAD_BODY = "banyan download fixture\n";
+const DOWNLOAD_BODY = "colt download fixture\n";
 
 function sendHtml(response, body) {
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -113,7 +113,7 @@ function handleRequest(request, response) {
   if (url === "/payload.txt") {
     response.writeHead(200, {
       "content-type": "text/plain; charset=utf-8",
-      "content-disposition": 'attachment; filename="banyan-payload.txt"',
+      "content-disposition": 'attachment; filename="colt-payload.txt"',
     });
     response.end(DOWNLOAD_BODY);
     return;
@@ -175,7 +175,7 @@ const isCli =
 
 if (isCli) {
   const started = await createFixtureServer({
-    port: Number(process.env.BANYAN_FIXTURE_PORT ?? DEFAULT_PORT),
+    port: Number(process.env.COLT_FIXTURE_PORT ?? DEFAULT_PORT),
   });
   console.log(`[fixture] 夹具站已启动：${started.url}`);
   console.log("[fixture] 只监听本机，Ctrl+C 结束");

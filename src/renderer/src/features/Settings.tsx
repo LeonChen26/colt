@@ -15,7 +15,7 @@ export function Settings(): React.JSX.Element {
   const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
-    setProviders(await window.banyan.invoke("providers.list", undefined));
+    setProviders(await window.colt.invoke("providers.list", undefined));
   }, []);
 
   useEffect(() => {
@@ -114,7 +114,7 @@ function ApprovalPolicySettings({
   useEffect(() => {
     void (async () => {
       try {
-        const { commands } = await window.banyan.invoke("approval.analyzeConfig.get", undefined);
+        const { commands } = await window.colt.invoke("approval.analyzeConfig.get", undefined);
         setText(commands.join("\n"));
       } catch (e) {
         onError(e);
@@ -130,7 +130,7 @@ function ApprovalPolicySettings({
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
-      const saved = await window.banyan.invoke("approval.analyzeConfig.set", { commands });
+      const saved = await window.colt.invoke("approval.analyzeConfig.set", { commands });
       setText(saved.commands.join("\n"));
       onSaved("审批白名单已保存");
     } catch (e) {
@@ -185,9 +185,9 @@ function ProviderCard({
     if (!key.trim()) return;
     try {
       if (provider.builtin) {
-        await window.banyan.invoke("secrets.set", { key: "deepseek", value: key });
+        await window.colt.invoke("secrets.set", { key: "deepseek", value: key });
       } else {
-        await window.banyan.invoke("providers.save", {
+        await window.colt.invoke("providers.save", {
           id: provider.id,
           name: provider.name,
           baseUrl: provider.baseUrl,
@@ -204,7 +204,7 @@ function ProviderCard({
 
   const remove = async (): Promise<void> => {
     try {
-      await window.banyan.invoke("providers.remove", { id: provider.id });
+      await window.colt.invoke("providers.remove", { id: provider.id });
       await onSaved("已删除");
     } catch (e) {
       onError(e);
@@ -313,7 +313,7 @@ function ProviderForm({
 
       if (models.length === 0) throw new Error("至少填写一个模型");
 
-      await window.banyan.invoke("providers.save", {
+      await window.colt.invoke("providers.save", {
         id: id.trim(),
         name: name.trim() || id.trim(),
         baseUrl: baseUrl.trim(),

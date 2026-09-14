@@ -1,4 +1,4 @@
-# Banyan · 下一阶段计划（开发交接）
+# Colt · 下一阶段计划（开发交接）
 
 > 上一阶段（2026-09）已把设计稿与代码的差异**全部收敛**，批次 A / B / C 均已收口。原 `DESIGN-TO-CODE.md`
 > （差异收敛清单）随之完成使命并删除，其中仍然有约束力的「已定调」条目转记于 §2。
@@ -646,11 +646,11 @@
    # 终端 1
    npm run fixture
    # 终端 2（先停掉占用 5173 的开发实例）
-   $env:BANYAN_SMOKE="e:/code/opensource/banyan/.smoke-fixture.png"
-   $env:BANYAN_SMOKE_MODE="fixture"
+   $env:COLT_SMOKE=".smoke-fixture.png"   # 只给文件名，产物固定落在 out/ 下
+   $env:COLT_SMOKE_MODE="fixture"
    npm run dev        # npm start（preview）亦可
    ```
-   看 `.smoke-fixture.png.log` 末行是否 `通过 25/25`
+   看 `out/.smoke-fixture.png.log` 末行是否 `通过 25/25`
 3. **工作区界面端到端（改右栏 ⑦ / ⑥ 必跑）**：`dock` 模式在主进程里驱动渲染层、**真派发鼠标事件**模拟拖拽，
    同时读主进程 `WebContentsView.getVisible()`——覆盖折叠/展开、拖拽上下限与方向、宽度记忆、双击复位、
    ⑦-F 自动展开、「折叠时原生视图必须收起」这条截图看不见的硬约束、**A3-2 的「点文件路径 → 预览」**
@@ -681,12 +681,12 @@
    最后**真的点一次「复制」，从主进程 `clipboard.readText()` 读回来核对**——
    ⚠️ 这一步前必须先 `window.focus()`：写剪贴板要求文档聚焦，否则 promise 静默 reject）。
    ```powershell
-   $env:BANYAN_SMOKE="e:/code/opensource/banyan/.smoke-dock.png"
-   $env:BANYAN_SMOKE_MODE="dock"
+   $env:COLT_SMOKE=".smoke-dock.png"   # 只给文件名，产物固定落在 out/ 下
+   $env:COLT_SMOKE_MODE="dock"
    npm run dev        # 夹具站在进程内以 port 0 拉起，无需另开终端
    ```
-   看 `.smoke-dock.png.log` 末行是否 `通过 146/146`；不调用模型、不产生计费
-4. **应用内实测**：`BANYAN_SMOKE_MODE=host` 会真实调用模型并**产生计费**；只想看界面时直接启动应用 + **系统级截图**即可
+   看 `out/.smoke-dock.png.log` 末行是否 `通过 146/146`；不调用模型、不产生计费
+4. **应用内实测**：`COLT_SMOKE_MODE=host` 会真实调用模型并**产生计费**；只想看界面时直接启动应用 + **系统级截图**即可
 5. 断言清单与手动用例：`docs/BROWSER-TEST-CASES.md`
 
 ---

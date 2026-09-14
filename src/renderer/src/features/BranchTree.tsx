@@ -71,7 +71,7 @@ export function BranchTree({
         setError(null);
         try {
           // 会话未打开时后端返回空数组（非异常）；有新的对话后刷新即可看到分支
-          setNodes(await window.banyan.invoke("session.branches", { sessionId }));
+          setNodes(await window.colt.invoke("session.branches", { sessionId }));
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
         } finally {
@@ -90,7 +90,7 @@ export function BranchTree({
   // 避免流式期间每个 token 都打一次 IPC / 闪烁加载态。
   const signatureRef = useRef<string>("");
   useEffect(() => {
-    return window.banyan.on("session.view", (view) => {
+    return window.colt.on("session.view", (view) => {
       if (view.sessionId !== sessionId) return;
       const signature = `${view.messages.length}:${view.running ? 1 : 0}`;
       if (signature === signatureRef.current) return;
@@ -108,7 +108,7 @@ export function BranchTree({
     setBusy(true);
     setError(null);
     try {
-      await window.banyan.invoke("session.navigate", { sessionId, targetId });
+      await window.colt.invoke("session.navigate", { sessionId, targetId });
       await load();
       onNavigated?.();
     } catch (e) {

@@ -14,7 +14,7 @@ import { applyFirstRunChoice, inspectUserData } from "../src/main/first-run.ts";
 let root: string;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "banyan-firstrun-"));
+  root = mkdtempSync(join(tmpdir(), "colt-firstrun-"));
 });
 
 afterEach(() => {
@@ -24,7 +24,7 @@ afterEach(() => {
 /** 造一个含项目/会话记录的历史库 */
 function seedDatabase(userDataPath: string): void {
   mkdirSync(join(userDataPath, "data"), { recursive: true });
-  const db = new DatabaseSync(join(userDataPath, "data", "banyan.db"));
+  const db = new DatabaseSync(join(userDataPath, "data", "colt.db"));
   db.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, root_path TEXT, created_at INTEGER, last_opened_at INTEGER);
     CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT, title TEXT);
@@ -74,7 +74,7 @@ describe("applyFirstRunChoice", () => {
     const result = applyFirstRunChoice(root, "import");
     assert.equal(result.cleared, false);
     // 数据仍在
-    assert.equal(existsSync(join(root, "data", "banyan.db")), true);
+    assert.equal(existsSync(join(root, "data", "colt.db")), true);
     assert.equal(inspectUserData(root).projectCount, 1);
     assert.equal(inspectUserData(root).onboardingDone, true);
   });

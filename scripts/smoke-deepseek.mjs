@@ -22,7 +22,7 @@ if (!model) throw new Error("模型未找到");
 console.log("[1/5] 模型就绪:", model.provider + "/" + model.id);
 
 const executionEnv = new NodeExecutionEnv({ cwd });
-const sessionsRoot = mkdtempSync(join(tmpdir(), "banyan-smoke-"));
+const sessionsRoot = mkdtempSync(join(tmpdir(), "colt-smoke-"));
 const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot });
 const session = await repo.create({ cwd }, context);
 console.log("[2/5] 会话已建:", session.metadata.id);

@@ -33,7 +33,7 @@ let root: string;
 
 beforeEach(() => {
   closeDatabase();
-  root = mkdtempSync(join(tmpdir(), "banyan-repo-"));
+  root = mkdtempSync(join(tmpdir(), "colt-repo-"));
   openDatabase(root);
 });
 

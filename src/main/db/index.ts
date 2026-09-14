@@ -1,5 +1,5 @@
 /**
- * Banyan 自有 SQLite：工作台元数据（会话本体在 JSONL，不在此库）
+ * Colt 自有 SQLite：工作台元数据（会话本体在 JSONL，不在此库）
  * 驱动：node:sqlite（Electron 44 / Node 24 内置，零原生编译）
  */
 import { DatabaseSync } from "node:sqlite";
@@ -284,7 +284,7 @@ export function openDatabase(userDataPath: string): DatabaseSync {
   if (db) return db;
   const dir = join(userDataPath, "data");
   mkdirSync(dir, { recursive: true });
-  const file = join(dir, "banyan.db");
+  const file = join(dir, "colt.db");
   const instance = new DatabaseSync(file);
 
   const existing = hasExistingSchema(instance);

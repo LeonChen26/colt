@@ -1,8 +1,8 @@
-import type { BanyanApi } from "@shared/protocol";
+import type { ColtApi } from "@shared/protocol";
 
 declare global {
   interface Window {
-    banyan: BanyanApi;
+    colt: ColtApi;
   }
 }
 

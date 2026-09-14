@@ -6,7 +6,7 @@
  *   2. 需要问的挂进待审队列并通知渲染层
  *   3. 用户处置后回传 worker，并按需记忆放行规则
  *
- * 记忆规则与审批模式只存在于内存、以 Banyan 会话为单位存活：不落盘，也不随
+ * 记忆规则与审批模式只存在于内存、以 Colt 会话为单位存活：不落盘，也不随
  * worker 进程启停重置；删除会话（unregister）或退出应用即失效——权限决定不应
  * 悄悄长期生效。待审队列则与 worker 同寿命，进程没了即清空。
  */
@@ -108,7 +108,7 @@ export class ApprovalStore {
   /**
    * 会话建立时登记项目根目录。
    * 重复登记（worker 回收后重开）**保留会话级状态**：审批模式与记忆规则都以
-   * Banyan 会话为单位存活，不随 worker 进程重置——否则用户点过「本会话内始终
+   * Colt 会话为单位存活，不随 worker 进程重置——否则用户点过「本会话内始终
    * 允许」后，只要切走一次会话（卸载会 dispose worker）就会再次被询问。
    * 只有待审队列随进程清空：阻塞在 before_tool 的调用方已随该进程消失。
    */
@@ -174,7 +174,7 @@ export class ApprovalStore {
       analyzeCommandAllowlist: this.#analyzeAllowlist,
     });
 
-    if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+    if (process.env.COLT_APPROVAL_DEBUG === "1") {
       console.log(
         `[approval] 判定 tool=${input.toolName} → ${verdict.decision}` +
           ` risk=${verdict.risk} reason=${verdict.reason}` +

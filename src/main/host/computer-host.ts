@@ -22,7 +22,7 @@ const SCREENSHOT_TTL_MS = 2 * 60 * 1000;
 
 /** user32 P/Invoke 定义：SetCursorPos + mouse_event */
 const NATIVE_MOUSE =
-  "Add-Type -Namespace Banyan -Name Native -MemberDefinition " +
+  "Add-Type -Namespace Colt -Name Native -MemberDefinition " +
   "'[DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int X, int Y); " +
   "[DllImport(\"user32.dll\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, System.UIntPtr dwExtraInfo);'";
 
@@ -168,9 +168,9 @@ export class ComputerHost {
         await runPowerShell(
           [
             NATIVE_MOUSE,
-            `[Banyan.Native]::SetCursorPos(${x}, ${y})`,
-            `[Banyan.Native]::mouse_event(${down},0,0,0,[System.UIntPtr]::Zero)`,
-            `[Banyan.Native]::mouse_event(${up},0,0,0,[System.UIntPtr]::Zero)`,
+            `[Colt.Native]::SetCursorPos(${x}, ${y})`,
+            `[Colt.Native]::mouse_event(${down},0,0,0,[System.UIntPtr]::Zero)`,
+            `[Colt.Native]::mouse_event(${up},0,0,0,[System.UIntPtr]::Zero)`,
           ].join("; "),
         );
         this.#invalidate(sessionId);
@@ -178,8 +178,8 @@ export class ComputerHost {
       }
       case "type": {
         const text = readText(params.text);
-        await runPowerShell(`${SENDKEYS_PRELUDE}[System.Windows.Forms.SendKeys]::SendWait($env:BANYAN_TEXT)`, {
-          BANYAN_TEXT: escapeSendKeysText(text),
+        await runPowerShell(`${SENDKEYS_PRELUDE}[System.Windows.Forms.SendKeys]::SendWait($env:COLT_TEXT)`, {
+          COLT_TEXT: escapeSendKeysText(text),
         });
         this.#invalidate(sessionId);
         return { text: `已在当前焦点输入 ${text.length} 个字符` };
@@ -187,8 +187,8 @@ export class ComputerHost {
       case "key": {
         const keys = readKeys(params.keys);
         const sequence = toSendKeysCombo(keys);
-        await runPowerShell(`${SENDKEYS_PRELUDE}[System.Windows.Forms.SendKeys]::SendWait($env:BANYAN_KEY)`, {
-          BANYAN_KEY: sequence,
+        await runPowerShell(`${SENDKEYS_PRELUDE}[System.Windows.Forms.SendKeys]::SendWait($env:COLT_KEY)`, {
+          COLT_KEY: sequence,
         });
         this.#invalidate(sessionId);
         return { text: `已发送按键 ${keys.join("+")}` };
@@ -202,8 +202,8 @@ export class ComputerHost {
         await runPowerShell(
           [
             NATIVE_MOUSE,
-            `[Banyan.Native]::SetCursorPos(${x}, ${y})`,
-            `[Banyan.Native]::mouse_event(${MOUSE_WHEEL},0,0,${data},[System.UIntPtr]::Zero)`,
+            `[Colt.Native]::SetCursorPos(${x}, ${y})`,
+            `[Colt.Native]::mouse_event(${MOUSE_WHEEL},0,0,${data},[System.UIntPtr]::Zero)`,
           ].join("; "),
         );
         this.#invalidate(sessionId);

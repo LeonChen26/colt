@@ -1,4 +1,4 @@
-; Banyan NSIS 自定义脚本：安装前检测历史安装
+; Colt NSIS 自定义脚本：安装前检测历史安装
 ; electron-builder 会在标准 NSIS 模板中通过 !include 引入此文件。
 ; 可用的内置宏（由 electron-builder 注入）：
 ;   UNINSTALL_REGISTRY_KEY  卸载信息注册表键（SHELL_CONTEXT 下）
@@ -7,7 +7,7 @@
 
 ; 安装开始前触发：检查是否已存在历史安装
 !macro customInit
-  ; 用 UninstallString 是否为空判断本机（当前 SHELL_CONTEXT 范围）是否装过 Banyan
+  ; 用 UninstallString 是否为空判断本机（当前 SHELL_CONTEXT 范围）是否装过 Colt
   ReadRegStr $R0 SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "UninstallString"
   StrCmp $R0 "" customInitDone
 
@@ -15,7 +15,7 @@
   ReadRegStr $R1 SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "DisplayVersion"
 
   MessageBox MB_OKCANCEL|MB_ICONQUESTION \
-    "检测到 Banyan 已在本机安装（版本：$R1）。$\r$\n$\r$\n点击「确定」将覆盖安装并保留原有工作台数据；$\r$\n点击「取消」将先卸载旧版本，再继续安装。" \
+    "检测到 Colt 已在本机安装（版本：$R1）。$\r$\n$\r$\n点击「确定」将覆盖安装并保留原有工作台数据；$\r$\n点击「取消」将先卸载旧版本，再继续安装。" \
     IDOK customInitKeepData IDCANCEL customInitUninstall
 
   customInitKeepData:

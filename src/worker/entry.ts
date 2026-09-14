@@ -62,9 +62,9 @@ const context: Context = BACKGROUND_CONTEXT;
  * 审批往返：worker 发起请求后阻塞，等主进程的 approvalResult。
  * 主进程持有策略与用户界面，worker 只负责阻塞与执行结果。
  */
-/** 启用 BANYAN_APPROVAL_DEBUG=1 时输出审批链路日志（排查安全功能为何未生效时用） */
+/** 启用 COLT_APPROVAL_DEBUG=1 时输出审批链路日志（排查安全功能为何未生效时用） */
 function trace(message: string): void {
-  if (process.env.BANYAN_APPROVAL_DEBUG === "1") {
+  if (process.env.COLT_APPROVAL_DEBUG === "1") {
     process.stderr.write(`[approval] ${message}\n`);
   }
 }
@@ -145,7 +145,7 @@ const hostBridge = new HostBridge(send);
 
 function systemPrompt(cwd: string): string {
   return [
-    "你是 Banyan 桌面工作台中的编码助手，运行在用户的本地项目里。",
+    "你是 Colt 桌面工作台中的编码助手，运行在用户的本地项目里。",
     `当前工作目录：${cwd}`,
     "可以使用 read / write / edit / bash 工具查看和修改文件。",
     "可以使用浏览器工具：browser_read 读取页面（snapshot 返回带 ref 的可交互元素），browser_act 打开/点击/输入/滚动，browser_screenshot 截图。操作网页前先用 snapshot 获取 ref。",
@@ -498,7 +498,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
 
   const lane = await harness.lane("main", context);
   const watch = await lane.watch(context);
-  // 投影一律使用 Banyan 的会话 ID，渲染层才能正确匹配
+  // 投影一律使用 Colt 的会话 ID，渲染层才能正确匹配
   // fileChanges 始终为空——主进程会用数据库中的完整列表覆盖它
   const meta = {
     sessionId: command.externalSessionId,

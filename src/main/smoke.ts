@@ -33,6 +33,13 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const uncaughtErrors: string[] = [];
 
 /**
+ * 本次冒烟**归一化后**的产物路径（由调用方 launcher 算好，恒在 out/ 下）。
+ * 用例内部需要派生伴生产物（如「待审截图」）时读它，而不是再读 COLT_SMOKE ——
+ * 否则派生文件会绕过归一化，重新落回仓库根目录。
+ */
+let activeOutputPath = "";
+
+/**
  * 生成纯红色 PNG（base64，不含 data URI 前缀）。
  * 用于验证「用户发图 → 模型看图」：颜色是确定的，模型答对即证明图片真的送达了。
  */
@@ -51,6 +58,8 @@ function makeSolidPng(size: number): string {
 }
 
 export async function runSmoke(window: BrowserWindow, outputPath: string): Promise<void> {
+  // outputPath 由 launcher 归一化到 out/ 下（见 index.ts 的 smokeArtifactPath）
+  activeOutputPath = outputPath;
   // 同时落盘：Windows 上 Electron 主进程 stdout 不接父终端，只看控制台会丢日志。
   // 每行立即追加，保证卡死时也能看到「卡在哪一步」，而不是等 finally 才写出。
   const lines: string[] = [];
@@ -109,12 +118,12 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
   });
 
   try {
-    const projectRoot = process.env.BANYAN_SMOKE_CWD ?? process.cwd();
+    const projectRoot = process.env.COLT_SMOKE_CWD ?? process.cwd();
     const project = upsertProject(projectRoot);
     log(`项目：${project.name} (${project.rootPath})`);
 
     const sessionsDir = join(app.getPath("userData"), "sessions", project.id);
-    const mode = process.env.BANYAN_SMOKE_MODE;
+    const mode = process.env.COLT_SMOKE_MODE;
 
     if (mode === "fixture") {
       await runFixture(projectRoot, log);
@@ -170,13 +179,13 @@ async function runBasic(
   window.reload();
   await sleep(4000);
 
-  const prompt = process.env.BANYAN_SMOKE_PROMPT ?? "用一句话介绍你自己。";
+  const prompt = process.env.COLT_SMOKE_PROMPT ?? "用一句话介绍你自己。";
   log(`发送：${prompt}`);
   await run(
-    `window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: session.id, text: prompt })})`,
+    `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: session.id, text: prompt })})`,
   );
 
-  await sleep(Number(process.env.BANYAN_SMOKE_WAIT ?? 20000));
+  await sleep(Number(process.env.COLT_SMOKE_WAIT ?? 20000));
 
   // 展开工具卡片，让验收截图能看到实际输出
   // 注意：不能用「改动」字样匹配，会误中顶部导航标签
@@ -190,7 +199,7 @@ async function runBasic(
 
   // 可选：打开右侧某个面板，便于验收截图覆盖该面板。按**会话头按钮文案**匹配（现在是「统计 / 规则」）——
   // 「改动」「工具」的会话头入口已按 ⑦-H 删除，需要时从 ⑦ 的「+」菜单开。
-  const panel = process.env.BANYAN_SMOKE_PANEL;
+  const panel = process.env.COLT_SMOKE_PANEL;
   if (panel) {
     await run(`(() => {
       const target = ${JSON.stringify(panel)};
@@ -217,8 +226,8 @@ async function runBasic(
  */
 async function runFixture(projectRoot: string, log: (message: string) => void): Promise<void> {
   const sessionId = "smoke-fixture";
-  const payloadName = "banyan-payload.txt";
-  const payloadBody = "banyan download fixture\n";
+  const payloadName = "colt-payload.txt";
+  const payloadBody = "colt download fixture\n";
   const uploadPath = join(projectRoot, "package.json");
 
   const server = await createFixtureServer({ port: 0 });
@@ -418,7 +427,7 @@ async function runDock(
   const session = createSession(projectId, sessionsDir);
   const server = await createFixtureServer({ port: 0 });
   /** 夹具站那次下载的落盘文件名（B2 用它判「下载页签有没有列出这条」） */
-  const payloadName = "banyan-payload.txt";
+  const payloadName = "colt-payload.txt";
   log(`会话：${session.id}`);
   log(`夹具站：${server.url}`);
 
@@ -865,7 +874,7 @@ async function runDock(
     // 用渲染层同款查询取「当前会话」：App 也是取 session.list 的第一条（updated_at DESC），
     // 由此保证浏览器视图挂在渲染层真正显示的那个会话上，而不是自说自话的新 id。
     const list = await run<{ id: string }[]>(
-      `window.banyan.invoke("session.list", ${JSON.stringify({ projectId })})`,
+      `window.colt.invoke("session.list", ${JSON.stringify({ projectId })})`,
     );
     const sessionId = list[0]?.id;
     if (sessionId === undefined) {
@@ -1021,7 +1030,7 @@ async function runDock(
     // 根**外**的绝对路径（⑦-G 之后越界条目在界面上已无可点入口：段一不再列文件行、
     // 文件树按 `isProjectRelative` 排除它），故改由**工具卡**驱动——模型确实会给出这种路径，
     // 「主进程拒绝 + 视图给出可读原因」这条不能因为入口搬家而掉出冒烟。
-    const outsideAbsPath = resolve(rootPath, "..", "banyan-smoke-outside", "escape.txt");
+    const outsideAbsPath = resolve(rootPath, "..", "colt-smoke-outside", "escape.txt");
     const stamp = Date.now();
     const fakeChange = (id: string, path: string, at: number): Record<string, unknown> => ({
       id,
@@ -1879,35 +1888,35 @@ async function runAdvanced(
   log("并行发起两个会话…");
   const started = Date.now();
   await run(`Promise.all([
-    window.banyan.invoke("session.open", ${JSON.stringify({ sessionId: first.id, cwd: process.env.BANYAN_SMOKE_CWD })}),
-    window.banyan.invoke("session.open", ${JSON.stringify({ sessionId: second.id, cwd: process.env.BANYAN_SMOKE_CWD })})
+    window.colt.invoke("session.open", ${JSON.stringify({ sessionId: first.id, cwd: process.env.COLT_SMOKE_CWD })}),
+    window.colt.invoke("session.open", ${JSON.stringify({ sessionId: second.id, cwd: process.env.COLT_SMOKE_CWD })})
   ])`);
   log(`两个 worker 就绪，耗时 ${Date.now() - started}ms`);
 
   await run(`Promise.all([
-    window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: first.id, text: "说出数字 1，只回一个字" })}),
-    window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: second.id, text: "说出数字 2，只回一个字" })})
+    window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: first.id, text: "说出数字 1，只回一个字" })}),
+    window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: second.id, text: "说出数字 2，只回一个字" })})
   ])`);
   await sleep(25000);
 
   const viewA = await run<{ messages: { role: string; text: string }[] } | null>(
-    `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: first.id })})`,
+    `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: first.id })})`,
   );
   const viewB = await run<{ messages: { role: string; text: string }[] } | null>(
-    `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: second.id })})`,
+    `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: second.id })})`,
   );
   log(`会话 A 消息数：${viewA?.messages.length}，末条：${viewA?.messages.at(-1)?.text.slice(0, 40)}`);
   log(`会话 B 消息数：${viewB?.messages.length}，末条：${viewB?.messages.at(-1)?.text.slice(0, 40)}`);
 
   // 分支：在会话 A 再问一轮，然后跳回第一个用户节点形成分叉
   await run(
-    `window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: first.id, text: "再说出数字 3，只回一个字" })})`,
+    `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: first.id, text: "再说出数字 3，只回一个字" })})`,
   );
   await sleep(20000);
 
   type Node = { id: string; kind: string; summary: string; isTip: boolean; onActivePath: boolean };
   const before = await run<Node[]>(
-    `window.banyan.invoke("session.branches", ${JSON.stringify({ sessionId: first.id })})`,
+    `window.colt.invoke("session.branches", ${JSON.stringify({ sessionId: first.id })})`,
   );
   log(`分支节点数（分叉前）：${before.length}`);
   for (const node of before) {
@@ -1918,23 +1927,23 @@ async function runAdvanced(
   if (target) {
     log(`跳转到首个用户节点：${target.id}`);
     await run(
-      `window.banyan.invoke("session.navigate", ${JSON.stringify({ sessionId: first.id, targetId: target.id })})`,
+      `window.colt.invoke("session.navigate", ${JSON.stringify({ sessionId: first.id, targetId: target.id })})`,
     );
     await sleep(4000);
 
     const mid = await run<{ running: boolean; messages: { role: string; text: string }[] } | null>(
-      `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: first.id })})`,
+      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: first.id })})`,
     );
     log(`跳转后：running=${mid?.running}，消息数=${mid?.messages.length}`);
 
     // 跳转后再提问，应当形成新分支而不是覆盖原有记录
     await run(
-      `window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: first.id, text: "改说字母 X，只回一个字" })})`,
+      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: first.id, text: "改说字母 X，只回一个字" })})`,
     );
     await sleep(25000);
 
     const post = await run<{ running: boolean; messages: { role: string; text: string }[] } | null>(
-      `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: first.id })})`,
+      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: first.id })})`,
     );
     log(`新分支提问后：running=${post?.running}，消息数=${post?.messages.length}`);
     for (const message of post?.messages ?? []) {
@@ -1942,7 +1951,7 @@ async function runAdvanced(
     }
 
     const after = await run<Node[]>(
-      `window.banyan.invoke("session.branches", ${JSON.stringify({ sessionId: first.id })})`,
+      `window.colt.invoke("session.branches", ${JSON.stringify({ sessionId: first.id })})`,
     );
     log(`分支节点数（分叉后）：${after.length}`);
     log(`活跃路径节点数：${after.filter((node) => node.onActivePath).length}`);
@@ -1974,7 +1983,7 @@ async function report(
     fileChanges: { path: string; kind: string; addedLines: number; removedLines: number; patch: string | null }[];
     stats: { totalTokens: number; costUsd: number };
     running: boolean;
-  } | null>(`window.banyan.invoke("session.view", ${JSON.stringify({ sessionId })})`);
+  } | null>(`window.colt.invoke("session.view", ${JSON.stringify({ sessionId })})`);
 
   if (!view) {
     log("未取得会话视图");
@@ -2014,8 +2023,8 @@ async function runCrash(
   const result = await run<string>(`
     (async () => {
       const timeout = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 15000));
-      const attempt = window.banyan
-        .invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.BANYAN_SMOKE_CWD })})
+      const attempt = window.colt
+        .invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD })})
         .then(() => "OK")
         .catch((e) => "REJECTED: " + e.message);
       return Promise.race([attempt, timeout]);
@@ -2052,11 +2061,11 @@ async function runReenter(
   // 让 busy 会话真正跑起来（带工具调用，耗时较长），模拟「分析当前项目」
   log("打开长任务会话…");
   await run(
-    `window.banyan.invoke("session.open", ${JSON.stringify({ sessionId: busy.id, cwd: process.env.BANYAN_SMOKE_CWD })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: busy.id, cwd: process.env.COLT_SMOKE_CWD })})`,
   );
   log("让长任务会话开工…");
   await run(
-    `window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: busy.id, text: "分析当前项目：先 ls 列出顶层目录，再读取 package.json，用一句话总结这是什么项目。" })})`,
+    `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: busy.id, text: "分析当前项目：先 ls 列出顶层目录，再读取 package.json，用一句话总结这是什么项目。" })})`,
   );
   await sleep(3000);
 
@@ -2116,7 +2125,7 @@ async function runReenter(
   }
 
   const view = await run<{ running: boolean; messages: unknown[] } | null>(
-    `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: busy.id })})`,
+    `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: busy.id })})`,
   );
   log(`长任务会话视图：running=${view?.running}，消息数=${view?.messages.length ?? 0}`);
 }
@@ -2143,7 +2152,7 @@ async function runApproval(
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const list = await run<unknown[]>(
-        `window.banyan.invoke("approval.list", ${JSON.stringify({ sessionId })})`,
+        `window.colt.invoke("approval.list", ${JSON.stringify({ sessionId })})`,
       );
       if (list.length > 0) return list.length;
       if (Date.now() > deadline) return 0;
@@ -2154,7 +2163,7 @@ async function runApproval(
   /** 列出当前会话调用过的工具名，用于区分「模型没调工具」与「调用未被拦」 */
   const toolTrail = async (sessionId: string): Promise<string> => {
     const view = await run<{ messages: { role: string; toolCalls?: { name: string }[] }[] } | null>(
-      `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId })})`,
+      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId })})`,
     );
     const names = (view?.messages ?? []).flatMap((message) =>
       (message.toolCalls ?? []).map((call) => call.name),
@@ -2174,27 +2183,27 @@ async function runApproval(
   );
   log(`  DOM 自检：${dom}`);
   await run(
-    `window.banyan.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.BANYAN_SMOKE_CWD })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD })})`,
   );
 
   // ---- 场景一：只读命令应当自动放行 ----
   log("[场景1] 只读命令 ls，预期自动放行");
   await run(
-    `window.banyan.invoke("session.prompt", ${JSON.stringify({
+    `window.colt.invoke("session.prompt", ${JSON.stringify({
       sessionId: session.id,
       text: "用 bash 运行 ls -la，只要列目录，不要做别的",
     })})`,
   );
   await sleep(25000);
   const pendingAfterRead = await run<unknown[]>(
-    `window.banyan.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
+    `window.colt.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
   );
   log(`  待审条目：${pendingAfterRead.length}（预期 0）`);
 
   // ---- 场景二：写入应当被拦下 ----
   log("[场景2] 写入 demo.md，预期出现待审");
   await run(
-    `window.banyan.invoke("session.prompt", ${JSON.stringify({
+    `window.colt.invoke("session.prompt", ${JSON.stringify({
       sessionId: session.id,
       text: "把 demo.md 末尾追加一行「审批测试」，用 edit 工具",
     })})`,
@@ -2202,7 +2211,7 @@ async function runApproval(
   const count = await waitForPending(session.id, 60000);
 
   const pending = await run<{ toolCallId: string; toolName: string; summary: string; risk: string; reason: string }[]>(
-    `window.banyan.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
+    `window.colt.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
   );
   log(`  待审条目：${pending.length}（预期 1）`);
   for (const item of pending) {
@@ -2218,7 +2227,7 @@ async function runApproval(
 
   // ---- 场景三：批准后工具应真的执行 ----
   // 先截一张待审状态的图，处置后卡片就消失了
-  const pendingShot = (process.env.BANYAN_SMOKE ?? "").replace(/\.png$/, "-pending.png");
+  const pendingShot = activeOutputPath.replace(/\.png$/, "-pending.png");
   if (pendingShot) {
     const image = await window.capturePage();
     await writeFile(pendingShot, image.toPNG());
@@ -2227,7 +2236,7 @@ async function runApproval(
 
   log("[场景3] 批准该调用，预期文件真的被改");
   await run(
-    `window.banyan.invoke("approval.resolve", ${JSON.stringify({
+    `window.colt.invoke("approval.resolve", ${JSON.stringify({
       sessionId: session.id,
       toolCallId: pending[0]!.toolCallId,
       approved: true,
@@ -2236,7 +2245,7 @@ async function runApproval(
   await sleep(20000);
 
   const view = await run<{ fileChanges: { kind: string; path: string; addedLines: number }[] } | null>(
-    `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
+    `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
   );
   log(`  文件改动：${view?.fileChanges.length ?? 0} 项（预期 >=1）`);
   for (const change of view?.fileChanges ?? []) {
@@ -2244,7 +2253,7 @@ async function runApproval(
   }
 
   const left = await run<unknown[]>(
-    `window.banyan.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
+    `window.colt.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
   );
   log(`  处置后待审：${left.length}（预期 0）`);
 
@@ -2252,7 +2261,7 @@ async function runApproval(
   log("[场景4] 再次写入并拒绝，预期文件不变、对话继续");
   const changesBefore = view?.fileChanges.length ?? 0;
   await run(
-    `window.banyan.invoke("session.prompt", ${JSON.stringify({
+    `window.colt.invoke("session.prompt", ${JSON.stringify({
       sessionId: session.id,
       text: "再把 demo.md 末尾追加一行「第二次追加」，用 edit 工具",
     })})`,
@@ -2260,12 +2269,12 @@ async function runApproval(
   const count2 = await waitForPending(session.id, 60000);
 
   const pending2 = await run<{ toolCallId: string }[]>(
-    `window.banyan.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
+    `window.colt.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
   );
   log(`  待审条目：${pending2.length}（预期 1）`);
   if (count2 > 0 && pending2.length > 0) {
     await run(
-      `window.banyan.invoke("approval.resolve", ${JSON.stringify({
+      `window.colt.invoke("approval.resolve", ${JSON.stringify({
         sessionId: session.id,
         toolCallId: "__PLACEHOLDER__",
         approved: false,
@@ -2277,7 +2286,7 @@ async function runApproval(
       fileChanges: unknown[];
       messages: { role: string; text: string }[];
       running: boolean;
-    } | null>(`window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`);
+    } | null>(`window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`);
     log(`  拒绝后文件改动：${after?.fileChanges.length ?? 0}（预期仍为 ${changesBefore}）`);
     log(`  会话运行中：${after?.running}（预期 false，说明未卡死）`);
     const last = after?.messages.at(-1);
@@ -2308,25 +2317,25 @@ async function runHost(
 
   // 默认用带视觉的模型：截图工具的价值全在「模型能看见画面」，
   // 纯文本模型（如默认的 deepseek-v4-flash）会丢掉工具结果里的图片。
-  const model = process.env.BANYAN_SMOKE_MODEL ?? "deepseek/deepseek-v4-flash-vision-exp";
+  const model = process.env.COLT_SMOKE_MODEL ?? "deepseek/deepseek-v4-flash-vision-exp";
   log(`模型：${model}`);
   await run(
-    `window.banyan.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.BANYAN_SMOKE_CWD, model })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD, model })})`,
   );
   const modeInfo = await run<{ mode: string }>(
-    `window.banyan.invoke("approval.mode.get", ${JSON.stringify({ sessionId: session.id })})`,
+    `window.colt.invoke("approval.mode.get", ${JSON.stringify({ sessionId: session.id })})`,
   );
   log(`审批模式：${modeInfo.mode}`);
 
   /** 批准当前所有待审条目，返回处理条数 */
   const approvePending = async (): Promise<number> => {
     const pending = await run<{ toolCallId: string; toolName: string; risk: string; summary: string }[]>(
-      `window.banyan.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
+      `window.colt.invoke("approval.list", ${JSON.stringify({ sessionId: session.id })})`,
     );
     for (const item of pending) {
       log(`  待审 → 批准：${item.toolName} [${item.risk}] ${item.summary}`);
       await run(
-        `window.banyan.invoke("approval.resolve", ${JSON.stringify({
+        `window.colt.invoke("approval.resolve", ${JSON.stringify({
           sessionId: session.id,
           toolCallId: item.toolCallId,
           approved: true,
@@ -2347,7 +2356,7 @@ async function runHost(
   const drive = async (label: string, timeoutMs: number): Promise<void> => {
     const readState = async (): Promise<{ count: number; running: boolean }> => {
       const view = await run<{ messages: unknown[]; running: boolean } | null>(
-        `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
+        `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
       );
       return { count: view?.messages.length ?? 0, running: view?.running ?? false };
     };
@@ -2398,25 +2407,25 @@ async function runHost(
   };
 
   // 聚焦验证：ONLY=image 只跑图片链路，ONLY=browser 只跑浏览器能力（其余任务更慢且无关）。
-  const only = process.env.BANYAN_SMOKE_ONLY;
+  const only = process.env.COLT_SMOKE_ONLY;
 
   if (only !== "image") {
     log("[1] 浏览器任务");
     // 上传夹具用正斜杠：反斜杠在提示词里要转义，模型容易把转义符一起照抄进路径
-    const projectRoot = process.env.BANYAN_SMOKE_CWD ?? process.cwd();
+    const projectRoot = process.env.COLT_SMOKE_CWD ?? process.cwd();
     const uploadFixture = join(projectRoot, "package.json").replaceAll("\\", "/");
     const browserPrompt =
-      process.env.BANYAN_SMOKE_BROWSER_PROMPT ??
+      process.env.COLT_SMOKE_BROWSER_PROMPT ??
       `请依次用浏览器工具完成十件事，每步只做一件：1) browser_act 打开 https://example.com ；2) browser_act 执行 wait（mode 用 idle）等页面就绪；3) browser_read 执行 snapshot；4) browser_read 执行 console 读取控制台；5) browser_read 执行 network 查看网络请求；6) browser_read 执行 downloads 查看下载列表；7) browser_act 执行 viewport 把视口设为 width=375、height=700；8) browser_screenshot 截图，并用一句话描述截图里的标题、正文字样，以及画面是否已变成窄屏（移动端）布局；9) browser_act 执行 viewport 恢复默认尺寸（即不传 width 和 height）；10) browser_act 执行 upload，ref 填第 3 步 snapshot 结果里的第一个 ref、paths 填 [${uploadFixture}]，然后把工具返回的原文照抄出来。`;
     await run(
-      `window.banyan.invoke("session.prompt", ${JSON.stringify({ sessionId: session.id, text: browserPrompt })})`,
+      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: session.id, text: browserPrompt })})`,
     );
     await drive("浏览器任务", 180_000);
 
     // 观测能力断言：这些动作的返回文本有固定前缀，只在它们跑通时才可能出现
     log("[1b] 观测能力断言");
     const view = await run<{ messages: { role: string; text: string }[] } | null>(
-      `window.banyan.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
+      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
     );
     const toolTexts = (view?.messages ?? [])
       .filter((message) => message.role === "toolResult")
@@ -2443,7 +2452,7 @@ async function runHost(
     if (only !== "browser") {
       log("[2] 电脑截图任务");
       await run(
-        `window.banyan.invoke("session.prompt", ${JSON.stringify({
+        `window.colt.invoke("session.prompt", ${JSON.stringify({
           sessionId: session.id,
           text: "请调用 computer_screenshot 截取当前屏幕，并用一句话说明你看到了什么。",
         })})`,
@@ -2456,7 +2465,7 @@ async function runHost(
     log("[3] 图片输入任务");
     const imageBase64 = makeSolidPng(128);
     await run(
-      `window.banyan.invoke("session.prompt", ${JSON.stringify({
+      `window.colt.invoke("session.prompt", ${JSON.stringify({
         sessionId: session.id,
         text: "这张图片是什么颜色？只回答颜色名称。",
         images: [{ data: imageBase64, mimeType: "image/png" }],

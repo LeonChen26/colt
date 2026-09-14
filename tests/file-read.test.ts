@@ -16,8 +16,8 @@ let root = "";
 let outside = "";
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), "banyan-root-"));
-  outside = mkdtempSync(join(tmpdir(), "banyan-outside-"));
+  root = mkdtempSync(join(tmpdir(), "colt-root-"));
+  outside = mkdtempSync(join(tmpdir(), "colt-outside-"));
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "docs", "a.md"), "# 标题\n正文\n");
   writeFileSync(join(root, "bin.dat"), Buffer.from([0x41, 0x00, 0x42]));

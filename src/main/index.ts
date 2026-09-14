@@ -1,9 +1,9 @@
 /**
- * Banyan 主进程入口（server host 角色）
+ * Colt 主进程入口（server host 角色）
  */
 import { app, BrowserWindow, shell } from "electron";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { registerIpcHandlers, importKeyFromEnvIfMissing, setFirstRunReport } from "./ipc";
 import { openDatabase, closeDatabase } from "./db";
 import { inspectUserData } from "./first-run";
@@ -24,8 +24,24 @@ const isDev = process.defaultApp === true || !app.isPackaged;
 // 必须在 app ready 之前设置，userData 路径依赖应用名
 appNameSetup();
 function appNameSetup(): void {
-  app.setName("Banyan");
-  app.setPath("userData", join(app.getPath("appData"), "Banyan"));
+  app.setName("Colt");
+  app.setPath("userData", join(app.getPath("appData"), "Colt"));
+}
+
+/**
+ * 冒烟产物目录：编译后的主进程位于 out/main，向上一级即 out/。
+ * 产物（截图 / 日志）一律落在这里，不再散到仓库根目录；out/ 已被 .gitignore
+ * 覆盖、且随构建重建，所以这些文件天然是「生成物」而非需要手工清理的垃圾。
+ */
+const SMOKE_OUT_DIR = join(__dirname, "..");
+
+/**
+ * 把 COLT_SMOKE 归一化成 out/ 下的产物路径。
+ * 该变量现在只表示**文件名**——即便传进来的是绝对路径，也只取其 basename，
+ * 目录固定为 out/。
+ */
+function smokeArtifactPath(name: string): string {
+  return join(SMOKE_OUT_DIR, basename(name) || ".smoke.png");
 }
 
 function createWindow(): BrowserWindow {
@@ -37,7 +53,7 @@ function createWindow(): BrowserWindow {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: "#0b0d10",
-    title: "Banyan",
+    title: "Colt",
     webPreferences: {
       // electron-vite 在 ESM 工程下输出 index.mjs；Electron 支持 ESM preload（需 sandbox: false）
       preload: join(__dirname, "../preload/index.mjs"),
@@ -49,10 +65,12 @@ function createWindow(): BrowserWindow {
 
   window.on("ready-to-show", () => {
     window.show();
-    // 冒烟自检：BANYAN_SMOKE 指向截图输出路径时，跑完流程自动退出。
+    // 冒烟自检：COLT_SMOKE 给出产物文件名时，跑完流程自动退出。
+    // 产物路径统一归一到 out/（见 smokeArtifactPath），不会落到仓库根目录。
     // 打包后一律不启用（与 worker 覆盖同一条原则）：该装置只为开发期验收，
     // 其 chunk 也未随包分发（见 electron-builder.yml 的 files 排除项）。
-    const smokeTarget = process.env.BANYAN_SMOKE;
+    const smokeName = process.env.COLT_SMOKE;
+    const smokeTarget = smokeName ? smokeArtifactPath(smokeName) : undefined;
     if (smokeTarget && isDev && !smokeStarted) {
       smokeStarted = true;
       // 动态导入失败（构建产物缺失 / 语法错误）必须落盘可见，

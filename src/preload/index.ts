@@ -6,7 +6,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import {
   IPC_CHANNELS,
   IPC_EVENTS,
-  type BanyanApi,
+  type ColtApi,
   type IpcChannel,
   type IpcEventName,
 } from "@shared/protocol";
@@ -14,7 +14,7 @@ import {
 const channels = new Set<string>(IPC_CHANNELS);
 const events = new Set<string>(IPC_EVENTS);
 
-const api: BanyanApi = {
+const api: ColtApi = {
   invoke: (channel, request) => {
     if (!channels.has(channel)) {
       return Promise.reject(new Error(`未授权的 IPC 通道: ${String(channel)}`));
@@ -35,4 +35,4 @@ const api: BanyanApi = {
   },
 };
 
-contextBridge.exposeInMainWorld("banyan", api);
+contextBridge.exposeInMainWorld("colt", api);

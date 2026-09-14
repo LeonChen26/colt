@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { parseHeadContent, readGitStatus } from "../src/main/git.ts";
 
 function makeTemp(): string {
-  return mkdtempSync(join(tmpdir(), "banyan-git-"));
+  return mkdtempSync(join(tmpdir(), "colt-git-"));
 }
 
 describe("parseHeadContent", () => {

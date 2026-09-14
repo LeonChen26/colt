@@ -90,7 +90,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
   useEffect(() => {
     let disposed = false;
     const tick = (): void => {
-      void window.banyan
+      void window.colt
         .invoke("browser.observe", { sessionId })
         .then((next) => {
           if (disposed) return;

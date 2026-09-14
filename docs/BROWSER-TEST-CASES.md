@@ -1,6 +1,6 @@
-# Banyan 浏览器能力验证用例
+# Colt 浏览器能力验证用例
 
-> 作者：Banyan
+> 作者：Colt
 > 定位：内置浏览器（观测 / 上传 / 下载 / 弹窗）的手动与自动化验证指南
 > 特点：**全程不依赖外部网络**——靶子由本地夹具站提供，任何时候都能复现
 
@@ -31,7 +31,7 @@
 ```powershell
 npm run fixture                       # 默认 http://127.0.0.1:8787/
 # 端口被占用时换一个：
-$env:BANYAN_FIXTURE_PORT="9000"; npm run fixture
+$env:COLT_FIXTURE_PORT="9000"; npm run fixture
 ```
 
 - 唯一数据源：[scripts/fixture-server.mjs](../scripts/fixture-server.mjs)
@@ -69,7 +69,7 @@ snapshot 会给出 6 个可交互元素（`e1`~`e6`，序号取决于当时页�
 
 ## 3. 手动验证用例
 
-前置：`npm run fixture` 已起；待上传文件用 `e:\code\opensource\banyan\package.json`。
+前置：`npm run fixture` 已起；待上传文件用 `e:\code\opensource\colt\package.json`。
 
 > **观察位置**：浏览器已**内嵌**在右栏工作区（规则 ⑦-C「视野跳跃为零」），
 > agent 首次操作页面时会**自动切到「浏览器」页签**（规则 ⑦-F）。
@@ -96,9 +96,9 @@ snapshot 会给出 6 个可交互元素（`e1`~`e6`，序号取决于当时页�
 | # | 操作 | 预期结果 |
 |---|---|---|
 | B1 | `看看这个会话下载过什么` | `下载：本会话尚未触发任何下载。` |
-| B2 | `点「下载测试文件」` | 不报错；再查下载列表得到 `下载：共 1 个` + `1-banyan-payload.txt [24 B] → <绝对路径>` |
-| B3 | `读一下刚下载的文件内容` | 内容为 `banyan download fixture` |
-| B4 | `把 e:\code\opensource\banyan\package.json 传到页面那个 file input 里` | `已向 e1 选择 1 个文件：…`；页面同步显示 `已选择：package.json（1613 字节）` |
+| B2 | `点「下载测试文件」` | 不报错；再查下载列表得到 `下载：共 1 个` + `1-colt-payload.txt [24 B] → <绝对路径>` |
+| B3 | `读一下刚下载的文件内容` | 内容为 `colt download fixture` |
+| B4 | `把 e:\code\opensource\colt\package.json 传到页面那个 file input 里` | `已向 e1 选择 1 个文件：…`；页面同步显示 `已选择：package.json（1613 字节）` |
 | B5 | 观察 B4 的审批分级 | 项目内文件 → 风险**中等**（可「本会话始终允许」） |
 | B6 | `把 C:\Windows\System32\drivers\etc\hosts 传上去` | 风险**危险**，每次单独确认（签名带文件路径，无法被「不再询问」批量放行） |
 | B7 | `对页面上「下载测试文件」这个链接执行 upload` | 明确拒绝：`e2 不是 file 类型的 input（实际为 A），无法选择文件`，而不是抛晦涩的 CDP 协议错误 |
@@ -106,7 +106,7 @@ snapshot 会给出 6 个可交互元素（`e1`~`e6`，序号取决于当时页�
 下载落盘位置：
 
 ```
-%APPDATA%\Banyan\browser-downloads\<会话ID>\<序号>-<文件名>
+%APPDATA%\Colt\browser-downloads\<会话ID>\<序号>-<文件名>
 ```
 
 ### 3.3 会话与内核
@@ -141,12 +141,12 @@ snapshot 会给出 6 个可交互元素（`e1`~`e6`，序号取决于当时页�
 不开模型、直接驱动宿主，把模型随机性排除在结论之外。先停掉正在运行的开发实例（占用 5173），然后：
 
 ```powershell
-$env:BANYAN_SMOKE="e:/code/opensource/banyan/.smoke-fixture.png"
-$env:BANYAN_SMOKE_MODE="fixture"
+$env:COLT_SMOKE=".smoke-fixture.png"   # 只给文件名，产物固定落在 out/ 下
+$env:COLT_SMOKE_MODE="fixture"
 npm run dev
 ```
 
-结论以 `.smoke-fixture.png.log` 为准（该模式**刻意不截图**：全程没让主窗口重绘，此时 `capturePage` 会把主进程拖住不返回）。
+结论以 `out/.smoke-fixture.png.log` 为准（该模式**刻意不截图**：全程没让主窗口重绘，此时 `capturePage` 会把主进程拖住不返回）。
 
 ### 4.1 断言清单（25 条）
 

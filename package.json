@@ -1,9 +1,9 @@
 {
-  "name": "banyan",
+  "name": "colt",
   "version": "0.0.1",
   "private": true,
-  "description": "Banyan 桌面 Agent 工作台 - 基于 pi-agent-core 的编码 Agent 工作台",
-  "author": "Banyan",
+  "description": "Colt 桌面 Agent 工作台 - 基于 pi-agent-core 的编码 Agent 工作台",
+  "author": "Colt",
   "license": "MIT",
   "type": "module",
   "main": "out/main/index.js",

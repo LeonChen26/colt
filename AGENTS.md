@@ -27,7 +27,7 @@
 ### 1.2 验证手段不奏效时，不要改被测对象
 
 **事故**：模拟 pointer 事件验证拖拽，多次失败后，我不断往页面里加钩子
-（改 `document.title`、加 `window.__banyanDragTest`、加临时自检函数），
+（改 `document.title`、加 `window.__coltDragTest`、加临时自检函数），
 而不是去检查「测试是否正确接入」。
 
 **铁律**：
@@ -235,7 +235,7 @@ const px = startVal - dx;
   「渲染层 → IPC → `navigationHistory`」，判据取主进程读到的**真实 URL**；
   按钮可用性跟着历史走——退到最早一页时后退要变灰）/
   **原生视图与「页面区域」逐像素对齐**（含反复收起/展开 5 轮）与**视口联调标记 / 「恢复」**，
-  已由 `BANYAN_SMOKE_MODE=dock` 覆盖
+  已由 `COLT_SMOKE_MODE=dock` 覆盖
   （146 条断言，见 `docs/NEXT-PHASE.md` §5 第 3 条）；`fixture` 模式另有 25 条（浏览器能力本体）。
   七个坑：① 拖拽要拆成
   「按下」与「移动+抬起」两次 `executeJavaScript`，否则监听器还没挂上就丢了 move 事件；

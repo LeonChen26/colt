@@ -336,7 +336,7 @@ export function WorkspaceDock({
   // 否则它会继续浮在界面上，盖住新会话的右栏。
   useEffect(() => {
     return () => {
-      void window.banyan.invoke("browser.bounds", { sessionId, rect: null }).catch(() => undefined);
+      void window.colt.invoke("browser.bounds", { sessionId, rect: null }).catch(() => undefined);
     };
   }, [sessionId]);
 
@@ -344,13 +344,13 @@ export function WorkspaceDock({
   useEffect(() => {
     const node = areaRef.current;
     if (!showArea || !loaded || node === null) {
-      void window.banyan.invoke("browser.bounds", { sessionId, rect: null }).catch(() => undefined);
+      void window.colt.invoke("browser.bounds", { sessionId, rect: null }).catch(() => undefined);
       return;
     }
     const report = (): void => {
       const rect = node.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) return;
-      void window.banyan
+      void window.colt
         .invoke("browser.bounds", {
           sessionId,
           rect: {
