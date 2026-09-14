@@ -3,7 +3,7 @@
  * 无副作用、不依赖 Electron / pi-agent-core，便于单元测试。
  */
 import { isAbsolute, relative } from "node:path";
-import type { ViewMessage } from "@shared/worker-protocol";
+import type { ViewMessage, WorkerBranchNode } from "@shared/worker-protocol";
 
 /** 从消息内容块中抽取纯文本 */
 export function extractText(content: unknown): string {
@@ -88,4 +88,80 @@ export function toRelative(cwd: string, path: string): string {
   if (!isAbsolute(path)) return path.replaceAll("\\", "/");
   const rel = relative(cwd, path);
   return (rel.startsWith("..") ? path : rel).replaceAll("\\", "/");
+}
+
+/** 分支树条目：内核 entry 中投影所需的最小字段 */
+export interface BranchEntry {
+  id: string;
+  parentId: string | null;
+  /** 条目类型：message / compaction / branch_summary ... */
+  type: string;
+  timestamp?: number;
+  message?: { role: string; content: unknown };
+}
+
+/**
+ * 把会话全部条目投影成分支树节点。
+ * 只保留「用户输入」「该轮最终回复」以及压缩/分支摘要等结构节点，
+ * 折叠中间的 LLM 轮次与工具调用，避免分支面板信息过载。
+ * 被折叠条目的子节点会挂到最近的保留祖先上以保持树连通；
+ * 若当前指针落在被折叠条目上，则回退为活跃路径上最近的保留节点。
+ */
+export function projectBranchNodes(
+  entries: BranchEntry[],
+  tipId: string | null,
+): WorkerBranchNode[] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+  const keep = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.message) {
+      // 压缩 / 分支摘要等结构节点保留
+      keep.add(entry.id);
+      continue;
+    }
+    const role = entry.message.role;
+    if (role === "user") {
+      keep.add(entry.id);
+      continue;
+    }
+    if (role !== "assistant") continue;
+    // 仅保留该轮的最终回复：不含工具调用且有文本输出的助手消息
+    const hasToolCall = extractToolCalls(entry.message.content).length > 0;
+    if (!hasToolCall && extractText(entry.message.content).trim()) keep.add(entry.id);
+  }
+
+  const nearestKept = (id: string): string | null => {
+    let cursor = byId.get(id)?.parentId ?? null;
+    while (cursor) {
+      if (keep.has(cursor)) return cursor;
+      cursor = byId.get(cursor)?.parentId ?? null;
+    }
+    return null;
+  };
+
+  const activePath = new Set<string>();
+  let effectiveTip: string | null = null;
+  let cursor: string | null = tipId;
+  while (cursor) {
+    activePath.add(cursor);
+    if (effectiveTip === null && keep.has(cursor)) effectiveTip = cursor;
+    cursor = byId.get(cursor)?.parentId ?? null;
+  }
+
+  const nodes: WorkerBranchNode[] = [];
+  for (const entry of entries) {
+    if (!keep.has(entry.id)) continue;
+    const text = entry.message ? extractText(entry.message.content) : "";
+    nodes.push({
+      id: entry.id,
+      parentId: nearestKept(entry.id),
+      kind: entry.message?.role ?? entry.type,
+      summary: text.slice(0, 60).replace(/\s+/g, " ").trim() || `(${entry.type})`,
+      timestamp: entry.timestamp ?? 0,
+      onActivePath: activePath.has(entry.id),
+      isTip: entry.id === effectiveTip,
+    });
+  }
+  return nodes;
 }

@@ -42,7 +42,9 @@ import {
   extractThinking,
   extractToolCalls,
   extractToolText,
+  projectBranchNodes,
   toRelative,
+  type BranchEntry,
 } from "./lib/project";
 import { HostBridge } from "./lib/host-bridge";
 import { createBrowserTools } from "./lib/browser-tool";
@@ -338,40 +340,12 @@ interface WorkerState {
   unsubscribe: () => void;
 }
 
-/** 把全部条目投影成分支树（session 级扫描，含所有分支） */
+/** 把全部条目投影成分支树（session 级扫描，含所有分支）。
+ *  只保留用户输入、各轮最终回复与结构节点，折叠中间的 LLM 轮次与工具调用。 */
 async function projectBranches(current: WorkerState): Promise<WorkerBranchNode[]> {
   const entries = await current.session.findEntries({ order: "asc" }, context);
   const tipId = await current.lane.getTipId(context);
-
-  // 从 tip 回溯到根，得到当前活跃路径
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const activePath = new Set<string>();
-  let cursor: string | null = tipId;
-  while (cursor) {
-    activePath.add(cursor);
-    cursor = byId.get(cursor)?.parentId ?? null;
-  }
-
-  return entries.map((entry) => {
-    const record = entry as unknown as {
-      id: string;
-      parentId: string | null;
-      type: string;
-      timestamp?: number;
-      message?: { role: string; content: unknown };
-    };
-    const role = record.message?.role;
-    const text = record.message ? extractText(record.message.content) : "";
-    return {
-      id: record.id,
-      parentId: record.parentId,
-      kind: role ?? record.type,
-      summary: text.slice(0, 60).replace(/\s+/g, " ").trim() || `(${record.type})`,
-      timestamp: record.timestamp ?? 0,
-      onActivePath: activePath.has(record.id),
-      isTip: record.id === tipId,
-    };
-  });
+  return projectBranchNodes(entries as unknown as BranchEntry[], tipId ?? null);
 }
 
 let state: WorkerState | undefined;

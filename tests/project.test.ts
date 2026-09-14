@@ -10,7 +10,9 @@ import {
   extractText,
   extractToolCalls,
   extractToolText,
+  projectBranchNodes,
   toRelative,
+  type BranchEntry,
 } from "../src/worker/lib/project.ts";
 
 describe("extractText", () => {
@@ -128,5 +130,124 @@ describe("toRelative", () => {
 
   test("已是相对路径时仅做分隔符归一", () => {
     assert.equal(toRelative("/proj", "src/a.ts"), "src/a.ts");
+  });
+});
+
+describe("projectBranchNodes", () => {
+  /** 一轮完整对话：用户提问 → 中间 LLM 轮（带工具调用）→ 工具结果 → 最终回复 */
+  const turn = (): BranchEntry[] => [
+    {
+      id: "u1",
+      parentId: null,
+      type: "message",
+      message: { role: "user", content: [{ type: "text", text: "帮我读文件" }] },
+    },
+    {
+      id: "a1",
+      parentId: "u1",
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "好的，我先读取" },
+          { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
+        ],
+      },
+    },
+    {
+      id: "t1",
+      parentId: "a1",
+      type: "message",
+      message: { role: "toolResult", content: [{ type: "text", text: "文件内容" }] },
+    },
+    {
+      id: "a2",
+      parentId: "t1",
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: "文件里是 42" }] },
+    },
+  ];
+
+  test("只保留用户输入与该轮最终回复，折叠中间轮次与工具调用", () => {
+    const nodes = projectBranchNodes(turn(), "a2");
+    assert.deepEqual(nodes.map((node) => node.id), ["u1", "a2"]);
+    assert.deepEqual(nodes.map((node) => node.kind), ["user", "assistant"]);
+    assert.equal(nodes[1]?.parentId, "u1");
+    assert.equal(nodes[1]?.summary, "文件里是 42");
+    assert.equal(nodes[0]?.isTip, false);
+    assert.equal(nodes[1]?.isTip, true);
+    assert.equal(nodes[0]?.onActivePath, true);
+    assert.equal(nodes[1]?.onActivePath, true);
+  });
+
+  test("指针落在被折叠条目上时回退为活跃路径上最近的保留节点", () => {
+    const nodes = projectBranchNodes(turn().slice(0, 3), "t1");
+    assert.deepEqual(nodes.map((node) => node.id), ["u1"]);
+    assert.equal(nodes[0]?.isTip, true);
+    assert.equal(nodes[0]?.onActivePath, true);
+  });
+
+  test("压缩 / 分支摘要等结构节点保留并保持父子挂接", () => {
+    const entries: BranchEntry[] = [
+      {
+        id: "u1",
+        parentId: null,
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "继续" }] },
+      },
+      { id: "cp", parentId: "u1", type: "compaction" },
+      { id: "bs", parentId: "cp", type: "branch_summary" },
+      {
+        id: "a1",
+        parentId: "bs",
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "压缩后继续" }] },
+      },
+    ];
+    const nodes = projectBranchNodes(entries, "a1");
+    assert.deepEqual(nodes.map((node) => node.id), ["u1", "cp", "bs", "a1"]);
+    assert.deepEqual(nodes.map((node) => node.kind), [
+      "user",
+      "compaction",
+      "branch_summary",
+      "assistant",
+    ]);
+    assert.deepEqual(nodes.map((node) => node.parentId), [null, "u1", "cp", "bs"]);
+  });
+
+  test("被折叠条目下的子节点重挂到最近的保留祖先", () => {
+    const entries: BranchEntry[] = [
+      {
+        id: "u1",
+        parentId: null,
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "第一问" }] },
+      },
+      {
+        id: "a1",
+        parentId: "u1",
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: {} }] },
+      },
+      {
+        id: "a2",
+        parentId: "a1",
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "原分支答案" }] },
+      },
+      {
+        id: "u2",
+        parentId: "a1",
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "改问别的" }] },
+      },
+    ];
+    const nodes = projectBranchNodes(entries, "u2");
+    assert.deepEqual(nodes.map((node) => node.id), ["u1", "a2", "u2"]);
+    assert.equal(nodes.find((node) => node.id === "a2")?.parentId, "u1");
+    assert.equal(nodes.find((node) => node.id === "u2")?.parentId, "u1");
+    assert.equal(nodes.find((node) => node.id === "a2")?.onActivePath, false);
+    assert.equal(nodes.find((node) => node.id === "u2")?.onActivePath, true);
+    assert.equal(nodes.find((node) => node.id === "u2")?.isTip, true);
   });
 });
