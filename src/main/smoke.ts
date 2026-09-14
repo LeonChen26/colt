@@ -9,7 +9,8 @@
  *       面板迁入页签（A3-5 / ⑦-H / ⑦-G：「工具」「改动」「文件」三个视图都取消后只剩统计与规则）、
  *       观测抽屉（B2）与它的**条目详情**（N1：点行展开完整字段 + 复制到剪贴板）、
  *       浏览器前进/后退/刷新（B1），以及 ⑥ Live Bar 的运行状态段（C1/C2：已中断 / 已失败 / 空闲）
- * model：未开启会话（无 worker）时也能选模型——落库的选定值照样回显、切换立即生效
+ * model：未开启会话（无 worker）时也能选模型——落库的选定值照样回显、切换立即生效；
+ *        以及**没有可用模型**时主区黄条与对话区共存（输入卡片的下半行不能被裁掉）
  */
 import { app, BrowserWindow, clipboard, nativeImage, WebContentsView } from "electron";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -163,6 +164,7 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runModelSelect(window, sessionsDir, project.id, log, run);
       await runModelFallback(window, sessionsDir, project.id, log, run);
       await runModelKeyless(window, sessionsDir, project.id, log, run);
+      await runModelNoUsable(window, sessionsDir, project.id, log, run);
       await runModelSwitchDuringOpen(window, sessionsDir, project.id, log, run);
       await runSessionDraft(window, sessionsDir, project.id, log, run);
     } else {
@@ -611,6 +613,131 @@ async function runModelKeyless(
     sessionManager.close(session.id);
     removeProvider(PROVIDER_ID);
     deleteSecret(PROVIDER_ID);
+    if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+  }
+}
+
+/**
+ * 主区提示条与对话区**共存**时的布局（回归：没有可用模型 → 输入卡片的下半行被裁掉）。
+ *
+ * 症状：无可用模型时主区顶部挂着黄条，对话区却仍按「整个主区」的高度算自己的 h-full，
+ * 于是整体下移、从**底部**溢出主区，被 main 的 overflow-hidden 裁掉——输入卡片的工具行
+ * （访问模式 / `/compact` / 模型选择 / 发送）正好落在被裁的那一截里，用户看到的是
+ * 「输入框下半部分不见了」。
+ *
+ * 「一个能用的模型服务都没有」没有 API 可开，只能由用例自己造环境：把这台机器上真实的服务
+ * 与密钥先原样存下来（无论中间出什么事都在 finally 里还回去），再让它们全部不可用。
+ * 省掉这步，配过密钥的机器上黄条根本不出现，下面的断言就全变成空跑（假绿）。
+ */
+async function runModelNoUsable(
+  window: BrowserWindow,
+  sessionsDir: string,
+  projectId: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const checks: [string, boolean][] = [];
+  const custom = listProviders().filter((provider) => !provider.builtin);
+  const savedSecrets = custom.map((provider) => [provider.id, getSecret(provider.id)] as const);
+  const savedDeepseekKey = getSecret("deepseek");
+  // 免密钥的服务（本地 / 自建 endpoint）删掉密钥照样算「可用」，只能整条挪走，稍后原样写回
+  const removedProviders = custom.filter((provider) => !provider.requiresKey);
+  const session = createSession(projectId, sessionsDir);
+  log(`会话：${session.id}（刻意让所有服务都不可用）`);
+
+  /** 布局只量一次；判据全部落在「可见区内」这件事上，别去看 class */
+  const probeExpr = `(() => {
+    const rect = (el) => {
+      if (!el) return null;
+      const box = el.getBoundingClientRect();
+      return {
+        top: Math.round(box.top),
+        bottom: Math.round(box.bottom),
+        height: Math.round(box.height),
+      };
+    };
+    const area = document.querySelector("textarea");
+    const send = document.querySelector('button[title="发送"]');
+    const box = send ? send.getBoundingClientRect() : null;
+    const hit = box
+      ? document.elementFromPoint((box.left + box.right) / 2, (box.top + box.bottom) / 2)
+      : null;
+    return {
+      // 用文案认这条黄条，别用 data-* 标记：这是「环境造对了没」的前提检查，
+      // 不能依赖被测的修复本身（否则修好前必然假红，红在哪也看不出来）。同 keyless 的判法。
+      notice: document.body.innerText.includes("尚未配置任何模型服务的 API Key"),
+      viewport: window.innerHeight,
+      // 输入卡片就是输入框的父节点（同 ② 的实测结构）
+      card: rect(area ? area.parentElement : null),
+      tools: rect(document.querySelector(".comp-tools")),
+      main: rect(document.querySelector("main")),
+      // 对话区根节点：唯一带 grid-rows-* 的祖先，从输入框往上找，不靠层级硬猜
+      conv: rect(area ? area.closest('[class*="grid-rows-"]') : null),
+      sendHit: Boolean(hit && send && (hit === send || send.contains(hit))),
+    };
+  })()`;
+  interface Probe {
+    notice: boolean;
+    viewport: number;
+    card: { top: number; bottom: number; height: number } | null;
+    tools: { top: number; bottom: number; height: number } | null;
+    main: { top: number; bottom: number; height: number } | null;
+    conv: { top: number; bottom: number; height: number } | null;
+    sendHit: boolean;
+  }
+
+  try {
+    for (const provider of removedProviders) removeProvider(provider.id);
+    for (const provider of custom) deleteSecret(provider.id);
+    deleteSecret("deepseek");
+
+    writeOnboardedFlag(app.getPath("userData"));
+    window.reload();
+    await sleep(4000);
+
+    const probe = await run<Probe>(probeExpr);
+    log(
+      `可视区高 ${probe.viewport}｜黄条 ${probe.notice}｜输入卡片 ${JSON.stringify(probe.card)}｜` +
+        `工具行 ${JSON.stringify(probe.tools)}｜对话区 ${JSON.stringify(probe.conv)}｜主区 ${JSON.stringify(probe.main)}`,
+    );
+
+    // 前提先立住：黄条没出现的话，后面几条都是空跑
+    checks.push(["无可用模型时主区顶部挂出黄条", probe.notice]);
+    // 电平式不变量：对话区的底边要**等于**主区底边（相等才说明它正好填满剩余高度；
+    // 只判「没变大」会把溢出也算通过——溢出时差值是负的）
+    checks.push([
+      "对话区没有溢出主区（底边与主区相等）",
+      probe.conv !== null && probe.main !== null && Math.abs(probe.main.bottom - probe.conv.bottom) <= 2,
+    ]);
+    checks.push([
+      "对话区仍填满主区剩余高度（flex-1 + h-full 没被弄塌）",
+      probe.conv !== null && probe.conv.height > 200,
+    ]);
+    checks.push([
+      "输入卡片完整落在窗口内（下半行不再被裁）",
+      probe.card !== null && probe.card.top >= 0 && probe.card.bottom <= probe.viewport,
+    ]);
+    checks.push([
+      "输入卡片的工具行完整可见（模型选择 / 发送都在这行）",
+      probe.tools !== null && probe.tools.top >= 0 && probe.tools.bottom <= probe.viewport,
+    ]);
+    checks.push(["发送按钮落在可视区且命中它自己（没被别的层压住）", probe.sendHit]);
+  } finally {
+    log("[model/no-usable] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    sessionManager.close(session.id);
+    // 还原这台机器的真实服务：先还密钥，再按原来的先后顺序写回被挪走的条目
+    for (const [id, key] of savedSecrets) if (key) setSecret(id, key);
+    for (const provider of removedProviders) {
+      saveProvider({
+        id: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        models: provider.models,
+        requiresKey: provider.requiresKey,
+      });
+    }
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
   }
 }

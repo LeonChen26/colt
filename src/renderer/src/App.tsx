@@ -415,40 +415,51 @@ export default function App(): React.JSX.Element {
           </div>
         </aside>
 
-        <main className="flex-1 overflow-hidden">
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
-            <div className="m-3.5 rounded-[8px] border border-danger/50 bg-danger-soft px-3.5 py-3 text-[12.5px] text-danger-fg">
+            <div className="m-3.5 shrink-0 rounded-[8px] border border-danger/50 bg-danger-soft px-3.5 py-3 text-[12.5px] text-danger-fg">
               {error}
             </div>
           )}
 
           {modelServiceReady === false && (
-            <div className="m-3.5 rounded-[8px] border border-warning/50 bg-warning-soft px-3.5 py-3 text-[12.5px] text-warning">
+            <div className="m-3.5 shrink-0 rounded-[8px] border border-warning/50 bg-warning-soft px-3.5 py-3 text-[12.5px] text-warning">
               尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
               DeepSeek 或自建的 OpenAI 兼容服务均可）。
             </div>
           )}
 
-          {mainView === "settings" ? (
-            <Settings />
-          ) : mainView === "changes" && activeProject ? (
-            <ProjectChanges projectId={activeProject.id} />
-          ) : activeSession && activeProject ? (
-            <Conversation
-              key={activeSession.id}
-              sessionId={activeSession.id}
-              cwd={activeProject.rootPath}
-              sessionModelRef={activeSession.modelRef}
-              providers={providers}
-              onModelSelected={(modelRef) => applySessionModel(activeSession.id, modelRef)}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center">
-              <p className="text-[12.5px] text-text-muted">
-                {activeProject ? "新建一个会话开始对话" : "打开一个项目目录开始"}
-              </p>
-            </div>
-          )}
+          {/*
+            视图区必须是「主区剩余高度」的**独立一格**（min-h-0 flex-1），不能像以前那样
+            直接与提示条并列：视图根节点是 h-full，而 h-full 量的是**整个 main** 的高度，
+            于是只要上面挂了提示条（无可用模型时的黄条、拉取失败时的红条），视图就会
+            多出「提示条高」那么一截、从**底部**溢出，被 main 的 overflow-hidden 裁掉——
+            输入卡片的下半行（访问模式 / /compact / 模型选择 / 发送）正好落在那一截里，
+            表现为「没有可用模型时输入框下半部分看不见」。
+            min-h-0 不可省：否则内容的最小高度会顶破 flex-1，视图又会被撑回去。
+          */}
+          <div className="min-h-0 flex-1">
+            {mainView === "settings" ? (
+              <Settings />
+            ) : mainView === "changes" && activeProject ? (
+              <ProjectChanges projectId={activeProject.id} />
+            ) : activeSession && activeProject ? (
+              <Conversation
+                key={activeSession.id}
+                sessionId={activeSession.id}
+                cwd={activeProject.rootPath}
+                sessionModelRef={activeSession.modelRef}
+                providers={providers}
+                onModelSelected={(modelRef) => applySessionModel(activeSession.id, modelRef)}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <p className="text-[12.5px] text-text-muted">
+                  {activeProject ? "新建一个会话开始对话" : "打开一个项目目录开始"}
+                </p>
+              </div>
+            )}
+          </div>
         </main>
       </div>
     </div>
