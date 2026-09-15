@@ -7,10 +7,17 @@
  *
  * 层与进入方式：
  *   - `list`（清单层）：总账点进来。按目录一层分组、同文件多次编辑折成 `×N`、
- *     `+a −b` **只在这里出现一次**；点文件卡（或它的历史行）→ `diff`
+ *     卡片上的 `+a −b` **只在这里出现一次**（且是**净值**，见下）；点文件卡（或它的历史行）→ `diff`
  *   - `diff`：该次改动的 patch，可在历史之间切换，「看文件」→ `content`
  *   - `content`：文件本身（`FilePreview`）。**④ 点文件路径直接落这一层**
  *     （原 A3-2 的入口，行为等价，只是不再切页签）
+ *
+ * **净值与逐次改动是两件事**（这正是本文件最容易搞错的地方）：
+ *   逐次 patch 只说「这一次改了什么」。文件改过三次、最后一次又退回原样时，
+ *   三次相加是 `+10 −10`，而文件其实和一开始一模一样——照相加显示，就等于在撒谎。
+ *   故：**卡片上的数字是净值**（基线 → 现在，主进程算好写在改动记录上），
+ *   逐次的数字只出现在**展开的历史行**里；`diff` 层还多一档「累计」，
+ *   直接把「改前 → 现在」的完整差异画出来（那一档要现算，见 `NetDiff`）。
  *
  * 逐层回退有三条出口：面包屑、各层底部那一行「返回」、ESC。
  * **层状态由本组件持有**（容器只管「在不在下钻」，见 `WorkspaceDock`）：
@@ -23,6 +30,7 @@ import { buildChangeList, type ChangeFile } from "@/lib/change-list";
 import { formatAgo, samePath } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { DiffView } from "../../../components/DiffView";
+import type { NetChangeResult } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import { FilePreview } from "./FilePreview";
 
@@ -32,6 +40,43 @@ export type DrillEntry =
   | { layer: "content"; path: string; token: number };
 
 type DrillLayer = "list" | "diff" | "content";
+
+/**
+ * 「累计」这一档的记号（`diff` 层的历史切换里与 `#1 #2 #3` 并列的那个）。
+ *
+ * 它不是一个 revision：`#N` 说的是「第 N 次改动」，而它说的是「这些改动**加起来**的结果」，
+ * 故不给它编号——编号会让人以为它也对应某一次记录。
+ */
+const NET_REVISION = "__net__";
+
+/** 净值算不出（没有基线）时，卡片右侧与「累计」档共用的一句解释 */
+const netTitle = (file: ChangeFile): string =>
+  file.netAddedLines === null || file.netRemovedLines === null
+    ? "未能记录改动前的内容（文件过大 / 二进制 / 读取失败），给不出净变化；展开可看逐次改动"
+    : "本次会话的净变化（改动前 → 现在）";
+
+/**
+ * 净值的那一小撮数字：`+a −b`；净 0 时明说「已还原」；算不出返回 null。
+ * 表格化三种情形是为了**不留第二种说法**——「已还原」与「算不出」在这一层就分开了，
+ * 调用方只需决定留白怎么画（卡片留空、累计行写 `—`）。
+ */
+function NetNumbers({
+  added,
+  removed,
+}: {
+  added: number | null;
+  removed: number | null;
+}): React.JSX.Element | null {
+  if (added === null || removed === null) return null;
+  if (added === 0 && removed === 0) return <span className="text-text-muted">已还原</span>;
+  return (
+    <>
+      {added > 0 && <span className="text-success-fg">+{added}</span>}
+      {removed > 0 && <span className="ml-1 text-danger-fg">−{removed}</span>}
+    </>
+  );
+}
+
 
 /** 面包屑与底部「返回」行共用的一枚小按钮 */
 function CrumbButton({
@@ -80,6 +125,86 @@ function BackRow({
       </span>
     </button>
   );
+}
+
+/**
+ * 「累计」这一档的内容：该文件**本次会话的净变化**（基线 → 现在）。
+ *
+ * 与逐次 patch 不同，这一份要**现算**：主进程取库里那份基线，与**此刻盘上**的文件比一次——
+ * 故它答的正是「这个文件最终被改成了什么」，哪怕中间有人在编辑器里手工动过。
+ * 三种结论都如实画出来：有差异给 patch；无差异 = 已还原；算不出则说清是「没有基线」
+ * 还是「文件读不到」——**不拿 0 冒充**，否则「没改过」与「不知道」就分不开了。
+ *
+ * 已知净值为 0 时不必问主进程：库里那对数就是刚算出来的结论，省一次读盘 + diff。
+ */
+function NetDiff({
+  sessionId,
+  path,
+  net,
+}: {
+  sessionId: string;
+  path: string;
+  net: { added: number; removed: number } | null;
+}): React.JSX.Element {
+  const [result, setResult] = useState<NetChangeResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const reverted = net !== null && net.added === 0 && net.removed === 0;
+
+  useEffect(() => {
+    if (reverted) return undefined;
+    let disposed = false;
+    setResult(null);
+    setError(null);
+    void window.colt
+      .invoke("file.netDiff", { sessionId, path })
+      .then((next) => {
+        if (!disposed) setResult(next);
+      })
+      .catch((cause: unknown) => {
+        if (disposed) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [sessionId, path, reverted]);
+
+  if (reverted) {
+    return (
+      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+        本次会话已还原：该文件当前内容与改动前一致。
+      </p>
+    );
+  }
+  if (error !== null) {
+    return (
+      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+        无法获取净变化：{error}
+      </p>
+    );
+  }
+  if (result === null) {
+    return (
+      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+        正在计算净变化…
+      </p>
+    );
+  }
+  if (result.status !== "ok") {
+    return (
+      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+        {result.reason}
+      </p>
+    );
+  }
+  if (result.patch === "") {
+    return (
+      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+        本次会话已还原：该文件当前内容与改动前一致。
+      </p>
+    );
+  }
+  return <DiffView patch={result.patch} />;
 }
 
 export function ChangeDrilldown({
@@ -132,6 +257,13 @@ export function ChangeDrilldown({
     (revisionId === null
       ? current?.history[0]
       : current?.history.find((item) => item.id === revisionId)) ?? current?.history[0] ?? null;
+  /** 选中的是「累计」那一档吗——它不是某一次改动，故与 `revision` 互斥 */
+  const netSelected = revisionId === NET_REVISION && (current?.history.length ?? 0) > 1;
+  /** 当前文件的净值（给「累计」档用）；算不出为 null，那时由主进程回一句可读的原因 */
+  const netOfCurrent =
+    current !== undefined && current.netAddedLines !== null && current.netRemovedLines !== null
+      ? { added: current.netAddedLines, removed: current.netRemovedLines }
+      : null;
 
   const goList = (): void => {
     setLayer("list");
@@ -228,14 +360,17 @@ export function ChangeDrilldown({
         )}
         <span className="flex-1" />
         {inList && (
-          <span className="shrink-0 pl-1 font-mono text-[10.5px] text-text-secondary">
+          <span
+            title="「处」是改动次数、「文件」是按路径去重后的文件数；+a −b 是净值（改动前 → 现在）"
+            className="shrink-0 pl-1 font-mono text-[10.5px] text-text-secondary"
+          >
             <span className="font-semibold text-text-primary">{list.places}</span> 处 ·{" "}
             <span className="font-semibold text-text-primary">{list.fileCount}</span> 文件
-            {list.addedLines > 0 && (
-              <span className="ml-1.5 text-success-fg">+{list.addedLines}</span>
+            {list.netAddedLines > 0 && (
+              <span className="ml-1.5 text-success-fg">+{list.netAddedLines}</span>
             )}
-            {list.removedLines > 0 && (
-              <span className="ml-1 text-danger-fg">−{list.removedLines}</span>
+            {list.netRemovedLines > 0 && (
+              <span className="ml-1 text-danger-fg">−{list.netRemovedLines}</span>
             )}
           </span>
         )}
@@ -311,19 +446,46 @@ export function ChangeDrilldown({
                             {file.kind === "write" ? "新建" : "编辑"} · {formatAgo(file.latestAt)}
                           </span>
                         </span>
-                        {/* `+a −b` 全应用**只在这里**出现一次（⑦-G：此前被渲染了三遍） */}
-                        <span className="shrink-0 font-mono text-[10.5px]">
-                          {file.addedLines > 0 && (
-                            <span className="text-success-fg">+{file.addedLines}</span>
-                          )}
-                          {file.removedLines > 0 && (
-                            <span className="ml-1 text-danger-fg">−{file.removedLines}</span>
-                          )}
+                        {/* `+a −b` 全应用**只在这里**出现一次（⑦-G：此前被渲染了三遍）。
+                            给的是**净值**：改完又退回原样就是 0，此时明说「已还原」——
+                            把逐次相加的 +10 −10 摆出来，等于告诉用户文件变了，是错的。 */}
+                        <span
+                          data-clist-net-value={file.path}
+                          title={netTitle(file)}
+                          className="shrink-0 font-mono text-[10.5px]"
+                        >
+                          <NetNumbers added={file.netAddedLines} removed={file.netRemovedLines} />
                         </span>
                       </button>
 
                       {many && isExpanded && (
                         <div className="mb-1 ml-[26px] border-l border-line pl-2">
+                          {/* 这一行是「这些改动加起来是什么」——逐次行说的是「每一次改了什么」，
+                              两者不可互相顶替，故都摆在同一个展开区里，位置说明身份。 */}
+                          <button
+                            type="button"
+                            data-clist-net={file.path}
+                            onClick={() => goDiff(file.path, NET_REVISION)}
+                            title="本次会话的累计改动（改动前 → 现在）"
+                            className="flex w-full items-center gap-2 rounded-[5px] px-1.5 py-1 text-left transition hover:bg-surface-overlay"
+                          >
+                            <span className="min-w-0 flex-1 truncate text-[10.5px] text-text-secondary">
+                              全部改动（累计）
+                            </span>
+                            <span
+                              data-clist-net-row-value={file.path}
+                              className="shrink-0 font-mono text-[10.5px]"
+                            >
+                              {file.netAddedLines === null || file.netRemovedLines === null ? (
+                                <span className="text-text-muted">—</span>
+                              ) : (
+                                <NetNumbers
+                                  added={file.netAddedLines}
+                                  removed={file.netRemovedLines}
+                                />
+                              )}
+                            </span>
+                          </button>
                           {file.history.map((rev, index) => (
                             <button
                               key={rev.id}
@@ -366,6 +528,16 @@ export function ChangeDrilldown({
               已隐藏 {list.hidden} 个项目外文件（不在项目根内，无法预览）
             </div>
           )}
+
+          {/* 净值算不出的文件同样是「少了一块」，理由要跟着数字一起说清楚 */}
+          {list.netUnknown > 0 && (
+            <div
+              data-clist-net-unknown={list.netUnknown}
+              className="px-1.5 py-1.5 text-[10.5px] leading-relaxed text-text-muted"
+            >
+              {list.netUnknown} 个文件未记录改动前的内容（过大 / 二进制 / 读取失败），未计入净值
+            </div>
+          )}
         </div>
       ) : layer === "diff" ? (
         <div className="flex min-h-0 flex-1 flex-col" data-drill-diff="">
@@ -373,9 +545,24 @@ export function ChangeDrilldown({
             <span className="truncate font-mono text-[11px] text-text-secondary" title={path ?? ""}>
               {path}
             </span>
-            {/* 同一文件改过多次时给历史切换；只有一次就不给（一个选项的开关是噪声） */}
+            {/* 同一文件改过多次时给历史切换；只有一次就不给（一个选项的开关是噪声）。
+                「累计」与 `#N` 并列：前者说「加起来的结果」，后者说「第几次」。 */}
             {current !== undefined && current.history.length > 1 && (
               <span className="ml-auto flex shrink-0 items-center gap-0.5 rounded-[5px] border border-line p-0.5">
+                <button
+                  type="button"
+                  data-drill-rev={NET_REVISION}
+                  onClick={() => setRevisionId(NET_REVISION)}
+                  title="本次会话的累计改动（改动前 → 现在）"
+                  className={cn(
+                    "rounded-[4px] px-1.5 py-0.5 text-[10.5px] transition",
+                    netSelected
+                      ? "bg-accent-soft font-semibold text-text-primary"
+                      : "text-text-muted hover:text-text-primary",
+                  )}
+                >
+                  累计
+                </button>
                 {current.history.map((rev, index) => (
                   <button
                     key={rev.id}
@@ -385,7 +572,7 @@ export function ChangeDrilldown({
                     title={formatAgo(rev.timestamp)}
                     className={cn(
                       "rounded-[4px] px-1.5 py-0.5 text-[10.5px] transition",
-                      rev.id === revision?.id
+                      !netSelected && rev.id === revision?.id
                         ? "bg-accent-soft font-semibold text-text-primary"
                         : "text-text-muted hover:text-text-primary",
                     )}
@@ -410,7 +597,9 @@ export function ChangeDrilldown({
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-2">
-            {revision?.patch ? (
+            {netSelected ? (
+              <NetDiff sessionId={sessionId} path={path ?? ""} net={netOfCurrent} />
+            ) : revision?.patch ? (
               <DiffView patch={revision.patch} />
             ) : (
               <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">

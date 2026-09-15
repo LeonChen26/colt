@@ -161,7 +161,12 @@ export function setSessionModel(sessionId: string, modelRef: string): void {
     .run(modelRef, Date.now(), sessionId);
 }
 
-/** 记录一次文件改动 */
+/**
+ * 记录一次文件改动，返回新行的自增 id。
+ *
+ * 返回 id 是为了让调用方**紧接着**把这条改动的净值写回去（`setChangeNet`）——
+ * 净值要读盘算，算完才知道，所以只能分两步：先落改动，再补净值。
+ */
 export function recordFileChange(
   sessionId: string,
   change: {
@@ -173,8 +178,8 @@ export function recordFileChange(
     removedLines: number;
     timestamp: number;
   },
-): void {
-  getDatabase()
+): number {
+  const result = getDatabase()
     .prepare(
       `INSERT INTO file_changes (session_id, client_change_id, file_path, change_kind, diff_text, added_lines, removed_lines, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -189,6 +194,50 @@ export function recordFileChange(
       change.removedLines,
       change.timestamp,
     );
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * 把某条改动的**净变化**写回去（基线 → 当前）。
+ * 传 null 表示算不出（没有基线 / 文件读不到）——写 NULL 而不是 0，界面才能区分
+ * 「没改」与「不知道」，这也正是净变化这件事最容易撒谎的地方。
+ */
+export function setChangeNet(changeId: number, net: { added: number; removed: number } | null): void {
+  getDatabase()
+    .prepare("UPDATE file_changes SET net_added_lines = ?, net_removed_lines = ? WHERE id = ?")
+    .run(net === null ? null : net.added, net === null ? null : net.removed, changeId);
+}
+
+/**
+ * 记录一个文件的基线（本次会话首次改动它之前的内容）。
+ *
+ * **只认最早的一份**：worker 被回收重启后不记得发过基线，会把「当时已经改过」的内容
+ * 再报一次——若允许覆盖，净值就会从那一刻重新起算，把会话前段的变化吃掉。
+ */
+export function recordFileBaseline(
+  sessionId: string,
+  path: string,
+  baseline: { existed: boolean; text: string | null },
+): void {
+  getDatabase()
+    .prepare(
+      `INSERT INTO file_baselines (session_id, file_path, existed, content, captured_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, file_path) DO NOTHING`,
+    )
+    .run(sessionId, path, baseline.existed ? 1 : 0, baseline.text, Date.now());
+}
+
+/** 取某文件的基线；undefined = 本次会话还没抓过（净值算不出） */
+export function getFileBaseline(
+  sessionId: string,
+  path: string,
+): { existed: boolean; text: string | null } | undefined {
+  const row = getDatabase()
+    .prepare("SELECT existed, content FROM file_baselines WHERE session_id = ? AND file_path = ?")
+    .get(sessionId, path) as unknown as { existed: number; content: string | null } | undefined;
+  if (row === undefined) return undefined;
+  return { existed: row.existed === 1, text: row.content };
 }
 
 /**
@@ -263,7 +312,8 @@ export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
 export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
   const rows = getDatabase()
     .prepare(
-      `SELECT client_change_id, file_path, change_kind, diff_text, added_lines, removed_lines, created_at
+      `SELECT client_change_id, file_path, change_kind, diff_text, added_lines, removed_lines,
+              net_added_lines, net_removed_lines, created_at
        FROM file_changes
        WHERE session_id = ?
        ORDER BY created_at ASC, id ASC`,
@@ -275,6 +325,8 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
     diff_text: string | null;
     added_lines: number;
     removed_lines: number;
+    net_added_lines: number | null;
+    net_removed_lines: number | null;
     created_at: number;
   }[];
 
@@ -287,6 +339,9 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
     addedLines: row.added_lines,
     removedLines: row.removed_lines,
     timestamp: row.created_at,
+    // NULL 原样带出（= 算不出）。**不要**在这里折成 0：那会把「不知道」说成「没改」。
+    netAddedLines: row.net_added_lines,
+    netRemovedLines: row.net_removed_lines,
   }));
 }
 
@@ -460,6 +515,7 @@ export function deleteSession(sessionId: string): SessionInfo | undefined {
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM file_changes WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM file_baselines WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);

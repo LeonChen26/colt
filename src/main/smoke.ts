@@ -22,6 +22,7 @@ import {
   getProject,
   getSession,
   listSessions,
+  recordFileBaseline,
   setSessionModel,
 } from "./db/repo";
 import { hostBridge } from "./host";
@@ -1296,11 +1297,22 @@ async function runDock(
     revisions: string[];
     hidden: number;
     diffRevisions: string[];
+    nets: [string, string][];
+    netRows: [string, string][];
+    netRowValues: [string, string][];
+    netUnknown: number;
   }> =>
     run(`(() => {
       const root = document.querySelector("[data-drill]");
       const attrAll = (selector, name) =>
         [...document.querySelectorAll(selector)].map((el) => el.getAttribute(name));
+      // 「图形界面说它算出来是多少」与「算出来是多少」是两件事：净值读的是产品自己渲染出来的
+      // 那个小格子（含空串＝没显示数字），用例不重算一遍——重算就等于把问题绕开了。
+      const attrText = (selector, name) =>
+        [...document.querySelectorAll(selector)].map((el) => [
+          el.getAttribute(name),
+          (el.textContent ?? "").trim(),
+        ]);
       return {
         layer: root ? (root.getAttribute("data-drill") ?? "") : "",
         crumbs: attrAll("[data-drill-crumb]", "data-drill-crumb"),
@@ -1312,7 +1324,23 @@ async function runDock(
           document.querySelector("[data-clist-hidden]")?.getAttribute("data-clist-hidden") ?? "0",
         ),
         diffRevisions: attrAll("[data-drill-rev]", "data-drill-rev"),
+        nets: attrText("[data-clist-net-value]", "data-clist-net-value"),
+        netRows: attrText("[data-clist-net]", "data-clist-net"),
+        netRowValues: attrText("[data-clist-net-row-value]", "data-clist-net-row-value"),
+        netUnknown: Number(
+          document.querySelector("[data-clist-net-unknown]")?.getAttribute("data-clist-net-unknown") ??
+            "0",
+        ),
       };
+    })()`);
+
+  /** 展开后那一行「全部改动（累计）」→ diff 层的「累计」档 */
+  const clickListNet = (path: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector(${JSON.stringify(`[data-clist-net="${path}"]`)});
+      if (!el) return false;
+      el.click();
+      return true;
     })()`);
 
   /** 点清单里 path 对应的文件卡 */
@@ -1671,7 +1699,16 @@ async function runDock(
     // 「主进程拒绝 + 视图给出可读原因」这条不能因为入口搬家而掉出冒烟。
     const outsideAbsPath = resolve(rootPath, "..", "colt-smoke-outside", "escape.txt");
     const stamp = Date.now();
-    const fakeChange = (id: string, path: string, at: number): Record<string, unknown> => ({
+    /**
+     * 造一条改动记录。`net` 是**净值**（基线 → 现在，主进程在改动落库时算好）；
+     * 不给就是 null = 算不出——界面据此**不下结论**，与「净 0」是两回事。
+     */
+    const fakeChange = (
+      id: string,
+      path: string,
+      at: number,
+      net: { added: number; removed: number } | null = null,
+    ): Record<string, unknown> => ({
       id,
       path,
       kind: "write",
@@ -1679,6 +1716,8 @@ async function runDock(
       addedLines: 0,
       removedLines: 0,
       timestamp: at,
+      netAddedLines: net?.added ?? null,
+      netRemovedLines: net?.removed ?? null,
     });
     /**
      * 受控会话视图的构造器：基准是一份「什么都没在跑」的视图，
@@ -1987,6 +2026,96 @@ async function runDock(
     checks.push(["点面包屑「正在处理」命中", await clickCrumb("follow")]);
     await sleep(400);
     checks.push(["面包屑退回「正在处理」（退出下钻）", (await drillProbe()).layer === ""]);
+
+    // ---- 净值：多次改动之后，看的是「最终改成了什么」----
+    // 逐次 patch 只说「这一次改了什么」。同一个文件改过多次、最后一次又退回原样时，
+    // 一串增量相加看着改了很多，文件其实一点没变——故卡片给**净值**（基线 → 现在），
+    // diff 层另有一档「累计」。这段用受控视图把三种情形一次钉住，净值不靠文本猜：
+    // 判据读的是产品自己渲染的那一小格（`data-clist-net-value`）。
+    log("[净值] 三种情形：有净变化 / 已还原 / 没有基线");
+    const netRel = "package.json";
+    const revertedRel = "src/main/session-manager.ts";
+    const noNetRel = "tsconfig.json";
+    // 累计档要**真算一次**（主进程读基线 + 读当前盘上的文件），故这里先落一份基线：
+    // 故意在真内容后面多一行，净变化因此确定是「删掉 1 行」，patch 里能读到那行标记。
+    const netMark = "// smoke-net-baseline";
+    recordFileBaseline(sessionId, netRel, {
+      existed: true,
+      text: `${readFileSync(join(rootPath, netRel), "utf8")}${netMark}\n`,
+    });
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        fileChanges: [
+          // ① 两次改动，最新那条的净值是 −1
+          fakeChange("net-1", netRel, stamp + 1, { added: 0, removed: 1 }),
+          fakeChange("net-2", netRel, stamp + 2, { added: 0, removed: 1 }),
+          // ② 先加后删，最后退回原样 → 净值 0（是**算出来的结论**，不是「算不出」）
+          fakeChange("rev-1", revertedRel, stamp + 3, { added: 6, removed: 0 }),
+          fakeChange("rev-2", revertedRel, stamp + 4, { added: 0, removed: 0 }),
+          // ③ 没有基线（过大 / 二进制 / 读取失败）→ 给不出净值
+          fakeChange("none-1", noNetRel, stamp + 5),
+        ],
+      }),
+    );
+    await sleep(400);
+    checks.push(["推净值受控视图后仍可进清单", await clickLedger()]);
+    await sleep(500);
+    const netList = await drillProbe();
+    const netOf = (path: string): string =>
+      netList.nets.find(([item]) => item === path)?.[1] ?? "<未渲染>";
+    checks.push(["（前置）清单层已渲染三个文件卡", netList.layer === "list" && netList.files.length === 3]);
+    checks.push([`净值：卡片给的是净值（改过两次、净 −1），实为 ${netOf(netRel)}`, netOf(netRel) === "−1"]);
+    checks.push([
+      `净值：改完又退回原样 → 卡片写「已还原」，实为 ${netOf(revertedRel)}`,
+      netOf(revertedRel) === "已还原",
+    ]);
+    checks.push([`净值：算不出的文件不显示数字，实为「${netOf(noNetRel)}」`, netOf(noNetRel) === ""]);
+    checks.push([
+      `净值：算不出的文件在清单底部如实计数，实为 ${netList.netUnknown}`,
+      netList.netUnknown === 1,
+    ]);
+
+    // 展开 → 「全部改动（累计）」→ diff 层的「累计」档。
+    // 判据是**正文里出现了基线那一行**：受控改动是 write（没有 patch），
+    // 若没落到「累计」档，正文只会是「内核未提供 diff」那句，不可能有这行内容。
+    checks.push(["展开改过两次的文件卡", await clickListFile(netRel)]);
+    await sleep(300);
+    const expanded = await drillProbe();
+    checks.push([
+      "展开后出现「全部改动（累计）」这一行",
+      expanded.netRows.some(([item]) => item === netRel),
+    ]);
+    // 判据读的是那一格**自己的**元素（`data-clist-net-row-value`），不是整行拼接出来的文字——
+    // 拿 label+数字 的整串去等于「−1」，红的是用例而不是产品（AGENTS.md §1.2）
+    checks.push([
+      `该行给出净值 −1，实为 ${JSON.stringify(expanded.netRowValues)}`,
+      expanded.netRowValues.some(([item, text]) => item === netRel && text === "−1"),
+    ]);
+    checks.push(["点「全部改动（累计）」命中", await clickListNet(netRel)]);
+    await sleep(900);
+    const netDiff = await drillProbe();
+    checks.push([
+      "累计档：落在 diff 层，且历史切换里有「累计」这一档",
+      netDiff.layer === "diff" && netDiff.diffRevisions.includes("__net__"),
+    ]);
+    checks.push(["累计档：画的是「基线 → 当前」的真实差异", await dockHas(netMark)]);
+    log(`  累计档：档位 ${JSON.stringify(netDiff.diffRevisions)}，命中了基线痕迹=${await dockHas(netMark)}`);
+
+    // 已还原的文件：累计档不必读盘，直接给出结论（再点一次主进程也算不出差异）
+    checks.push(["回清单", await clickCrumb("list")]);
+    await sleep(400);
+    checks.push(["展开已还原的文件卡", await clickListFile(revertedRel)]);
+    await sleep(300);
+    checks.push(["点它的「全部改动（累计）」", await clickListNet(revertedRel)]);
+    await sleep(600);
+    checks.push(["已还原的文件，累计档明说「已还原」", await dockHas("本次会话已还原")]);
+
+    // 退出下钻并把受控视图还原成后续用例依赖的那份（3 条改动）
+    checks.push(["退出净值场景的下钻", await clickCrumb("follow")]);
+    await sleep(300);
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(400);
 
     // ---- A3-5：中栏的观测 / 管理面板迁入 ⑦ 页签 ----
     // 迁入前它们在**中栏**另起一个 aside（同一件事两处实现、两套入口）；迁入后

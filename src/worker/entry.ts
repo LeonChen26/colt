@@ -22,6 +22,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createModels, type ImageContent } from "@earendil-works/pi-ai";
 import type {
   ConversationView,
+  FileBaseline,
   ViewFileChange,
   ViewMessage,
   ViewRunOutcome,
@@ -47,6 +48,7 @@ import {
   type BranchEntry,
 } from "./lib/project";
 import { HostBridge } from "./lib/host-bridge";
+import { captureBaseline } from "./lib/baseline";
 import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
 import {
@@ -395,8 +397,24 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // handler 返回 Promise，内核会 await，期间整条 lane 挂起；
   // 抛错会被内核转成 block，所以超时/异常的默认结果是拦截而非放行。
   const gatedToolCalls = new Set<string>();
+  /**
+   * 改动前的内容快照，按 toolCallId 暂存到 after_tool——净值（基线 → 现在）就靠它。
+   *
+   * 读盘**必须在工具执行之前**：after_tool 时文件已经是新内容，那时再读只会得到
+   * 「改完的样子」，净值恒为 0（而且不会报错，只会让界面一直说「已还原」）。
+   * 抓取放在闸门内、**等审批之前**：审批可能等很久，越晚读越可能读到别人写过的内容。
+   */
+  const pendingBaselines = new Map<string, FileBaseline>();
+  /** 已经报过基线的路径：同一文件后续改动只报增量，不重发全文（主进程也按「最早那份」为准） */
+  const baselineSent = new Set<string>();
   harness.hooks.on("before_tool", async (event) => {
     gatedToolCalls.add(event.toolCallId);
+    if (
+      (event.toolName === "edit" || event.toolName === "write") &&
+      typeof event.args.path === "string"
+    ) {
+      pendingBaselines.set(event.toolCallId, captureBaseline(cwd, event.args.path));
+    }
     trace(`hook 触发 ${event.toolName} ${event.toolCallId}`);
     const decision = await requestApproval(event.toolCallId, event.toolName, event.args);
     trace(`得到答复 ${event.toolName} approved=${decision.approved}`);
@@ -448,17 +466,30 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     const patch = typeof details?.patch === "string" ? details.patch : null;
     const counts = patch ? countPatchLines(patch) : { added: 0, removed: 0 };
 
+    const path = toRelative(cwd, rawPath);
     const change: ViewFileChange = {
       id: randomUUID(),
-      path: toRelative(cwd, rawPath),
+      path,
       kind: event.toolName === "edit" ? "edit" : "write",
       patch,
       addedLines: counts.added,
       removedLines: counts.removed,
       timestamp: Date.now(),
+      // 净值由主进程算（它才有基线与读盘边界），worker 只报了「这一次改了什么」
+      netAddedLines: null,
+      netRemovedLines: null,
     };
+    // 基线只在该文件的**第一次**改动时带上：后面几次主进程已有基线，不必重发全文
+    const baseline = pendingBaselines.get(event.toolCallId);
+    pendingBaselines.delete(event.toolCallId);
+    const firstTouch = baseline !== undefined && !baselineSent.has(path);
+    if (firstTouch) baselineSent.add(path);
     // 上报给主进程落库；改动的投影真源是数据库，不在 worker 内存累积
-    send({ type: "fileChange", change });
+    send(
+      firstTouch && baseline !== undefined
+        ? { type: "fileChange", change, baseline }
+        : { type: "fileChange", change },
+    );
     scheduleFlush();
     return undefined;
   });

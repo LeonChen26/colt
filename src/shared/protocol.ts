@@ -246,6 +246,7 @@ export const IPC_CHANNELS = [
   "browser.navigate",
   "browser.viewport.reset",
   "file.read",
+  "file.netDiff",
 ] as const;
 
 /**
@@ -260,6 +261,18 @@ export type FileReadResult =
   | { kind: "image"; dataUrl: string; size: number }
   | { kind: "binary"; size: number }
   | { kind: "too-large"; size: number; limit: number };
+
+/**
+ * 一个文件在**本次会话**里的净变化（`file.netDiff` 的返回）：基线 → 现在。
+ *
+ * 用判别联合而不是「总是带 patch」，因为「算不出来」有两种，且**都得如实说清**：
+ * 没有基线（改动前的内容没留下）与读不到当前文件，二者用户能做的事不同。
+ * 绝不把这两种情况退化成 `+0 −0`——那会读成「没改过」，与事实相反。
+ */
+export type NetChangeResult =
+  | { status: "ok"; patch: string; added: number; removed: number }
+  | { status: "no-baseline"; reason: string }
+  | { status: "unreadable"; reason: string };
 
 /** 渲染进程 → 主进程的调用通道契约（类型真源） */
 export interface IpcInvokeMap {
@@ -549,6 +562,18 @@ export interface IpcInvokeMap {
   "file.read": {
     request: { sessionId: string; path: string };
     response: FileReadResult;
+  };
+  /**
+   * 一个文件在本次会话里的**净变化**：以「本次会话首次改动它之前」的内容为基线，
+   * 与**当前盘上**的内容比一次（`--- 基线` / `+++ 当前`）。
+   *
+   * 等价于「这个文件最终被改成了什么」——逐次 patch 只说单次改了什么，改完又退回原样时
+   * 一串增量看着像改了很多，而净变化是空的。基线由 worker 在改动前抓取、主进程落库。
+   * 与 `file.read` 同一套边界：根由主进程按 sessionId → 项目推出，路径必须落在项目内。
+   */
+  "file.netDiff": {
+    request: { sessionId: string; path: string };
+    response: NetChangeResult;
   };
 }
 

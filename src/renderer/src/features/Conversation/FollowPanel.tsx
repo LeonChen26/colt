@@ -7,6 +7,8 @@
  *      理由：面板必须能显示「空」。若把已完成内容也常驻在此，它永远有内容，
  *      ⑦-E 那句「它是活的吗」就再也答不出来，而这是自用场景判断安全性的第一依据。
  *   2. 本次改动（本次累计）：底部**一行常驻总账**「N 处 · M 文件」，点它进入清单。
+ *      `+a −b` 是**净值**（基线 → 现在，与清单层同源）：改完又退回原样就是 0，
+ *      故这里不给「干了多少下」的错觉——「处 / 文件」两个数说明干过活，净值说明结果。
  *      它不是可折叠区段（没有 caret / 展开态 / 空态），也不固定在右栏底部——
  *      它属于本视图，跟着出现、随切页签消失。
  *
@@ -26,6 +28,7 @@
 import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Clock, FileDiff } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { buildChangeList } from "@/lib/change-list";
 import { formatAgo, samePath } from "@/lib/format";
 import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
@@ -93,9 +96,10 @@ export function FollowPanel({
   // 用户在同一屏看到「3 文件」与「7 处」无从理解——故两个数都必须显式命名。
   const places = changes.length;
   const fileCount = new Set(changes.map((change) => change.path)).size;
-  const added = changes.reduce((sum, change) => sum + change.addedLines, 0);
-  const removed = changes.reduce((sum, change) => sum + change.removedLines, 0);
-  const hasDiff = added > 0 || removed > 0;
+  // `+a −b` 是**净值**（基线 → 现在），与清单层的卡片、头部同一处算出（`buildChangeList`）——
+  // 逐次相加会把「改了又退回去」读成实打实的改动，那正是总账最不该给的错觉。
+  const net = buildChangeList(changes);
+  const hasDiff = net.netAddedLines > 0 || net.netRemovedLines > 0;
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
@@ -176,7 +180,7 @@ export function FollowPanel({
           type="button"
           data-follow-ledger=""
           onClick={onOpenChanges}
-          title="本次会话的文件改动"
+          title="本次会话的文件改动（+a −b 为净值：改动前 → 现在）"
           className="group flex w-full shrink-0 items-center gap-2 border-t border-line bg-surface px-3 py-2 text-left transition hover:bg-surface-overlay"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
@@ -189,8 +193,8 @@ export function FollowPanel({
             {hasDiff && (
               <>
                 {" "}
-                <span className="text-success-fg">+{added}</span>{" "}
-                <span className="text-danger-fg">−{removed}</span>
+                <span className="text-success-fg">+{net.netAddedLines}</span>{" "}
+                <span className="text-danger-fg">−{net.netRemovedLines}</span>
               </>
             )}
           </span>

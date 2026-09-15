@@ -91,9 +91,29 @@ CREATE TABLE IF NOT EXISTS file_changes (
   diff_text TEXT,
   added_lines INTEGER NOT NULL DEFAULT 0,
   removed_lines INTEGER NOT NULL DEFAULT 0,
+  /** 净变化（基线 → 当前）；NULL = 没有基线，算不出，界面据此不下结论 */
+  net_added_lines INTEGER,
+  net_removed_lines INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, created_at DESC);
+
+/**
+ * 「本次会话首次改动某文件之前」的内容快照：净变化的基线。
+ *
+ * 键是 (session, path)——**最早的那一份才作数**：worker 被回收重启后会把「当时已经改过」
+ * 的内容当成基线再报一次，写入必须按 DO NOTHING 挡住它，否则净值会从那一刻起算错。
+ */
+CREATE TABLE IF NOT EXISTS file_baselines (
+  session_id TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  /** 0 = 改动前文件不存在（这次是新建），净变化即整份新增 */
+  existed INTEGER NOT NULL,
+  /** 改动前的内容；NULL = 未留存（过大 / 二进制 / 读取失败） */
+  content TEXT,
+  captured_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, file_path)
+);
 
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,
@@ -128,7 +148,7 @@ CREATE TABLE IF NOT EXISTS settings (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 /** 判断某表是否存在：迁移要兼容「早期形态」的旧库，某些表可能还没建 */
 function hasTable(instance: DatabaseSync, table: string): boolean {
@@ -199,6 +219,17 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
     up: (instance) => {
       if (!hasTable(instance, "providers")) return;
       addColumnIfMissing(instance, "providers", "requires_key", "INTEGER NOT NULL DEFAULT 1");
+    },
+  },
+  {
+    // v8：净值两列 + 基线表。旧库此刻的改动一条都没有净值——它们那时还没抓过基线，
+    // 故两列留空（NULL = 算不出），界面据此只显示逐次改动，不显示净变化。
+    // 表不存在（早期形态的旧库）时跳过加列，交给后面的 SCHEMA 建到最新形态。
+    version: 8,
+    up: (instance) => {
+      if (!hasTable(instance, "file_changes")) return;
+      addColumnIfMissing(instance, "file_changes", "net_added_lines", "INTEGER");
+      addColumnIfMissing(instance, "file_changes", "net_removed_lines", "INTEGER");
     },
   },
 ];

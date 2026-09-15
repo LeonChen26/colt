@@ -42,6 +42,21 @@ export interface ViewRunningTool {
   startedAt: number;
 }
 
+/**
+ * 「本次会话第一次改动这个文件之前」的内容快照——净变化的**基线**。
+ *
+ * 内核每次只给「这一次改了什么」（patch），把一串增量加起来并**不等于**文件的最终样子：
+ * 改完又退回原样的一串编辑相加是 `+10 −10`，而文件其实没变。要回答「这个文件最终
+ * 被改成了什么」，就必须有「改之前是什么」——故 worker 在工具执行**前**抓这份快照
+ * （见 `before_tool` 闸门）、随改动上报，由主进程落库。
+ */
+export interface FileBaseline {
+  /** 改动前文件是否存在：false 表示这次是「新建」，净变化就是整份新增 */
+  existed: boolean;
+  /** 改动前的内容；null 表示未留存（文件过大 / 二进制 / 读取失败），净值因而算不出 */
+  text: string | null;
+}
+
 /** 一次文件改动 */
 export interface ViewFileChange {
   id: string;
@@ -53,6 +68,13 @@ export interface ViewFileChange {
   addedLines: number;
   removedLines: number;
   timestamp: number;
+  /**
+   * 该文件在本次会话里的**净变化**（基线 → 现在），由**主进程**在改动落库时算好写库。
+   * null = 算不出来（没有基线，或文件已读不到）——界面据此**不下结论**，而不是显示 0。
+   * worker 不参与这件事，故它上报的改动里这两个字段恒为 null。
+   */
+  netAddedLines: number | null;
+  netRemovedLines: number | null;
 }
 
 /**
@@ -180,7 +202,11 @@ export type WorkerMessage =
       model: string;
     }
   | { type: "view"; view: ConversationView }
-  | { type: "fileChange"; change: ViewFileChange }
+  /**
+   * 一次文件改动。`baseline` 只在该文件**本次会话的第一次**改动时携带（worker 按路径去重），
+   * 那次之后的改动不再重发全文——主进程按 (session, path) 只认最早的一份（见 `recordFileBaseline`）。
+   */
+  | { type: "fileChange"; change: ViewFileChange; baseline?: FileBaseline }
   | {
       type: "usage";
       /** 内核 usage 行的稳定 ID，作为幂等键，防事件重放 */

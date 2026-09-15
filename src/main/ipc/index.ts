@@ -14,6 +14,7 @@ import type { FirstRunReport } from "@shared/protocol";
 import {
   createSession,
   deleteSession,
+  getFileBaseline,
   getProject,
   getSession,
   listProjectChanges,
@@ -28,6 +29,7 @@ import { sessionManager } from "../session-manager";
 import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
+import { computeNetChange } from "../net-change";
 import { closeDatabase, openDatabase } from "../db";
 import { deleteSecret, hasSecret, maskSecret, setSecret } from "../secrets";
 import {
@@ -506,6 +508,22 @@ export function registerIpcHandlers(): void {
     const project = getProject(session.projectId);
     if (project === undefined) throw new Error("项目不存在");
     return readFileWithin(project.rootPath, request.path);
+  });
+
+  /**
+   * 净变化（基线 → 当前）：逐次 patch 答不了「这个文件最终被改成了什么」，这条通道答它。
+   * 基线与根同样**只由主进程**取（前者来自库、后者由 sessionId → 项目推出）。
+   */
+  handle("file.netDiff", (request) => {
+    const session = getSession(request.sessionId);
+    if (session === undefined) throw new Error("会话不存在");
+    const project = getProject(session.projectId);
+    if (project === undefined) throw new Error("项目不存在");
+    return computeNetChange(
+      project.rootPath,
+      request.path,
+      getFileBaseline(request.sessionId, request.path),
+    );
   });
 }
 

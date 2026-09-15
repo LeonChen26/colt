@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 7;
+const LATEST = 8;
 
 let root: string;
 
@@ -205,6 +205,32 @@ describe("openDatabase 迁移", () => {
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
       .get();
     assert.ok(table, "settings 表应已建立");
+  });
+
+  test("v8 为旧库补净值两列与基线表，存量改动的净值为 NULL（那时还没抓过基线）", () => {
+    seedLegacy(root, LEGACY_SCHEMA, 0);
+    // 存量改动：升级前记下的，没有净值可言
+    const raw = new DatabaseSync(join(root, "data", "colt.db"));
+    raw
+      .prepare(
+        "INSERT INTO file_changes (session_id, file_path, change_kind, added_lines, created_at)" +
+          " VALUES ('s1','a.ts','edit',3,1)",
+      )
+      .run();
+    raw.close();
+
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    assert.ok(columns(db, "file_changes").includes("net_added_lines"));
+    assert.ok(columns(db, "file_changes").includes("net_removed_lines"));
+    assert.ok(
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='file_baselines'").get(),
+      "file_baselines 表应已建立",
+    );
+    const row = db
+      .prepare("SELECT net_added_lines FROM file_changes")
+      .get() as { net_added_lines: number | null };
+    assert.equal(row.net_added_lines, null, "存量改动读不出净值，界面据此不下结论");
   });
 
   test("新库 projects 含 root_key 且唯一索引生效", () => {

@@ -11,6 +11,7 @@ import { openDatabase, closeDatabase } from "../src/main/db/index.ts";
 import {
   createSession,
   deleteSession,
+  getFileBaseline,
   getSession,
   getSetting,
   listProjectChanges,
@@ -19,9 +20,11 @@ import {
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  recordFileBaseline,
   recordFileChange,
   recordToolCall,
   recordUsage,
+  setChangeNet,
   setKernelSessionId,
   setSessionModel,
   setSetting,
@@ -253,6 +256,61 @@ describe("file changes", () => {
     const list = listProjectChanges(project.id);
     assert.equal(list.length, 1);
     assert.equal(list[0]?.sessionTitle, "我的会话");
+  });
+
+  test("净值写回后按行带出；没写过的行是 null（= 算不出，不是 0）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    const known = recordFileChange(session.id, { id: "c1", path: "a.ts", kind: "edit", patch: "@@", addedLines: 9, removedLines: 4, timestamp: 1 });
+    recordFileChange(session.id, { id: "c2", path: "b.ts", kind: "write", patch: null, addedLines: 3, removedLines: 0, timestamp: 2 });
+    setChangeNet(known, { added: 2, removed: 2 });
+
+    const changes = listSessionFileChanges(session.id);
+    assert.equal(changes[0]?.netAddedLines, 2);
+    assert.equal(changes[0]?.netRemovedLines, 2);
+    // 逐次的那对数没有被净值顶掉：卡片看净值、历史行看逐次
+    assert.equal(changes[0]?.addedLines, 9);
+    assert.equal(changes[0]?.removedLines, 4);
+    assert.equal(changes[1]?.netAddedLines, null);
+    assert.equal(changes[1]?.netRemovedLines, null);
+  });
+
+  test("净值可以写回 null（后来读不到文件了），不必删行重插", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    const id = recordFileChange(session.id, { id: "c1", path: "a.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 1 });
+    setChangeNet(id, { added: 5, removed: 1 });
+    setChangeNet(id, null);
+    assert.equal(listSessionFileChanges(session.id)[0]?.netAddedLines, null);
+  });
+});
+
+describe("file baselines", () => {
+  test("首次写入后按 (session, path) 读回，含「改动前不存在」这一态", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordFileBaseline(session.id, "src/a.ts", { existed: true, text: "旧内容\n" });
+    recordFileBaseline(session.id, "src/new.ts", { existed: false, text: "" });
+
+    assert.deepEqual(getFileBaseline(session.id, "src/a.ts"), { existed: true, text: "旧内容\n" });
+    assert.deepEqual(getFileBaseline(session.id, "src/new.ts"), { existed: false, text: "" });
+    assert.equal(getFileBaseline(session.id, "src/other.ts"), undefined);
+  });
+
+  test("**只认最早那一份**：worker 重启后重报的基线不得覆盖（否则净值从那一刻起算）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordFileBaseline(session.id, "src/a.ts", { existed: true, text: "第一次（真基线）\n" });
+    recordFileBaseline(session.id, "src/a.ts", { existed: true, text: "重启后误报的内容\n" });
+    assert.equal(getFileBaseline(session.id, "src/a.ts")?.text, "第一次（真基线）\n");
+  });
+
+  test("会话删除时基线一并清掉", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordFileBaseline(session.id, "src/a.ts", { existed: true, text: "旧内容\n" });
+    deleteSession(session.id);
+    assert.equal(getFileBaseline(session.id, "src/a.ts"), undefined);
   });
 });
 

@@ -8,7 +8,8 @@ import { mkdirSync } from "node:fs";
 import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
 import { getSecret } from "./secrets";
-import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
+import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
+import { computeNetChange } from "./net-change";
 import { ApprovalStore, DEFAULT_TIMEOUT_MS } from "./approval/store";
 import { getAnalyzeCommandAllowlist } from "./approval/config";
 import { analyzeToolCall } from "./approval/analyzer";
@@ -570,13 +571,26 @@ export class SessionManager {
           }
           break;
         }
-        case "fileChange":
-          // 落库后回填：worker 只负责上报，改动的投影始终以 DB 为准
-          recordFileChange(options.sessionId, message.change);
+        case "fileChange": {
+          // 基线只在「本会话首次改动该文件」时随改动带来；落库按最早那份为准（见 recordFileBaseline）
+          if (message.baseline !== undefined) {
+            recordFileBaseline(options.sessionId, message.change.path, message.baseline);
+          }
+          const rowId = recordFileChange(options.sessionId, message.change);
+          // 净值在这里算、当场写死：**以库里的基线为准**，不用消息里带来的那份——
+          // worker 重启后不记得发过基线，会把「已经改过」的内容再报一次，信它就等于
+          // 把会话前段的变化吃掉。算不出（没有基线 / 读不到）时写 NULL，界面因此不下结论。
+          const net = computeNetChange(
+            options.cwd,
+            message.change.path,
+            getFileBaseline(options.sessionId, message.change.path),
+          );
+          setChangeNet(rowId, net.status === "ok" ? { added: net.added, removed: net.removed } : null);
           // 唯一的写入点：缓存必须在此失效，否则后续投影会一直停在旧列表
           this.#fileChangesCache.delete(options.sessionId);
           this.#emitView(entry);
           break;
+        }
 
         case "usage":
           // 用量历史只增不改，直接落库；视图里的累计值仍以内核快照为准

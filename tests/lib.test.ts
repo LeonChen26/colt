@@ -6,7 +6,13 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { parseAnsi } from "../src/renderer/src/lib/ansi.ts";
 import { classifyDiffLine } from "../src/renderer/src/lib/diff.ts";
-import { formatAgo, formatArgs, runStateOf, samePath } from "../src/renderer/src/lib/format.ts";
+import {
+  formatAgo,
+  formatArgs,
+  matchChangeByPath,
+  runStateOf,
+  samePath,
+} from "../src/renderer/src/lib/format.ts";
 import { buildChangeList, isProjectRelative } from "../src/renderer/src/lib/change-list.ts";
 import {
   UNKNOWN_MODEL,
@@ -73,6 +79,28 @@ describe("parseAnsi", () => {
   test("裸转义无文本产出空内容", () => {
     assert.deepEqual(parseAnsi("\u001B[0m"), []);
   });
+
+  test("bold-off(22) 解除加粗，不残留到后续输出", () => {
+    // npm 等大量用「1m…22m」包步骤名；不处理 22 会让第一次加粗后的输出全部残留粗体
+    const spans = parseAnsi("\u001B[1mbold\u001B[22mplain");
+    assert.equal(spans[0]?.className, "font-bold");
+    assert.equal(spans[1]?.text, "plain");
+    assert.equal(spans[1]?.className, "");
+  });
+
+  test("默认前景色(39) 清除颜色", () => {
+    const spans = parseAnsi("\u001B[31mred\u001B[39mplain");
+    assert.equal(spans[0]?.className, "text-red-400");
+    assert.equal(spans[1]?.className, "");
+  });
+
+  test("非 SGR 序列（光标控制 / OSC）被剥离，不漏成可见乱码", () => {
+    const spans = parseAnsi("\u001B[2K\u001B[1Gloading\u001B]0;title\u0007done");
+    assert.deepEqual(spans, [
+      { text: "loading", className: "" },
+      { text: "done", className: "" },
+    ]);
+  });
 });
 
 describe("classifyDiffLine", () => {
@@ -93,6 +121,14 @@ describe("classifyDiffLine", () => {
   test("上下文行", () => {
     assert.equal(classifyDiffLine(" unchanged"), "context");
     assert.equal(classifyDiffLine(""), "context");
+  });
+
+  test("hunk 内的 --- / +++ 是被删除/新增的正文行，不是文件头", () => {
+    // 删掉 markdown 的 --- 分隔线、SQL 的 -- 注释时，patch 行以 --- 开头；
+    // 按 meta 着灰会让用户以为那行没被删
+    assert.equal(classifyDiffLine("--- 删掉的分隔线", true), "remove");
+    assert.equal(classifyDiffLine("+++ 追加的正文", true), "add");
+    assert.equal(classifyDiffLine("--- a/file.ts", false), "meta");
   });
 });
 
@@ -135,10 +171,21 @@ describe("runStateOf", () => {
   });
 });
 
-/** 造一条改动记录。名字统一用小写，避免 localeCompare 在大小写上产生环境差异 */
+/**
+ * 造一条改动记录。名字统一用小写，避免 localeCompare 在大小写上产生环境差异。
+ *
+ * `net` 默认**不给**（null = 没有基线、净值算不出）——手写的记录本来就不知道基线是什么，
+ * 要测净值的用例必须显式给出来，免得「默认等于逐次相加」这种想当然混进断言。
+ */
 const change = (
   path: string,
-  options: { at?: number; kind?: "write" | "edit"; added?: number; removed?: number } = {},
+  options: {
+    at?: number;
+    kind?: "write" | "edit";
+    added?: number;
+    removed?: number;
+    net?: { added: number; removed: number } | null;
+  } = {},
 ): ViewFileChange => ({
   id: `${path}@${options.at ?? 0}`,
   path,
@@ -147,6 +194,8 @@ const change = (
   addedLines: options.added ?? 1,
   removedLines: options.removed ?? 0,
   timestamp: options.at ?? 0,
+  netAddedLines: options.net?.added ?? null,
+  netRemovedLines: options.net?.removed ?? null,
 });
 
 describe("isProjectRelative", () => {
@@ -214,16 +263,51 @@ describe("buildChangeList", () => {
     assert.equal(list.fileCount, 1);
   });
 
-  test("同文件的多次改动合计 +a −b（概念稿的 ×3 卡片）", () => {
+  test("同一文件的数字取**最新那条的净值**，不是历史逐次相加", () => {
     const list = buildChangeList([
-      change("a.ts", { at: 1, added: 3, removed: 2 }),
-      change("a.ts", { at: 2, added: 4, removed: 1 }),
+      // 先加了 3 删了 2，随后又改了一次：净值只认最后那一行（主进程每次落库都重算）
+      change("a.ts", { at: 1, added: 3, removed: 2, net: { added: 3, removed: 2 } }),
+      change("a.ts", { at: 2, added: 4, removed: 1, net: { added: 5, removed: 1 } }),
     ]);
     const file = list.groups[0]?.files[0];
-    assert.equal(file?.addedLines, 7);
-    assert.equal(file?.removedLines, 3);
-    assert.equal(list.addedLines, 7);
-    assert.equal(list.removedLines, 3);
+    assert.equal(file?.netAddedLines, 5);
+    assert.equal(file?.netRemovedLines, 1);
+    assert.equal(list.netAddedLines, 5);
+    assert.equal(list.netRemovedLines, 1);
+    // 逐次的那两对数字仍在历史行里（`×N` 展开后逐条显示）
+    assert.deepEqual(
+      file?.history.map((rev) => [rev.addedLines, rev.removedLines]),
+      [
+        [4, 1],
+        [3, 2],
+      ],
+    );
+  });
+
+  test("净值 0（改完又退回原样）仍算一条改动，只是不产生行数", () => {
+    const list = buildChangeList([
+      change("a.ts", { at: 1, added: 10, removed: 0, net: { added: 10, removed: 0 } }),
+      change("a.ts", { at: 2, added: 0, removed: 10, net: { added: 0, removed: 0 } }),
+    ]);
+    assert.equal(list.groups[0]?.files[0]?.netAddedLines, 0);
+    assert.equal(list.groups[0]?.files[0]?.netRemovedLines, 0);
+    assert.equal(list.places, 2);
+    assert.equal(list.fileCount, 1);
+    assert.equal(list.netAddedLines, 0);
+    assert.equal(list.netRemovedLines, 0);
+    assert.equal(list.netUnknown, 0, "净值 0 是**算出来的结论**，不是「算不出」");
+  });
+
+  test("净值算不出的文件不计入总额，并如实计数（不能让它们静默消失）", () => {
+    const list = buildChangeList([
+      change("known.ts", { at: 1, net: { added: 4, removed: 2 } }),
+      change("unknown.ts", { at: 2 }),
+      change("also-unknown.ts", { at: 3 }),
+    ]);
+    assert.equal(list.netAddedLines, 4);
+    assert.equal(list.netRemovedLines, 2);
+    assert.equal(list.netUnknown, 2);
+    assert.equal(list.fileCount, 3);
   });
 
   test("历史按时间倒序（最新在前），kind 取最新一次", () => {
@@ -329,11 +413,57 @@ describe("samePath", () => {
     assert.equal(samePath("src/a.ts", "src/b.ts"), false);
   });
 
-  test("裸后缀也算命中——刻意与 matchChangeByPath 用同一套容差", () => {
-    // 这条看着像误判，其实是**有意**的：工具入参会给出各种前缀写法，
-    // 而 `matchChangeByPath`（工具卡 → 改动记录的配对）用的就是这三条判据。
-    // 两处若不一致，同一行 hover 会在「正在处理」与工具卡上高亮不同的文件。
-    assert.equal(samePath("rc/a.ts", "src/a.ts"), true);
+  test("裸后缀不算命中——配对真数据不能靠「前缀截断」的巧合", () => {
+    // 判据与 matchChangeByPath 保持一致（同一行 hover 在两处高亮同一个文件）：
+    // 命中必须落在 / 边界上，否则 `src/a.ts` 会与 `rc/a.ts` 互相误配。
+    assert.equal(samePath("rc/a.ts", "src/a.ts"), false);
+  });
+});
+
+/** 造一条改动记录：只写用例关心的字段（净值这里用不到，一律「算不出」） */
+const changeOf = (path: string, addedLines = 1, removedLines = 0): ViewFileChange => ({
+  id: `chg-${path}#${addedLines}/${removedLines}`,
+  path,
+  kind: "edit",
+  patch: null,
+  addedLines,
+  removedLines,
+  timestamp: 0,
+  netAddedLines: null,
+  netRemovedLines: null,
+});
+
+describe("matchChangeByPath", () => {
+  test("精确相等优先于后缀：同 basename 不同目录不被误抢", () => {
+    const changes = [changeOf("README.md", 5), changeOf("docs/README.md", 9)];
+    // 旧实现单趟倒序后缀匹配：工具卡 docs/README.md 会先撞上根目录的 README.md
+    //（"docs/README.md".endsWith("/README.md") === true），把别的文件的 diff 配到这张卡上
+    assert.equal(matchChangeByPath(changes, "docs/README.md")?.addedLines, 9);
+    assert.equal(matchChangeByPath(changes, "README.md")?.addedLines, 5);
+  });
+
+  test("绝对路径按 / 边界后缀兜底", () => {
+    const changes = [changeOf("src/lib/util.ts", 3, 1)];
+    assert.equal(matchChangeByPath(changes, "E:\\proj\\src\\lib\\util.ts")?.path, "src/lib/util.ts");
+  });
+
+  test("多个后缀命中取最长（更具体）的那条", () => {
+    const changes = [changeOf("README.md", 5), changeOf("docs/README.md", 9)];
+    assert.equal(matchChangeByPath(changes, "C:\\repo\\docs\\README.md")?.addedLines, 9);
+  });
+
+  test("裸后缀不算命中（前缀截断的巧合不配对）", () => {
+    const changes = [changeOf("a.ts", 1)];
+    assert.equal(matchChangeByPath(changes, "src/wa.ts"), undefined);
+  });
+
+  test("同路径多条记录取最新", () => {
+    const changes = [changeOf("src/a.ts", 1), changeOf("src/a.ts", 7)];
+    assert.equal(matchChangeByPath(changes, "src/a.ts")?.addedLines, 7);
+  });
+
+  test("非字符串入参返回 undefined", () => {
+    assert.equal(matchChangeByPath([], undefined), undefined);
   });
 });
 
@@ -501,6 +631,12 @@ describe("formatTokenCount", () => {
     assert.equal(formatTokenCount(1240000), "1.24M");
     assert.equal(formatTokenCount(1050000), "1.05M");
     assert.equal(formatTokenCount(2000000), "2M");
+  });
+
+  test("999.95K 起四舍五入会进位成 1000K：升到 M 档", () => {
+    assert.equal(formatTokenCount(999_949), "999.9K");
+    assert.equal(formatTokenCount(999_950), "1M");
+    assert.equal(formatTokenCount(999_999), "1M");
   });
 });
 
