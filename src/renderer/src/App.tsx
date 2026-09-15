@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  FileDiff,
   FolderOpen,
   Monitor,
   Moon,
@@ -322,6 +323,21 @@ export default function App(): React.JSX.Element {
           </div>
           <button
             type="button"
+            onClick={() => setMainView((value) => (value === "changes" ? "chat" : "changes"))}
+            title={activeProject ? "项目改动汇总" : "打开项目后可查看改动"}
+            disabled={!activeProject}
+            className={cn(
+              "flex items-center gap-1.5 rounded-[6px] border px-2 py-1 text-[11.5px] transition disabled:cursor-not-allowed disabled:opacity-40",
+              mainView === "changes"
+                ? "border-accent bg-accent-soft text-text-primary"
+                : "border-line text-text-secondary hover:border-line-strong hover:text-text-primary",
+            )}
+          >
+            <FileDiff {...ICON.sm} />
+            改动
+          </button>
+          <button
+            type="button"
             onClick={() => setMainView((value) => (value === "settings" ? "chat" : "settings"))}
             title="设置"
             className={cn(
@@ -366,6 +382,7 @@ export default function App(): React.JSX.Element {
                       onActivate={() => setActiveProject(project)}
                       onNewSession={() => {
                         if (project.id !== activeProject?.id) setActiveProject(project);
+                        setMainView((value) => (value === "changes" ? "chat" : value));
                         void newSession();
                       }}
                     />
@@ -387,6 +404,7 @@ export default function App(): React.JSX.Element {
                               now={now}
                               onClick={() => {
                                 if (project.id !== activeProject?.id) setActiveProject(project);
+                                setMainView((value) => (value === "changes" ? "chat" : value));
                                 setActiveSession(session);
                               }}
                               onDelete={() => void deleteSession(session)}
@@ -442,7 +460,7 @@ export default function App(): React.JSX.Element {
             {mainView === "settings" ? (
               <Settings />
             ) : mainView === "changes" && activeProject ? (
-              <ProjectChanges projectId={activeProject.id} />
+              <ProjectChanges key={activeProject.id} projectId={activeProject.id} />
             ) : activeSession && activeProject ? (
               <Conversation
                 key={activeSession.id}
