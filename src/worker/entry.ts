@@ -497,6 +497,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   });
 
   const lane = await harness.lane("main", context);
+  // 恢复旧会话时，lane 持久化配置里的模型可能已在本进程不存在（provider 被删、模型下线、
+  // 或测试残留）：内核恢复语义是原样采纳持久化配置（create 传入的模型只用于新建 lane），
+  // 不校验可用性，第一条消息就会以 model_unavailable 失败。这里与主进程 resolveSessionModel
+  // 的「失效回退」对齐：解析不了就用本次 init 的模型愈合（setModel 会把修复写回会话）。
+  // 解析得了就不动——注册表里只有 init 装配的 provider，能解析即与 init 同源，属会话自己的选定。
+  if ((await lane.getModel(context)) === undefined) {
+    await lane.setModel({ provider: providerConfig.id, modelId }, context);
+  }
   const watch = await lane.watch(context);
   // 投影一律使用 Colt 的会话 ID，渲染层才能正确匹配
   // fileChanges 始终为空——主进程会用数据库中的完整列表覆盖它
