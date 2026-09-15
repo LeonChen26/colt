@@ -196,9 +196,12 @@ export class ComputerHost {
       case "scroll": {
         const x = readCoord(params.x, "x", width);
         const y = readCoord(params.y, "y", height);
-        const steps = readScrollSteps(params.delta);
-        // delta 正值表示向下滚动；Windows 滚轮正值向上，故取负
-        const data = -steps * 120;
+        // 方向取自 delta 的符号（正=向下，负=向上），readScrollSteps 只取步数——
+        // 此前对 delta 整体取 abs，「向上」分支永远不可达，模型想回看上方内容时会继续向下滚。
+        const rawDelta = typeof params.delta === "number" && Number.isFinite(params.delta) ? params.delta : 1;
+        const steps = readScrollSteps(rawDelta);
+        // Windows 滚轮正值向上，故向下滚动取负
+        const data = (rawDelta < 0 ? 1 : -1) * steps * 120;
         await runPowerShell(
           [
             NATIVE_MOUSE,

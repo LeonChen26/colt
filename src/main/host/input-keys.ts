@@ -53,7 +53,11 @@ export function toSendKeysCombo(keys: readonly string[]): string {
     else if (key === "shift") modifiers.push("+");
     else if (key === "win" || key === "meta" || key === "cmd" || key === "super") {
       throw new Error("SendKeys 不支持 Win/Meta 键");
-    } else if (key.length === 1) main = key;
+    } else if (key.length === 1) {
+      // 单字符主键与文本同规：SendKeys 元字符（~ + ^ % ( ) { } [ ]）必须包花括号，
+      // 否则 `~` 会被解释成 Enter、`+` 解释成 Shift——字面量变控制键。
+      main = SENDKEYS_SPECIAL.has(key) ? `{${key}}` : key;
+    }
     else main = NAMED_KEYS[key] ?? `{${key.toUpperCase()}}`;
   }
   if (main.length === 0) throw new Error("按键组合缺少主键（如 ctrl+c 中的 c）");

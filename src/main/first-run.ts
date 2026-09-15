@@ -75,17 +75,30 @@ export function inspectUserData(userDataPath: string): FirstRunReport {
 /**
  * 清空指定 userData 目录下的业务数据，保留目录本身，并写入引导完成标志。
  * 调用前必须已关闭数据库连接，否则 Windows 下文件被占用无法删除。
+ *
+ * 逐条 try/catch：此时窗口早已创建，userData 根目录下还有**正在被本进程占用**的
+ * Chromium 配置（Local Storage 的 LOCK、Network\Cookies、Cache…），Windows 对被占用
+ * 文件的删除会抛 EPERM/EBUSY（`force` 只忽略「路径不存在」）。不能让单个删不掉的
+ * 条目把整个清空中断——那会连「引导完成」标志都写不进去，下次启动重新弹引导，
+ * 且活的 Chromium 存储被删到一半。删不掉的（极少数）跳过即可。
  */
 export function clearUserData(userDataPath: string): void {
+  const remove = (target: string): void => {
+    if (!existsSync(target)) return;
+    try {
+      rmSync(target, { recursive: true, force: true });
+    } catch {
+      // 被占用的条目跳过：清空是尽力而为，标志文件必须在 finally 语义下落盘
+    }
+  };
   for (const name of CLEARABLE_ENTRIES) {
-    const target = join(userDataPath, name);
-    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+    remove(join(userDataPath, name));
   }
   // 清理根目录残留（保留标志文件）
   if (existsSync(userDataPath)) {
     for (const entry of readdirSync(userDataPath)) {
       if (entry === ONBOARDING_FLAG) continue;
-      rmSync(join(userDataPath, entry), { recursive: true, force: true });
+      remove(join(userDataPath, entry));
     }
   }
 }

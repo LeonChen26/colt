@@ -12,6 +12,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
   const [changes, setChanges] = useState<ProjectFileChange[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useMemo(
     () => async () => {
@@ -20,6 +21,10 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
         const list = await window.colt.invoke("changes.list", { projectId });
         setChanges(list);
         setSelected((current) => current ?? list[0]?.id ?? null);
+        setError(null);
+      } catch (e) {
+        // 查询失败不能静默变成「该项目还没有任何文件改动」假空态——那是在撒谎
+        setError(e instanceof Error ? e.message : String(e));
       } finally {
         setLoading(false);
       }
@@ -67,9 +72,15 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
         </button>
       </div>
 
+      {error && (
+        <div className="m-3 rounded-[8px] border border-danger/50 bg-danger/10 px-3 py-2 text-[12.5px] text-danger">
+          {error}
+        </div>
+      )}
+
       {changes.length === 0 ? (
         <p className="mt-20 text-center text-sm text-text-muted">
-          {loading ? "加载中…" : "该项目还没有任何文件改动"}
+          {loading ? "加载中…" : error !== null ? "加载失败，请重试" : "该项目还没有任何文件改动"}
         </p>
       ) : (
         <div className="flex min-h-0 flex-1">

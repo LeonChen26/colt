@@ -196,7 +196,12 @@ function trimZeros(value: number, digits: number): string {
  */
 export function formatTokenCount(value: number): string {
   if (value >= 1_000_000) return `${trimZeros(value / 1_000_000, 2)}M`;
-  if (value >= 1_000) return `${trimZeros(value / 1_000, 1)}K`;
+  if (value >= 1_000) {
+    // 999.95K 起 toFixed(1) 会四舍五入进位成「1000K」：直接升到 M 档
+    const k = value / 1_000;
+    if (k >= 999.95) return `${trimZeros(value / 1_000_000, 2)}M`;
+    return `${trimZeros(k, 1)}K`;
+  }
   return String(value);
 }
 

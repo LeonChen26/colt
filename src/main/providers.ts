@@ -117,7 +117,9 @@ export function saveProvider(input: {
       id,
       input.name.trim() || id,
       input.baseUrl.trim(),
-      JSON.stringify(input.models),
+      // 落库的必须是清洗后的 models：入参里的空 id 行 / 字段漂移行过不了读取侧的假设，
+      // 存原始数据会让「入库前统一清洗」只发生在校验、不发生在存储
+      JSON.stringify(models),
       input.requiresKey === false ? 0 : 1,
       Date.now(),
     );

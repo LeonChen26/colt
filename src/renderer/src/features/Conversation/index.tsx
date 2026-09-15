@@ -78,7 +78,11 @@ const MODE_LABEL: Record<ApprovalMode, string> = {
 
 function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  if (value >= 1_000) {
+    // 999.95k 起 toFixed(1) 会四舍五入进位成「1000.0k」，直接升档显示
+    const k = value / 1_000;
+    return k >= 999.95 ? "1.0M" : `${k.toFixed(1)}k`;
+  }
   return String(value);
 }
 
@@ -146,6 +150,13 @@ export function Conversation({
   const dockWidthRef = useRef(0);
   /** 是否已自动切过一次浏览器页签（规则 ⑦-F 只在「首次使用」切） */
   const browserAutoSwitchedRef = useRef(false);
+  /**
+   * 工具卡的展开状态，以工具调用 id 为键。
+   * 同一个工具调用在「流式区」与「完成态消息」是两个树位置——完成的瞬间旧实例卸载、
+   * 新实例挂载，实例本地的 useState 会把用户手动展开的状态丢掉（正在读实时输出被收起）。
+   * 展开状态挂在这个组件外的 Map 上，两个渲染点共用，切换时状态跟着 id 走。
+   */
+  const toolOpenStateRef = useRef(new Map<string, boolean>());
 
   /** 当前激活实例的 kind —— 决定渲染哪个视图、以及用哪个建议宽度 */
   const dockActiveKind =
@@ -469,10 +480,18 @@ export function Conversation({
     };
   }, [sessionId, cwd]);
 
-  // 新内容到达时自动滚到底（审批卡片出现时也要滚，否则用户看不到）
+  // 新内容到达时自动滚到底（审批卡片出现时也要滚，否则用户看不到）。
+  // 跟随**只在用户本就停在底部附近**时发生：流式期间每 50ms 一次投影更新，
+  // 无条件拉底的话，用户上翻读历史会被不断拽回去，「回到底部」按钮也跟着闪烁。
+  // 审批卡片例外——它是阻塞点、必须被看到，出现（计数增加）时强制拉底。
+  const approvalsCountRef = useRef(0);
   useEffect(() => {
     const node = scrollRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
+    if (!node) return;
+    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+    const approvalAppeared = approvals.length > approvalsCountRef.current;
+    approvalsCountRef.current = approvals.length;
+    if (distance <= 80 || approvalAppeared) node.scrollTop = node.scrollHeight;
   }, [view?.messages.length, view?.streamingText, view?.thought, view?.runningTools, approvals.length]);
 
   // 是否已离开底部（决定是否显示「回到底部」）
@@ -884,6 +903,7 @@ export function Conversation({
                 changes={changes}
                 onHoverFile={setHoveredFile}
                 onOpenFile={openFile}
+                openState={toolOpenStateRef.current}
               />
             ))}
 
@@ -901,6 +921,8 @@ export function Conversation({
                 {view?.runningTools.map((tool) => (
                   <ToolCard
                     key={tool.id}
+                    openId={tool.id}
+                    openState={toolOpenStateRef.current}
                     name={tool.name}
                     args={tool.args}
                     running

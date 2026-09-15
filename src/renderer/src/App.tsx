@@ -207,12 +207,19 @@ export default function App(): React.JSX.Element {
     if (!activeProject) return;
     const projectId = activeProject.id;
     setExpandedProjects((set) => new Set(set).add(projectId));
+    let stale = false;
     void (async () => {
       const list = await loadProjectSessions(projectId);
+      // 响应到达时可能已经切到别的项目（会话多、IPC 慢时后到）：不能把**上一个项目**
+      // 的响应写进选中态，否则主区会用当前项目的 cwd 去开另一个项目的会话。
+      if (stale) return;
       setActiveSession((current) =>
         current && list.some((item) => item.id === current.id) ? current : (list[0] ?? null),
       );
     })();
+    return () => {
+      stale = true;
+    };
   }, [activeProject, loadProjectSessions]);
 
   const pickProject = useCallback(async () => {
@@ -226,16 +233,22 @@ export default function App(): React.JSX.Element {
     }
   }, []);
 
-  const newSession = useCallback(async () => {
-    if (!activeProject) return;
-    const projectId = activeProject.id;
+  /**
+   * 新建会话。`projectId` 必须由调用方显式传入：侧栏每个项目行都有自己的「+」，
+   * 点的是哪个项目就建在哪个项目——不能依赖闭包里的 `activeProject`，
+   * 否则「先 setActiveProject(B)、再同步调 newSession()」时，读到的还是**本次渲染**的 A，
+   * 会话就被建到 A 项目里去了（stale closure）。
+   */
+  const newSession = useCallback(async (projectId?: string) => {
+    const targetId = projectId ?? activeProject?.id;
+    if (!targetId) return;
     try {
-      const session = await window.colt.invoke("session.create", { projectId });
+      const session = await window.colt.invoke("session.create", { projectId: targetId });
       // 新会话是**草稿**：首次发消息才落库，所以 session.list 里还没有它。
       // 必须本地插进列表，否则侧栏看不到这一条，用户也就无从点回来。
       setSessionsByProject((map) => {
         const next = new Map(map);
-        next.set(projectId, [session, ...(next.get(projectId) ?? [])]);
+        next.set(targetId, [session, ...(next.get(targetId) ?? [])]);
         return next;
       });
       setActiveSession(session);
@@ -298,9 +311,11 @@ export default function App(): React.JSX.Element {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {env?.bashPath ? null : (
+          {/* env 尚未探测完成（null）时不能渲染红条：那只是「还不知道」，不是「确认没有」——
+              否则每次启动都会先闪一帧「未找到 bash」再消失（探测要做多轮文件系统访问）。 */}
+          {env !== null && !env.bashPath ? (
             <span className="text-[11.5px] text-danger">未找到 bash，命令工具不可用</span>
-          )}
+          ) : null}
           <div className="flex items-center gap-0.5 rounded-[6px] border border-line p-0.5">
             {THEME_OPTIONS.map((item) => (
               <button
@@ -382,8 +397,10 @@ export default function App(): React.JSX.Element {
                       onActivate={() => setActiveProject(project)}
                       onNewSession={() => {
                         if (project.id !== activeProject?.id) setActiveProject(project);
-                        setMainView((value) => (value === "changes" ? "chat" : value));
-                        void newSession();
+                        // 无论当前在哪个视图（设置 / 改动），新建会话都要回到对话视图：
+                        // 否则主区停在原页面、会话在后台静默创建——看起来就是「点了没反应」。
+                        setMainView("chat");
+                        void newSession(project.id);
                       }}
                     />
                     {expanded && (
@@ -404,7 +421,8 @@ export default function App(): React.JSX.Element {
                               now={now}
                               onClick={() => {
                                 if (project.id !== activeProject?.id) setActiveProject(project);
-                                setMainView((value) => (value === "changes" ? "chat" : value));
+                                // 同 onNewSession：在设置页点会话行也必须回到对话视图
+                                setMainView("chat");
                                 setActiveSession(session);
                               }}
                               onDelete={() => void deleteSession(session)}

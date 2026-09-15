@@ -237,7 +237,7 @@ export function waitScript(mode: WaitMode, text: string, timeoutMs: number, quie
       return false;
     };
     if (check()) return;
-    const poll = setInterval(() => { if (check()) clearInterval(poll); }, 250);`
+    poll = setInterval(() => { if (check()) clearInterval(poll); }, 250);`
       : mode === "load"
         ? `    const check = () => {
       if (document.readyState === 'complete') {
@@ -247,21 +247,27 @@ export function waitScript(mode: WaitMode, text: string, timeoutMs: number, quie
       return false;
     };
     if (check()) return;
-    const poll = setInterval(() => { if (check()) clearInterval(poll); }, 250);`
+    poll = setInterval(() => { if (check()) clearInterval(poll); }, 250);`
         : `    let timer = 0;
     const quiet = () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { observer.disconnect(); done(true, 'DOM 已停止变化'); }, ${quietMs});
+      timer = setTimeout(() => { if (observer) observer.disconnect(); done(true, 'DOM 已停止变化'); }, ${quietMs});
     };
-    const observer = new MutationObserver(quiet);
+    observer = new MutationObserver(quiet);
     observer.observe(document.documentElement || document, { childList: true, subtree: true });
     quiet();`;
 
   return `(() => new Promise((resolve) => {
   const started = Date.now();
   let hardStop = 0;
+  let poll = 0;
+  let observer = null;
   const done = (ok, detail) => {
     if (hardStop) clearTimeout(hardStop);
+    // 超时路径也要清掉轮询定时器 / 观察器：否则每次等待超时都在页面里留下一个
+    // 永久 interval（innerText 轮询会强制布局）或 MutationObserver，多次超时层层叠加。
+    if (poll) clearInterval(poll);
+    if (observer) observer.disconnect();
     resolve(JSON.stringify({ ok, detail, elapsedMs: Date.now() - started }));
   };
   hardStop = setTimeout(() => done(false, '等待超时'), ${timeoutMs});

@@ -179,6 +179,13 @@ describe("waitScript", () => {
     assert.match(idleMode, /400/);
   });
 
+  test("done 出口统一清理页内定时器 / 观察器（超时路径也不能留下永久轮询）", () => {
+    const textMode = waitScript("text", "x", 8000, 500);
+    assert.match(textMode, /if \(poll\) clearInterval\(poll\)/);
+    const idleMode = waitScript("idle", "", 5000, 400);
+    assert.match(idleMode, /if \(observer\) observer\.disconnect\(\)/);
+  });
+
   test("文本被当作字面量嵌入，不会破坏脚本结构", () => {
     const script = waitScript("text", 'a"b\\c`d', 1000, 500);
     assert.match(script, /JSON/);

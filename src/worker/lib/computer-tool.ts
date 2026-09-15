@@ -46,7 +46,8 @@ export function createComputerTools(bridge: HostBridge): AgentHarnessTool<Execut
     description:
       "操作整个桌面（会真实控制鼠标键盘）。" +
       "click：在 (x,y) 点击，button 可选 left/right；type：在当前焦点输入 text；" +
-      "key：发送按键组合，如 [\"ctrl\",\"c\"]；scroll：在 (x,y) 按 delta 步数滚动。" +
+      "key：发送按键组合，如 [\"ctrl\",\"c\"]；scroll：在 (x,y) 按 delta 步数滚动，" +
+      "delta 为正向下、为负向上。" +
       "每次操作前需先 computer_screenshot，操作后需再次截图确认结果。",
     parameters: actionSchema,
     async execute(_toolCallId, params) {

@@ -545,6 +545,28 @@ export class BrowserHost {
         });
       },
     );
+    // 捕获缓冲的语义是「自上次导航以来」，清空必须挂在导航**开始**（did-start-navigation）：
+    // 点链接 / 后退 / 前进 / 刷新 / agent 导航都从这里走，不清理旧页条目就会算到新页面头上，
+    // 刷新还会把相同条目重复录入（计数失真）。之所以不在提交完成（did-navigate）时清——
+    // 新页的文档请求先于提交到达，提交时清会把新页自己的请求一起抹掉。
+    // 页内导航（SPA 路由）与子框架不算换页，不清。
+    let pendingAdopt: { url: string } | undefined;
+    contents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+      if (!isMainFrame || isInPlace) return;
+      capture.reset();
+      // 弹窗接管的提示写在 loadURL 之前，上面的 reset 会把它抹掉——这里补写回来，
+      // 否则「这次换页是接管新窗口」这条线索在观测里消失
+      const adopt = pendingAdopt;
+      pendingAdopt = undefined;
+      if (adopt !== undefined) {
+        capture.recordConsole({
+          level: "info",
+          message: `拦截新窗口请求，已在当前窗口打开：${adopt.url}`,
+          source: adopt.url,
+          line: 0,
+        });
+      }
+    });
     // 地址/标题变化都要同步给渲染层（右栏浏览器视图的 URL 展示）
     contents.on("did-navigate", () => this.#emitState(sessionId, true));
     contents.on("did-navigate-in-page", () => this.#emitState(sessionId, true));
@@ -569,6 +591,9 @@ export class BrowserHost {
         source: details.url,
         line: 0,
       });
+      // 上面那条提示随后会被 did-start-navigation 的 reset 抹掉，先挂号、reset 后重放；
+      // 若导航根本没能开始（loadURL 直接失败），缓冲里还留着这条，线索不丢
+      pendingAdopt = { url: details.url };
       void contents.loadURL(details.url).catch(() => undefined);
       return { action: "deny" };
     });

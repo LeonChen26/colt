@@ -62,7 +62,10 @@ export function getSecret(key: SecretKey): string | undefined {
 
 /** 是否已配置，供 UI 展示（不返回明文） */
 export function hasSecret(key: SecretKey): boolean {
-  return Boolean(readStore()[key]);
+  // 以「真的能解密出明文」为准，而不是「密文存在」：系统凭据环境变更后
+  // （重装 / 换账户 / 迁移 userData）密文还在但解密必失败，若仍显示「已配置」，
+  // 用户打开会话时才会撞上「尚未配置 API Key」，前一步的提示就成了谎言。
+  return Boolean(getSecret(key));
 }
 
 /** 删除密钥 */

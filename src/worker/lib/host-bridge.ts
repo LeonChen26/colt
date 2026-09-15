@@ -9,8 +9,16 @@ import { randomUUID } from "node:crypto";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { HostCapability, HostResult, WorkerMessage } from "@shared/worker-protocol";
 
-/** 单次宿主调用上限；超时视为失败，避免 lane 永久挂起 */
-const HOST_RPC_TIMEOUT_MS = 60_000;
+/**
+ * 单次宿主调用上限；超时视为失败，避免 lane 永久挂起。
+ *
+ * 必须大于主进程侧最长的动作时限：`browser/wait` 的页内硬超时上限是 60s
+ * （MAX_WAIT_TIMEOUT_MS），主进程外层再留 5s 余量（65s）——RPC 定时器在请求发出
+ * 之前就开始计时，若也是 60s，按上限等待时**必然**被 RPC 超时抢先，
+ * 把「等待超时」误报成「宿主能力调用超时」，模型会以为宿主坏了而原参重试。
+ * 取 90s = wait 上限 60s + 主进程余量 5s + 往返与调度余量。
+ */
+const HOST_RPC_TIMEOUT_MS = 90_000;
 
 /** 把宿主结果转成内核的工具内容块（文本 + 可选图片），供各能力工具共用 */
 export function hostResultToContent(result: HostResult): (TextContent | ImageContent)[] {

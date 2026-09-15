@@ -2,7 +2,7 @@
  * 设置：provider 与密钥管理
  * 密钥只上行不下行——界面永远拿不到明文，只能看到是否已配置
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Brain, Check, Image as ImageIcon, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ModelOption, ProviderConfig } from "@shared/protocol";
@@ -23,10 +23,14 @@ export function Settings(): React.JSX.Element {
     void load();
   }, [load]);
 
+  // 提示条定时器要持句柄、新提示先清旧的：否则 2.5s 内连续两次成功操作时，
+  // 第一条的定时器会把第二条提示提前清掉（看起来「闪一下就没了」）
+  const notifyTimerRef = useRef<number | null>(null);
   const notify = useCallback((text: string) => {
     setMessage(text);
     setError(null);
-    setTimeout(() => setMessage(null), 2500);
+    if (notifyTimerRef.current !== null) clearTimeout(notifyTimerRef.current);
+    notifyTimerRef.current = window.setTimeout(() => setMessage(null), 2500);
   }, []);
 
   const fail = useCallback((e: unknown) => {
@@ -208,6 +212,14 @@ function ProviderCard({
 
   const remove = async (): Promise<void> => {
     try {
+      // 与删除会话同一待遇（原生确认框，不用 window.confirm——它会让页面失焦）：
+      // baseUrl、模型清单（含手填的能力 / 计价参数）误删要全部重填，铅笔旁的垃圾桶很容易点错
+      const { confirmed } = await window.colt.invoke("dialog.confirm", {
+        message: `确定删除模型服务「${provider.name}」？`,
+        detail: "该服务的模型与密钥配置将被移除。",
+        confirmLabel: "删除",
+      });
+      if (!confirmed) return;
       await window.colt.invoke("providers.remove", { id: provider.id });
       await onSaved("已删除");
     } catch (e) {

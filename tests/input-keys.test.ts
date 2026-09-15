@@ -43,6 +43,12 @@ describe("toSendKeysCombo", () => {
     assert.throws(() => toSendKeysCombo(["ctrl"]));
   });
 
+  test("单字符主键是 SendKeys 元字符时按字面发送（~ 不是 Enter、+ 不是 Shift）", () => {
+    assert.equal(toSendKeysCombo(["~"]), "{~}");
+    assert.equal(toSendKeysCombo(["+"]), "{+}");
+    assert.equal(toSendKeysCombo(["ctrl", "~"]), "^{~}");
+  });
+
   test("Win/Meta 键不支持，明确抛错", () => {
     assert.throws(() => toSendKeysCombo(["win", "r"]));
   });

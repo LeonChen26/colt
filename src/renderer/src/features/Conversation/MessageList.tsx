@@ -49,6 +49,7 @@ export function MessageBubble({
   changes,
   onHoverFile,
   onOpenFile,
+  openState,
 }: {
   message: ViewMessage;
   resultMap: Map<string, ToolResult>;
@@ -56,6 +57,8 @@ export function MessageBubble({
   onHoverFile?: (path: string | null) => void;
   /** 点工具卡里的文件路径 → 在右栏预览它（A3-2） */
   onOpenFile?: (path: string) => void;
+  /** 工具卡展开状态共享表（键 = 工具调用 id），与流式区共用，完成迁移时不丢展开态 */
+  openState?: Map<string, boolean>;
 }): React.JSX.Element | null {
   // 工具结果已合并进各自的工具卡片，不再单独成条
   if (message.role === "toolResult") return null;
@@ -88,6 +91,8 @@ export function MessageBubble({
       {message.toolCalls.map((call) => (
         <ToolCard
           key={call.id}
+          openId={call.id}
+          openState={openState}
           name={call.name}
           args={call.args}
           durationMs={call.durationMs}
@@ -202,6 +207,8 @@ export function ToolCard({
   durationMs,
   change,
   running,
+  openId,
+  openState,
   onHoverFile,
   onOpenFile,
 }: {
@@ -211,11 +218,23 @@ export function ToolCard({
   durationMs?: number;
   change?: ViewFileChange;
   running?: boolean;
+  /** 展开 state 共享表里的键（工具调用 id）；与 openState 成对使用 */
+  openId?: string;
+  /** 跨「流式区 → 完成态」迁移的展开状态表；缺省时展开状态只在实例本地 */
+  openState?: Map<string, boolean>;
   onHoverFile?: (path: string | null) => void;
   /** 点副标题里的文件路径 → 在右栏预览它（A3-2） */
   onOpenFile?: (path: string) => void;
 }): React.JSX.Element {
-  const [open, setOpen] = useState(Boolean(running));
+  // 展开状态优先取共享表（同一工具调用在流式区与完成态是两次挂载，
+  // 实例本地 state 会在迁移时清零——用户正展开读实时输出，完成瞬间却被收起）。
+  const [open, setOpenState] = useState(
+    () => (openId !== undefined ? openState?.get(openId) : undefined) ?? Boolean(running),
+  );
+  const setOpen = (value: boolean): void => {
+    setOpenState(value);
+    if (openId !== undefined) openState?.set(openId, value);
+  };
   const parsed = useMemo(() => parseArgsJson(args), [args]);
   const { icon, subtitle } = describeTool(name, parsed);
   const isError = result?.isError ?? false;
@@ -261,7 +280,7 @@ export function ToolCard({
       <div className="flex w-full items-center gap-2 px-3 py-2 transition hover:bg-surface-overlay/50">
         <button
           type="button"
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => setOpen(!open)}
           title={open ? "收起" : "展开"}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
@@ -290,7 +309,9 @@ export function ToolCard({
               : undefined
           }
           className={cn(
-            "w-[320px] shrink-0 truncate font-mono text-[11.5px] text-text-secondary",
+            // min-w-0 允许在窄中栏收缩（truncate 兜底）：固定 320 不可缩时，
+            // 右侧的增删行数 / 运行态 / 失败徽标会被挤出卡片、被 overflow 裁掉。
+            "w-[320px] min-w-0 truncate font-mono text-[11.5px] text-text-secondary",
             clickable && "cursor-pointer hover:text-text-primary hover:underline",
           )}
         >
