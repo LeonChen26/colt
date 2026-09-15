@@ -557,6 +557,25 @@ export interface ModelOption {
   id: string;
   name: string;
   contextWindow: number;
+  /**
+   * 支持图片输入。缺省按 false——「能不能收图」推断不出来，宁严勿松：
+   * 只有显式声明了，界面才放开图片上传（imageInput 投影直接取自装配后的模型）。
+   */
+  imageInput?: boolean;
+  /** 支持推理 / 思考输出。缺省 false。 */
+  reasoning?: boolean;
+  /**
+   * 最大输出 tokens。缺省回落到 min(contextWindow, 8192)（历史行为）——
+   * 这个钳制对推理模型（思考 token 计入输出）明显偏小，声明了才放开。
+   */
+  maxTokens?: number;
+  /** 计价（USD / 百万 tokens，与 pi-ai 的 Model.cost 同单位）。缺省按 0——价格猜不得。 */
+  price?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
 }
 
 /** Provider 配置 */

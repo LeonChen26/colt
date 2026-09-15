@@ -11,12 +11,22 @@
  */
 import { createProvider, envApiKeyAuth, lazyApi } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import { LEGACY_MAX_TOKENS } from "./model-option";
 
-/** 装配所需的模型项（与 protocol 的 ModelOption 同形） */
+/** 装配所需的模型项（与 protocol 的 ModelOption 同形；能力/计价均为可选声明） */
 export interface ProviderBuildModel {
   id: string;
   name: string;
   contextWindow: number;
+  imageInput?: boolean;
+  reasoning?: boolean;
+  maxTokens?: number;
+  price?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
 }
 
 /** 装配所需的最小 provider 配置（不含 builtin / hasKey 等仅供界面展示的字段） */
@@ -47,11 +57,20 @@ export function buildProvider(config: ProviderBuildConfig): ReturnType<typeof de
       api: "openai-completions" as const,
       baseUrl: config.baseUrl,
       provider: config.id,
-      reasoning: false,
-      input: ["text" as const],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      // 能力与计价都来自用户的显式声明（设置页表单），缺省值即历史行为
+      reasoning: option.reasoning === true,
+      input: option.imageInput === true ? (["text", "image"] as const) : (["text"] as const),
+      cost: {
+        input: option.price?.input ?? 0,
+        output: option.price?.output ?? 0,
+        cacheRead: option.price?.cacheRead ?? 0,
+        cacheWrite: option.price?.cacheWrite ?? 0,
+      },
       contextWindow: option.contextWindow,
-      maxTokens: Math.min(option.contextWindow, 8192),
+      maxTokens:
+        option.maxTokens !== undefined && option.maxTokens > 0
+          ? option.maxTokens
+          : Math.min(option.contextWindow, LEGACY_MAX_TOKENS),
     })),
     api: openAICompletionsApi,
   }) as ReturnType<typeof deepseekProvider>;

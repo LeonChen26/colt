@@ -4,6 +4,7 @@
  */
 import type { ModelOption, ProviderConfig } from "@shared/protocol";
 import { BUILTIN_PROVIDER_ID } from "@shared/model-ref";
+import { normalizeModelOptions } from "@shared/model-option";
 import { DEEPSEEK_MODELS } from "@earendil-works/pi-ai/providers/deepseek.models";
 import { getDatabase } from "./db";
 import { hasSecret } from "./secrets";
@@ -18,6 +19,11 @@ function builtinModels(): ModelOption[] {
     id: model.id,
     name: model.name,
     contextWindow: model.contextWindow,
+    // 能力声明直接取自 pi-ai 目录数据（真源就是它），仅供界面展示与一致性；
+    // 装配时内置走 deepseekProvider() 自带的元数据，不经这份声明。
+    // 不映射价格：装配侧用不到，拷一份只会多一处漂移点。
+    imageInput: model.input?.includes("image") ?? false,
+    reasoning: model.reasoning === true,
   }));
 }
 
@@ -92,6 +98,10 @@ export function saveProvider(input: {
   if (input.id === BUILTIN_DEEPSEEK.id) throw new Error("内置 provider 不可修改");
   const id = input.id.trim();
   if (!id) throw new Error("provider id 不能为空");
+  // 入库前统一清洗：手填数据不可信，库里只存归一后的形状
+  //（渲染层提交前已给出友好报错，这里的空列表是兜底而非主路径）
+  const models = normalizeModelOptions(input.models);
+  if (models.length === 0) throw new Error("至少填写一个模型");
 
   getDatabase()
     .prepare(
