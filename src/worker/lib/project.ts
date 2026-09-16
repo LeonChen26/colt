@@ -1,9 +1,32 @@
 /**
  * worker 侧的纯投影辅助：从内核数据结构中抽取渲染层需要的字段。
- * 无副作用、不依赖 Electron / pi-agent-core，便于单元测试。
+ * 无副作用、不依赖 Electron，便于单元测试——下面那个内核类型导入是**类型专用**的
+ * （`import type` 编译后整句擦除，Node 的 type-stripping 也直接删掉），运行时依旧零依赖。
  */
+import type { Message } from "@earendil-works/pi-ai";
+
 import { isAbsolute, relative } from "node:path";
 import type { ViewMessage, WorkerBranchNode } from "@shared/worker-protocol";
+
+/**
+ * 内核消息内容块的**已知类型**——真源是 pi 的联合类型，不是我们手写的字符串。
+ *
+ * ⚠️ 这张表是**升级哨兵**：pi 新增或改名内容块类型时它**编译不过**，逼你在 `extract*` 里
+ * 显式处理。没有这道哨兵，新类型会被静默丢掉——界面上整整一类内容无声消失，
+ * 与 `docs/ERRORS.md` 的「不许静默」直接冲突。理由与升级流程见 `docs/ARCHITECTURE.md` §四。
+ */
+type ContentBlock = Exclude<Message["content"], string>[number];
+const COVERED_BLOCK_TYPES: Record<ContentBlock["type"], true> = {
+  text: true,
+  thinking: true,
+  image: true,
+  toolCall: true,
+};
+
+/** 内容块的 `type` 是否已被 `extract*` 覆盖（false = 会被投影丢掉，应当上报） */
+export function isCoveredBlockType(type: unknown): boolean {
+  return typeof type === "string" && Object.prototype.hasOwnProperty.call(COVERED_BLOCK_TYPES, type);
+}
 
 /** 从消息内容块中抽取纯文本 */
 export function extractText(content: unknown): string {

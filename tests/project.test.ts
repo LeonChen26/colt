@@ -10,6 +10,7 @@ import {
   extractText,
   extractToolCalls,
   extractToolText,
+  isCoveredBlockType,
   projectBranchNodes,
   toRelative,
   type BranchEntry,
@@ -249,5 +250,23 @@ describe("projectBranchNodes", () => {
     assert.equal(nodes.find((node) => node.id === "a2")?.onActivePath, false);
     assert.equal(nodes.find((node) => node.id === "u2")?.onActivePath, true);
     assert.equal(nodes.find((node) => node.id === "u2")?.isTip, true);
+  });
+});
+
+describe("内容块覆盖哨兵（升级 pi 时的护栏）", () => {
+  test("四个已知类型都算已覆盖", () => {
+    for (const type of ["text", "thinking", "image", "toolCall"]) {
+      assert.equal(isCoveredBlockType(type), true, type);
+    }
+  });
+
+  test("未知类型与非字符串一律算未覆盖", () => {
+    assert.equal(isCoveredBlockType("audio"), false);
+    assert.equal(isCoveredBlockType(""), false);
+    assert.equal(isCoveredBlockType(undefined), false);
+    assert.equal(isCoveredBlockType(42), false);
+    // 原型链上的键不算「已覆盖」——否则 constructor 之类的字符串会蒙混过关
+    assert.equal(isCoveredBlockType("constructor"), false);
+    assert.equal(isCoveredBlockType("__proto__"), false);
   });
 });

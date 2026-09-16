@@ -37,7 +37,7 @@ npm run dev
 |---|---|
 | `npm run dev` | 开发模式启动（electron-vite） |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test，当前 **557** 条：556 通过 / 1 跳过） |
+| `npm test` | 单测（node:test，当前 **559** 条：558 通过 / 1 跳过） |
 | `npm run build` | 类型检查 + 构建产物到 `out/` |
 | `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
 | `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
@@ -107,7 +107,7 @@ src/
 | 文档 | 什么时候读 |
 |---|---|
 | `docs/PRINCIPLES.md` | **动手前**。设计原则 + 逐条现状，改动是否违背一眼可查 |
-| `docs/ARCHITECTURE.md` | 跨进程改动、加 IPC 通道 / 加工具 / 加表字段之前 |
+| `docs/ARCHITECTURE.md` | 跨进程改动、加 IPC 通道 / 加工具 / 加表字段之前；**升级 pi 依赖之前**（§四） |
 | `docs/SECURITY.md` | 碰审批、文件读写、浏览器/电脑控制、密钥之前 |
 | `docs/ERRORS.md` | 写任何可能失败的路径之前（失败可见性铁律） |
 | `docs/GLOSSARY.md` | 看不懂某处的编号（`⑦`、`A3-4`、`N1`、`事 B`）时 |

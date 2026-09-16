@@ -1,6 +1,6 @@
 # 架构
 
-> **什么时候读这份**：跨进程改动、加 IPC 通道、加 worker 命令、加右栏视图、加表字段——**动手之前**。
+> **什么时候读这份**：跨进程改动、加 IPC 通道、加 worker 命令、加右栏视图、加表字段、**升级 pi 依赖**——**动手之前**。
 > 这些改动的共同点是**要同时改几处**，漏一处不会编译报错，只会在运行期静默失灵。
 
 ---
@@ -84,7 +84,71 @@
 
 ---
 
-## 四、新增能力要走哪几步
+## 四、与 pi 内核的边界（升级依赖前必读）
+
+worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）。**我们对它只有 11 处 import**，
+且全部走 pi 在 `package.json` 的 `exports` 里声明的公开入口——没有一处 import `dist/` 下的内部模块，
+也没有 `patches/` / `overrides` / vendoring。这条「零补丁」是升级能一直是「改版本号 + 跑测试」的前提，**不要破坏它**。
+
+| 用到的内核能力 | 公开入口 | 我们的用法 |
+|---|---|---|
+| 工具集 | `createBashTool` / `createEditTool` / `createReadTool` / `createWriteTool` | `worker/entry.ts` 组装 lane 工具集 |
+| 自定义工具 | `AgentHarnessTool` / `ExecutionToolContext`（类型） | `worker/lib/browser-tool.ts`、`computer-tool.ts` |
+| 钩子 | `harness.hooks.on("before_tool" / "after_tool" / "transform_context")` | 审批闸门、净值基线抓取、浏览器变更提示注入（`entry.ts:426-474`） |
+| 事件 | `harness.events.on("usage" / "tool_start" / "tool_end")` | 用量与工具状态上报 |
+| 会话持久化 | `JsonlSessionRepo` | **格式归 pi**；我们只在自己的库里存 `kernel_session_id` 做映射 |
+| 状态归约 | `reduceLaneSnapshot` + `LaneSnapshot` | 投影成我们自己的 `ConversationView` |
+| 模型 / provider | `createModels` / `createProvider` / `envApiKeyAuth` / `lazyApi` + `pi-ai/providers/*` + `pi-ai/api/*` | `shared/provider-factory.ts`、`main/providers.ts`、`main/approval/analyzer.ts` |
+| 执行环境 | `pi-agent-core/node` 的 `NodeExecutionEnv` | worker 里的 bash / fs |
+| 上下文 | `BACKGROUND_CONTEXT`（实为 `@earendil-works/chord/context` 经 pi 转出） | worker 的 `Context` |
+
+**四条纪律**
+
+1. **只走公开入口**——根导出，或 `exports` 里声明过的子路径（如 `pi-agent-core/node`、`pi-ai/providers/*`）。
+   pi 没声明、但恰好能 import 到的路径也是内部，别用。
+2. **pi 的类型只允许出现在 `worker/`**：`worker/lib/project.ts` 是唯一的投影出口，内核的数据结构在那里变成
+   我们的 `ConversationView`；渲染层与主进程永远只认我们自己的类型。投影里还带一道**编译期哨兵**
+   （`COVERED_BLOCK_TYPES`，键集由 pi 的 `Message["content"]` 派生）：pi 新增或改名内容块类型时它
+   **编译不过**，逼我们在 `extract*` 里显式处理——否则新类型会被静默丢掉（`docs/ERRORS.md` 的「不许静默」）。
+3. **字段语义以「定义与写入点」为准，不按名字猜**。本仓为此付过学费：`faulted` 名字看着像「任务失败」，
+   实为 harness `fault` 事件的会话级硬故障、且从不复位（`AGENTS.md` §四）。
+4. **不 fork、不打补丁**：`patches/` 与 `overrides` 保持为空。
+
+**升级 pi 的清单**
+
+1. 读 pi 的 release notes，先列出改了什么。
+2. 改 `package.json` 的 pin（两个 pi 包 + `typebox`，理由见本节末）。
+3. `npm install` → `npm run typecheck` → `npm test`（559）→ `npm run build`。
+   **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
+4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（189）。
+5. **逐项核对「我们用过的内核字段」**：`LaneSnapshot.lastResult`（`status` / `kind`）、会话条目的 `seq`、
+   `thinkingLevel`、`Usage` 各字段、`JsonlSessionMetadata`。
+6. 单独一个提交，消息里写明升到哪个版本、改了什么。
+
+> 这三个包**全部精确 pin，不用 `^`**（与 pi 自己的做法一致：它把 `diff` / `typebox` / `yaml` / `ignore`
+> 都钉死）。两条具体理由：① 0.x 的 `^0.85.1` 虽然只放开补丁位，但「谁跑一次 `npm update` 就静默升」
+> 比看上去危险——升级应当是一个**动作**，不是一个**意外**；② **`typebox` 必须与 pi 完全同版**：
+> 我们在 `browser-tool.ts` / `computer-tool.ts` 里用 `Type` 构造工具入参 schema 交给 pi 校验，
+> 而 TypeBox schema 是**运行时对象**——一旦出现两份实例，校验分歧极难定位。
+
+**已知的继承度缺口**（想「继承社区资产」时看这里，别以为已经接上了）
+
+| 内核已提供 | 我们的状态 |
+|---|---|
+| `loadSkills`（递归找 `SKILL.md` + frontmatter + ignore 规则 + 诊断） | **未接**——只有 `main/db` 一列 `skills_json`，没有读取代码 |
+| `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
+| 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
+| 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |
+| 插件 / 组合运行时（`@earendil-works/chord`，**已在依赖树里**） | **未启用**——只用了它的 `BACKGROUND_CONTEXT` 一个符号 |
+
+⚠️ 还有一条**没有版本锚点**的耦合：worker 的集成形态是照 pi 仓库里
+`packages/coding-agent/src/experimental/mini/worker/run.ts` 抄的（`worker/entry.ts` 头注自己写着）。
+`@earendil-works/coding-agent` 不是我们的依赖——拿不到它的版本号，也收不到变更通知，而那个路径还在
+`experimental/` 下。**改动 worker 形态时记住这一点。**
+
+---
+
+## 五、新增能力要走哪几步
 
 ### A. 加一个 IPC 通道（渲染层 → 主进程）
 
@@ -129,7 +193,7 @@
 
 ---
 
-## 五、资源与上限（一览）
+## 六、资源与上限（一览）
 
 改动这些值之前先想清楚：**它们大多是「不设就会出事」才存在的**。
 
@@ -151,7 +215,7 @@
 
 ---
 
-## 六、构建与产物
+## 七、构建与产物
 
 `electron-vite` 三份产物：`out/main`、`out/preload`、`out/renderer`。类型检查分三个 tsconfig（`node` / `web` / `test`）——**`npm run build` 会先跑前两个**，所以构建过了不代表测试类型也对，`npm run typecheck` 才跑全部三个。
 
