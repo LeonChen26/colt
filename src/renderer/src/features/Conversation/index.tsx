@@ -147,6 +147,13 @@ export function Conversation({
    * 与黄条语义不同：黄条是「还差一步」的待办，会一直挂着；成功提示挂久了反而像没消失的异常。
    */
   const [compactNotice, setCompactNotice] = useState<string | null>(null);
+  /**
+   * 附件被拒/被跳过的说明，**贴在输入卡片里**而不是顶部的消息区。
+   *
+   * 用户在输入框旁边拖入文件，反馈就必须出现在拖入的地方：
+   * 顶部那条 error 在消息滚到底时根本不在视野内，等于没说。
+   */
+  const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [mode, setMode] = useState<ApprovalMode>("auto");
@@ -287,6 +294,20 @@ export function Conversation({
   const resetBrowserViewport = useCallback(() => {
     void window.colt.invoke("browser.viewport.reset", { sessionId }).catch(() => undefined);
   }, [sessionId]);
+
+  /**
+   * 开 / 关「适应宽度」：把装不下的页面等比缩小，让整个宽度都能看见。
+   *
+   * 这里发的是**意图**（要不要适应）而不是比例——比例由主进程算，因为它同时握着
+   * 「页面区域多宽」（它自己摆的原生视图矩形）与「页面需要多宽」（它自己量的 contentWidth），
+   * 而渲染层只有一个估算的 `areaWidth`。发比例等于把这段算术复制到两个进程里。
+   */
+  const browserZoom = useCallback(
+    (fit: boolean) => {
+      void window.colt.invoke("browser.zoom", { sessionId, fit }).catch(() => undefined);
+    },
+    [sessionId],
+  );
 
   /**
    * 右栏宽度（规则 ⑦-B）：**只由用户拖拽决定**。
@@ -577,16 +598,31 @@ export function Conversation({
     [sessionId],
   );
 
-  /** 把 File（粘贴 / 拖拽 / 选择）读成 base64 附件；非图片与超限的直接拒绝并说明原因 */
+  /**
+   * 把 File（粘贴 / 拖拽 / 选择）读成 base64 附件。
+   *
+   * 附件通道只承载图片（对应内核的 imageInput 语义），非图片一律走不通——但**不能静默**：
+   * 往输入框拖一个 PDF 却什么都没发生，用户只会以为程序坏了。
+   * 所有「没进来」的原因都汇总成一条贴在输入卡片里的提示。
+   */
   const addFiles = useCallback(async (files: File[]) => {
+    const notes: string[] = [];
+    const skipped = files.filter((file) => !file.type.startsWith("image/"));
+    if (skipped.length > 0) {
+      notes.push(
+        `已跳过非图片文件：${skipped.map((file) => file.name || "未命名文件").join("、")}。请把它们放进项目目录，让 Agent 按路径读取。`,
+      );
+    }
     const images = files.filter((file) => file.type.startsWith("image/"));
-    if (images.length === 0) return;
-    setError(null);
+    if (images.length === 0) {
+      setAttachNotice(notes.join(" ") || null);
+      return;
+    }
     const accepted: Attachment[] = [];
     for (const file of images.slice(0, MAX_ATTACHMENTS)) {
       const label = file.name || "剪贴板图片";
       if (file.size > MAX_ATTACHMENT_BYTES) {
-        setError(`图片过大：${label}（${(file.size / 1024 / 1024).toFixed(1)}MB，上限 4MB）`);
+        notes.push(`图片过大：${label}（${(file.size / 1024 / 1024).toFixed(1)}MB，上限 4MB）`);
         continue;
       }
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -603,6 +639,7 @@ export function Conversation({
         data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl,
       });
     }
+    setAttachNotice(notes.join(" ") || null);
     if (accepted.length > 0) {
       setAttachments((prev) => [...prev, ...accepted].slice(0, MAX_ATTACHMENTS));
     }
@@ -650,6 +687,7 @@ export function Conversation({
     setInput("");
     setAttachments([]);
     setError(null);
+    setAttachNotice(null);
     try {
       await window.colt.invoke("session.prompt", {
         sessionId,
@@ -1086,6 +1124,11 @@ export function Conversation({
                 deepseek-v4-flash-vision-exp）
               </p>
             )}
+            {attachNotice && (
+              <p data-conv-attach-notice className="mb-1.5 text-[11px] text-warning">
+                {attachNotice}
+              </p>
+            )}
 
             <textarea
               ref={inputRef}
@@ -1306,6 +1349,7 @@ export function Conversation({
           browser={browser}
           onBrowserNav={browserNav}
           onResetViewport={resetBrowserViewport}
+          onBrowserZoom={browserZoom}
           fileRequest={dockFile}
           instances={dockInstances}
           activeId={dockActiveId}

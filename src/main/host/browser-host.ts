@@ -73,6 +73,29 @@ const BROWSER_PARTITION = "persist:colt-browser";
  */
 const DEFAULT_RECT: Rectangle = { x: 0, y: 0, width: 1024, height: 768 };
 
+/**
+ * 「重新量页面内容宽度」的去抖延时。
+ * 拖动分隔条时宽度逐像素变化，而每量一次都要查一次页面布局，故等手停下来再量。
+ */
+const MEASURE_DEBOUNCE_MS = 300;
+
+/**
+ * 「页面还在装载、这次量不成」时的重试间隔与次数上限。
+ * `did-finish-load` 触发时子资源可能还在飞（`isLoading()` 仍为 true），只量一次会**静默漏掉**，
+ * 故等一小会儿再试；重试有上限，免得页面永远加载不完时留下一个常驻定时器。
+ */
+const MEASURE_RETRY_MS = 500;
+const MEASURE_MAX_ATTEMPTS = 3;
+
+/**
+ * 「适应宽度」的缩放下限（可读下限）。
+ *
+ * 缩放能让固定宽度的页面整体塞进更窄的停靠区，但字会一起变小：最窄停靠区 219px
+ * 要装下 768px 的页面得缩到 29%，12px 的字就剩 3.5px——那时候「全都看得见」已经没有意义。
+ * 所以缩到这个比例就停手，**如实告诉用户「还需拖宽右栏」**，而不是给他一屏读不了的蚂蚁字。
+ */
+const MIN_FIT_ZOOM = 0.6;
+
 interface SessionBrowser {
   view: WebContentsView;
   /** 控制台与网络观测缓冲，导航时清空 */
@@ -87,6 +110,16 @@ interface SessionBrowser {
   hidden: boolean;
   /** viewport 动作的临时覆盖尺寸（响应式联调用），null 表示未覆盖 */
   viewport: { width: number; height: number } | null;
+  /** 页面够不到的内容宽度（0 = 没有；口径见 CONTENT_WIDTH_SCRIPT），报给界面用于提示 */
+  contentWidth: number;
+  /** 当前缩放比例（1 = 100%），「适应宽度」生效时小于 1；见 setZoom */
+  zoom: number;
+  /** 用户是否开着「适应宽度」（**意图**，跨导航保留：换一页仍按它决定要不要缩） */
+  fit: boolean;
+  /** 上一次摆放用的宽度：宽度一变页面就重排，「够不够看」要重新量 */
+  appliedWidth: number;
+  /** 去抖用的重测定时器（拖分隔条时每像素都会走到 #applyBounds） */
+  measureTimer?: NodeJS.Timeout;
 }
 
 /** 页面内取可交互元素：给每个元素打稳定 ref，返回一段人类/模型可读的清单 */
@@ -104,6 +137,39 @@ const SNAPSHOT_SCRIPT = `(() => {
   });
   window.__coltRefSeq = seq;
   return 'URL: ' + location.href + '\\nTITLE: ' + document.title + '\\n' + lines.join('\\n');
+})()`;
+
+/**
+ * 量「页面内容实际需要的宽度」。
+ *
+ * 只关心一种无解的情形：内容比视口宽、而页面又把横向滚动关掉了
+ * （`<html>` / `<body>` 上写死 `overflow-x: hidden`）。此时右边被裁掉的部分
+ * 既没有滚动条、也没有别的入口，只能由界面告诉用户。
+ * 页面自己能横向滚动（用户滚得到）或内容本来就装得下，一律返回 0。
+ *
+ * 两个易错点（都是实测出来的，不是推的）：
+ *   ① 内容宽度**不要**去遍历全元素取右边界最大值：那样会把已经被内层滚动容器裁住的
+ *      内容也算进来——宽表格套在 `overflow-x: auto` 的壳里时，它超出的是那个壳而不是视口，
+ *      用户滚那个壳就能看到。文档级的 `scrollWidth` 天然不含这种内层裁剪。
+ *   ② 用「根 / body 的 `overflow-x` 是不是 hidden」判「用户滚不到」，而**不要**用
+ *      `documentElement.scrollWidth > clientWidth` 当「有横向滚动条」的依据：
+ *      实测这条不成立——夹具页视口 219、内容 700、`<html>` 写了 `overflow-x: hidden`，
+ *      而 `documentElement.scrollWidth` 照样报 700（并没有被钳到 clientWidth）。
+ *      照那个判据走会把「真的够不到」误判成「用户自己能滚」，于是永远不提示。
+ *      （`overflow: hidden` 只是禁止**用户**滚动，脚本仍能改 scrollLeft，所以也不能拿
+ *      「试着滚一下看动不动」当判据。）
+ */
+const CONTENT_WIDTH_SCRIPT = `(() => {
+  const doc = document.documentElement;
+  const viewport = doc.clientWidth || 0;
+  if (viewport <= 0) return 0;
+  const body = document.body;
+  const content = Math.max(doc.scrollWidth, body ? body.scrollWidth : 0);
+  if (content <= viewport + 1) return 0;
+  const off = (value) => value === 'hidden' || value === 'clip';
+  const reachable =
+    !off(getComputedStyle(doc).overflowX) && !(body && off(getComputedStyle(body).overflowX));
+  return reachable ? 0 : Math.ceil(content);
 })()`;
 
 function readString(value: unknown): string | undefined {
@@ -227,6 +293,8 @@ export class BrowserHost {
         canGoBack: false,
         canGoForward: false,
         viewport: null,
+        contentWidth: 0,
+        zoom: 1,
       };
     }
     const contents = entry.view.webContents;
@@ -239,6 +307,8 @@ export class BrowserHost {
       canGoBack: history.canGoBack(),
       canGoForward: history.canGoForward(),
       viewport: entry.viewport === null ? null : { ...entry.viewport },
+      contentWidth: entry.contentWidth,
+      zoom: entry.zoom,
     };
   }
 
@@ -253,8 +323,27 @@ export class BrowserHost {
     if (entry === undefined) throw new Error("浏览器尚未加载，没有可恢复的视口");
     entry.viewport = null;
     this.#applyBounds(sessionId);
+    // 覆盖一撤，「适应宽度」就该重新参与（覆盖期间它是让位的）
+    this.#applyFit(sessionId);
     // 推给界面：头部据此收起「视口 × 恢复」标记
     this.#emitState(sessionId, true);
+    return this.stateOf(sessionId);
+  }
+
+  /**
+   * 开 / 关「适应宽度」（用户在装不下那条横条上点按钮，或点头部的缩放指示还原）。
+   *
+   * 缩放**不动原生视图的矩形**——视图仍精确等于「页面区域」，那条逐像素对齐的硬约束因此
+   * 完全不受影响（这是它比「把视图撑到 768」干净的根本原因）。变的是页面的 CSS 视口：
+   * `setZoomFactor(z)` 让 CSS 视口变成 `区域宽 / z`，于是按固定宽度排版的页面整体塞得进来。
+   *
+   * 比例由主进程算，因为它同时握着「区域宽」（`bounds`）与「页面需要多宽」（`contentWidth`）。
+   */
+  setZoom(sessionId: string, fit: boolean): BrowserViewState {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) throw new Error("浏览器尚未加载，无法缩放");
+    entry.fit = fit;
+    this.#applyFit(sessionId);
     return this.stateOf(sessionId);
   }
 
@@ -342,6 +431,13 @@ export class BrowserHost {
     if (entry === undefined) return;
     const base = entry.bounds ?? DEFAULT_RECT;
     const size = entry.viewport ?? { width: base.width, height: base.height };
+    // 宽度一变页面就重排，「装不装得下」随之改变，要重新量一次。
+    // 高度变化不影响横向装不装得下，故不触发（拖动高度是常见动作，白扫 DOM 不值）。
+    if (size.width !== entry.appliedWidth) {
+      const first = entry.appliedWidth < 0;
+      entry.appliedWidth = size.width;
+      if (!first) this.#scheduleMeasure(sessionId);
+    }
     try {
       entry.view.setBounds({ x: base.x, y: base.y, width: size.width, height: size.height });
       entry.view.setVisible(!entry.hidden);
@@ -371,8 +467,113 @@ export class BrowserHost {
           canGoBack: false,
           canGoForward: false,
           viewport: null,
+          contentWidth: 0,
+          zoom: 1,
         } satisfies BrowserViewState);
     this.#onState(state);
+  }
+
+  /**
+   * 去抖地重量内容宽度：拖动分隔条时每移动一像素都会走到 #applyBounds，
+   * 每次都查一次页面布局太贵——等用户停下来再量，量完顺带重算「适应宽度」。
+   */
+  #scheduleMeasure(sessionId: string): void {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) return;
+    if (entry.measureTimer !== undefined) clearTimeout(entry.measureTimer);
+    entry.measureTimer = setTimeout(() => {
+      entry.measureTimer = undefined;
+      void this.#refreshContentFit(sessionId);
+    }, MEASURE_DEBOUNCE_MS);
+    entry.measureTimer.unref?.();
+  }
+
+  /**
+   * 重新评估一次「装不装得下」：先量（若该量），再据结果决定缩放。
+   *
+   * 这两步**必须捆在一起**：区域宽一变，既可能改变「页面需要多宽」（响应式重排），
+   * 也可能改变「缩多少才装得下」；只做前者会让缩放停在上一个尺寸算出来的比例上。
+   */
+  async #refreshContentFit(sessionId: string): Promise<void> {
+    await this.#measureContentWidth(sessionId);
+    this.#applyFit(sessionId);
+  }
+
+  /**
+   * 按「适应宽度」把页面缩到刚好装下。
+   *
+   * 只在用户开着这个开关、且没有联调覆盖时动作（覆盖期间页面按覆盖尺寸排版，
+   * 「装不装得下」由那条标记解释，两者同时生效只会互相打架）。
+   * 比例钳在 `[MIN_FIT_ZOOM, 1]`：装得下就回到 100%，装不下但已到可读下限就停手——
+   * 剩下的交给那条横条去如实说明「还需拖宽右栏」。
+   */
+  #applyFit(sessionId: string): void {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) return;
+    const width = entry.bounds?.width ?? 0;
+    const need = entry.contentWidth;
+    const ratio =
+      !entry.fit || entry.viewport !== null || need <= 0 || width <= 0
+        ? 1
+        : Math.min(1, Math.max(MIN_FIT_ZOOM, width / need));
+    if (entry.zoom === ratio) return;
+    entry.zoom = ratio;
+    this.#setZoomFactor(entry, ratio);
+    this.#emitState(sessionId, true);
+  }
+
+  /**
+   * 把缩放落到视图上。
+   *
+   * 视图建好时已设 `setZoomMode('isolated')`：这个比例**只属于这一个视图**，
+   * 既不跟着 origin 串到别的站点，也不会被同一 partition 的其他视图影响。
+   */
+  #setZoomFactor(entry: SessionBrowser, factor: number): void {
+    try {
+      entry.view.webContents.setZoomFactor(factor);
+    } catch {
+      // 视图可能正好在销毁中；缩放失败不该打断调用方
+    }
+  }
+
+  /**
+   * 量一次「页面够不到的内容宽度」并推给界面（口径见 CONTENT_WIDTH_SCRIPT）。
+   *
+   * `did-finish-load` 触发时 `isLoading()` **仍可能是 true**（favicon 之类的子资源还在飞），
+   * 此刻的布局不作数，所以不能量一次就完——那样会是**静默失败**：页面确实装不下，
+   * 界面却永远不提示（实测踩过：夹具页 219 视口 / 700 内容，`contentWidth` 一直是 0）。
+   * 故补有限次重试；仍不成也没关系，下一次导航或尺寸变化还会再量。
+   */
+  async #measureContentWidth(sessionId: string, attempt = 0): Promise<void> {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) return;
+    const contents = entry.view.webContents;
+    if (contents.isDestroyed()) return;
+    // 缩放生效期间**不量**：「需要多宽」是页面在 100% 下的固有属性，而缩放会把 CSS 视口
+    // 撑大，此时量出来的数是缩放后的假象（看着像是本来就装得下）。拿它当输入，
+    // 就会「缩了 → 显示装得下 → 把缩放退回去 → 又装不下」来回震荡。
+    if (entry.zoom !== 1) return;
+    if (contents.isLoading()) {
+      if (attempt >= MEASURE_MAX_ATTEMPTS) return;
+      if (entry.measureTimer !== undefined) clearTimeout(entry.measureTimer);
+      entry.measureTimer = setTimeout(() => {
+        entry.measureTimer = undefined;
+        void this.#measureContentWidth(sessionId, attempt + 1);
+      }, MEASURE_RETRY_MS);
+      entry.measureTimer.unref?.();
+      return;
+    }
+    let width = 0;
+    try {
+      width = Number(await contents.executeJavaScript(CONTENT_WIDTH_SCRIPT, true)) || 0;
+    } catch {
+      return;
+    }
+    // 等待期间会话可能已被关掉 / 换了视图，回写到新条目上是错的
+    if (this.#sessions.get(sessionId) !== entry) return;
+    if (entry.contentWidth === width) return;
+    entry.contentWidth = width;
+    this.#emitState(sessionId, true);
   }
 
   /**
@@ -517,6 +718,9 @@ export class BrowserHost {
     view.setBackgroundColor("#ffffff");
     view.setVisible(false);
     view.setBounds(DEFAULT_RECT);
+    // 缩放按**视图**隔离（而不是 Chromium 默认的按 origin）：默认模式下我们给 A 站设的
+    // 「适应宽度」比例会跟着 origin 串到 B 站，同一 partition 的其它视图也会被带上。
+    view.webContents.setZoomMode("isolated");
 
     const capture = new CaptureBuffer();
     const contents = view.webContents;
@@ -554,6 +758,15 @@ export class BrowserHost {
     contents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
       if (!isMainFrame || isInPlace) return;
       capture.reset();
+      // 缩放是按视图隔离的、且**跨导航保留**（见 setZoomMode），于是新页面会带着上一页的比例
+      // 出生。必须先回到 100% 再量再算：否则「需要多宽」量到的是缩放后的假象，
+      // 而新站可能本来就装得下（留着旧比例等于替用户白缩一屏）。
+      // 不用 emit：紧接着的 did-navigate / did-finish-load 会把新状态整份推过去。
+      const current = this.#sessions.get(sessionId);
+      if (current !== undefined && current.zoom !== 1) {
+        current.zoom = 1;
+        this.#setZoomFactor(current, 1);
+      }
       // 弹窗接管的提示写在 loadURL 之前，上面的 reset 会把它抹掉——这里补写回来，
       // 否则「这次换页是接管新窗口」这条线索在观测里消失
       const adopt = pendingAdopt;
@@ -571,6 +784,10 @@ export class BrowserHost {
     contents.on("did-navigate", () => this.#emitState(sessionId, true));
     contents.on("did-navigate-in-page", () => this.#emitState(sessionId, true));
     contents.on("page-title-updated", () => this.#emitState(sessionId, true));
+    // 装载完成后量一次「有没有够不到的内容」：此时布局才定型，量出来的数才作数。
+    // 页面在 did-navigate 时就已提交，但那时子资源与字体还没到位，宽度会偏小。
+    // 此刻子资源仍可能在飞（#measureContentWidth 自带有限次重试），量完顺带定缩放。
+    contents.on("did-finish-load", () => void this.#refreshContentFit(sessionId));
     // 新窗口一律不开：默认行为会生出一个不受本类管理的窗口——读不到、disposeAll 也回收不掉，
     // 而 agent 后续的 snapshot/text 仍停在旧页面上，表现为「点了没反应」。改为在当前视图接管。
     // 接管与否记一条 info 到控制台缓冲（这里没有独立的通知通道，靠文案自证来源）。
@@ -601,7 +818,17 @@ export class BrowserHost {
     this.#hookNetwork();
     this.#hookDownload();
     this.#webContentsToSession.set(contentsId, sessionId);
-    this.#sessions.set(sessionId, { view, capture, bounds: null, hidden: false, viewport: null });
+    this.#sessions.set(sessionId, {
+      view,
+      capture,
+      bounds: null,
+      hidden: false,
+      viewport: null,
+      contentWidth: 0,
+      zoom: 1,
+      fit: false,
+      appliedWidth: -1,
+    });
     owner.contentView.addChildView(view);
     return view;
   }
@@ -772,6 +999,9 @@ export class BrowserHost {
     if (entry === undefined) return;
     this.#sessions.delete(sessionId);
     this.#downloadSeq.delete(sessionId);
+    // 去抖中的重量可能还没跑：撤掉定时器，在飞的那次由 #measureContentWidth 的
+    // 「条目还是不是它」守卫收尾
+    if (entry.measureTimer !== undefined) clearTimeout(entry.measureTimer);
 
     const contents = entry.view.webContents;
     if (!contents.isDestroyed()) this.#webContentsToSession.delete(contents.id);

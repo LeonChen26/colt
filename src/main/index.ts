@@ -25,6 +25,9 @@ const isDev = process.defaultApp === true || !app.isPackaged;
 appNameSetup();
 function appNameSetup(): void {
   app.setName("Colt");
+  // 「等待授权」会在窗口不在前台时发系统通知，而 Windows 的通知要求进程有 AppUserModelID；
+  // 不设的话开发态会挂在 electron.exe 的默认身份下，通知不显示。非 Windows 上是空操作。
+  app.setAppUserModelId("com.colt.app");
   // 开发态用独立目录：与安装版共用同一份数据时，两个实例会各自 fork 一个 worker
   // 写**同一个**会话 JSONL，而内核要求 seq 跨行严格递增——双写会让整份历史在下次
   // 打开时被判为 Invalid storage 而彻底打不开（真实事故，见 commit.js 的校验）。

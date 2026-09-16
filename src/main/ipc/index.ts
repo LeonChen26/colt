@@ -518,6 +518,9 @@ export function registerIpcHandlers(): void {
   // 撤销 agent 留下的视口联调覆盖（B1 排查中发现的问题）：覆盖是持久状态，
   // 只有显式撤销才结束，用户必须有个出口，否则面板会一直按那个尺寸摆放、看着像渲染坏了。
   handle("browser.viewport.reset", (request) => hostBridge.browserResetViewport(request.sessionId));
+  // 「适应宽度」：页面按固定宽度排版、停靠区又装不下时的唯一出路（缩放不动原生视图矩形，
+  // 所以那条「视图 == 页面区域」的硬约束不受影响）。比例由主进程算，用户只表达意图。
+  handle("browser.zoom", (request) => hostBridge.browserSetZoom(request.sessionId, request.fit));
 
   // 根**只由主进程推导**：渲染层给 sessionId 与相对路径，绝不给根
   handle("file.read", (request) => {

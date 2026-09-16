@@ -105,6 +105,26 @@ export interface BrowserViewState {
    * 它是**只在显式「恢复」时才撤销**的持久状态，因此必须报给界面：头部要显示它、并提供撤销入口。
    */
   viewport: { width: number; height: number } | null;
+  /**
+   * 页面内容实际需要的宽度（CSS px），供界面判断「停靠区装不下、右侧够不到」。
+   *
+   * 页面比停靠区宽**不必然是问题**：自带横向滚动条的页面，用户滚一下就能看到。
+   * 真正无解的是「内容比视口宽、且页面把横向滚动禁掉了」（如首页把 `overflow-x: hidden`
+   * 写死在 `<html>` 上）——此时被裁掉的部分既没有滚动条也没有别的入口。
+   * 所以主进程只在**后者**才报数，前者一律报 0（表示「不存在够不到的内容」）。
+   *
+   * 测量口径见 `browser-host.ts` 的 `CONTENT_WIDTH_SCRIPT`——两处实测出来的坑都记在那里
+   * （不要去遍历全元素求右边界；也不要拿 `documentElement.scrollWidth` 当「有滚动条」的依据）。
+   */
+  contentWidth: number;
+  /**
+   * 当前缩放比例（1 = 100%），「适应宽度」生效时小于 1。
+   *
+   * 与 `contentWidth` 的分工：`contentWidth` 说的是「页面在 100% 下需要多宽」（页面固有属性，
+   * 故**只在 1 倍下量**，缩放生效期间不重量），`zoom` 说的是「现在按多小在画」。
+   * 界面据此判断「缩完还装不下吗」：`contentWidth * zoom > 区域宽` 才是真的还看不到。
+   */
+  zoom: number;
 }
 
 /**
@@ -249,6 +269,7 @@ export const IPC_CHANNELS = [
   "browser.observe",
   "browser.navigate",
   "browser.viewport.reset",
+  "browser.zoom",
   "file.read",
   "file.netDiff",
 ] as const;
@@ -559,6 +580,22 @@ export interface IpcInvokeMap {
    */
   "browser.viewport.reset": {
     request: { sessionId: string };
+    response: BrowserViewState;
+  };
+  /**
+   * 「适应宽度」开关（用户点浏览器头部的缩放指示 / 装不下那条横条上的按钮）。
+   *
+   * 传的是**意图**而不是比例：比例该是多少由主进程算——它同时握着页面区域宽度与
+   * 「页面需要多宽」，而这两个数都在主进程侧。渲染层再算一遍就是第二份真源，
+   * 拖分隔条或换页时两边必然走偏。
+   *
+   * 缩放**不改变原生视图的矩形**（视图仍精确等于「页面区域」，那条硬约束不受影响），
+   * 变的是页面的 CSS 视口：`setZoomFactor(z)` 让 CSS 视口变成 `区域宽 / z`，
+   * 于是按固定宽度排版的页面能整体塞进更窄的停靠区。代价是字也一起变小，
+   * 故主进程侧有可读下限（见 `MIN_FIT_ZOOM`）。
+   */
+  "browser.zoom": {
+    request: { sessionId: string; fit: boolean };
     response: BrowserViewState;
   };
   /**

@@ -54,6 +54,11 @@ export class HostBridge {
     return this.#browser.resetViewport(sessionId);
   }
 
+  /** 开 / 关「适应宽度」（用户点装不下那条横条上的按钮，或点头部的缩放指示还原） */
+  browserSetZoom(sessionId: string, fit: boolean): BrowserViewState {
+    return this.#browser.setZoom(sessionId, fit);
+  }
+
   /** 读取会话的浏览器观测快照（B2：控制台 / 网络 / 下载） */
   browserObservation(sessionId: string): BrowserObservation {
     return this.#browser.observe(sessionId);

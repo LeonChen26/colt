@@ -94,6 +94,32 @@ const POPUP_PAGE = `<!doctype html>
   <p>若你看到的仍是浏览器窗口里的同一页，说明弹窗已被拦截并在当前窗口打开。</p>
 </body></html>`;
 
+/**
+ * 刻意做成「装不下」的页面：内容固定 700px 宽，且在 `<html>` 上关掉横向滚动。
+ *
+ * 真实世界里这样写死的站点不少（实测某搜索首页有 768px 的最小内容宽同样禁了横向滚动）。
+ * 此时停靠区一旦比它窄，右边被裁掉的部分**既没有滚动条也没有别的入口**，
+ * 而界面上完全看不出是页面本身装不下——本页就是给「界面必须说出来」这条用的靶子。
+ *
+ * 700 这个数刻意选在「最窄右栏（约 219）装不下、最宽右栏（826）装得下」之间：
+ * 同一个页面在两个栏宽下呈现相反的结果，才能证明提示是**算出来的**而不是常驻的。
+ */
+const NARROW_PAGE = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>夹具·固定宽度页</title>
+<style>
+  html { overflow-x: hidden; }
+  body { margin: 0; }
+  #wide { width: 700px; height: 120px; background: #eef; }
+</style>
+</head>
+<body>
+  <div id="wide">固定 700px 宽的内容</div>
+</body>
+</html>`;
+
 const DOWNLOAD_BODY = "colt download fixture\n";
 
 function sendHtml(response, body) {
@@ -120,6 +146,10 @@ function handleRequest(request, response) {
   }
   if (url === "/popup.html") {
     sendHtml(response, POPUP_PAGE);
+    return;
+  }
+  if (url === "/narrow.html") {
+    sendHtml(response, NARROW_PAGE);
     return;
   }
   if (url === "/api/missing") {

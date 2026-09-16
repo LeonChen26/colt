@@ -33,6 +33,7 @@ import { writeOnboardedFlag } from "./first-run";
 import { hasUsableProvider, resolveSessionModel } from "@shared/model-ref";
 import { join, resolve } from "node:path";
 import type { HostResult } from "@shared/worker-protocol";
+import type { ApprovalRequest } from "@shared/protocol";
 // 夹具站与「手动体验」共用同一份页面（scripts/fixture-server.mjs 是唯一数据源），
 // 以 port 0 在进程内拉起，跑完即关，用例因此不依赖任何外部站点
 import { createFixtureServer } from "../../scripts/fixture-server.mjs";
@@ -2626,13 +2627,226 @@ async function runDock(
     await sleep(700);
     checks.push(["最窄右栏下「恢复」后仍逐像素对齐", await alignedNow()]);
 
+    // ---- ③「页面装不下、够不到」必须说出来（v1.39）----
+    // 最小窗口（1024）下右栏最多只有 ~423px，而固定宽度的站点会被原生视图裁掉；若页面又禁了
+    // 横向滚动，被裁的部分**既没有滚动条也没有别的入口**，而界面上看不出是页面本身装不下。
+    // 判据取提示条给出的数字，不看 class；数字正好能验出「量的是页面内容宽，不是视口宽」
+    // （量错成视口宽时它会等于可视区宽，永远不触发）。
+    const clippedBadge = (): Promise<{ size: string | null; text: string } | null> =>
+      run(`(() => {
+        const el = document.querySelector("[data-browser-clipped]");
+        return el ? { size: el.getAttribute("data-browser-clipped"), text: el.textContent } : null;
+      })()`);
+    /**
+     * 页面侧的横向量——**必须从浏览器视图的 webContents 读**（`run()` 打的是应用 UI）。
+     * 打印它是为了让这条一旦变红时能一眼看清「是页面真的没溢出，还是我们的口径量错了」。
+     */
+    const pageMetrics = async (): Promise<Record<string, number> | null> => {
+      const view = browserView();
+      if (!(view instanceof WebContentsView)) return null;
+      return view.webContents.executeJavaScript(
+        `(() => ({
+          innerWidth: window.innerWidth,
+          docClientWidth: document.documentElement.clientWidth,
+          docScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body ? document.body.scrollWidth : -1,
+        }))()`,
+        true,
+      );
+    };
+    const gotoPage = async (suffix: string): Promise<void> => {
+      await hostBridge.handle({
+        sessionId,
+        capability: "browser",
+        action: "navigate",
+        params: { url: `${server.url}${suffix}` },
+      });
+      await sleep(900);
+    };
+
+    // 右栏显式回最窄：不依赖上一段恰好停在最窄这个偶然状态
+    await dragGrip(10000);
+    await sleep(600);
+    await gotoPage("narrow.html");
+    const clippedNarrow = await clippedBadge();
+    const [needRaw, areaRaw] = (clippedNarrow?.size ?? "").split(">");
+    const need = Number(needRaw);
+    const area = Number(areaRaw);
+    log(`  [装不下] 窄栏提示条：${JSON.stringify(clippedNarrow)}`);
+    log(`  [装不下] 页面侧横向量：${JSON.stringify(await pageMetrics())}`);
+    log(`  [装不下] 主进程状态：${JSON.stringify(hostBridge.browserState(session.id))}`);
+    checks.push([
+      `窄栏遇上固定宽度页面 → 提示条如实给出「需要 ${need}px / 可视区 ${area}px」`,
+      clippedNarrow !== null && need >= 700 && need <= 720 && area > 0 && area < 500,
+    ]);
+    // 提示条是横在「页面区域」之上的：它一出现，区域矩形就变矮，原生视图必须跟着收。
+    // 这一条正是「电平」那一类——原生视图浮在渲染层之上，错位了肉眼看不出来。
+    checks.push(["提示条出现后原生视图仍与页面区域逐像素对齐", await alignedNow()]);
+
+    // 同一个页面、把右栏拉到最宽：装得下了，提示必须**自己消失**。
+    // 这一条防的是「栏一窄就挂一条常驻提示」——那种提示永远为真，比没有提示更糟（它会持续撒谎）。
+    await dragGrip(-10000);
+    await sleep(900);
+    log(`  [装得下] 宽栏提示条：${JSON.stringify(await clippedBadge())}`);
+    checks.push([
+      "右栏拉宽到装得下之后提示条自行消失（不是常驻灰条）",
+      (await clippedBadge()) === null,
+    ]);
+
+    // 复原成最窄，免得把「最窄」这个上下文留给后面的段落（其余段落只用到输入区）
+    await dragGrip(10000);
+    await sleep(400);
+
+    // ---- 「适应宽度」：把装不下的页面等比缩小（v1.40）----
+    // 上面那条横条原先只解释、不给出口（「拖宽右栏或最大化窗口即可」），而右栏上限本就受窗口
+    // 宽度限制（上限 = 窗口内容宽 − 601）——用户读完那句话依然什么也做不了。现在横条上直接给
+    // 「适应宽度」：整页等比缩小，右侧被裁掉的部分重新可见。
+    //
+    // 缩放**不动原生视图的矩形**（只改页面的 CSS 视口），所以「逐像素对齐」这条硬约束在缩放
+    // 期间仍必须成立，本节每一步都跟着复核一次。
+    // 判据一律取**页面自己的读数**（innerWidth），不看 class、也不看界面上那个百分比文字——
+    // 「界面写了个 60% 但页面根本没缩」正是这类功能最容易假通过的地方。
+    const zoomBadge = (): Promise<number | null> =>
+      run(`(() => {
+        const el = document.querySelector("[data-browser-zoom]");
+        return el ? Number(el.getAttribute("data-browser-zoom")) : null;
+      })()`);
+    /**
+     * 「适应宽度」按钮的存在与可点。
+     * 只说 `present` 会漏掉被挤出可视区的那种「看得见字号、点不到」的假出口（窄栏下真发生过），
+     * 故可点性一律用命中测试判——与真人点击同一条路径。
+     */
+    const fitState = (): Promise<{ present: boolean; hittable: boolean }> =>
+      run(`(() => {
+        const el = document.querySelector("[data-browser-fit]");
+        if (!el) return { present: false, hittable: false };
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return {
+          present: true,
+          hittable: r.width > 0 && r.height > 0 && hit !== null && (hit === el || el.contains(hit)),
+        };
+      })()`);
+    const clickHittable = (selector: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (hit === null || !(hit === el || el.contains(hit))) return false;
+        hit.click();
+        return true;
+      })()`);
+
+    await gotoPage("narrow.html");
+    await sleep(700);
+    const needPx = hostBridge.browserState(session.id).contentWidth;
+    const beforeFit = await readAreaRect();
+    log(
+      `  [适应宽度] 最窄栏：区域 ${JSON.stringify(beforeFit)}，页面需要 ${needPx}px，主进程 ${JSON.stringify(hostBridge.browserState(session.id))}`,
+    );
+    checks.push([
+      "装不下时横条上真的有「适应宽度」出口，且它落在可视区内可点（不是只存在于 DOM）",
+      (await fitState()).hittable,
+    ]);
+
+    checks.push(["点「适应宽度」命中", await clickHittable("[data-browser-fit]")]);
+    await sleep(1000);
+    const clampZoom = await zoomBadge();
+    const clampArea = await readAreaRect();
+    const clampIw = await pageInnerWidth();
+    // 最窄栏里要装下 700px 的页面得缩到约 31%，那已经认不出字了，故比例被钳在可读下限 60%：
+    // 页面**确实**缩了（CSS 视口从 219 变成 ≈365），但**仍然装不下**——这时界面必须如实说，
+    // 不能假装成功，也不能留一个再按也不会变化的按钮。
+    const expectClampIw = clampArea === null ? null : Math.round(clampArea.width / 0.6);
+    log(
+      `  [适应宽度] 顶到下限：缩放 ${clampZoom}%，页面 CSS 视口 ${clampIw}（期望 ${expectClampIw}）`,
+    );
+    checks.push([
+      `点「适应宽度」后页面真的缩了（区域宽 ${clampArea?.width} → 页面 CSS 视口 ${clampIw}）`,
+      clampZoom === 60 &&
+        clampIw !== null &&
+        expectClampIw !== null &&
+        Math.abs(clampIw - expectClampIw) <= 2,
+    ]);
+    const clampedClip = await clippedBadge();
+    log(`  [适应宽度] 顶到下限后横条：${JSON.stringify(clampedClip)}`);
+    checks.push([
+      "顶到最小可读比例仍装不下时，横条改为如实说明「已经缩到 60%」",
+      clampedClip !== null && clampedClip.text.includes("60%"),
+    ]);
+    checks.push([
+      "此时不再摆一个再按也不会变化的「适应宽度」（死控件比缺失更伤信任）",
+      (await fitState()).present === false,
+    ]);
+    checks.push(["缩放期间原生视图仍与页面区域逐像素对齐", await alignedNow()]);
+
+    // 把右栏拉到「缩得动」的宽度：装下 needPx 需要缩到 needPx×60% 以上，又要窄于 needPx
+    // 才看得到「缩了但不是 100%」这个中间态。取 500。
+    const midTarget = 500;
+    await dragGrip(Math.round((clampArea?.width ?? 219) - midTarget));
+    await sleep(1000);
+    const midArea = await readAreaRect();
+    const midZoom = await zoomBadge();
+    const midIw = await pageInnerWidth();
+    log(
+      `  [适应宽度] 拉宽到 ${midArea?.width}：缩放 ${midZoom}%，页面 CSS 视口 ${midIw}（页面需要 ${needPx}）`,
+    );
+    // 「比例跟着宽度重算」是这条的关键：缩放期间**不重量** contentWidth（那是页面在 100% 下的
+    // 固有属性，缩放后量会得出「本来就装得下」的假象，进而把缩放退回去来回震荡），但比例必须用
+    // 新宽度重算。若它停在 60% 不动，页面 CSS 视口会是区域宽÷0.6 ≈ 833 而不是 needPx。
+    checks.push([
+      `右栏拉宽后比例自动重算到刚好装满（区域 ${midArea?.width}，缩放 ${midZoom}%，页面 CSS 视口 ${midIw} ≈ 需要宽 ${needPx}）`,
+      midArea !== null &&
+        needPx > 0 &&
+        midArea.width >= Math.ceil(needPx * 0.6) &&
+        midArea.width < needPx &&
+        midZoom !== null &&
+        midZoom > 60 &&
+        midZoom < 100 &&
+        midIw !== null &&
+        Math.abs(midIw - needPx) <= 8,
+    ]);
+    checks.push(["缩到刚好装满后横条自己消失（不是常驻灰条）", (await clippedBadge()) === null]);
+    checks.push(["缩放状态下原生视图仍与页面区域逐像素对齐", await alignedNow()]);
+
+    // 「还原」出口必须**常驻工具条**而不是挂在横条上：一旦缩到装下，横条就自己消失了，
+    // 还原入口若跟着横条走，用户按完「适应宽度」就再也回不去（只能刷页面）。
+    checks.push(["缩到装下之后，工具条上仍留着「还原」出口", await clickHittable("[data-browser-zoom-reset]")]);
+    await sleep(1000);
+    const backArea = await readAreaRect();
+    const backIw = await pageInnerWidth();
+    log(`  [适应宽度] 还原后：缩放 ${await zoomBadge()}%，页面 CSS 视口 ${backIw}，区域 ${backArea?.width}`);
+    checks.push([
+      `「还原」后回到 100%（工具条缩放指示消失，页面 ${backIw} 重新等于区域宽 ${backArea?.width}）`,
+      (await zoomBadge()) === null &&
+        backArea !== null &&
+        backIw !== null &&
+        Math.abs(backIw - backArea.width) <= 20,
+    ]);
+    checks.push([
+      "「还原」后横条回来、并重新给出「适应宽度」出口",
+      (await clippedBadge()) !== null && (await fitState()).present,
+    ]);
+
+    // 复原成最窄，别把「右栏较宽」这个上下文留给后面的段落
+    await dragGrip(10000);
+    await sleep(400);
+
     // ---- `/compact` 斜杠命令（手动上下文压缩）----
-    // 压缩链路本身早已存在（session.compact → worker 的 compact 分支），本条验的是
+    // 压缩链路本身早已存在（`session.compact` → worker 的 compact 分支），本条验的是
     // **输入框能不能把它叫出来**，以及「未知 / 带参数的写法会不会被误吞」。
     //
     // 判据不用界面文字，直接在 `sessionManager` 上打桩计数：命令是否被识别、
     // 以及它是走了压缩还是被当成普通提问发出（后者会打到 `promptOrReconnect`）。
     // 打桩跑完立刻恢复，不残留到其他段落。
+    //
+    // ⚠️ 打桩**只记账、不转发**（v1.41 订正）。原先三个桩都转给了真实现，代价是：
+    //   · 每次跑 `dock` 都会**真打一次模型**——`/compact 帮我看看` 与 `/usr/local/bin/node`
+    //     两句是**真 prompt**（实测会话记录里带着 provider / modelId / usageId），而这本是个
+    //     「不调用模型、不产生计费」的模式；`dock` 也因此变成**唯一会给用户账单的动作**。
+    //   · 这两句测试文本会写进**用户真实项目里的真实会话历史**，混在侧栏的会话列表里。
+    // 而这三条断言问的都是「渲染层选了哪条路径」，与真发无关——转发是多余的。
     const compactCalls: string[] = [];
     const promptCalls: string[] = [];
     const realCompact = sessionManager.compact.bind(sessionManager);
@@ -2640,15 +2854,12 @@ async function runDock(
     const realPromptOrReconnect = sessionManager.promptOrReconnect.bind(sessionManager);
     sessionManager.compact = (id: string) => {
       compactCalls.push(id);
-      realCompact(id);
     };
-    sessionManager.compactOrReconnect = async (id: string, recover: () => Promise<void>) => {
+    sessionManager.compactOrReconnect = async (id: string) => {
       compactCalls.push(id);
-      await realCompactOrReconnect(id, recover);
     };
-    sessionManager.promptOrReconnect = async (id, text, images, recover) => {
+    sessionManager.promptOrReconnect = async (_id: string, text: string) => {
       promptCalls.push(text);
-      await realPromptOrReconnect(id, text, images, recover);
     };
 
     /** 把文本敲进输入框并回车——用真实事件驱动，走的是用户那条按键通道 */
@@ -2715,6 +2926,84 @@ async function runDock(
     sessionManager.compact = realCompact;
     sessionManager.compactOrReconnect = realCompactOrReconnect;
     sessionManager.promptOrReconnect = realPromptOrReconnect;
+
+    // ---- ①「等待授权」必须被看见（v1.39）----
+    // 「等待授权」是本产品唯一需要用户**立刻拍板**的状态，且有 5 分钟超时；
+    // 只显示「运行中 · mm:ss」会让人以为它在正常干活。这里走**真实事件通道**
+    // （与 session.view 那批同样），断言侧栏确实改口，而不是直接去改 DOM。
+    log("[等待授权] 推 approval.pending：侧栏应改口并在清空后自己摘掉");
+    const pendingRequest: ApprovalRequest = {
+      toolCallId: "smoke-approval-1",
+      sessionId: session.id,
+      toolName: "write",
+      argsJson: '{"path":"src/main/index.ts"}',
+      summary: "写入 src/main/index.ts",
+      risk: "moderate",
+      reason: "冒烟夹具",
+      signature: "smoke:approval",
+      requestedAt: Date.now(),
+      timeoutMs: 300_000,
+    };
+    window.webContents.send("approval.pending", {
+      sessionId: session.id,
+      requests: [pendingRequest],
+    });
+    await sleep(250);
+    const waitingText = "等待你的授权";
+    checks.push([
+      "有待审时侧栏标出「等待你的授权」",
+      await run<boolean>(`document.body.innerText.includes(${JSON.stringify(waitingText)})`),
+    ]);
+    // 清空后必须自己摘掉：一条不会消失的「等待授权」比没有信号更糟（它会一直撒谎）
+    window.webContents.send("approval.pending", { sessionId: session.id, requests: [] });
+    await sleep(250);
+    checks.push([
+      "待审清空后「等待你的授权」随之消失",
+      !(await run<boolean>(`document.body.innerText.includes(${JSON.stringify(waitingText)})`)),
+    ]);
+
+    // ---- ② 附件「没进来」必须说出来（v1.39）----
+    // 附件通道只承载图片，非图片过去是**静默 return**：往输入框拖一个 PDF 什么都没发生，
+    // 用户只会以为程序坏了。提示还必须落在**输入卡片内**——顶部那条 error 在消息
+    // 滚到底时不在视野里，等于没说。
+    log("[附件] 拖入非图片 / 混合拖入：提示要落在输入卡片内");
+    const dropFiles = (
+      specs: { name: string; type: string }[],
+    ): Promise<{ notice: string | null; inCard: boolean; alts: string[] }> =>
+      run(`(async () => {
+        const card = document.querySelector("textarea").parentElement;
+        const data = new DataTransfer();
+        ${specs
+          .map(
+            (item, index) =>
+              `data.items.add(new File([new Uint8Array([137, 80, 78, 71, ${index}])], ${JSON.stringify(item.name)}, { type: ${JSON.stringify(item.type)} }));`,
+          )
+          .join("\n        ")}
+        card.dispatchEvent(new DragEvent("drop", { dataTransfer: data, bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const notice = card.querySelector("[data-conv-attach-notice]");
+        return {
+          notice: notice ? notice.textContent : null,
+          inCard: notice !== null,
+          alts: [...card.querySelectorAll("img[alt]")].map((node) => node.getAttribute("alt")),
+        };
+      })()`);
+
+    const pdfOnly = await dropFiles([{ name: "需求说明.pdf", type: "application/pdf" }]);
+    checks.push([
+      "拖入非图片：输入卡片内直接点名被跳过的文件",
+      pdfOnly.inCard && (pdfOnly.notice ?? "").includes("需求说明.pdf"),
+    ]);
+    checks.push(["非图片不会被静默塞成附件", pdfOnly.alts.length === 0]);
+
+    const mixed = await dropFiles([
+      { name: "shot.png", type: "image/png" },
+      { name: "契约.pdf", type: "application/pdf" },
+    ]);
+    checks.push([
+      "图片照常进附件，同时点名被跳过的非图片",
+      mixed.alts.includes("shot.png") && (mixed.notice ?? "").includes("契约.pdf"),
+    ]);
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   } finally {

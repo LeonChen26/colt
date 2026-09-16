@@ -2,11 +2,11 @@
  * SessionManager：每会话一个 worker 进程（utilityProcess）
  * 负责启动、路由命令、转发视图、进程池上限与回收
  */
-import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
+import { app, Notification, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
-import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, ApprovalRequest, BranchNode, ProviderConfig } from "@shared/protocol";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
@@ -129,12 +129,30 @@ export class SessionManager {
   readonly #fileChangesCache = new Map<string, ViewFileChange[]>();
   #window: BrowserWindow | undefined;
   #reaper?: NodeJS.Timeout;
+  /**
+   * 当前有待审请求的会话。
+   *
+   * 「等待授权」是本产品唯一**需要用户立刻拍板**的状态，而窗口常常不在前台——
+   * 没有这份集合，我们既不知道「该不该喊人」，也不知道「人回来看了、该停止喊」。
+   */
+  readonly #pendingSessions = new Set<string>();
+  /**
+   * 已就「等待授权」提醒过的 toolCallId，按会话分组：同一条只提醒一次，避免反复弹通知。
+   * 分组不是为了分组本身——会话待审清空时要能精确回收这一份，否则集合跟着进程无界增长。
+   */
+  readonly #notifiedApprovals = new Map<string, Set<string>>();
+  /** 任务栏是否正在闪烁。flashFrame 表达的是一个**状态**而非开关，重复调用无意义，故自己记一份 */
+  #flashing = false;
 
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
     // 内嵌浏览器的视图状态（首次加载 / 导航 / 标题变化 / 销毁）统一走本类的推送出口。
     // onState 以最后一次注册为准，故重复 attachWindow 不会叠加监听。
     hostBridge.onBrowserState((state) => this.#emit("browser.state", state));
+    // 用户回到窗口就停止闪烁；又走开且仍有待审，则继续喊。
+    // 这样「闪烁」恒等于「有待审 且 人没在看」——不需要任何一方手动去清。
+    window.on("focus", () => this.#setFlashing(false));
+    window.on("blur", () => this.#setFlashing(this.#pendingSessions.size > 0));
   }
 
   #emit(channel: string, payload: unknown): void {
@@ -143,12 +161,85 @@ export class SessionManager {
     }
   }
 
-  /** 推送某会话的待审列表（全量，渲染层直接替换） */
+  /**
+   * 推送某会话的待审列表（全量，渲染层直接替换）。
+   *
+   * 这也是「该不该喊人」的唯一同步点：待审列表的每一次变化都必经此地
+   * （入队、处置、超时、中断、崩溃清理），提醒状态在此处派生，
+   * 才不会出现「界面已清空、任务栏还在闪」这类两处状态打架的情况。
+   */
   #emitPending(sessionId: string): void {
-    this.#emit("approval.pending", {
-      sessionId,
-      requests: this.approvals.listPending(sessionId),
+    const requests = this.approvals.listPending(sessionId);
+    this.#emit("approval.pending", { sessionId, requests });
+    this.#syncAttention(sessionId, requests);
+  }
+
+  /**
+   * 根据「有哪些会话在等授权」决定要不要请求用户注意。
+   *
+   * 「等待授权」是本产品唯一需要用户**立刻拍板**的状态，而窗口常常不在前台；
+   * 不喊人，一条卡住的审批就只能干等到 5 分钟超时被自动拒绝，用户还以为是模型慢。
+   * 但也不抢焦点——用户可能正在别处打字，抢焦点等同于打断。
+   * 于是只用任务栏闪烁 + 桌面通知这两种「可以不理会」的方式请求注意。
+   */
+  #syncAttention(sessionId: string, requests: ApprovalRequest[]): void {
+    if (requests.length > 0) {
+      this.#pendingSessions.add(sessionId);
+    } else {
+      this.#pendingSessions.delete(sessionId);
+      // 该会话已无待审：提醒记录一并回收，否则它会跟着进程一直涨
+      this.#notifiedApprovals.delete(sessionId);
+    }
+
+    const window = this.#window;
+    const focused = window !== undefined && !window.isDestroyed() && window.isFocused();
+    // 人就在窗口前面时侧栏直接可见，闪烁与通知都属多余
+    this.#setFlashing(!focused && this.#pendingSessions.size > 0);
+    if (focused) return;
+
+    const notified = this.#notifiedApprovals.get(sessionId) ?? new Set<string>();
+    // 本方法随每次 flush 被高频调用，不去重就是通知轰炸
+    const fresh = requests.filter((item) => !notified.has(item.toolCallId));
+    if (fresh.length === 0) return;
+    for (const item of fresh) notified.add(item.toolCallId);
+    this.#notifiedApprovals.set(sessionId, notified);
+    this.#notifyApproval(fresh);
+  }
+
+  /**
+   * 桌面通知：给「窗口不在前台」的用户一个看得见的提醒。
+   * 点击只把窗口叫到前台、不代用户切换会话——那要另开一条「主进程指示渲染层切会话」的通道，
+   * 而侧栏此刻已经标出了是哪个会话在等授权，用户点一下即可。
+   */
+  #notifyApproval(requests: ApprovalRequest[]): void {
+    const first = requests[0];
+    if (!first || !Notification.isSupported()) return;
+    const more = requests.length > 1 ? `（另有 ${requests.length - 1} 条）` : "";
+    const notification = new Notification({
+      title: "有操作等待你的授权",
+      body: `${first.summary}${more}`,
     });
+    notification.on("click", () => {
+      const window = this.#window;
+      if (!window || window.isDestroyed()) return;
+      // 最小化时先还原：直接 focus() 只是把焦点给了任务栏上那个仍然最小化的窗口
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    });
+    notification.show();
+  }
+
+  /**
+   * 任务栏闪烁——请求注意但不抢焦点。
+   * flashFrame 表达的是一个**状态**而非一次性开关，重复调用没有意义，故自己记一份去重。
+   */
+  #setFlashing(active: boolean): void {
+    if (this.#flashing === active) return;
+    this.#flashing = active;
+    const window = this.#window;
+    if (!window || window.isDestroyed()) return;
+    window.flashFrame(active);
   }
 
   /**

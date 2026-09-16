@@ -1,0 +1,164 @@
+# 架构
+
+> **什么时候读这份**：跨进程改动、加 IPC 通道、加 worker 命令、加右栏视图、加表字段——**动手之前**。
+> 这些改动的共同点是**要同时改几处**，漏一处不会编译报错，只会在运行期静默失灵。
+
+---
+
+## 一、四个进程与各自边界
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ main（Electron 主进程）                                      │
+│  · 窗口 / 原生视图（WebContentsView）  · SQLite              │
+│  · IPC 路由（渲染层所有调用的落点）    · 审批闸门             │
+│  · 宿主能力（浏览器 / 电脑控制）       · worker 进程池        │
+└───────────────┬──────────────────────────────┬──────────────┘
+                │ IPC（invoke / event）        │ 消息（WorkerCommand / WorkerMessage）
+┌───────────────┴──────┐              ┌────────┴──────────────┐
+│ preload              │              │ worker（每会话一个）    │
+│  按通道名白名单桥接   │              │  · 持内核 harness/lane │
+└───────────────┬──────┘              │  · 跑工具、读文件、bash │
+                │                     │  · 投影 ConversationView│
+┌───────────────┴──────┐              └───────────────────────┘
+│ renderer（React）    │   ← 只能通过 window.colt.invoke/on 说话
+└──────────────────────┘
+```
+
+| 进程 | 职责 | **不做**什么 |
+|---|---|---|
+| **main** | 窗口、原生视图、DB、IPC 路由、审批、宿主能力、worker 池 | 不直接调模型（内核在 worker 里）；不渲染界面 |
+| **preload** | 按 `IPC_CHANNELS` / `IPC_EVENTS` 白名单暴露 `window.colt.invoke/on` | 不含任何业务逻辑 |
+| **renderer** | 界面、纯前端状态、纯函数计算（`lib/`） | 不碰 fs、不碰密钥、不直接连模型 |
+| **worker** | 每会话一个 `utilityProcess`：持内核、跑工具、投影视图 | **不碰窗口与 OS 权限**——那两样在主进程，只能走 `toolRpc` 请主进程代做 |
+
+**为什么每会话一个进程**：长历史会话重放、工具执行、bash 都可能卡住或崩溃；隔离到进程后，一个会话卡死不拖累其它会话，崩溃也只丢一个会话的运行时状态（会话数据在磁盘）。
+
+**为什么窗口能力必须在主进程**：`WebContentsView`、`desktopCapturer`、系统剪贴板都要求 Electron GUI 侧。worker 里的工具（`worker/lib/browser-tool.ts`、`computer-tool.ts`）只是**薄封装**，实质是把请求发给主进程再等回。
+
+---
+
+## 二、一次对话的往返
+
+```
+① ⑤ 输入区发送
+      └─ window.colt.invoke("session.prompt") → preload → main/ipc
+② main 查密钥、必要时拉起 worker（池内没有则开），下发 prompt
+③ worker 把 prompt 交给内核 lane → 模型流式返回
+④ 工具调用发生，按类型分两路：
+      ├─ 内核侧工具（读文件 / bash …）→ 在 worker 里执行
+      └─ 宿主能力（浏览器 / 电脑控制）→ toolRpc 反向上行 → main → 原生视图 → 结果回传
+      └─ ⚠️ **两种情况都先过审批闸门**：worker 阻塞在 before_tool，
+         发 approvalRequest → main 的审批中枢判定（放行 / 上报用户）→ 用户处置 → 回传
+⑤ 事件流（文本 / 思考 / 工具状态 / 用量）持续从 worker 上报
+      └─ worker/lib/project.ts 投影成 ConversationView
+      └─ worker/lib/telemetry.ts 转成 usage / toolCall 上报
+⑥ main 侧落库：usage / toolCalls / fileChanges / 净值，然后 `session.view` 推给渲染层
+⑦ 渲染层重渲染
+```
+
+两个容易记错的点：
+
+- **DB 是 main 写的**，不是 worker。worker 只**上报**（`usage` / `toolCall` / `fileChange`），main 收到后落库，再把加工过的视图推回渲染层（`session-manager.ts` 的 `#withDbChanges`）。
+- **净值在主进程算**：**基线**由 worker 在改动前抓（`worker/lib/baseline.ts`，挂在 `before_tool`），**当前内容与 diff** 由 main 算（`main/net-change.ts` + 纯函数 `shared/line-diff.ts`）。
+
+---
+
+## 三、契约只有一个真源
+
+跨进程的东西**只允许定义一次**，其余全部由编译期断言强制对齐。
+
+| 契约 | 真源 | 强制方式 |
+|---|---|---|
+| 渲染层 → 主进程 | `src/shared/protocol.ts` 的 `IPC_CHANNELS`（47 条）+ `IpcInvokeMap`（类型） | 两者的**双向编译期断言**；`preload` 的白名单同源 |
+| 主进程 → 渲染层（推送） | 同文件的 `IPC_EVENTS`（7 条）+ `IpcEventMap` | 同上 |
+| main ↔ worker | `src/shared/worker-protocol.ts` 的 `WorkerCommand`（14 个）/ `WorkerMessage`（12 个）/ `ConversationView` | 类型联合 + 穷尽 switch |
+| 只读工具名单 | `src/shared/readonly-tools.ts`（**唯一真源**） | 被审批策略与「未经闸门即执行」告警共同消费——两份漂移会**要么刷假告警、要么遮蔽真漏报** |
+
+**这条纪律的价值**：加一个通道时，编译器会替你找出所有没改的地方。所以**不要绕过它**——不要在渲染层拼通道名字符串，也不要在 worker 里读主进程的私有类型。
+
+> **给既有推送 payload 加字段**（如 v1.39 给 `BrowserViewState` 加 `contentWidth`、v1.40 再加 `zoom`）也走这里：
+> 只改 `IpcEventMap` 顶层的类型定义，字段**设成必填而非可选**——必填会让编译器把每一个构造点
+> 都指出来（本仓是 `browser-host.ts` 的 `stateOf` 与 `#emitState` 两处）；设成可选就全部漏过去，
+> 留一批「有时是 `undefined`」的推送在线上。跨进程的字段**宁可要求每处都显式给值**。
+
+---
+
+## 四、新增能力要走哪几步
+
+### A. 加一个 IPC 通道（渲染层 → 主进程）
+
+1. `shared/protocol.ts`：`IPC_CHANNELS` 加通道名 + `IpcInvokeMap` 加 `request` / `response` 类型。
+2. `main/ipc/index.ts`：`handle("通道名", …)` 落点。
+3. 渲染层：`window.colt.invoke("通道名", …)`。
+4. `preload` **不用改**（白名单从 `IPC_CHANNELS` 派生）。
+
+要**推送**（主进程 → 渲染层）则改 `IPC_EVENTS` + `IpcEventMap`，main 侧发、渲染层 `on`。
+
+### B. 加一个 worker 命令
+
+`shared/worker-protocol.ts` 的 `WorkerCommand` 联合加成员 → `worker/entry.ts` 加处理分支 → `main/session-manager.ts` 里加调用方（`#post`）。
+
+⚠️ 与 `A` 的区别：**`A` 是渲染层的请求，`B` 是主进程对 worker 的指令**。多数「用户点了一下要影响 agent」的需求两处都要改。
+
+### C. 加一个右栏视图（⑦）
+
+1. `WorkspaceDock.tsx`：`DockKind` 加值 + `DOCK_KIND_META` 加元数据。
+2. **`closable` 决定它是否出现在「+」菜单**——菜单项**由该字段推导**，不要手写第二份列表。
+3. 加渲染分支；面板放 `features/Conversation/panels/`，用 `SidePanelShell` 作外壳。
+4. 冒烟 `dock` 模式加断言（页签数按 `data-dock-tab` 认，**别用 `button[aria-pressed]`**——容器里还有别的可切换控件）。
+
+⚠️ 新视图必须回答「**关掉之后怎么回来**」（出口：`+` 菜单 / 自动展开规则 / 其它入口）。
+
+### D. 加一个表字段
+
+1. `main/db/index.ts`：`SCHEMA` 加列 + `SCHEMA_VERSION` **加一** + `MIGRATIONS` 加一条（用 `addColumnIfMissing`）。
+2. `main/db/repo.ts`：行类型与映射、读写函数。
+3. `tests/migration.test.ts`：**断言存量行为**（旧数据应留 `NULL` 还是回填，取决于该字段语义——「NULL = 从未设置」是一种语义，见 `thinking_level`）。
+4. 更新 `tests/migration.test.ts` 的 `LATEST` 常量。
+
+⚠️ 迁移**写错会毁用户数据**，且只在已有用户库上才暴露。规则见 `docs/SECURITY.md` 的「数据」。
+
+### E. 加一个工具（给模型用）
+
+1. `worker/lib/` 下写薄封装（现有：`browser-tool.ts`、`computer-tool.ts`）。
+2. 送进 lane 的工具集。
+3. **判断它是否只读**：只读就必须加进 `shared/readonly-tools.ts` 这个唯一真源，否则要么被误报、要么遮蔽真漏报。
+4. 需要宿主能力就走 `host-bridge`（`toolRpc`）。
+5. 若涉及写盘 / 危险命令，确认审批策略能识别它——见 `docs/SECURITY.md`。
+
+---
+
+## 五、资源与上限（一览）
+
+改动这些值之前先想清楚：**它们大多是「不设就会出事」才存在的**。
+
+| 项 | 值 | 为什么 |
+|---|---|---|
+| worker 池上限 | **6** | 超出时回收最久未活动的空闲会话 |
+| worker 空闲回收 | **5 分钟**（扫描间隔 60s） | 一个 worker 是一个进程，不回收会越积越多 |
+| worker 启动上限 | **120s**（`COLT_READY_TIMEOUT_MS`） | 长历史重放可能数十秒；但超过就是卡住，必须拒绝等待方，否则界面永久停在「正在启动会话进程…」 |
+| `dispose` 宽限 | **3s**，超时强杀 | `dispose` 只是一条消息，worker 忙时可能迟迟不处理 |
+| 宿主 RPC 上限 | **90s** | **必须大于**主进程侧最长动作（`browser/wait` 页内硬超时 60s + 主进程 5s 余量）。若取等，按上限等待时必然被 RPC 超时抢先，把「等待超时」误报成「宿主能力坏了」，模型会原参重试 |
+| 观测缓冲 | **300** 条 | 控制台 / 网络缓冲上限 |
+| 下载 | **每会话 5 个 / 单文件 100MB** | 落盘要有界 |
+| 截图 TTL | **2 分钟** | 电脑控制的截图不能无限留 |
+| 文件预览 | 文本 **1MB** / 图片 **8MB** | 超出**直接报「过大」，不截断**——半截文件比看不到更容易误导 |
+| 基线快照 | 文本 **1MB** | 净值基线的体积上限 |
+| 「页面够不到的内容宽度」重测 | 去抖 **300ms**；装载未完成时重试 **3 次 × 500ms** | 拖动分隔条时宽度逐像素变化，逐次去查页面布局太贵；而 `did-finish-load` 触发时子资源仍在飞（`isLoading()` 仍为 true），**只量一次会静默漏掉**——页面真装不下却永远不提示（v1.39 实测踩过） |
+| 「适应宽度」的最小缩放 | **0.6**（`MIN_FIT_ZOOM`） | 最窄栏（219）里装下 700px 的页面要缩到约 31%，那已经认不出字了——缩到看不见等于把「看不到右边」换成「什么都看不到」。到下限仍装不下就**如实说**并撤掉按钮，不再往下缩 |
+| 渲染层 bundle | 约 **2.0 MB** | 目前没有预算机制，只作为观察值记录在此 |
+
+---
+
+## 六、构建与产物
+
+`electron-vite` 三份产物：`out/main`、`out/preload`、`out/renderer`。类型检查分三个 tsconfig（`node` / `web` / `test`）——**`npm run build` 会先跑前两个**，所以构建过了不代表测试类型也对，`npm run typecheck` 才跑全部三个。
+
+冒烟装置用 `import.meta.env.DEV` 守卫，**生产构建会把整段树摇掉**——包里不残留「可被环境变量激活的入口」。
+
+### 环境约束（会真的拦住你）
+
+- **`electron` 精确 pin 在 `44.2.0`**。本机开着 Windows「智能应用控制」（SAC）时会拦未签名的 `electron.exe`：`npm run dev` 报 `spawn UNKNOWN`（errno `-4094`），而 `build` / `test` 全绿。官方 Electron 本就不签名，SAC 按微软信誉库放行，**实测阈值在发布后 7~11 天**——所以不要用 `^`，升版本后必须**真起一次** `npx electron --version`。
+- **Node ≥ 22**（`node:sqlite`、`node:test`）。
+- 浏览器工具**只接受 http/https**，且不能开 `file://`——预览本地 HTML 要先起静态服务。

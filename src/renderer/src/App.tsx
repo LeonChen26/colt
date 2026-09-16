@@ -66,6 +66,14 @@ export default function App(): React.JSX.Element {
   const [offlineSessions, setOfflineSessions] = useState<Map<string, "dormant" | "crashed">>(
     new Map(),
   );
+  /**
+   * 有待用户处置的授权请求的会话 id。
+   *
+   * 与「运行中」正交：会话确实还在跑，但 Agent 正阻塞在一个待批的工具调用上不动了。
+   * 只显示「运行中 · mm:ss」会让人以为它在正常干活，实际上它在等用户拍板——
+   * 而这个状态是有代价的：5 分钟内没人处置就被自动拒绝。
+   */
+  const [pendingSessions, setPendingSessions] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
 
   // 主题挂载到下 <html>，并在变更时持久化
@@ -174,6 +182,18 @@ export default function App(): React.JSX.Element {
     });
   }, []);
 
+  // 全局监听待授权列表：侧栏据此标出「等待你的授权」。
+  // 主进程已在窗口不在前台时额外闪任务栏并发系统通知，这里只负责让状态在界面上可见。
+  useEffect(() => {
+    return window.colt.on("approval.pending", ({ sessionId, requests }) => {
+      setPendingSessions((prev) => {
+        const next = new Set(prev);
+        if (requests.length > 0) next.add(sessionId);
+        else next.delete(sessionId);
+        return next;
+      });
+    });
+  }, []);
   /** 拉取某项目的会话列表并写入缓存；force 时重拉 */
   const loadProjectSessions = useCallback(async (projectId: string) => {
     const list = await window.colt.invoke("session.list", { projectId });
@@ -443,6 +463,7 @@ export default function App(): React.JSX.Element {
                               active={session.id === activeSession?.id}
                               startedAt={runningSessions.get(session.id)}
                               offlineState={offlineSessions.get(session.id)}
+                              waiting={pendingSessions.has(session.id)}
                               now={now}
                               onClick={() => {
                                 if (project.id !== activeProject?.id) setActiveProject(project);
@@ -667,6 +688,7 @@ function SessionRow({
   active,
   startedAt,
   offlineState,
+  waiting,
   now,
   onClick,
   onDelete,
@@ -679,6 +701,8 @@ function SessionRow({
    * 与 startedAt 正交：停止的会话一定不在运行中。
    */
   offlineState?: "dormant" | "crashed";
+  /** 有待用户处置的授权请求。比「运行中」更该被看见，故显示时优先于它 */
+  waiting: boolean;
   now: number;
   onClick: () => void;
   onDelete: () => void;
@@ -705,15 +729,17 @@ function SessionRow({
         <span
           className={cn(
             "h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px]",
-            running
-              ? "pulse-dot border-success bg-success"
-              : offlineState === "crashed"
-                ? "border-danger bg-danger"
-                : offlineState === "dormant"
-                  ? "border-warning"
-                  : active
-                    ? "border-accent bg-accent"
-                    : "border-text-muted",
+            waiting
+              ? "pulse-dot border-warning bg-warning"
+              : running
+                ? "pulse-dot border-success bg-success"
+                : offlineState === "crashed"
+                  ? "border-danger bg-danger"
+                  : offlineState === "dormant"
+                    ? "border-warning"
+                    : active
+                      ? "border-accent bg-accent"
+                      : "border-text-muted",
           )}
         />
         <span className="min-w-0 flex-1">
@@ -728,16 +754,22 @@ function SessionRow({
           <span
             className={cn(
               "block truncate text-[10.5px]",
-              offlineState === "crashed" ? "text-danger-fg" : "text-text-muted",
+              waiting
+                ? "text-warning"
+                : offlineState === "crashed"
+                  ? "text-danger-fg"
+                  : "text-text-muted",
             )}
           >
-            {running
-              ? `运行中 · ${formatElapsed(startedAt, now)}`
-              : offlineState === "crashed"
-                ? "异常中断 · 发送即恢复"
-                : offlineState === "dormant"
-                  ? "空闲休眠 · 发送即恢复"
-                  : formatAgo(session.updatedAt)}
+            {waiting
+              ? "等待你的授权"
+              : running
+                ? `运行中 · ${formatElapsed(startedAt, now)}`
+                : offlineState === "crashed"
+                  ? "异常中断 · 发送即恢复"
+                  : offlineState === "dormant"
+                    ? "空闲休眠 · 发送即恢复"
+                    : formatAgo(session.updatedAt)}
           </span>
         </span>
       </button>

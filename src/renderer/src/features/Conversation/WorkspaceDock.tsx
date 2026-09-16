@@ -33,10 +33,12 @@ import {
   ChevronRight,
   Globe,
   MonitorSmartphone,
+  MoveHorizontal,
   Plus,
   RotateCw,
   ShieldCheck,
   X,
+  ZoomOut,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { BrowserNavAction, BrowserViewState } from "@shared/protocol";
@@ -241,6 +243,7 @@ export function WorkspaceDock({
   fileRequest,
   onBrowserNav,
   onResetViewport,
+  onBrowserZoom,
   instances,
   activeId,
   onActivate,
@@ -257,6 +260,11 @@ export function WorkspaceDock({
   onBrowserNav: (action: BrowserNavAction) => void;
   /** 用户点「恢复」撤销 agent 留下的视口联调覆盖 */
   onResetViewport: () => void;
+  /**
+   * 开 / 关「适应宽度」（缩放）。传的是**意图**不是比例——比例由主进程算（它同时握着
+   * 区域宽与页面需要多宽），渲染层只负责发起与呈现。
+   */
+  onBrowserZoom: (fit: boolean) => void;
   /**
    * 「要看某个文件」的请求（A3-2：点消息流工具卡上的路径）——`seq` 变化即重读。
    * ⑦-G 之后它不再切「文件」页签，而是**让「正在处理」落到下钻的内容层**。
@@ -277,6 +285,12 @@ export function WorkspaceDock({
 }): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * 「页面区域」当前宽度。
+   * 与主进程报来的 `contentWidth` 一比，就知道页面装不装得下——
+   * 装不下时右侧会被原生视图裁掉，且页面若禁了横向滚动就**够不到**（见下方提示条）。
+   */
+  const [areaWidth, setAreaWidth] = useState(0);
   /**
    * 「正在处理」是否处在下钻中；null = 停在 follow 层。
    * 这里**只记「在不在下钻」与「怎么进来的」**，下钻到哪一层由 `ChangeDrilldown` 自己维护——
@@ -322,6 +336,29 @@ export function WorkspaceDock({
   const canGoForward = browser?.canGoForward ?? false;
   /** 视口联调覆盖：非 null 时头部要显示它并给出「恢复」入口 */
   const override = browser?.viewport ?? null;
+  /**
+   * 页面装不下且**够不到**：内容比页面区域宽，而页面自己又禁了横向滚动
+   * （主进程只在「禁了横向滚动」时才报 contentWidth > 0，见 BrowserViewState 的说明）。
+   *
+   * 判据是**算出来的**，不是「栏一窄就报警」：响应式页面在窄栏里会自己重排，
+   * 那种页面永远不满足 contentWidth > areaWidth，也就不会挂上一条永远为真的灰条
+   * （持续撒谎的提示比没有提示更糟）。
+   *
+   * 联调覆盖生效时不报：那时页面是按覆盖尺寸重排的，「装不装得下」已由联调标记解释，
+   * 两条同时出现只会互相打架。
+   */
+  const contentWidth = browser?.contentWidth ?? 0;
+  /**
+   * 当前缩放（1 = 100%，「适应宽度」生效时小于 1）。
+   *
+   * 判「还看不看得到」必须**乘上它**：`contentWidth` 说的是「页面在 100% 下需要多宽」，
+   * 缩放之后真正占的宽度是 `contentWidth × zoom`。少了这一乘，「适应宽度」生效后
+   * 页面明明已经装下、横条却仍挂在那里说「右侧看不到」——一条立刻在撒谎的提示。
+   */
+  const zoom = browser?.zoom ?? 1;
+  const needWidth = Math.round(contentWidth * zoom);
+  const stillClipped = contentWidth > 0 && areaWidth > 0 && needWidth > areaWidth + 1;
+  const clippedX = override === null && stillClipped;
   const activeInstance = instances.find((item) => item.id === activeId) ?? instances[0];
   const activeKind = activeInstance?.kind ?? DOCK_DEFAULT_KIND;
   const showBrowser = activeKind === "browser";
@@ -350,6 +387,8 @@ export function WorkspaceDock({
     const report = (): void => {
       const rect = node.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) return;
+      // 同时也记一份宽度：装了装不下要看它，而 getBoundingClientRect 只在 report 里量
+      setAreaWidth(Math.round(rect.width));
       void window.colt
         .invoke("browser.bounds", {
           sessionId,
@@ -588,7 +627,71 @@ export function WorkspaceDock({
                 </button>
               </span>
             )}
+            {/* 「适应宽度」生效时的常驻指示 + 还原入口。
+                必须**常驻**：页面一旦缩到装下，「装不下」那条横条就自己消失了（它只在还看得见
+                被裁时才该在）——若把还原入口也放在那条横条上，用户一按「适应宽度」就再也找不到
+                回去的路，等于给自己设了一个只能靠刷新页面才退得出的状态。
+                它不进横条、常驻工具条：与联调标记抢的是一行里的同一个位置，但两者不会同时出现
+                （联调覆盖生效时缩放恒为 1，见 browser-host 的 #applyFit）。 */}
+            {zoom !== 1 && (
+              <span
+                data-browser-zoom={Math.round(zoom * 100)}
+                title={`已按「适应宽度」等比缩到 ${Math.round(zoom * 100)}%，整页宽度都能看见；点「还原」回到 100%（页面会重新按停靠区尺寸重排）。`}
+                className="flex min-w-0 items-center gap-1.5 rounded-[6px] border border-line bg-surface-overlay px-2 py-1 text-[11.5px] font-medium leading-none text-text-secondary"
+              >
+                <ZoomOut {...ICON.sm} className="shrink-0" />
+                <span className="min-w-0 truncate font-mono">{Math.round(zoom * 100)}%</span>
+                <button
+                  type="button"
+                  data-browser-zoom-reset=""
+                  onClick={() => onBrowserZoom(false)}
+                  title="回到 100%"
+                  className="shrink-0 rounded-[4px] bg-surface-raised px-1.5 py-[3px] text-[11px] font-semibold text-text-primary transition hover:bg-line"
+                >
+                  还原
+                </button>
+              </span>
+            )}
           </div>
+          {/* 页面装不下且够不到的说明。它**必须**占一条独立的横条而不是挤进 30px 的工具条：
+              工具条那一行已经有地址与联调标记在抢位置，再塞一句长文案只会被截断成半个词，
+              而半句话解释不了任何事。横在页面区域之上虽然吃掉约 20px 高，但换来的是一句读得完的话。
+              横条同时是**出手的地方**：只解释不给出口，用户明知道右边被裁了也只能去拖窗口，
+              而「拖窗口」在最小窗口下根本做不到（右栏上限就是那么宽）。故 100% 下直接给「适应宽度」。
+              缩放已经生效却仍装不下时**不给按钮**：那时已经顶到最小可读比例，再按不会有任何变化，
+              摆一个点了没反应的按钮比不给更伤信任（同 ⑦-F「死控件」的教训）。 */}
+          {clippedX && (
+            <div
+              data-browser-clipped={`${needWidth}>${areaWidth}`}
+              className="flex shrink-0 items-start gap-1.5 border-b border-warning/40 bg-warning-soft px-2.5 py-1.5 text-[11.5px] leading-relaxed text-warning"
+            >
+              <MoveHorizontal {...ICON.sm} className="mt-px shrink-0" />
+              <span className="min-w-0 flex-1">
+                {zoom === 1 ? (
+                  <>
+                    这个页面需要 {contentWidth}px 宽，可视区只有 {areaWidth}px，而它禁用了横向滚动——
+                    右边 {contentWidth - areaWidth}px 现在看不到、也够不到。
+                  </>
+                ) : (
+                  <>
+                    已经缩到 {Math.round(zoom * 100)}%（再小就认不出字了）仍差 {needWidth - areaWidth}px——
+                    这个页面本身就比停靠区宽，只能拖宽右栏或最大化窗口。
+                  </>
+                )}
+              </span>
+              {zoom === 1 && (
+                <button
+                  type="button"
+                  data-browser-fit=""
+                  onClick={() => onBrowserZoom(true)}
+                  title="把整页等比缩小到能看见全部宽度；页面会变小，可随时在工具条上「还原」回 100%"
+                  className="shrink-0 self-center rounded-[4px] bg-warning px-1.5 py-[3px] text-[11px] font-semibold text-accent-fg transition hover:opacity-90"
+                >
+                  适应宽度
+                </button>
+              )}
+            </div>
+          )}
           {loaded ? (
             <>
               {/* 这个 div 就是「页面区域」：主进程把 WebContentsView 精确摆在这个矩形上。
