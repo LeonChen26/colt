@@ -23,7 +23,6 @@ interface SessionRow {
   title: string;
   jsonl_path: string;
   kernel_session_id: string | null;
-  preset_id: string | null;
   model_ref: string | null;
   thinking_level: string | null;
   created_at: number;
@@ -49,7 +48,6 @@ function toSession(row: SessionRow): SessionInfo {
     title: row.title,
     jsonlPath: row.jsonl_path,
     kernelSessionId: row.kernel_session_id,
-    presetId: row.preset_id,
     modelRef: row.model_ref,
     thinkingLevel: toStoredThinkingLevel(row.thinking_level),
     createdAt: row.created_at,
@@ -115,7 +113,6 @@ export function getProject(projectId: string): Project | undefined {
 export function createSession(
   projectId: string,
   jsonlPath: string,
-  presetId?: string,
   id?: string,
 ): SessionInfo {
   const db = getDatabase();
@@ -126,7 +123,6 @@ export function createSession(
     title: "新会话",
     jsonl_path: jsonlPath,
     kernel_session_id: null,
-    preset_id: presetId ?? null,
     model_ref: null,
     thinking_level: null,
     created_at: now,
@@ -135,14 +131,13 @@ export function createSession(
     status: "active",
   };
   db.prepare(
-    `INSERT INTO sessions (id, project_id, title, jsonl_path, preset_id, created_at, updated_at, message_count, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
     row.project_id,
     row.title,
     row.jsonl_path,
-    row.preset_id,
     row.created_at,
     row.updated_at,
     row.message_count,

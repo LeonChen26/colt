@@ -98,7 +98,7 @@ describe("sessions", () => {
   test("可复用调用方给定的会话 id（草稿落库）", () => {
     const project = upsertProject("E:/demo");
     const draftId = "draft-1";
-    const session = createSession(project.id, "E:/demo/jsonl", undefined, draftId);
+    const session = createSession(project.id, "E:/demo/jsonl", draftId);
     assert.equal(session.id, draftId);
     assert.equal(getSession(draftId)?.id, draftId);
     assert.equal(listSessions(project.id).length, 1);

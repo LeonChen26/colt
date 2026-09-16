@@ -37,6 +37,7 @@ import type { ThinkingLevel } from "@shared/thinking-level";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import {
   countPatchLines,
   extractImage,
@@ -59,6 +60,7 @@ import {
   serializeArgs,
 } from "./lib/telemetry";
 import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
+import { describeSkills, loadSkillsForSession, skillDirs } from "./lib/skills";
 
 const context: Context = BACKGROUND_CONTEXT;
 
@@ -387,11 +389,20 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot });
   const session = await openSession(repo, command.kernelSessionId, cwd);
 
+  // 技能（Agent Skills，agentskills.io 标准）：项目级 `.agents/skills` 与用户级 `~/.agents/skills`
+  // 各扫一遍，装到的交给内核进系统提示词；同名时项目级胜出。
+  // **装了什么、跳过了什么如实报给用户**——技能来自磁盘且会进提示词，是一条隐式信任通道，
+  // 不该悄悄发生（见 `docs/SECURITY.md`）。加载失败只记告警，不拦会话。
+  const skills = await loadSkillsForSession(executionEnv, skillDirs(cwd, homedir()), context);
+  const skillsNotice = describeSkills(skills);
+  if (skillsNotice !== null) send({ type: "notice", message: skillsNotice });
+
   const { harness, open } = await AgentHarness.create(
     {
       session,
       models,
       model,
+      resources: skills.skills.length > 0 ? { skills: skills.skills } : undefined,
       tools: [
         createReadTool(),
         createWriteTool(),

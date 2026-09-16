@@ -151,7 +151,7 @@ function jsonlPathFor(projectId: string): string {
  */
 const drafts = new Map<
   string,
-  { projectId: string; presetId?: string; modelRef: string | null; thinkingLevel: ThinkingLevel | null }
+  { projectId: string; modelRef: string | null; thinkingLevel: ThinkingLevel | null }
 >();
 
 /** 把草稿落库；不是草稿则什么都不做。落库后立刻从草稿表移除，避免二次落库 */
@@ -159,7 +159,7 @@ function materializeDraft(sessionId: string): void {
   const draft = drafts.get(sessionId);
   if (!draft) return;
   drafts.delete(sessionId);
-  createSession(draft.projectId, jsonlPathFor(draft.projectId), draft.presetId, sessionId);
+  createSession(draft.projectId, jsonlPathFor(draft.projectId), sessionId);
   // 落库前在草稿上选过的模型要跟着走：不然用户「先选模型再发消息」的那一步会被丢掉
   if (draft.modelRef) setSessionModel(sessionId, draft.modelRef);
   if (draft.thinkingLevel) setSessionThinkingLevel(sessionId, draft.thinkingLevel);
@@ -251,7 +251,6 @@ export function registerIpcHandlers(): void {
     const id = randomUUID();
     drafts.set(id, {
       projectId: request.projectId,
-      presetId: request.presetId,
       modelRef: null,
       thinkingLevel: null,
     });
@@ -262,7 +261,6 @@ export function registerIpcHandlers(): void {
       title: "新会话",
       jsonlPath: "",
       kernelSessionId: null,
-      presetId: request.presetId ?? null,
       modelRef: null,
       thinkingLevel: null,
       createdAt: now,

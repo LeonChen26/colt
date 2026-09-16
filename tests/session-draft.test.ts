@@ -74,7 +74,7 @@ describe("草稿会话：首次发消息才落库", () => {
     const body = IPC_SOURCE.slice(start, IPC_SOURCE.indexOf("\n}", start));
     assert.match(
       body,
-      /draft\.projectId, jsonlPathFor\(draft\.projectId\), draft\.presetId, sessionId/,
+      /draft\.projectId, jsonlPathFor\(draft\.projectId\), sessionId/,
       "必须沿用界面手里的那个 id，否则界面持有的会话不存在",
     );
     assert.match(body, /if \(draft\.modelRef\) setSessionModel\(/, "草稿期选定的模型要跟着落库");

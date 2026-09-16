@@ -39,7 +39,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   title TEXT NOT NULL,
   jsonl_path TEXT NOT NULL,
   kernel_session_id TEXT,
-  preset_id TEXT,
   /** 会话选定模型，格式 "providerId/modelId"，未选时为 NULL */
   model_ref TEXT,
   /** 会话思考等级（off/low/medium/high）。NULL = 从未选过，按当前默认（high）下发 */
@@ -126,17 +125,6 @@ CREATE TABLE IF NOT EXISTS providers (
   /** 是否需要 API Key：0 表示本地 / 自建 endpoint 无需鉴权（见 ProviderConfig.requiresKey） */
   requires_key INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS presets (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  system_prompt TEXT,
-  enabled_tools_json TEXT,
-  skills_json TEXT,
-  model_ref TEXT,
-  thinking_level TEXT,
-  updated_at INTEGER NOT NULL
 );
 
 /** 通用键值设置：审批策略等运行期可配置项（值统一存 JSON 字符串） */

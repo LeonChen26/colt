@@ -118,7 +118,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 1. 读 pi 的 release notes，先列出改了什么。
 2. 改 `package.json` 的 pin（两个 pi 包 + `typebox`，理由见本节末）。
-3. `npm install` → `npm run typecheck` → `npm test`（559）→ `npm run build`。
+3. `npm install` → `npm run typecheck` → `npm test`（569）→ `npm run build`。
    **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
 4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（189）。
 5. **逐项核对「我们用过的内核字段」**：`LaneSnapshot.lastResult`（`status` / `kind`）、会话条目的 `seq`、
@@ -135,7 +135,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 | 内核已提供 | 我们的状态 |
 |---|---|
-| `loadSkills`（递归找 `SKILL.md` + frontmatter + ignore 规则 + 诊断） | **未接**——只有 `main/db` 一列 `skills_json`，没有读取代码 |
+| `loadSkills`（递归找 `SKILL.md` + frontmatter + ignore 规则 + 诊断） | **已接**——`worker/lib/skills.ts` 扫 `.agents/skills`（项目级）与 `~/.agents/skills`（用户级），装到的交给 `AgentHarnessOptions.resources.skills` 进系统提示词；同名项目级胜出，装载情况走 `notice` 如实告知（信任口径见 `docs/SECURITY.md`） |
 | `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
 | 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
 | 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |

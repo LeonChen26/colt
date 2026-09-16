@@ -204,7 +204,6 @@ export interface SessionInfo {
   jsonlPath: string;
   /** 内核 JSONL 会话 ID，首次打开前为 null */
   kernelSessionId: string | null;
-  presetId: string | null;
   /** 会话选定模型，格式 "providerId/modelId"，未选时为 null */
   modelRef: string | null;
   /** 会话思考等级；null = 从未选过（按默认值下发） */
@@ -351,7 +350,7 @@ export interface IpcInvokeMap {
    * （文件尚不存在），`kernelSessionId` 为 null。
    */
   "session.create": {
-    request: { projectId: string; presetId?: string };
+    request: { projectId: string };
     response: SessionInfo;
   };
   "session.list": {
