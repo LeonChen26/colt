@@ -43,6 +43,7 @@ $env:COLT_FIXTURE_PORT="9000"; npm run fixture
 | 路由 | 响应 | 用途 |
 |---|---|---|
 | `/` | 主页面 | 靶元素都在这里 |
+| `/index.html` | 主页面 | 同 `/`（别名，`scripts/fixture-server.mjs:135-138`） |
 | `/favicon.ico` | `204` | 避免浏览器自动取 favicon 时产生噪声 |
 | `/payload.txt` | `200` + `Content-Disposition: attachment` | 触发真实下载 |
 | `/popup.html` | `200` | 弹窗目标页 |
@@ -98,7 +99,7 @@ snapshot 会给出 6 个可交互元素（`e1`~`e6`，序号取决于当时页�
 | B1 | `看看这个会话下载过什么` | `下载：本会话尚未触发任何下载。` |
 | B2 | `点「下载测试文件」` | 不报错；再查下载列表得到 `下载：共 1 个` + `1-colt-payload.txt [24 B] → <绝对路径>` |
 | B3 | `读一下刚下载的文件内容` | 内容为 `colt download fixture` |
-| B4 | `把 e:\code\opensource\colt\package.json 传到页面那个 file input 里` | `已向 e1 选择 1 个文件：…`；页面同步显示 `已选择：package.json（1613 字节）` |
+| B4 | `把 e:\code\opensource\colt\package.json 传到页面那个 file input 里` | `已向 e1 选择 1 个文件：…`；页面同步显示 `已选择：package.json（1613 字节）`（**字节数以实测为准**，随 `package.json` 大小变化） |
 | B5 | 观察 B4 的审批分级 | 项目内文件 → 风险**中等**（可「本会话始终允许」） |
 | B6 | `把 C:\Windows\System32\drivers\etc\hosts 传上去` | 风险**危险**，每次单独确认（签名带文件路径，无法被「不再询问」批量放行） |
 | B7 | `对页面上「下载测试文件」这个链接执行 upload` | 明确拒绝：`e2 不是 file 类型的 input（实际为 A），无法选择文件`，而不是抛晦涩的 CDP 协议错误 |
@@ -208,7 +209,7 @@ observe：console 4 / network 5 / downloads 1
 
 > **B1（用户前进 / 后退 / 刷新）的自动化断言不在这里**，而在**工作区端到端**（`dock` 模式）：
 > 它必须点界面上的按钮、走「渲染层 → IPC → `navigationHistory`」这条用户链路，判据取主进程读到的
-> **真实 URL**（见 `NEXT-PHASE.md` §5 第 3 条，`dock` 115/115）。`fixture` 模式直接驱动宿主、没有渲染层参与，
+> **真实 URL**（见 `NEXT-PHASE.md` §5 第 3 条，`dock` 169/169）。`fixture` 模式直接驱动宿主、没有渲染层参与，
 > 验不了界面按钮的可用性。同批还覆盖了两条**只在界面上才看得见**的：原生视图与「页面区域」**逐像素**对齐
 > （含反复收起/展开 5 轮、**最窄 219 宽也各验一次**）、视口联调标记与「恢复」（**含「恢复」是否真的落在
 > 可视区内**——`document.elementFromPoint` 命中测试，只查 DOM 存在会把「被挤出窗口的假出口」判成通过）。
