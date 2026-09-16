@@ -27,7 +27,11 @@ import {
   formatToolDuration,
   toolCallSummary,
 } from "../src/renderer/src/lib/session-stats.ts";
-import { parseSlashCommand, resolveSkillCommand } from "../src/renderer/src/lib/slash-command.ts";
+import {
+  parseSlashCommand,
+  resolveSkillCommand,
+  slashCandidates,
+} from "../src/renderer/src/lib/slash-command.ts";
 import {
   consoleFields,
   consoleRowKey,
@@ -900,6 +904,76 @@ describe("resolveSkillCommand（/skill 是发出去还是就地拦下）", () =>
   test("名字按**精确**匹配（内核就是这么找的），大小写不同算不存在", () => {
     assert.deepEqual(resolveSkillCommand("pdf", ["pdf"]), { kind: "invoke" });
     assert.equal(resolveSkillCommand("PDF", ["pdf"]).kind, "reject");
+  });
+});
+
+describe("slashCandidates（敲 / 之后浮层列什么）", () => {
+  const skills = ["pdf", "code-review"];
+  /** 只取命令文本，断言更直观；`list` 省略时用上面的 `skills` */
+  const texts = (text: string, list: readonly string[] = skills): string[] =>
+    slashCandidates(text, list).map((item) => item.text);
+  /**
+   * 「清单**不知道**」单独走一个入口：**不能**在这里给形参写默认值再传 `undefined`——
+   * 默认参数会把 `undefined` 一并换成 `skills`，那条用例就悄悄变成了在测别的东西。
+   */
+  const unknownTexts = (text: string): string[] =>
+    slashCandidates(text, undefined).map((item) => item.text);
+
+  test("裸 `/` → 两条命令都列（/compact + 每个技能一项）", () => {
+    assert.deepEqual(texts("/"), ["/compact", "/skill pdf", "/skill code-review"]);
+  });
+
+  test("按前缀过滤：`/c` 只剩 /compact，`/s` 只剩技能", () => {
+    assert.deepEqual(texts("/c"), ["/compact"]);
+    assert.deepEqual(texts("/s"), ["/skill pdf", "/skill code-review"]);
+    // 命令字之后还能继续过滤技能名（用户记得开头几个字母就够了）
+    assert.deepEqual(texts("/skill co"), ["/skill code-review"]);
+  });
+
+  test("`/skill ` （带空格还没写名字）也列 —— 这时最需要提示", () => {
+    assert.deepEqual(texts("/skill "), ["/skill pdf", "/skill code-review"]);
+  });
+
+  test("**整条命令已敲全 → 一条都不列**（否则那一下回车会被「选中」吃掉）", () => {
+    // 这条是本函数的要害：少了它，用户敲对 `/compact` 之后按回车不会发送，
+    // 而是被浮层「选中」重写一遍，得先按 Esc 才发得出去。
+    assert.deepEqual(texts("/compact"), []);
+    assert.deepEqual(texts("/skill pdf"), []);
+    // 大小写不同也算「敲全了」
+    assert.deepEqual(texts("/COMPACT"), []);
+  });
+
+  test("以 / 开头的普通文本（路径）一个都匹配不上 → 浮层不出现", () => {
+    assert.deepEqual(texts("/usr/local/bin/node"), []);
+    assert.deepEqual(texts("/xz"), []);
+  });
+
+  test("带正文的 `/compact 一下` 匹配不上（前缀比候选长）→ 照常可发", () => {
+    assert.deepEqual(texts("/compact 一下"), []);
+  });
+
+  test("不以 / 开头（含空串）→ 空列表", () => {
+    assert.deepEqual(texts(""), []);
+    assert.deepEqual(texts("帮我看看"), []);
+  });
+
+  test("清单**不知道**（undefined）→ 只列 /compact，不猜技能名", () => {
+    assert.deepEqual(unknownTexts("/"), ["/compact"]);
+    // 「不知道」不等于「没有」：这里只是不列，不是报错，也不是把 /skill 也藏掉
+    assert.deepEqual(unknownTexts("/s"), []);
+  });
+
+  test("清单为空数组 → 同样只列 /compact（一个技能都没装）", () => {
+    assert.deepEqual(texts("/", []), ["/compact"]);
+  });
+
+  test("技能候选的 insert 带**尾随空格**（好接着写额外指示），命令字大小写不敏感但名字保留原样", () => {
+    const skillItem = slashCandidates("/s", ["PDF"])[0];
+    assert.ok(skillItem);
+    assert.equal(skillItem.text, "/skill PDF");
+    assert.equal(skillItem.insert, "/skill PDF ");
+    // 匹配不区分大小写（与 parseSlashCommand 对命令字的态度一致）
+    assert.deepEqual(texts("/SKILL"), ["/skill pdf", "/skill code-review"]);
   });
 });
 

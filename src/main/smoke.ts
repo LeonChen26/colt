@@ -351,6 +351,43 @@ async function runModelSelect(
 }
 
 /**
+ * 把「这台机器上用户自己配的服务」先变成**不可用**，并交还一个**原样还原**的函数。
+ *
+ * 为什么需要：`[model]` 之后的三段（`fallback` / `keyless` / `no-usable`）都在造一个关于
+ * 「现在有哪些服务可用」的环境，而默认解析（`resolveSessionModel`）是从**整份** provider 列表里
+ * 挑的——机器上只要还有一个自己配的服务能排在用例造的那个前面，整段断言就**悄悄失去意义**。
+ * 2026-09 实测：本机的 `glm`（自己配的、带密钥）抢走了默认解析，`fallback` / `keyless` 各红 2 条，
+ * 而红字看上去像产品坏了（那两段的**其余**断言全绿：界面无报错、会话开得起来、消息发得出去）。
+ *
+ * 做法刻意**取最小的副作用**——这段跑在用户的真实配置上，最坏情况是把配置改坏：
+ * - **带密钥的服务：只删密钥、不删条目**。没有密钥它就不算「可用」，而条目（名字 / baseUrl /
+ *   models）原样留着；哪怕用例中途硬崩、`finally` 没跑到，用户损失的也只是一个密钥值。
+ * - **免密钥的服务**（本地 / 自建 endpoint）：删了密钥照样算可用，只能**整条挪走**。
+ * - **内置服务**（DeepSeek）的密钥是**环境资产**，各段按需自己处理、自己还——这里不碰。
+ *
+ * 还原顺序跟写入依赖一致：**先还全部密钥，再写回被挪走的条目**。
+ */
+function stashUsableProviders(): () => void {
+  const custom = listProviders().filter((provider) => !provider.builtin);
+  const secrets = custom.map((provider) => [provider.id, getSecret(provider.id)] as const);
+  const removed = custom.filter((provider) => !provider.requiresKey);
+  for (const provider of custom) deleteSecret(provider.id);
+  for (const provider of removed) removeProvider(provider.id);
+  return () => {
+    for (const [id, secret] of secrets) if (secret) setSecret(id, secret);
+    for (const provider of removed) {
+      saveProvider({
+        id: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        models: provider.models,
+        requiresKey: provider.requiresKey,
+      });
+    }
+  };
+}
+
+/**
  * 未配内置 DeepSeek、只配了自定义服务时的**默认模型解析**。
  *
  * 回归背景（用户实测）：没有 DeepSeek 密钥、配好了自定义 provider，会话又从未选过模型时，
@@ -372,24 +409,30 @@ async function runModelFallback(
   const MODEL_NAME = "Smoke 自定义模型";
   const checks: [string, boolean][] = [];
 
-  // 场景前提：内置 DeepSeek 没有密钥、用户只配了自定义服务（且填了密钥）。
+  // 场景前提：内置 DeepSeek 没有密钥、**且除本用例的临时服务外没有别的服务**。
+  // 后半句必须**显式建立**——默认解析是从整份 provider 列表里挑的，机器上只要还有一个自己配的
+  // 服务能排在前面，本段就悄悄失去意义（2026-09 实测：本机的 `glm` 就是这样）。
   // DeepSeek 的密钥是**环境资产**（跑冒烟的那份 userData 里可能真配过），用完原样还回去，
   // 免得一次冒烟把环境改坏、后续用例看到的前提就不对了。
   const savedDeepseekKey = getSecret("deepseek");
-  deleteSecret("deepseek");
-  saveProvider({
-    id: PROVIDER_ID,
-    name: "Smoke 自定义服务",
-    baseUrl: "https://example.invalid/v1",
-    models: [{ id: MODEL_ID, name: MODEL_NAME, contextWindow: 1000 }],
-  });
-  setSecret(PROVIDER_ID, "sk-smoke-fake-key");
 
   // 会话从未选过模型：正是「默认解析」要负责的情形
   const session = createSession(projectId, sessionsDir);
   log(`会话：${session.id}（未选模型，且内置 DeepSeek 无密钥）`);
 
+  // 先给个空实现：`stashUsableProviders` 万一自己抛了，`finally` 里也不至于再炸一次
+  let restoreProviders: () => void = () => undefined;
   try {
+    restoreProviders = stashUsableProviders();
+    deleteSecret("deepseek");
+    saveProvider({
+      id: PROVIDER_ID,
+      name: "Smoke 自定义服务",
+      baseUrl: "https://example.invalid/v1",
+      models: [{ id: MODEL_ID, name: MODEL_NAME, contextWindow: 1000 }],
+    });
+    setSecret(PROVIDER_ID, "sk-smoke-fake-key");
+
     writeOnboardedFlag(app.getPath("userData"));
     window.reload();
     await sleep(4000);
@@ -444,6 +487,8 @@ async function runModelFallback(
     removeProvider(PROVIDER_ID);
     deleteSecret(PROVIDER_ID);
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+    // 最后再还这台机器真实的服务——放最后，保证用户配置是被最后写回的
+    restoreProviders();
   }
 }
 
@@ -559,20 +604,28 @@ async function runModelKeyless(
   }
 
   // 内置 DeepSeek 空着：唯一「能用」的服务就是这个不需要密钥的本地 endpoint
-  deleteSecret("deepseek");
-  saveProvider({
-    id: PROVIDER_ID,
-    name: "Smoke 本地服务",
-    baseUrl: "https://example.invalid/v1",
-    models: [{ id: MODEL_ID, name: MODEL_NAME, contextWindow: 1000 }],
-    requiresKey: false,
-  });
+  // ——但这句话只有在**别的服务都不在**时才成立，见下面 `stashUsableProviders()`。
 
   // 不设 model_ref：走的就是「会话从未选过模型」的默认解析
   const session = createSession(projectId, sessionsDir);
   log(`会话：${session.id}（未选模型，且内置 DeepSeek 无密钥）`);
 
+  // 先给个空实现：`stashUsableProviders` 万一自己抛了，`finally` 里也不至于再炸一次
+  let restoreProviders: () => void = () => undefined;
   try {
+    // 前提同上段：**只剩**「内置 DeepSeek（无密钥）」与本用例这个不需要密钥的本地 endpoint。
+    // 不把机器上真实的服务挪开，默认解析可能落到别处，本段就从「验降级」变成「验运气」
+    // （2026-09 实测：本机的 `glm` 就是这样抢走了默认解析）。
+    restoreProviders = stashUsableProviders();
+    deleteSecret("deepseek");
+    saveProvider({
+      id: PROVIDER_ID,
+      name: "Smoke 本地服务",
+      baseUrl: "https://example.invalid/v1",
+      models: [{ id: MODEL_ID, name: MODEL_NAME, contextWindow: 1000 }],
+      requiresKey: false,
+    });
+
     writeOnboardedFlag(app.getPath("userData"));
     window.reload();
     await sleep(4000);
@@ -617,6 +670,8 @@ async function runModelKeyless(
     removeProvider(PROVIDER_ID);
     deleteSecret(PROVIDER_ID);
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+    // 最后再还这台机器真实的服务——放最后，保证用户配置是被最后写回的
+    restoreProviders();
   }
 }
 
@@ -628,8 +683,8 @@ async function runModelKeyless(
  * （访问模式 / `/compact` / 模型选择 / 发送）正好落在被裁的那一截里，用户看到的是
  * 「输入框下半部分不见了」。
  *
- * 「一个能用的模型服务都没有」没有 API 可开，只能由用例自己造环境：把这台机器上真实的服务
- * 与密钥先原样存下来（无论中间出什么事都在 finally 里还回去），再让它们全部不可用。
+ * 「一个能用的模型服务都没有」没有 API 可开，只能由用例自己造环境：走 `stashUsableProviders()`
+ * 把这台机器上真实的服务先变成不可用（无论中间出什么事都在 `finally` 里还回去）。
  * 省掉这步，配过密钥的机器上黄条根本不出现，下面的断言就全变成空跑（假绿）。
  */
 async function runModelNoUsable(
@@ -640,13 +695,12 @@ async function runModelNoUsable(
   run: <T>(expression: string) => Promise<T>,
 ): Promise<void> {
   const checks: [string, boolean][] = [];
-  const custom = listProviders().filter((provider) => !provider.builtin);
-  const savedSecrets = custom.map((provider) => [provider.id, getSecret(provider.id)] as const);
   const savedDeepseekKey = getSecret("deepseek");
-  // 免密钥的服务（本地 / 自建 endpoint）删掉密钥照样算「可用」，只能整条挪走，稍后原样写回
-  const removedProviders = custom.filter((provider) => !provider.requiresKey);
   const session = createSession(projectId, sessionsDir);
   log(`会话：${session.id}（刻意让所有服务都不可用）`);
+
+  // 先给个空实现：`stashUsableProviders` 万一自己抛了，`finally` 里也不至于再炸一次
+  let restoreProviders: () => void = () => undefined;
 
   /** 布局只量一次；判据全部落在「可见区内」这件事上，别去看 class */
   const probeExpr = `(() => {
@@ -670,8 +724,11 @@ async function runModelNoUsable(
       // 不能依赖被测的修复本身（否则修好前必然假红，红在哪也看不出来）。同 keyless 的判法。
       notice: document.body.innerText.includes("尚未配置任何模型服务的 API Key"),
       viewport: window.innerHeight,
-      // 输入卡片就是输入框的父节点（同 ② 的实测结构）
-      card: rect(area ? area.parentElement : null),
+      // 输入卡片按**它自己的标记**认，**不要**写「输入框的父节点」：
+      // v1.44 给 textarea 套了一层 relative 容器（候选浮层要靠它定位），那个猜测当场失效——
+      // 量到的会变成那层容器（更小、且恒在卡片内），断言于是**静默变松**，还看不出错在哪。
+      // 与下面找 conv 那条（用 closest 找 grid-rows-*）是同一条纪律：别靠层级猜结构。
+      card: rect(document.querySelector("[data-conv-card]")),
       tools: rect(document.querySelector(".comp-tools")),
       main: rect(document.querySelector("main")),
       // 对话区根节点：唯一带 grid-rows-* 的祖先，从输入框往上找，不靠层级硬猜
@@ -690,8 +747,7 @@ async function runModelNoUsable(
   }
 
   try {
-    for (const provider of removedProviders) removeProvider(provider.id);
-    for (const provider of custom) deleteSecret(provider.id);
+    restoreProviders = stashUsableProviders();
     deleteSecret("deepseek");
 
     writeOnboardedFlag(app.getPath("userData"));
@@ -730,18 +786,9 @@ async function runModelNoUsable(
     for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
     log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
     sessionManager.close(session.id);
-    // 还原这台机器的真实服务：先还密钥，再按原来的先后顺序写回被挪走的条目
-    for (const [id, key] of savedSecrets) if (key) setSecret(id, key);
-    for (const provider of removedProviders) {
-      saveProvider({
-        id: provider.id,
-        name: provider.name,
-        baseUrl: provider.baseUrl,
-        models: provider.models,
-        requiresKey: provider.requiresKey,
-      });
-    }
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+    // 最后再还这台机器真实的服务——放最后，保证用户配置是被最后写回的
+    restoreProviders();
   }
 }
 
@@ -2900,6 +2947,30 @@ async function runDock(
         `!!document.querySelector('[data-slash-command="compact"]')`,
       );
 
+    /** 只把文本写进输入框、**不回车**（`/` 候选浮层要在「还没提交」的状态下观察） */
+    const typeText = (text: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const ta = document.querySelector("textarea");
+        if (!ta) return false;
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, "value").set;
+        setter.call(ta, ${JSON.stringify(text)});
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`);
+
+    /** 单独敲一个键（浮层的方向键 / Enter / Esc 都要在不改文本的情况下派发） */
+    const pressKey = (key: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const ta = document.querySelector("textarea");
+        if (!ta) return false;
+        ta.focus();
+        ta.dispatchEvent(new KeyboardEvent("keydown", {
+          key: ${JSON.stringify(key)}, bubbles: true, cancelable: true,
+        }));
+        return true;
+      })()`);
+
     // 命令的可见入口必须真能点（且它自己也走同一条 compact 路径）
     checks.push(["输入区有 /compact 的可点入口", await slashButton()]);
 
@@ -3010,6 +3081,120 @@ async function runDock(
       `  /skill：清单已知=${skillsKnown}，打桩 skill=${skillCalls.length}，prompt=${promptCalls.length}`,
     );
 
+    // ---- `/` 候选浮层：技能**唯一的可发现入口**（v1.44）----
+    // 上面验的是「打错名字会不会丢输入」，这里验的是**用户怎么知道有哪些技能**。
+    // 它必须走完**整条链**：敲 / → 弹出 → 选中 → 写入输入框 → 回车真的走技能 IPC。
+    // 少任何一环这个入口就是死的（`AGENTS.md` §3.6），只断言「浮层出现了」等于没验「选中能不能用」。
+    //
+    // 夹具里那个真实会话**一个技能都没装**（本仓没有 `.agents/skills`），所以这里推一份
+    // **带技能**的受控视图——`smokeView()` 会整份替换渲染层那份视图，`skills` 必须显式给，
+    // 否则浮层只会列 `/compact`（见 `AGENTS.md` ⑪）。
+    const MENU_SKILLS = ["pdf", "code-review"];
+    window.webContents.send("session.view", smokeView({ skills: MENU_SKILLS }));
+    await sleep(400);
+    const menuItems = (): Promise<string[]> =>
+      run<string[]>(
+        `[...document.querySelectorAll("[data-slash-menu] [data-slash-item]")]` +
+          `.map((el) => el.getAttribute("data-slash-item") ?? "")`,
+      );
+
+    await typeText("/");
+    await sleep(250);
+    checks.push([
+      "敲 / 弹出候选：/compact + 本会话每个技能各一项",
+      JSON.stringify(await menuItems()) ===
+        JSON.stringify(["/compact", "/skill pdf", "/skill code-review"]),
+    ]);
+    // 「在 DOM 里」不等于「用户点得到」——浮层是绝对定位、祖先里还有 overflow-hidden，
+    // 所以做命中测试：候选的中心点上最上面那一层必须是它自己（同小目标入口那条老坑）。
+    checks.push([
+      "候选真的落在可视区且点得到（不是只存在于 DOM）",
+      await run<boolean>(`(() => {
+        const item = document.querySelector("[data-slash-menu] [data-slash-item]");
+        if (!item) return false;
+        const r = item.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !!at && (at === item || item.contains(at));
+      })()`),
+    ]);
+
+    // ⚠️ 这条是本段的要害：**浮层开着时 Enter 是「选中」，不是「发送」**。
+    // 不拦这一下，用户选中技能的那次回车会把半截命令（`/skill pd`）当正文发出去——
+    // 技能没调用、输入也没了，是比「按了没反应」更糟的一种失败。
+    promptCalls.length = 0;
+    skillCalls.length = 0;
+    await typeText("/skill pd");
+    await sleep(250);
+    await pressKey("Enter");
+    await sleep(300);
+    checks.push([
+      "浮层开着时 Enter 是「选中」：既没当正文发出去，也没提前调用技能",
+      promptCalls.length === 0 && skillCalls.length === 0,
+    ]);
+    checks.push([
+      "选中后命令写回输入框，且带尾随空格（好接着写那半句额外指示）",
+      (await inputValue()) === "/skill pdf ",
+    ]);
+    checks.push([
+      "光标停在末尾（额外指示是接着打的，不会被插到中间）",
+      await run<boolean>(
+        `(() => { const ta = document.querySelector("textarea");
+                  return !!ta && ta.value.length > 0 && ta.selectionStart === ta.value.length; })()`,
+      ),
+    ]);
+    checks.push(["选中后浮层自己收起（不用再按一次 Esc）", (await menuItems()).length === 0]);
+
+    // 选中之后那段输入必须真的**能用**——这才是「不是死控件」的判据
+    promptCalls.length = 0;
+    skillCalls.length = 0;
+    await pressKey("Enter");
+    await sleep(400);
+    checks.push([
+      "选中后直接回车 → 真的走技能 IPC（浮层已收起，Enter 回到「发送」语义）",
+      skillCalls.length === 1 &&
+        skillCalls[0]?.name === "pdf" &&
+        promptCalls.length === 0,
+    ]);
+
+    // 路径不弹浮层：否则每次贴 `/usr/...` 都会跳一个菜单出来（v1.34 的防误吞同理）
+    await typeText("/usr/local");
+    await sleep(250);
+    checks.push([
+      "以 / 开头的路径**不弹浮层**（一个候选都匹配不上）",
+      (await menuItems()).length === 0,
+    ]);
+
+    await typeText("/");
+    await sleep(250);
+    checks.push(["前置：Esc 用例之前浮层确实开着", (await menuItems()).length > 0]);
+    await pressKey("Escape");
+    await sleep(250);
+    checks.push([
+      "Esc 只收起浮层、**不动输入**（清空输入是另一件事，不能顺手替用户决定）",
+      (await menuItems()).length === 0 && (await inputValue()) === "/",
+    ]);
+
+    // 整条命令已敲全 → 浮层让开。少了这条，用户敲对 `/compact` 之后回车会被「选中」吃掉，
+    // **得先按 Esc 才发得出去**——命令没问题，却被浮层拦住，是最难自查的一种。
+    compactCalls.length = 0;
+    promptCalls.length = 0;
+    await typeText("/compact");
+    await sleep(250);
+    checks.push([
+      "整条命令已敲全 → 浮层让开（否则回车会被「选中」吃掉）",
+      (await menuItems()).length === 0,
+    ]);
+    await pressKey("Enter");
+    await sleep(400);
+    checks.push([
+      "/compact 敲全后回车照常压缩（Enter 的默认语义没被浮层改掉）",
+      compactCalls.includes(session.id),
+    ]);
+    log(
+      `  / 候选浮层：清单=${MENU_SKILLS.join("、")}，最后 skill=${skillCalls.length}，prompt=${promptCalls.length}`,
+    );
+
     // 复原打桩，避免影响后续断言（dock 到此也接近尾声）
     sessionManager.compact = realCompact;
     sessionManager.compactOrReconnect = realCompactOrReconnect;
@@ -3061,7 +3246,9 @@ async function runDock(
       specs: { name: string; type: string }[],
     ): Promise<{ notice: string | null; inCard: boolean; alts: string[] }> =>
       run(`(async () => {
-        const card = document.querySelector("textarea").parentElement;
+        // 按卡片**自己的标记**认（v1.44 起 textarea 外面多了一层 relative 容器，
+        // 「输入框的父节点」不再是卡片——见 §5 第 3 条里那处同源的说明）
+        const card = document.querySelector("[data-conv-card]");
         const data = new DataTransfer();
         ${specs
           .map(

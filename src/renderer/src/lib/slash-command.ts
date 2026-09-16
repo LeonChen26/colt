@@ -100,3 +100,53 @@ export function resolveSkillCommand(
   if (knownSkills.includes(skillName)) return { kind: "invoke" };
   return { kind: "reject", message: unknownSkillMessage(skillName, knownSkills) };
 }
+
+/** `/` 候选浮层里的一项 */
+export interface SlashCandidate {
+  /** 命令本身：既用来**匹配**（前缀），也用来**显示** */
+  readonly text: string;
+  /** 选中后写回输入框的内容。技能的带一个**尾随空格**，好让用户接着写那半句额外指示 */
+  readonly insert: string;
+  /** 一行说明这条命令干什么 */
+  readonly hint: string;
+}
+
+/**
+ * 输入框里敲出 `/` 之后该列哪些候选（**只管显示，不参与「发不发」的判定**——那是
+ * `parseSlashCommand` 与 `resolveSkillCommand` 的事）。
+ *
+ * 匹配只有一条规则：**候选的命令文本以当前输入为前缀**，且**不等于它自己**。
+ *
+ * 后半句是必须的，也是这条最容易漏的地方：少了它，用户把 `/compact` 或 `/skill pdf`
+ * 完整敲完之后浮层仍开着，那一下回车会被「选中」吃掉——**明明敲对了整条命令，
+ * 却得先按 Esc 才能发出去**。加上它，敲完整条命令浮层就自己让开，回车照常发送。
+ *
+ * 这条前缀规则顺带覆盖了三种边界，不必再写特例：
+ * - 裸 `/`（或 `/skill `）→ 全部列出；
+ * - `/usr/local/bin` 这类路径 → **一个都匹配不上**，浮层不出现，照常当正文发出（v1.34 的防误吞）；
+ * - `/compact 一下` → 前缀比候选长，同样匹配不上，浮层收起，那句提问能正常发。
+ *
+ * `skills` 拿不到（`undefined`）时**只列 `/compact`**：菜单是**便利**、不是闸门，
+ * 清单不知道就不猜；名字真打错时还有 `resolveSkillCommand` / worker 兜底报错。
+ */
+export function slashCandidates(
+  text: string,
+  skills: readonly string[] | undefined,
+): SlashCandidate[] {
+  const typed = text.trim().toLowerCase();
+  if (!typed.startsWith("/")) return [];
+  const all: SlashCandidate[] = [
+    { text: "/compact", insert: "/compact", hint: "压缩上下文" },
+    ...(skills ?? []).map((name) => ({
+      text: `/skill ${name}`,
+      insert: `/skill ${name} `,
+      hint: "调用技能",
+    })),
+  ];
+  return all.filter((item) => {
+    // 大小写不敏感地匹配（与 `parseSlashCommand` 对命令字的处理一致），
+    // 但 `insert` 用**技能名原样**——内核按精确名查找，转写会造出一个「我们改了用户输入」的隐式行为。
+    const lower = item.text.toLowerCase();
+    return lower.startsWith(typed) && lower !== typed;
+  });
+}

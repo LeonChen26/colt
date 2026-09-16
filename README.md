@@ -38,7 +38,7 @@ npm run dev
 |---|---|
 | `npm run dev` | 开发模式启动（electron-vite） |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test，当前 **589** 条：588 通过 / 1 跳过） |
+| `npm test` | 单测（node:test，当前 **599** 条：598 通过 / 1 跳过） |
 | `npm run build` | 类型检查 + 构建产物到 `out/` |
 | `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
 | `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
@@ -63,7 +63,7 @@ npm run dev
 |---|---|---|
 | `basic` | 主界面自检 | 仅日志 |
 | `fixture` | 浏览器能力本体 | **25** |
-| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / `/skill` / 等待授权 / 装不下提示 / 适应宽度） | **195** |
+| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / `/skill` / `/` 候选浮层 / 等待授权 / 装不下提示 / 适应宽度） | **207** |
 | `model` | 模型解析与降级六段 | **34**（7/6/6/6/1/8） |
 | `host` | 宿主能力往返 | 7 |
 | `advanced` / `approval` / `reenter` / `crash` | 长会话 / 审批四场景 / 重入 / 崩溃恢复 | 仅日志 |
@@ -72,6 +72,12 @@ npm run dev
 > `COLT_SMOKE_MODE` 时的 `basic`）都会真实打模型并产生费用。
 > `dock` 此前不在此列——它的 `/compact` 段把打桩转给了真实现，会真发两句测试 prompt、
 > 计一次费，还把这两句写进用户真实项目的会话历史；v1.41 起该段**只记账、不转发**。
+>
+> 📌 **`model` 模式会临时改动你的 provider 配置**：`[model/fallback]` / `[model/keyless]` /
+> `[model/no-usable]` 三段都要造出「这台机器上只有 XX 服务」的环境（默认解析是从整份列表里挑的），
+> 跑完在 `finally` 里原样还回去。做法取**最小副作用**——带密钥的服务**只删密钥、不删条目**
+> （万一硬崩，丢的也只是一个密钥值，重填即可），只有免密钥的条目会被整条挪走。
+> 详因见 `NEXT-PHASE.md` §5 第 4 条。
 
 ---
 

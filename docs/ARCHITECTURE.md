@@ -118,9 +118,9 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 1. 读 pi 的 release notes，先列出改了什么。
 2. 改 `package.json` 的 pin（两个 pi 包 + `typebox`，理由见本节末）。
-3. `npm install` → `npm run typecheck` → `npm test`（589）→ `npm run build`。
+3. `npm install` → `npm run typecheck` → `npm test`（599）→ `npm run build`。
    **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
-4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（195）。
+4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（207）。
 5. **逐项核对「我们用过的内核字段」**：`LaneSnapshot.lastResult`（`status` / `kind`）、会话条目的 `seq`、
    `thinkingLevel`、`Usage` 各字段、`JsonlSessionMetadata`。
 6. 单独一个提交，消息里写明升到哪个版本、改了什么。

@@ -31,7 +31,7 @@ import {
 } from "@shared/thinking-level";
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
-import { parseSlashCommand, resolveSkillCommand } from "../../lib/slash-command";
+import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
@@ -134,6 +134,15 @@ export function Conversation({
 }): React.JSX.Element {
   const [view, setView] = useState<ConversationView | null>(null);
   const [input, setInput] = useState("");
+  /**
+   * `/` 候选浮层的状态：`slashActive` 是高亮项下标，`slashDismissed` 记住**哪段输入被 Esc 收掉了**。
+   *
+   * 浮层显不显示**由输入派生**（见下面的 `slashOpen`），不另存一个 open 标志——存两份必然会走偏：
+   * 输入被程序改掉时（比如选中候选项把命令写回去），那个 open 不会跟着变。
+   * Esc 是唯一的例外：用户明确收起了它，那就记住**收起时的那段输入**，输入一变自然重新打开。
+   */
+  const [slashActive, setSlashActive] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -735,6 +744,28 @@ export function Conversation({
     }
   }, [sessionId]);
 
+  /**
+   * `/` 候选：敲 `/` 之后把可用的命令**列出来**，选中就把命令写回输入框。
+   *
+   * 这条是技能**唯一**的可发现入口——原先只有会话启动通知里报一次名字（最多 8 个），
+   * 用户得记住名字再手打，所以它必须真的能落地：**弹出 → 选中 → 写入 → 回车发送**，一环不缺。
+   * 匹配规则（前缀匹配；整条命令已敲全就不弹）在 `slashCandidates` 里，有单测。
+   */
+  const candidates = useMemo(() => slashCandidates(input, view?.skills), [input, view?.skills]);
+  const slashOpen = candidates.length > 0 && slashDismissed !== input;
+  /** 高亮项下标可能越界（候选因为输入变化而变少），用的时候夹一下，而不是再写一个 effect 去同步 */
+  const activeCandidate = candidates[Math.min(slashActive, Math.max(candidates.length - 1, 0))];
+
+  const pickSlash = useCallback((item: SlashCandidate | undefined): void => {
+    if (!item) return;
+    setInput(item.insert);
+    setSlashActive(0);
+    // 光标挪到末尾，好让用户接着写那半句额外指示（技能候选尾部那个空格就是为此留的）
+    requestAnimationFrame(() => {
+      inputRef.current?.setSelectionRange(item.insert.length, item.insert.length);
+    });
+  }, []);
+
   const switchModel = useCallback(
     async (value: string) => {
       // 下拉值形如 "providerId/modelId"，需拆开分别下发
@@ -1106,6 +1137,7 @@ export function Conversation({
         <div className="mx-auto max-w-[796px] px-[18px] pb-3.5">
           {/* 输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行） */}
           <div
+            data-conv-card
             className="rounded-[12px] border border-line bg-surface-raised px-3 pb-2 pt-2.5 transition focus-within:border-line-strong"
             onDragOver={(e) => {
               if (e.dataTransfer.types.includes("Files")) e.preventDefault();
@@ -1156,34 +1188,101 @@ export function Conversation({
               </p>
             )}
 
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onPaste={(e) => {
-                const files = [...e.clipboardData.items]
-                  .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-                  .map((item) => item.getAsFile())
-                  .filter((file): file is File => file !== null);
-                if (files.length === 0) return;
-                e.preventDefault();
-                void addFiles(files);
-              }}
-              onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                if (e.key === "Enter" && !e.shiftKey) {
+            {/*
+              输入框与 `/` 候选浮层。浮层**绝对定位向上弹**：不占布局——
+              否则每敲一个 `/` 输入卡片就会变高、把对话区顶上去（无可用模型时那条
+              「卡片/工具行完整落在窗口内」的回归就是这么被抓到的）。
+            */}
+            <div className="relative">
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  // 候选变了，高亮回到第一项（否则会停在一个已经不存在的下标上）
+                  setSlashActive(0);
+                }}
+                onPaste={(e) => {
+                  const files = [...e.clipboardData.items]
+                    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                    .map((item) => item.getAsFile())
+                    .filter((file): file is File => file !== null);
+                  if (files.length === 0) return;
                   e.preventDefault();
-                  void submit();
+                  void addFiles(files);
+                }}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  // ⚠️ 候选浮层开着时，方向键与 Enter **先归浮层**。
+                  // Enter 的默认语义在这里是「发送」：不先把这一下拦下来，用户选中技能的那一次回车
+                  // 会把半截命令（`/skill pd`）当正文发出去——既没调用技能，输入还没了。
+                  // 只有「浮层开着」才拦；关着时 Enter 仍是发送，一个字都不变。
+                  if (slashOpen) {
+                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                      e.preventDefault();
+                      const step = e.key === "ArrowDown" ? 1 : -1;
+                      setSlashActive(
+                        (index) => (index + step + candidates.length) % candidates.length,
+                      );
+                      return;
+                    }
+                    if (e.key === "Enter" || e.key === "Tab") {
+                      e.preventDefault();
+                      pickSlash(activeCandidate);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      // **只收浮层，不动输入**：清空输入是另一件事（N2 里 Esc 的语义还没定），
+                      // 这里顺手清掉就是替用户做一个他没要求的决定。
+                      setSlashDismissed(input);
+                      return;
+                    }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+                rows={1}
+                placeholder={
+                  running
+                    ? "运行中：Enter 发送插话，按钮停止"
+                    : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
                 }
-              }}
-              rows={1}
-              placeholder={
-                running
-                  ? "运行中：Enter 发送插话，按钮停止"
-                  : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
-              }
-              className="max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted"
-            />
+                className="max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted"
+              />
+              {slashOpen && (
+                <div
+                  data-slash-menu
+                  className="absolute bottom-full left-0 right-0 z-20 mb-1 max-h-[220px] overflow-y-auto rounded-[6px] border border-line bg-surface-overlay py-1 shadow-lg"
+                >
+                  {candidates.map((item, index) => (
+                    <button
+                      key={item.text}
+                      type="button"
+                      data-slash-item={item.text}
+                      // 走 mousedown 而不是 click：click 之前 textarea 会先失焦，
+                      // 而「失焦引发的重排」在这里没有意义，还会让这一次选择落空。
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        pickSlash(item);
+                      }}
+                      onMouseEnter={() => setSlashActive(index)}
+                      className={cn(
+                        "flex w-full items-baseline gap-2 px-2.5 py-1 text-left transition",
+                        item === activeCandidate
+                          ? "bg-surface-raised text-text-primary"
+                          : "text-text-secondary hover:bg-surface-raised",
+                      )}
+                    >
+                      <span className="font-mono text-[11.5px]">{item.text}</span>
+                      <span className="text-[10.5px] text-text-muted">{item.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* 工具行：附件 / 访问模式（左），模型 / 发送（右） */}
             <div className="comp-tools mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
