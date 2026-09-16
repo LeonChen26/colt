@@ -32,8 +32,9 @@ import { deleteSecret, getSecret, setSecret } from "./secrets";
 import { writeOnboardedFlag } from "./first-run";
 import { hasUsableProvider, resolveSessionModel } from "@shared/model-ref";
 import { join, resolve } from "node:path";
-import type { HostResult } from "@shared/worker-protocol";
+import type { ConversationView, HostResult, ViewFileChange } from "@shared/worker-protocol";
 import type { ApprovalRequest } from "@shared/protocol";
+import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
 // 夹具站与「手动体验」共用同一份页面（scripts/fixture-server.mjs 是唯一数据源），
 // 以 port 0 在进程内拉起，跑完即关，用例因此不依赖任何外部站点
 import { createFixtureServer } from "../../scripts/fixture-server.mjs";
@@ -1709,7 +1710,7 @@ async function runDock(
       path: string,
       at: number,
       net: { added: number; removed: number } | null = null,
-    ): Record<string, unknown> => ({
+    ): ViewFileChange => ({
       id,
       path,
       kind: "write",
@@ -1723,13 +1724,24 @@ async function runDock(
     /**
      * 受控会话视图的构造器：基准是一份「什么都没在跑」的视图，
      * 各用例只覆盖自己关心的字段（如 `lastRun` / `running`）。
+     *
+     * ⚠️ 基准对象的类型**必须是 `ConversationView` 本体**，不能写成 `Record<string, unknown>`。
+     * 这个视图会经 `session.view` **整份替换**渲染层手里那份真实视图，所以**少一个字段就等于
+     * 把那个字段抹成 `undefined`**。v1.43 正是在这里漏了 `skills`：渲染层于是把「本会话技能清单」
+     * 读成 `undefined`（＝**不知道**），`/skill` 的本地拦截整条失效——而冒烟只报「拦不住」，
+     * 看不出根因在**夹具缺字段**（`AGENTS.md` §1.2：先怀疑测试接入，别先改被测对象）。
+     * 钉上类型之后，契约再加字段时这里会**编译不过**，而不是静默抹空。
      */
-    const smokeView = (over: Record<string, unknown>): Record<string, unknown> => ({
+    const viewBase: ConversationView = {
       sessionId,
       lane: "main",
       cwd: rootPath,
       model: "smoke/model",
       imageInput: false,
+      thinkingLevel: DEFAULT_THINKING_LEVEL,
+      // 夹具里**一个技能都没装**：这是「知道，且为空」，正是 `/skill` 本地拦截该生效的那种情形
+      // （区别于 `undefined` = 拿不到清单，那时必须放行，否则会把有效调用误判成失败）。
+      skills: [],
       messages: [
         {
           id: "smoke-msg-1",
@@ -1773,6 +1785,9 @@ async function runDock(
         costUsd: 0,
         contextUsed: 0,
       },
+    };
+    const smokeView = (over: Partial<ConversationView>): ConversationView => ({
+      ...viewBase,
       ...over,
     });
     window.webContents.send("session.view", smokeView({}));
@@ -2926,9 +2941,9 @@ async function runDock(
     // 「技能」在内核里是**两条互不相干的通道**：模型能不能看见清单（靠应用自己把
     // `formatSkillsForSystemPrompt` 拼进系统提示词），与 `resources.skills` 提供的
     // 「按名显式调用」完全是两码事——详见 ARCHITECTURE §四。本条验的是**输入框能不能
-    // 把后者叫出来**，以及两个最容易出事的边界：
-    //   · 名字打错 → 仍必须走技能通道（由 worker 报错并列出可用名），**不能**静默吞掉、
-    //     也不能偷偷变成一句普通提问；
+    // 把后者叫出来**，以及三个最容易出事的边界：
+    //   · 名字打错 → **就地拦下**：不发 IPC、**输入一个字都不丢**（v1.43 修掉的那件事：
+    //     原先先清空再发，worker 报错时用户已经白敲了一整句），且错误可见、点出正确写法；
     //   · 只写 `/skill`（没给名字）→ 必须回落成普通提问（防误吞，与 `/compact …` 那条对称）。
     // 「错误文案里带不带可用技能名」由 tests/skill-error.test.ts 断言——纯字符串逻辑，
     // 不必为它真拉一个 worker 进程起来（与上面 `/compact` 同理：打桩**只记账、不转发**）。
@@ -2946,22 +2961,43 @@ async function runDock(
       skillCalls.push({ name, instructions });
     };
 
-    // ① 名字打错：仍走技能通道（worker 会回可见报错），绝不是普通提问
+    // **前置**：本地拦截的前提是渲染层手里有本会话的技能清单，而清单只在 worker 起来后
+    // 才上报。先单独断言这条，否则环境里没有可用模型服务时，下面的红是**假红**——
+    // 会被误读成「拦截坏了」（`AGENTS.md` §1.2：先怀疑前置，别先改被测对象）。
+    const skillsKnown = Array.isArray(sessionManager.getView(session.id)?.skills);
+    checks.push(["前置：本会话视图已带技能清单（本地拦截据此才能成立）", skillsKnown]);
+
+    // ① 名字打错：**就地拦下**——不发 IPC、也不变成普通提问、输入原样留着
     compactCalls.length = 0;
     promptCalls.length = 0;
     skillCalls.length = 0;
     await typeAndEnter("/skill no-such-skill-colt");
     await sleep(400);
     checks.push([
-      "敲 /skill <未知名> 回车 → 走的是技能通道（没被静默吞掉）",
-      skillCalls.some((call) => call.name === "no-such-skill-colt") && promptCalls.length === 0,
+      "敲 /skill <未知名> → 本地拦下（既没走技能 IPC，也没变成普通提问）",
+      skillCalls.length === 0 && promptCalls.length === 0,
     ]);
     checks.push([
-      "/skill 的输入框被清空（已消费；失败可见，靠 worker 的报错）",
-      (await inputValue()) === "",
+      "拦下时输入**原样留着**（改一个字母就能重敲，不必整句重打）",
+      (await inputValue()) === "/skill no-such-skill-colt",
+    ]);
+    const skillError = await run<string>(
+      `(document.querySelector("[data-conv-error]")?.textContent ?? "")`,
+    );
+    checks.push([
+      "错误可见且**点出正确写法**（报出打错的名字 / 或说清技能该放哪）",
+      skillError.includes("技能「no-such-skill-colt」不存在"),
     ]);
 
-    // ② 只写 `/skill`：不给名字就不算命令 → 回落成普通提问（防误吞）
+    // ② 那半句额外指示也不能跟着丢——这正是用户报的现象（打错一个字母，白敲一整句话）
+    await typeAndEnter("/skill no-such-skill-colt 只改这一处");
+    await sleep(400);
+    checks.push([
+      "名字后那半句额外指示也留在输入里（整句没丢）",
+      (await inputValue()) === "/skill no-such-skill-colt 只改这一处",
+    ]);
+
+    // ③ 只写 `/skill`：不给名字就不算命令 → 回落成普通提问（防误吞）
     skillCalls.length = 0;
     promptCalls.length = 0;
     await typeAndEnter("/skill");
@@ -2970,19 +3006,9 @@ async function runDock(
       "裸 /skill（没给名字）回落成普通提问，不被吞掉",
       skillCalls.length === 0 && promptCalls.some((text) => text === "/skill"),
     ]);
-
-    // ③ 技能名之后的额外指示要**原样**带过去（这条走的是渲染层 → IPC → 主进程整条链路）
-    skillCalls.length = 0;
-    promptCalls.length = 0;
-    await typeAndEnter("/skill no-such-skill-colt 只改这一处");
-    await sleep(400);
-    checks.push([
-      "技能名之后的额外指示随调用一起送达",
-      skillCalls.some(
-        (call) => call.name === "no-such-skill-colt" && call.instructions === "只改这一处",
-      ) && promptCalls.length === 0,
-    ]);
-    log(`  /skill 打桩：skill=${skillCalls.length}，prompt=${promptCalls.length}`);
+    log(
+      `  /skill：清单已知=${skillsKnown}，打桩 skill=${skillCalls.length}，prompt=${promptCalls.length}`,
+    );
 
     // 复原打桩，避免影响后续断言（dock 到此也接近尾声）
     sessionManager.compact = realCompact;

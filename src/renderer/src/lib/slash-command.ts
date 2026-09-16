@@ -15,10 +15,13 @@
  * **未知的 `/xxx` 一律不算命令**，回落成普通提问照常发给模型（模型自己能理解它）。
  * 即「只有白名单里的命令才被拦截」——漏写的命令只会「原样发出去」，不会静默丢失。
  *
- * 唯一的例外是 `/skill <名字>` 里名字不存在：那**不回落**，而是由 worker 回一条**可见报错**
- * 并列出可用技能名。这不违反上面那条原则的本意——那条怕的是**静默**丢输入，而这里用户立刻
- * 看得到错误与正确写法。（见 `src/worker/lib/skill-error.ts`）
+ * 唯一的例外是 `/skill <名字>` 里名字不存在：那**不回落**，而是**就地拦下**（渲染层拿着本会话的
+ * 技能清单，判据见下面的 `resolveSkillCommand`），报一条可见错误、列出可用技能名，**且不清空输入**
+ * ——用户改一个字母就能重敲。这不违反上面那条原则的本意：那条怕的是**静默**丢输入。
+ * 渲染层拿不到清单时交给 worker 报同一句话（文案在 `@shared/skill-error`，两边共用同一份）。
  */
+
+import { unknownSkillMessage } from "@shared/skill-error";
 
 export type SlashCommand =
   | { name: "compact" }
@@ -67,4 +70,33 @@ export function parseSlashCommand(text: string): SlashCommand | null {
   }
 
   return null;
+}
+
+/** `/skill <名字>` 该不该发出去 */
+export type SkillDispatch =
+  | { readonly kind: "invoke" }
+  | { readonly kind: "reject"; readonly message: string };
+
+/**
+ * 决定 `/skill <名字>` 是发出去还是就地拦下。
+ *
+ * **为什么要在本地先判一次**：`invoke("session.skill")` 返回的是「**已投递**」，worker 的校验
+ * 失败走 `session.error` **推送**——提交那一刻渲染层判不了成败。所以若照旧先清空输入再发，
+ * 名字打错时那半句额外指示就跟着一起没了（用户看到的现象：打错一个字母，白敲一整句话）。
+ * 本地拦下则输入原样留着，改一个字母重敲即可。
+ *
+ * `knownSkills` 的**三种取值必须区别对待**，这是本函数的全部要点：
+ * - **`undefined`**（拿不到视图：没有 worker / 还没上报）→ **不拦**，照常发。此时清单是
+ *   **不知道**，不是「空的」；凭它拒绝会把一次**有效**调用误判成失败——那是另一种丢输入，
+ *   而且用户看不懂（「明明有这个技能文件」）。由 worker 兜底报错。
+ * - **`[]`**（知道，且确实一个技能都没装）→ 拦：此时名字**必然**不存在。
+ * - **非空列表** → 在里面找，找不到才拦（报错带上可用名，那是用户唯一能知道正确写法的地方）。
+ */
+export function resolveSkillCommand(
+  skillName: string,
+  knownSkills: readonly string[] | undefined,
+): SkillDispatch {
+  if (knownSkills === undefined) return { kind: "invoke" };
+  if (knownSkills.includes(skillName)) return { kind: "invoke" };
+  return { kind: "reject", message: unknownSkillMessage(skillName, knownSkills) };
 }

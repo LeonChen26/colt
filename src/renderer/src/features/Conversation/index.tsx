@@ -31,7 +31,7 @@ import {
 } from "@shared/thinking-level";
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
-import { parseSlashCommand } from "../../lib/slash-command";
+import { parseSlashCommand, resolveSkillCommand } from "../../lib/slash-command";
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
@@ -668,7 +668,8 @@ export function Conversation({
     const text = input.trim();
     if (!text && attachments.length === 0) return;
     // 斜杠命令：只认白名单（`/compact` / `/skill`），未知的 `/xxx` 回落成普通提问照常发出。
-    // 命令一律**被消费**（清空输入）、但**不消耗附件**（附件留给下一条消息）。
+    // 命令一律**被消费**（清空输入）、但**不消耗附件**（附件留给下一条消息）——
+    // 唯一的例外见下面 `/skill` 的「本地拦下」：那时**故意不清空**，好让用户改完接着发。
     const command = parseSlashCommand(text);
     if (command?.name === "compact") {
       setInput("");
@@ -676,11 +677,15 @@ export function Conversation({
       return;
     }
     if (command?.name === "skill") {
-      // 注意：**这里判断不了成败**。`invoke` 返回的是「已投递」，worker 的校验与失败
-      // 走 `session.error` 推送（见下面的事件订阅）——所以名字打错时，那半句额外指示会
-      // 跟着输入一起没掉。代价可接受：错误里会**列出可用技能名**，改一个字重敲即可。
-      // 想彻底避免这个损失，得让渲染层拿到技能清单（`ConversationView` 目前没有这个字段），
-      // 那样就能在本地先校验再决定清不清——那也正是将来做技能选择器要补的那一块。
+      // **本地先判一次**再决定清不清：名字打错时把输入留着（含那半句额外指示），
+      // 而不是先清空再发、让 worker 报错——那时用户已经白敲了一整句。
+      // `view?.skills` 是本会话的清单（worker 投影来的）；拿不到视图时它是 `undefined`，
+      // 该函数会放行，由 worker 兜底报同一句话（见 `resolveSkillCommand` 的注释）。
+      const dispatch = resolveSkillCommand(command.skillName, view?.skills);
+      if (dispatch.kind === "reject") {
+        setError(dispatch.message);
+        return;
+      }
       setInput("");
       setError(null);
       try {

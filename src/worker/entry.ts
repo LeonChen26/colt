@@ -60,13 +60,12 @@ import {
   serializeArgs,
 } from "./lib/telemetry";
 import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
-import { describeSkillError, unknownSkillMessage } from "./lib/skill-error";
+import { describeSkillError, unknownSkillMessage } from "@shared/skill-error";
 import {
   composeSystemPrompt,
   describeSkills,
   loadSkillsForSession,
   skillDirs,
-  type LoadedSkills,
 } from "./lib/skills";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -202,6 +201,13 @@ function project(
     imageInput: boolean;
     /** 会话思考等级，供界面下拉回显 */
     thinkingLevel: ThinkingLevel;
+    /**
+     * 本会话装载到的技能名字（装载后固定）。
+     *
+     * 渲染层要拿它**就地**判「这个名字存不存在」：名字打错时它不清空输入、把可用名报出来，
+     * 用户改一个字母就能重敲。没有它，那半句额外指示会跟着输入一起没掉。
+     */
+    skills: string[];
     fileChanges: ViewFileChange[];
     /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
     contextUsed: number;
@@ -297,6 +303,7 @@ function project(
     model: meta.model,
     imageInput: meta.imageInput,
     thinkingLevel: meta.thinkingLevel,
+    skills: meta.skills,
     messages,
     toolResults,
     fileChanges: meta.fileChanges,
@@ -343,12 +350,6 @@ interface WorkerState {
   models: ReturnType<typeof createModels>;
   providerId: string;
   snapshot: LaneSnapshot;
-  /**
-   * 本会话装载到的技能。`/skill <名字>` 按它**先自查一遍**再交给内核——
-   * 内核的 `UnknownSkill` 只带名字、不带候选，而技能名是用户自己在磁盘上定的，
-   * 打错时必须把可用名一起给出来（见 `lib/skill-error.ts`）。
-   */
-  skills: LoadedSkills["skills"];
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
   meta: {
@@ -358,6 +359,14 @@ interface WorkerState {
     imageInput: boolean;
     /** 会话思考等级（投影到 view，供界面下拉回显） */
     thinkingLevel: ThinkingLevel;
+    /**
+     * 本会话装载到的技能**名字**（装载后固定）。
+     *
+     * 一份数据两个用处，都是「按名核对」：worker 用它给 `/skill <名字>` 兜底自查，
+     * 渲染层用它**就地拦下打错的名字**——所以它必须跟着 view 一起发出去，
+     * 少了它用户敲错一个字母就得连那半句额外指示一起重敲。
+     */
+    skills: string[];
     fileChanges: ViewFileChange[];
     contextUsed: number;
   };
@@ -597,6 +606,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     // 模型目录声明的输入能力；纯文本模型（如 deepseek-v4-flash）不含 "image"
     imageInput: model.input?.includes("image") ?? false,
     thinkingLevel,
+    skills: skills.skills.map((item) => item.name),
     fileChanges: [] as ViewFileChange[],
     // 进程内初值为 0；首个 usage 事件到达后修正，切会话/重启时由主进程用 DB 覆盖
     contextUsed: 0,
@@ -610,7 +620,6 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     models,
     providerId: providerConfig.id,
     snapshot: watch.snapshot,
-    skills: skills.skills,
     resnapshot: () => watch.resnapshot(context),
     meta,
     unsubscribe: () => watch.unsubscribe(),
@@ -768,13 +777,12 @@ async function handle(command: WorkerCommand): Promise<void> {
       if (!state) throw new Error("会话尚未初始化");
       // 先按**本会话装到的清单**自查一遍再交给内核：内核的 UnknownSkill 只带名字、不带候选，
       // 而技能名是用户自己在磁盘上定的——打错时必须把可用名一起给出来，否则用户无从修正。
-      if (!state.skills.some((item) => item.name === command.name)) {
+      // 渲染层有一份同样的清单（`ConversationView.skills`）会在本地先拦一次，这里是**兜底**：
+      // 渲染层不知道清单时（无 worker / 还没上报）或有人直接调 IPC 时，这条路径负责说同一句话。
+      if (!state.meta.skills.includes(command.name)) {
         send({
           type: "error",
-          message: unknownSkillMessage(
-            command.name,
-            state.skills.map((item) => item.name),
-          ),
+          message: unknownSkillMessage(command.name, state.meta.skills),
           fatal: false,
         });
         return;

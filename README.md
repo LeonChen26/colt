@@ -38,7 +38,7 @@ npm run dev
 |---|---|
 | `npm run dev` | 开发模式启动（electron-vite） |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test，当前 **584** 条：583 通过 / 1 跳过） |
+| `npm test` | 单测（node:test，当前 **589** 条：588 通过 / 1 跳过） |
 | `npm run build` | 类型检查 + 构建产物到 `out/` |
 | `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
 | `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
@@ -63,7 +63,7 @@ npm run dev
 |---|---|---|
 | `basic` | 主界面自检 | 仅日志 |
 | `fixture` | 浏览器能力本体 | **25** |
-| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / `/skill` / 等待授权 / 装不下提示 / 适应宽度） | **193** |
+| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / `/skill` / 等待授权 / 装不下提示 / 适应宽度） | **195** |
 | `model` | 模型解析与降级六段 | **34**（7/6/6/6/1/8） |
 | `host` | 宿主能力往返 | 7 |
 | `advanced` / `approval` / `reenter` / `crash` | 长会话 / 审批四场景 / 重入 / 崩溃恢复 | 仅日志 |

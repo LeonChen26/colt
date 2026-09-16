@@ -27,7 +27,7 @@ import {
   formatToolDuration,
   toolCallSummary,
 } from "../src/renderer/src/lib/session-stats.ts";
-import { parseSlashCommand } from "../src/renderer/src/lib/slash-command.ts";
+import { parseSlashCommand, resolveSkillCommand } from "../src/renderer/src/lib/slash-command.ts";
 import {
   consoleFields,
   consoleRowKey,
@@ -867,6 +867,39 @@ describe("parseSlashCommand", () => {
     assert.equal(parseSlashCommand("/"), null);
     assert.equal(parseSlashCommand("compact"), null);
     assert.equal(parseSlashCommand("帮我看看 compact 的实现"), null);
+  });
+});
+
+describe("resolveSkillCommand（/skill 是发出去还是就地拦下）", () => {
+  test("名字在清单里 → 发出去", () => {
+    assert.deepEqual(resolveSkillCommand("pdf", ["pdf", "code-review"]), { kind: "invoke" });
+  });
+
+  test("名字不在清单里 → 拦下，并把**可用名**报出来（那是用户唯一知道正确写法的地方）", () => {
+    const dispatch = resolveSkillCommand("pf", ["pdf", "code-review"]);
+    assert.equal(dispatch.kind, "reject");
+    assert.ok(dispatch.kind === "reject");
+    assert.ok(dispatch.message.includes("技能「pf」不存在"), dispatch.message);
+    assert.ok(dispatch.message.includes("pdf、code-review"), dispatch.message);
+  });
+
+  test("清单是空数组（**知道**确实一个都没装）→ 拦下，并说清技能该放哪", () => {
+    const dispatch = resolveSkillCommand("pdf", []);
+    assert.equal(dispatch.kind, "reject");
+    assert.ok(dispatch.kind === "reject");
+    assert.ok(dispatch.message.includes(".agents/skills"), dispatch.message);
+  });
+
+  test("清单**不知道**（拿不到视图）→ 不拦，照常发（凭不知道的清单拒绝 = 把有效调用误判成失败）", () => {
+    assert.deepEqual(resolveSkillCommand("pdf", undefined), { kind: "invoke" });
+    // 这条是本函数的要害：`undefined`（不知道）与 `[]`（知道且没有）**必须**分开，
+    // 否则会话刚打开、worker 还没上报时，一个有效的技能名会被本地拒掉。
+    assert.notDeepEqual(resolveSkillCommand("pdf", undefined), resolveSkillCommand("pdf", []));
+  });
+
+  test("名字按**精确**匹配（内核就是这么找的），大小写不同算不存在", () => {
+    assert.deepEqual(resolveSkillCommand("pdf", ["pdf"]), { kind: "invoke" });
+    assert.equal(resolveSkillCommand("PDF", ["pdf"]).kind, "reject");
   });
 });
 

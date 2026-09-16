@@ -4,13 +4,15 @@
  * 内核的技能调用失败走 `Result.err` 而不是抛异常，错误类不在本仓类型面里，
  * 只能按 `_tag` 判别。**每一种形态都必须给出可读说明**——否则用户敲了 `/skill xxx`
  * 就是「敲了没反应」，而技能调用最常见的失败（名字不存在）恰恰只走这条路。
+ *
+ * 模块住在 `src/shared/`：渲染层的本地拦截与 worker 的兜底必须说**同一句话**。
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   describeSkillError,
   unknownSkillMessage,
-} from "../src/worker/lib/skill-error.ts";
+} from "../src/shared/skill-error.ts";
 
 describe("unknownSkillMessage", () => {
   test("列全可用名——用户打错名字时，这是唯一能告诉他正确写法的地方", () => {

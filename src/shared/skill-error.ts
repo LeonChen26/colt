@@ -1,5 +1,10 @@
 /**
- * 把 `lane.skill()` 的失败原因翻译成给用户看的一句话。
+ * 技能相关失败原因的文案（worker 与渲染层**共用**）。
+ *
+ * 为什么放在 `shared`：同一个「名字打错」有两条到达用户的路径——渲染层拿着本会话的技能清单，
+ * 可以**就地拦下**（好处是输入还留着，用户改一个字母就能重敲）；worker 那条是**兜底**
+ * （渲染层不知道清单时、或有人直接调 IPC）。两条路径必须说**同一句话**，
+ * 否则同一个错误会因为入口不同给用户两种说法。
  *
  * ⚠️ 内核的技能调用失败**走 `Result.err` 而不是抛异常**：`UnknownSkill` / `LaneBusy` /
  * `Closed` / `InvalidMessage`。worker 侧必须显式检查返回值，否则这些失败全部静默——
@@ -22,9 +27,9 @@ export function unknownSkillMessage(name: string, available: readonly string[]):
 export function describeSkillError(error: unknown): string {
   const tag = (error as { _tag?: string } | undefined)?._tag;
   switch (tag) {
-    // 正常路径下走不到这里——worker 会先拿本会话装到的清单自己查一遍，好把可用名一起列出来
-    // （内核这个错误只带名字、不带候选）。这里**只说不存在**，不跟着断言「没装载任何技能」：
-    // 那种情况下技能其实装着，只是名字不对，说错比少说更糟。
+    // 正常路径下走不到这里——worker 与渲染层都会先拿本会话装到的清单自己查一遍，
+    // 好把可用名一起列出来（内核这个错误只带名字、不带候选）。这里**只说不存在**，
+    // 不跟着断言「没装载任何技能」：那种情况下技能其实装着，只是名字不对，说错比少说更糟。
     case "UnknownSkill": {
       const name = (error as { name?: unknown }).name;
       return typeof name === "string" && name.length > 0 ? `技能「${name}」不存在。` : "技能不存在。";

@@ -111,6 +111,18 @@ export interface ConversationView {
    * 会让不带工具的请求（压缩、审批）被「始终思考」的模型 400 掉。
    */
   thinkingLevel: ThinkingLevel;
+  /**
+   * 本会话装载到的技能**名字**（装载后固定，投影自 worker 装载时的清单）。
+   *
+   * 渲染层拿它在**本地**判「这个名字存不存在」，然后才决定发不发：名字打错时它**不清空输入**、
+   * 把可用名报出来，用户改一个字母就能重敲。少了这个字段，渲染层只能先清空再发，
+   * 那半句额外指示会跟着输入一起没掉（用户看得见的现象：打错一个字母，白敲一整句话）。
+   *
+   * ⚠️ 判据要按「**知道**才知道」来用：拿不到视图时（没有 worker / 还没上报，`view?.skills`
+   * 就是 `undefined`）**不要**拦——那时候清单是**不知道**，不是「空的」，凭它拒绝会把一次
+   * 有效调用误判成失败，那是**另一种丢输入**。
+   */
+  skills: string[];
   messages: ViewMessage[];
   /** toolCallId → 工具结果，供工具卡片展开时查阅 */
   toolResults: ViewToolResult[];
@@ -186,7 +198,7 @@ export type WorkerCommand =
   /**
    * 显式调用一个技能：内核按名从 `resources.skills` 取出**整份正文**，作为一条 user 消息发出
    * （不只是提示词里那份清单）。名字不存在时**不回落**成普通提问——worker 回一条可见报错并
-   * 列出可用名：技能名是用户在磁盘上自己定的，打错时必须给回正确写法（见 `lib/skill-error.ts`）。
+   * 列出可用名：技能名是用户在磁盘上自己定的，打错时必须给回正确写法（见 `@shared/skill-error`）。
    */
   | { type: "skill"; name: string; instructions?: string }
   | { type: "branches" }
