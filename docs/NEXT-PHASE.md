@@ -377,6 +377,9 @@
 - 新增「文件」视图 kind（`DockKind = follow | browser | file`）+ `FilePanel.tsx`：按类型分流
   文本（`.md` 走 `Markdown.tsx`，其余按代码等宽）/ 图片（dataUrl）/ 二进制 / 过大；
   **不做「截断渲染半截内容」**——半截比看不到更容易误导
+  - ⚠️ **后续修正（v1.37，2026-09）**：上面这条「其余按代码等宽」已升级为**按扩展名认语言 → 着色 + 行号**
+    （`lib/code-lang.ts` + `components/CodeView.tsx`），认不出仍原样等宽、不猜；见 `UI-REGIONS` v1.37。
+    （本条目里的「文件」kind 与 `FilePanel.tsx` 另已被 ⑦-G 第四步 v1.32 取消，预览现为下钻的内容层。）
 - **两个入口**（都汇到 `openFile()` → `ensureDockInstance("file")` 并展开右栏，只切页签而右栏收着 = 没被看到）：
   1. `FollowPanel` 的「最近改动的文件」行；
   2. **消息流（④）里工具卡的副标题**——仅当副标题**就是该工具操作的文件**时可点

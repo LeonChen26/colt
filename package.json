@@ -36,6 +36,7 @@
     "electron": "44.2.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^4.0.1",
+    "highlight.js": "^11.11.2",
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

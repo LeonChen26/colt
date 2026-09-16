@@ -4,6 +4,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import hljs from "highlight.js/lib/common";
 import { parseAnsi } from "../src/renderer/src/lib/ansi.ts";
 import { classifyDiffLine } from "../src/renderer/src/lib/diff.ts";
 import {
@@ -14,6 +15,11 @@ import {
   samePath,
 } from "../src/renderer/src/lib/format.ts";
 import { buildChangeList, isProjectRelative } from "../src/renderer/src/lib/change-list.ts";
+import {
+  LANG_BY_EXT,
+  LANG_BY_NAME,
+  detectLanguage,
+} from "../src/renderer/src/lib/code-lang.ts";
 import {
   UNKNOWN_MODEL,
   buildSessionStats,
@@ -820,5 +826,76 @@ describe("parseSlashCommand", () => {
     assert.equal(parseSlashCommand("/"), null);
     assert.equal(parseSlashCommand("compact"), null);
     assert.equal(parseSlashCommand("帮我看看 compact 的实现"), null);
+  });
+});
+
+describe("detectLanguage（文件预览「按格式渲染」的判据）", () => {
+  test("常见扩展名 → highlight.js 语言名", () => {
+    assert.equal(detectLanguage("src/main/index.ts"), "typescript");
+    assert.equal(detectLanguage("src/renderer/src/App.tsx"), "typescript");
+    assert.equal(detectLanguage("scripts/fixture-server.mjs"), "javascript");
+    assert.equal(detectLanguage("package.json"), "json");
+    assert.equal(detectLanguage("src/renderer/src/styles.css"), "css");
+    assert.equal(detectLanguage("src/renderer/index.html"), "xml");
+    assert.equal(detectLanguage("docs/x.graphql"), "graphql");
+    assert.equal(detectLanguage("scripts/build.sh"), "bash");
+    assert.equal(detectLanguage("tools/gen.py"), "python");
+    assert.equal(detectLanguage("rust/src/main.rs"), "rust");
+  });
+
+  test("大小写、盘符、反斜杠都同解（入参可能是绝对路径）", () => {
+    assert.equal(detectLanguage("E:\\code\\colt\\src\\a.TS"), "typescript");
+    assert.equal(detectLanguage("E:/code/colt/src/a.ts"), "typescript");
+    assert.equal(detectLanguage("src/a.ts"), "typescript");
+    assert.equal(detectLanguage("C:\\repo\\Makefile"), "makefile");
+  });
+
+  test("无扩展名文件按整个文件名认；其它认不出的返回 null", () => {
+    assert.equal(detectLanguage("Makefile"), "makefile");
+    assert.equal(detectLanguage("src/GNUmakefile"), "makefile");
+    assert.equal(detectLanguage("LICENSE"), null);
+    assert.equal(detectLanguage("notes.log"), null);
+    assert.equal(detectLanguage("data.csv"), null);
+  });
+
+  test("隐藏文件不把整名当扩展名（`.gitignore` 的扩展名是空串）", () => {
+    assert.equal(detectLanguage(".gitignore"), null);
+    assert.equal(detectLanguage(".editorconfig"), null);
+  });
+
+  test("空路径 / 目录形态不炸，也不误判", () => {
+    assert.equal(detectLanguage(""), null);
+    assert.equal(detectLanguage("src/"), null);
+  });
+
+  test("Markdown 不在表里：`.md` 由上游直接交给 Markdown 渲染器", () => {
+    // 若这里也给出 markdown，CodeView 会把 .md 当代码着色，与上游分流打架
+    assert.equal(detectLanguage("docs/UI-REGIONS.md"), null);
+    assert.equal(detectLanguage("README.markdown"), null);
+  });
+
+  test("表里的语言名必须都是 common 包注册过的，否则识别等于白识别", () => {
+    const names = new Set([...Object.values(LANG_BY_EXT), ...Object.values(LANG_BY_NAME)]);
+    for (const name of names) {
+      assert.notEqual(hljs.getLanguage(name), undefined, `${name} 不在 highlight.js common 包里`);
+    }
+  });
+
+  test("CodeView 依赖的 highlight 调用方式成立（返回带 hljs- 类名的 HTML）", () => {
+    // 钉住的是「调用方式」而不是某段 HTML：一旦 highlight.js 改了签名（升大版本），
+    // CodeView 的 catch 会把失败吞成「这个文件本来就没颜色」，界面上看不出来。
+    const { value } = hljs.highlight('{ "name": "colt" }', {
+      language: "json",
+      ignoreIllegals: true,
+    });
+    assert.match(value, /class="hljs-/);
+  });
+
+  test("着色结果不含未转义的原样标签（内容全部来自文件，必须转义）", () => {
+    const { value } = hljs.highlight("<script>alert(1)</script>", {
+      language: "xml",
+      ignoreIllegals: true,
+    });
+    assert.equal(value.includes("<script>"), false);
   });
 });

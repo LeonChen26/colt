@@ -264,6 +264,51 @@ body.resizing * {
    预览本身（`FilePreview`）不再有并排的第二栏，故没有需要让位的容器查询。
    ============================================================ */
 
+/* ============================================================
+   文件内容层里「按格式渲染」的代码 / 文本视图（`CodeView`）。
+   左列行号 + 右侧着色后的代码：两列同在 `.code-view` 这个滚动容器里，
+   故行号要 `sticky` 才不会在横向滚动时被推走。
+   行高与字号只在容器上写一次，两列都继承它——**两列的行高必须逐像素相等**，
+   否则第 100 行的行号会跟正文错开（这也是不在这里单独给 pre 设 line-height 的原因）。
+   配色见下方 `:is(.md, .code-view) .hljs-*`。
+   ============================================================ */
+.code-view {
+  display: flex;
+  align-items: flex-start;
+  overflow: auto;
+  background: var(--color-surface-code);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.code-view .gutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  padding: 12px 8px 12px 12px;
+  border-right: 1px solid var(--color-line);
+  /* 不透明底色：否则横向滚动时正文会从行号底下透出来 */
+  background: var(--color-surface-code);
+  color: var(--color-text-muted);
+  text-align: right;
+  white-space: pre;
+  user-select: none;
+}
+.code-view pre {
+  flex: 1;
+  margin: 0;
+  padding: 12px;
+}
+.code-view pre code {
+  display: block;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  white-space: pre;
+}
+
 .conv-center {
   container: center / inline-size;
 }
@@ -496,49 +541,51 @@ body.resizing * {
   margin: 14px 0;
 }
 
-/* ---------- 语法高亮：低饱和，克制 ---------- */
-.md .hljs-keyword,
-.md .hljs-built_in,
-.md .hljs-literal,
-.md .hljs-selector-tag {
+/* ---------- 语法高亮：低饱和，克制 ----------
+   `.md`（助手回复的围栏代码块、以及 `.md` 文件预览）与 `.code-view`（其它文件按格式渲染）
+   共用同一份配色，故用 `:is()` 一并选中，避免两处各维护一套主题。 */
+:is(.md, .code-view) .hljs-keyword,
+:is(.md, .code-view) .hljs-built_in,
+:is(.md, .code-view) .hljs-literal,
+:is(.md, .code-view) .hljs-selector-tag {
   color: var(--color-code-keyword);
 }
-.md .hljs-string,
-.md .hljs-regexp,
-.md .hljs-addition {
+:is(.md, .code-view) .hljs-string,
+:is(.md, .code-view) .hljs-regexp,
+:is(.md, .code-view) .hljs-addition {
   color: var(--color-code-string);
 }
-.md .hljs-comment,
-.md .hljs-quote {
+:is(.md, .code-view) .hljs-comment,
+:is(.md, .code-view) .hljs-quote {
   color: var(--color-code-comment);
   font-style: italic;
 }
-.md .hljs-number,
-.md .hljs-symbol,
-.md .hljs-bullet {
+:is(.md, .code-view) .hljs-number,
+:is(.md, .code-view) .hljs-symbol,
+:is(.md, .code-view) .hljs-bullet {
   color: var(--color-code-number);
 }
-.md .hljs-title,
-.md .hljs-title.function_,
-.md .hljs-section {
+:is(.md, .code-view) .hljs-title,
+:is(.md, .code-view) .hljs-title.function_,
+:is(.md, .code-view) .hljs-section {
   color: var(--color-code-function);
 }
-.md .hljs-attr,
-.md .hljs-attribute,
-.md .hljs-variable,
-.md .hljs-property,
-.md .hljs-params,
-.md .hljs-template-variable {
+:is(.md, .code-view) .hljs-attr,
+:is(.md, .code-view) .hljs-attribute,
+:is(.md, .code-view) .hljs-variable,
+:is(.md, .code-view) .hljs-property,
+:is(.md, .code-view) .hljs-params,
+:is(.md, .code-view) .hljs-template-variable {
   color: var(--color-code-prop);
 }
-.md .hljs-punctuation,
-.md .hljs-operator,
-.md .hljs-meta {
+:is(.md, .code-view) .hljs-punctuation,
+:is(.md, .code-view) .hljs-operator,
+:is(.md, .code-view) .hljs-meta {
   color: var(--color-text-muted);
 }
-.md .hljs-emphasis {
+:is(.md, .code-view) .hljs-emphasis {
   font-style: italic;
 }
-.md .hljs-strong {
+:is(.md, .code-view) .hljs-strong {
   font-weight: 600;
 }
