@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 8;
+const LATEST = 9;
 
 let root: string;
 
@@ -231,6 +231,28 @@ describe("openDatabase 迁移", () => {
       .prepare("SELECT net_added_lines FROM file_changes")
       .get() as { net_added_lines: number | null };
     assert.equal(row.net_added_lines, null, "存量改动读不出净值，界面据此不下结论");
+  });
+
+  test("v9 为旧库补思考等级列，存量会话留 NULL（从未选过，打开时按默认值下发）", () => {
+    seedLegacy(root, LEGACY_SCHEMA, 0);
+    const raw = new DatabaseSync(join(root, "data", "colt.db"));
+    raw
+      .prepare(
+        "INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at)" +
+          " VALUES ('s1','p1','t','x.jsonl',1,1)",
+      )
+      .run();
+    raw.close();
+
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    assert.ok(columns(db, "sessions").includes("thinking_level"));
+    const row = db
+      .prepare("SELECT thinking_level FROM sessions WHERE id = 's1'")
+      .get() as { thinking_level: string | null };
+    // NULL = 从未选过：老会话在核心里存的是 off（当年的默认值），那是被「显式关闭思考」
+    // 翻译出来的 400 源头，所以这里必须是 NULL 而不是 off
+    assert.equal(row.thinking_level, null, "存量会话不应被写成 off");
   });
 
   test("新库 projects 含 root_key 且唯一索引生效", () => {

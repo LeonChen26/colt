@@ -4,6 +4,7 @@
  */
 
 import type { ProviderBuildConfig } from "./provider-factory";
+import type { ThinkingLevel } from "./thinking-level";
 
 /** 对话中的一条消息（投影后） */
 export interface ViewMessage {
@@ -104,6 +105,12 @@ export interface ConversationView {
    * 否则适配器会按 `model.input.includes("image")` 静默丢弃图片，用户只看到"发了但 AI 没反应"。
    */
   imageInput: boolean;
+  /**
+   * 当前会话的思考等级。**必须由主进程显式下发**（不是内核对新 lane 的种子值）：
+   * 内核只在新 lane 时套用种子，老会话会沿用自己持久化的值——而老会话存的 off
+   * 会让不带工具的请求（压缩、审批）被「始终思考」的模型 400 掉。
+   */
+  thinkingLevel: ThinkingLevel;
   messages: ViewMessage[];
   /** toolCallId → 工具结果，供工具卡片展开时查阅 */
   toolResults: ViewToolResult[];
@@ -167,11 +174,14 @@ export type WorkerCommand =
       kernelSessionId?: string;
       provider: ProviderBuildConfig;
       model: string;
+      /** 思考等级；主进程已按「会话存值 → 默认值」收敛过，worker 原样下发 */
+      thinkingLevel: ThinkingLevel;
     }
   | { type: "prompt"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "steer"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "abort" }
   | { type: "setModel"; provider: ProviderBuildConfig; modelId: string }
+  | { type: "setThinkingLevel"; level: ThinkingLevel }
   | { type: "compact" }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
@@ -257,6 +267,8 @@ export type WorkerMessage =
       params: Record<string, unknown>;
     }
   | { type: "error"; message: string; fatal: boolean }
+  /** 非错误的瞬时通知（如压缩完成）：主进程原样转成 session.notice 推给渲染层 */
+  | { type: "notice"; message: string }
   | { type: "log"; message: string };
 
 /** 分支树节点（投影后） */

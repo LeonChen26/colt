@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { Project, ProjectFileChange, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
+import { toStoredThinkingLevel } from "@shared/thinking-level";
 import { getDatabase, normalizeRootKey } from "./index";
 
 interface ProjectRow {
@@ -24,6 +25,7 @@ interface SessionRow {
   kernel_session_id: string | null;
   preset_id: string | null;
   model_ref: string | null;
+  thinking_level: string | null;
   created_at: number;
   updated_at: number;
   message_count: number;
@@ -49,6 +51,7 @@ function toSession(row: SessionRow): SessionInfo {
     kernelSessionId: row.kernel_session_id,
     presetId: row.preset_id,
     modelRef: row.model_ref,
+    thinkingLevel: toStoredThinkingLevel(row.thinking_level),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     messageCount: row.message_count,
@@ -125,6 +128,7 @@ export function createSession(
     kernel_session_id: null,
     preset_id: presetId ?? null,
     model_ref: null,
+    thinking_level: null,
     created_at: now,
     updated_at: now,
     message_count: 0,
@@ -159,6 +163,13 @@ export function setSessionModel(sessionId: string, modelRef: string): void {
   getDatabase()
     .prepare("UPDATE sessions SET model_ref = ?, updated_at = ? WHERE id = ?")
     .run(modelRef, Date.now(), sessionId);
+}
+
+/** 记录会话思考等级，下次打开时恢复 */
+export function setSessionThinkingLevel(sessionId: string, level: string): void {
+  getDatabase()
+    .prepare("UPDATE sessions SET thinking_level = ?, updated_at = ? WHERE id = ?")
+    .run(level, Date.now(), sessionId);
 }
 
 /**

@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
+import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
 import { readGitStatus } from "../git";
@@ -23,6 +24,7 @@ import {
   listSessionUsage,
   listSessions,
   setSessionModel,
+  setSessionThinkingLevel,
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
@@ -149,7 +151,7 @@ function jsonlPathFor(projectId: string): string {
  */
 const drafts = new Map<
   string,
-  { projectId: string; presetId?: string; modelRef: string | null }
+  { projectId: string; presetId?: string; modelRef: string | null; thinkingLevel: ThinkingLevel | null }
 >();
 
 /** 把草稿落库；不是草稿则什么都不做。落库后立刻从草稿表移除，避免二次落库 */
@@ -160,6 +162,7 @@ function materializeDraft(sessionId: string): void {
   createSession(draft.projectId, jsonlPathFor(draft.projectId), draft.presetId, sessionId);
   // 落库前在草稿上选过的模型要跟着走：不然用户「先选模型再发消息」的那一步会被丢掉
   if (draft.modelRef) setSessionModel(sessionId, draft.modelRef);
+  if (draft.thinkingLevel) setSessionThinkingLevel(sessionId, draft.thinkingLevel);
 }
 
 export function registerIpcHandlers(): void {
@@ -250,6 +253,7 @@ export function registerIpcHandlers(): void {
       projectId: request.projectId,
       presetId: request.presetId,
       modelRef: null,
+      thinkingLevel: null,
     });
     // 与真实会话同形，界面无需特殊分支；jsonlPath 为空串——文件要等首次发消息才存在
     const draft: SessionInfo = {
@@ -260,6 +264,7 @@ export function registerIpcHandlers(): void {
       kernelSessionId: null,
       presetId: request.presetId ?? null,
       modelRef: null,
+      thinkingLevel: null,
       createdAt: now,
       updatedAt: now,
       messageCount: 0,
@@ -454,6 +459,19 @@ export function registerIpcHandlers(): void {
 
   handle("session.steer", (request) => {
     sessionManager.steer(request.sessionId, request.text);
+    return { ok: true } as const;
+  });
+
+  handle("session.setThinkingLevel", (request) => {
+    // 草稿会话：同 session.setModel——它还没落库，UPDATE 会打在 0 行上静默丢失；
+    // 也不该为一个还没发过消息的会话拉起 worker。记在草稿里，首次发消息落库时一并写出。
+    const draft = drafts.get(request.sessionId);
+    if (draft) {
+      draft.thinkingLevel = request.level;
+      return { ok: true } as const;
+    }
+    // worker 不在池中时只落库（不重建）：下次打开会话会带着新等级启动
+    sessionManager.setThinkingLevel(request.sessionId, request.level);
     return { ok: true } as const;
   });
 

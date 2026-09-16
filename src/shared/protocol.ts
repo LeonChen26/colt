@@ -4,6 +4,7 @@
  */
 
 import type { ConversationView, ViewFileChange } from "./worker-protocol";
+import type { ThinkingLevel } from "./thinking-level";
 
 /** 环境体检结果 */
 export interface EnvReport {
@@ -186,6 +187,8 @@ export interface SessionInfo {
   presetId: string | null;
   /** 会话选定模型，格式 "providerId/modelId"，未选时为 null */
   modelRef: string | null;
+  /** 会话思考等级；null = 从未选过（按默认值下发） */
+  thinkingLevel: ThinkingLevel | null;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -226,6 +229,7 @@ export const IPC_CHANNELS = [
   "providers.save",
   "providers.remove",
   "session.setModel",
+  "session.setThinkingLevel",
   "session.steer",
   "session.compact",
   "approval.list",
@@ -476,6 +480,12 @@ export interface IpcInvokeMap {
      */
     response: { ok: true; needsKey?: boolean };
   };
+  /** 切换会话思考等级 */
+  "session.setThinkingLevel": {
+    /** cwd 用于 worker 已被空闲回收时自愈重建（同 session.setModel） */
+    request: { sessionId: string; level: ThinkingLevel; cwd?: string };
+    response: { ok: true };
+  };
   /** 显式插话 */
   "session.steer": {
     request: { sessionId: string; text: string };
@@ -712,6 +722,7 @@ export const IPC_EVENTS = [
   "session.view",
   "session.status",
   "session.error",
+  "session.notice",
   "file.changed",
   "approval.pending",
   "browser.state",
@@ -725,6 +736,8 @@ export interface IpcEventMap {
   "session.status": { sessionId: string; state: SessionRunState };
   /** 会话错误 */
   "session.error": { sessionId: string; message: string };
+  /** 会话级瞬时通知（非错误）：如压缩完成，渲染层短暂展示后自动消失 */
+  "session.notice": { sessionId: string; message: string };
   /** 文件改动（M2 接入） */
   "file.changed": { sessionId: string; change: ViewFileChange };
   /** 待审批的工具调用（新增或清空时推送全量） */

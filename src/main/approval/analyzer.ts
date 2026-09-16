@@ -21,6 +21,7 @@
  */
 import { createModels, contentText } from "@earendil-works/pi-ai";
 import { buildProvider, type ProviderBuildConfig } from "@shared/provider-factory";
+import type { ThinkingLevel } from "@shared/thinking-level";
 
 /** 分析器的输入：一次待判定的工具调用 */
 export interface AnalyzeInput {
@@ -37,6 +38,13 @@ export interface AnalyzeInput {
   modelId: string;
   /** provider 的 API key，由调用方从 secrets 取出后传入（本模块不碰密钥存储） */
   apiKey: string | undefined;
+  /**
+   * 思考等级。分析器**不走内核 harness**，不会自动继承会话的等级，必须显式带上——
+   * 否则这条请求会以「未设思考等级」的身份发出去，被 provider 兼容层翻译成
+   * 「显式关闭思考」（zai 协议必写 thinking.type=disabled），而这恰是一次**不带工具**的
+   * 请求，「始终思考」的模型会直接 400，自动放行就永远拿到不结论。
+   */
+  thinkingLevel: ThinkingLevel;
 }
 
 /** 分析结论 */
@@ -201,6 +209,8 @@ export async function analyzeToolCall(input: AnalyzeInput): Promise<AnalyzeResul
         signal: controller.signal,
         maxTokens: ANALYZE_MAX_TOKENS,
         temperature: 0,
+        // 低层 API 收的是 reasoningEffort（不是 harness 那层的 reasoning）
+        reasoningEffort: input.thinkingLevel,
       },
     );
 

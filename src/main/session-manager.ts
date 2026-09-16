@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
+import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
-import { getSession, setKernelSessionId, setSessionModel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
+import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
 import { computeNetChange } from "./net-change";
 import { ApprovalStore, DEFAULT_TIMEOUT_MS } from "./approval/store";
 import { getAnalyzeCommandAllowlist } from "./approval/config";
@@ -209,6 +210,9 @@ export class SessionManager {
       },
       modelId: entry.modelId,
       apiKey,
+      // 分析器不走内核，必须显式带上等级：否则这条不带工具的请求会以「关闭思考」发出，
+      // 被「始终思考」的模型 400 掉，自动放行永远是兜底拒绝
+      thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
     });
 
     // 分析期间 worker 可能已被回收/替换，回给已死的进程毫无意义
@@ -571,6 +575,13 @@ export class SessionManager {
           }
           break;
         }
+        case "notice":
+          // worker 的非错误通知（如压缩完成）：与 error 同一条通路，但渲染层按提示而非错误呈现
+          this.#emit("session.notice", {
+            sessionId: options.sessionId,
+            message: message.message,
+          });
+          break;
         case "fileChange": {
           // 基线只在「本会话首次改动该文件」时随改动带来；落库按最早那份为准（见 recordFileBaseline）
           if (message.baseline !== undefined) {
@@ -733,6 +744,9 @@ export class SessionManager {
         models: options.provider.models,
       },
       model: options.model,
+      // 会话存值 → 默认值。**不能**让内核的默认（off）兜底：off 会被兼容层翻译成
+      // 「显式关闭思考」，对「始终思考」的模型必然 400（详见 shared/thinking-level.ts）
+      thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
     } satisfies WorkerCommand);
 
     await readyDeferred.promise;
@@ -867,6 +881,18 @@ export class SessionManager {
 
   compact(sessionId: string): void {
     this.#post(sessionId, { type: "compact" });
+  }
+
+  /**
+   * 切换会话思考等级：落库 + 在池中时下发。
+   *
+   * 比 `setModelOrReconnect` 简单一档：等级不需要模型服务真跑起来，也不影响「能否发消息」，
+   * 故 worker 不在池中时**不重建**——下次打开会话会带着新等级启动（同 setModel 的注释：重建
+   * 要几百毫秒且要密钥，而这件事根本不需要它）。
+   */
+  setThinkingLevel(sessionId: string, level: ThinkingLevel): void {
+    setSessionThinkingLevel(sessionId, level);
+    if (this.#workers.has(sessionId)) this.#post(sessionId, { type: "setThinkingLevel", level });
   }
 
   /**

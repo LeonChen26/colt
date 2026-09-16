@@ -33,6 +33,7 @@ import type {
   WorkerMessage,
 } from "@shared/worker-protocol";
 import { buildProvider } from "@shared/provider-factory";
+import type { ThinkingLevel } from "@shared/thinking-level";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 
 import { randomUUID } from "node:crypto";
@@ -57,6 +58,7 @@ import {
   contextUsedFromUsage,
   serializeArgs,
 } from "./lib/telemetry";
+import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
 
 const context: Context = BACKGROUND_CONTEXT;
 
@@ -189,6 +191,8 @@ function project(
     model: string;
     /** 当前模型是否支持图片输入（取自模型目录的 input 能力），决定界面能否发图 */
     imageInput: boolean;
+    /** 会话思考等级，供界面下拉回显 */
+    thinkingLevel: ThinkingLevel;
     fileChanges: ViewFileChange[];
     /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
     contextUsed: number;
@@ -283,6 +287,7 @@ function project(
     cwd: meta.cwd,
     model: meta.model,
     imageInput: meta.imageInput,
+    thinkingLevel: meta.thinkingLevel,
     messages,
     toolResults,
     fileChanges: meta.fileChanges,
@@ -336,6 +341,8 @@ interface WorkerState {
     cwd: string;
     model: string;
     imageInput: boolean;
+    /** 会话思考等级（投影到 view，供界面下拉回显） */
+    thinkingLevel: ThinkingLevel;
     fileChanges: ViewFileChange[];
     contextUsed: number;
   };
@@ -363,7 +370,13 @@ function scheduleFlush(): void {
 }
 
 async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<void> {
-  const { cwd, sessionsRoot, model: modelId, provider: providerConfig } = command;
+  const {
+    cwd,
+    sessionsRoot,
+    model: modelId,
+    provider: providerConfig,
+    thinkingLevel,
+  } = command;
 
   const models = createModels();
   models.setProvider(buildProvider(providerConfig));
@@ -389,6 +402,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       ],
       toolContext: { env: executionEnv },
       systemPrompt: systemPrompt(cwd),
+      // 只对**新建 lane** 生效；已存在的会话沿用自己持久化的值，
+      // 故下面还有一步显式下发（见 lane 拿到之后的注释）
+      thinkingLevel,
     },
     context,
   );
@@ -536,6 +552,15 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   if ((await lane.getModel(context)) === undefined) {
     await lane.setModel({ provider: providerConfig.id, modelId }, context);
   }
+
+  // 思考等级同理，但**不能**只靠 create 的种子：内核只在新 lane 时套用种子，
+  // 已有会话会原样采纳自己持久化的值。老会话存的 off 是当年的默认值（谁都没选过），
+  // 而 off 会被 provider 兼容层翻译成「显式关闭思考」（zai 协议必写 thinking.type=disabled），
+  // 「始终思考」的模型见到就直接 400——压缩、审批分析器这类**不带工具**的请求会整条失效。
+  // 仅在确有差异时写：setThinkingLevel 不做等值短路，无条件调用会让每次开会话都多一条配置事件。
+  if ((await lane.getThinkingLevel(context)) !== thinkingLevel) {
+    await lane.setThinkingLevel(thinkingLevel, context);
+  }
   const watch = await lane.watch(context);
   // 投影一律使用 Colt 的会话 ID，渲染层才能正确匹配
   // fileChanges 始终为空——主进程会用数据库中的完整列表覆盖它
@@ -545,6 +570,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     model: `${providerConfig.id}/${modelId}`,
     // 模型目录声明的输入能力；纯文本模型（如 deepseek-v4-flash）不含 "image"
     imageInput: model.input?.includes("image") ?? false,
+    thinkingLevel,
     fileChanges: [] as ViewFileChange[],
     // 进程内初值为 0；首个 usage 事件到达后修正，切会话/重启时由主进程用 DB 覆盖
     contextUsed: 0,
@@ -596,6 +622,18 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       }
     })();
   }
+}
+
+/** 压缩完成提示：带上「压缩前多少 tokens」，用户才看得出压缩干了多少活 */
+function compactDoneMessage(snapshot: LaneSnapshot): string {
+  const head = snapshot.transcript[0] as { type?: string; tokensBefore?: number } | undefined;
+  const before =
+    head?.type === "compaction" && typeof head.tokensBefore === "number" && head.tokensBefore > 0
+      ? head.tokensBefore
+      : null;
+  if (before === null) return "上下文已压缩：较早的对话已替换为摘要。";
+  const label = before >= 1000 ? `${Math.round(before / 100) / 10}k` : `${before}`;
+  return `上下文已压缩：较早的对话已替换为摘要（压缩前约 ${label} tokens）。`;
 }
 
 async function handle(command: WorkerCommand): Promise<void> {
@@ -669,12 +707,33 @@ async function handle(command: WorkerCommand): Promise<void> {
       return;
     }
 
+    case "setThinkingLevel": {
+      if (!state) throw new Error("会话尚未初始化");
+      await state.lane.setThinkingLevel(command.level, context);
+      state.meta.thinkingLevel = command.level;
+      send({ type: "view", view: project(state.snapshot, state.meta) });
+      return;
+    }
+
     case "compact": {
       if (!state) throw new Error("会话尚未初始化");
-      await state.lane.compact(undefined, context);
+      // 内核压缩的失败有**两条**路径，缺一不可查：
+      // ① accept 阶段被拒 → Result.err（NothingToCompact / LaneBusy / Closed）；
+      // ② 运行后失败 → Result.ok 但 record.status 为 aborted / failed（摘要请求失败走这里，
+      //    恰是最常见的失败：密钥 / 网络 / 模型错误都发生在这一次真实模型请求上）。
+      const result = await state.lane.compact(undefined, context);
+      if (!result.ok) {
+        send({ type: "error", message: describeCompactError(result.error), fatal: false });
+        return;
+      }
+      if (result.value.compaction.status !== "completed") {
+        send({ type: "error", message: describeCompactOutcome(result.value.compaction), fatal: false });
+        return;
+      }
       // 压缩重写了 transcript，增量事件不足以重建，必须重新取快照
       state.snapshot = await state.resnapshot();
       send({ type: "view", view: project(state.snapshot, state.meta) });
+      send({ type: "notice", message: compactDoneMessage(state.snapshot) });
       return;
     }
 

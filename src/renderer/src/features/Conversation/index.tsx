@@ -23,6 +23,12 @@ import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
 import { displayModelRef, resolveSessionModel, splitModelRef } from "@shared/model-ref";
+import {
+  DEFAULT_THINKING_LEVEL,
+  THINKING_LEVELS,
+  isThinkingLevel,
+  type ThinkingLevel,
+} from "@shared/thinking-level";
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand } from "../../lib/slash-command";
@@ -86,23 +92,45 @@ function formatTokens(value: number): string {
   return String(value);
 }
 
+/** 思考等级的下拉文案。等级由内核定义（见 shared/thinking-level.ts），这里只负责措辞 */
+const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
+  off: "不思考",
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
+/** 「不思考」要写明风险：「始终思考」的模型会直接拒绝它，连带压缩与自动放行一起失败 */
+const THINKING_LEVEL_HINTS: Record<ThinkingLevel, string> = {
+  off: "最快，但「始终思考」的模型不支持，会让压缩与自动放行失败",
+  low: "少量思考",
+  medium: "中等思考",
+  high: "最多思考（默认）",
+};
+
 export function Conversation({
   sessionId,
   cwd,
   sessionModelRef,
+  sessionThinkingLevel,
   providers,
   onModelSelected,
+  onThinkingLevelSelected,
 }: {
   sessionId: string;
   cwd: string;
   /** 会话上次选定的模型（"providerId/modelId"，未选过为 null），用于判断本次能否自动打开 */
   sessionModelRef: string | null;
+  /** 会话上次选定的思考等级（未选过为 null，按默认值回显） */
+  sessionThinkingLevel: ThinkingLevel | null;
   providers: ProviderConfig[];
   /**
    * 模型选择已落库。父组件需据此刷新会话的 model_ref——否则切走再回来（重挂载）
    * 会退回旧值，用户又看到「选了没生效」。
    */
   onModelSelected?: (modelRef: string) => void;
+  /** 思考等级已落库，同 onModelSelected：父组件要刷新缓存，否则重挂载会退回旧值 */
+  onThinkingLevelSelected?: (level: ThinkingLevel) => void;
 }): React.JSX.Element {
   const [view, setView] = useState<ConversationView | null>(null);
   const [input, setInput] = useState("");
@@ -114,6 +142,11 @@ export function Conversation({
    * 全塞进红色错误框，会让正常的第一步操作看上去像出了事故。
    */
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * 压缩完成的瞬时提示（绿色，几秒后自动消失）。
+   * 与黄条语义不同：黄条是「还差一步」的待办，会一直挂着；成功提示挂久了反而像没消失的异常。
+   */
+  const [compactNotice, setCompactNotice] = useState<string | null>(null);
   const [opening, setOpening] = useState(true);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [mode, setMode] = useState<ApprovalMode>("auto");
@@ -415,6 +448,7 @@ export function Conversation({
     setOpening(true);
     setError(null);
     setNotice(null);
+    setCompactNotice(null);
     setApprovals([]);
 
     const offView = window.colt.on("session.view", (next) => {
@@ -423,6 +457,15 @@ export function Conversation({
     });
     const offError = window.colt.on("session.error", (payload) => {
       if (!disposed && payload.sessionId === sessionId) setError(payload.message);
+    });
+    // 压缩完成由 worker 在**真的压缩完**后推来（invoke 提前返回的是「已入队」，不可作数）。
+    // 提示是瞬时的：几秒后自动消失，不占用黄条的位置。
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    const offNotice = window.colt.on("session.notice", (payload) => {
+      if (disposed || payload.sessionId !== sessionId) return;
+      setCompactNotice(payload.message);
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => setCompactNotice(null), 5000);
     });
     const offApproval = window.colt.on("approval.pending", (payload) => {
       if (disposed || payload.sessionId !== sessionId) return;
@@ -471,8 +514,10 @@ export function Conversation({
 
     return () => {
       disposed = true;
+      clearTimeout(noticeTimer);
       offView();
       offError();
+      offNotice();
       offApproval();
       // 卸载时释放该会话的 worker。运行中会被主进程拒绝，交给空闲回收兼顾；
       // 重新打开时靠 JSONL 重放恢复，代价仅是一次启动延迟。
@@ -658,6 +703,23 @@ export function Conversation({
     [sessionId, cwd, providers, onModelSelected],
   );
 
+  const switchThinkingLevel = useCallback(
+    async (value: string) => {
+      if (!isThinkingLevel(value)) return;
+      setError(null);
+      setNotice(null);
+      try {
+        await window.colt.invoke("session.setThinkingLevel", { sessionId, level: value, cwd });
+        // 同 switchModel：可能压根没有 worker（会话未打开 / 已空闲回收），view 永远不会更新，
+        // 不回写父组件缓存的话，切走再回来就会显示回旧等级。
+        onThinkingLevelSelected?.(value);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [sessionId, cwd, onThinkingLevelSelected],
+  );
+
   const switchMode = useCallback(
     async (next: ApprovalMode) => {
       setError(null);
@@ -702,6 +764,16 @@ export function Conversation({
         provider.requiresKey && !provider.hasKey ? `${model.name}（未配置密钥）` : model.name,
     })),
   );
+  // 思考等级：worker 在就以它的投影为准（运行时切换会立刻回推），否则认会话上落库的值，
+  // 都没有才回落到默认值。**默认值不能是 off**——off 会被 provider 兼容层翻译成
+  // 「显式关闭思考」，对「始终思考」的模型会让压缩 / 审批这类无工具请求直接失败。
+  const currentThinkingLevel: ThinkingLevel =
+    view?.thinkingLevel ?? sessionThinkingLevel ?? DEFAULT_THINKING_LEVEL;
+  const thinkingLevelOptions = THINKING_LEVELS.map((level) => ({
+    value: level,
+    label: THINKING_LEVEL_LABELS[level],
+    hint: THINKING_LEVEL_HINTS[level],
+  }));
   // 会话头上显示的文案直接取「当前选中项」的标签，与下拉选项**同源**：
   // 两处各算一遍必然漂移（冒烟实测过：选项写着「（未配置密钥）」，选中后抬头却把标记
   // 丢了——那等于选完就不再提醒这个服务还没配密钥）。选项里找不到时（provider 被删、
@@ -845,6 +917,15 @@ export function Conversation({
               className="mb-3 rounded-[8px] border border-warning/50 bg-warning-soft px-3 py-2 text-[12.5px] text-warning"
             >
               {notice}
+            </div>
+          )}
+
+          {compactNotice && (
+            <div
+              data-conv-compact-notice
+              className="mb-3 rounded-[8px] border border-success/50 bg-success-soft px-3 py-2 text-[12.5px] text-success-fg"
+            >
+              {compactNotice}
             </div>
           )}
 
@@ -1088,6 +1169,15 @@ export function Conversation({
               <span className="cpush flex-1" />
 
               <div className="cright flex shrink-0 items-center gap-2">
+                <Picker
+                  title="思考等级：越高越能想、越低越快越省。默认「高」"
+                  value={currentThinkingLevel}
+                  label={THINKING_LEVEL_LABELS[currentThinkingLevel]}
+                  options={thinkingLevelOptions}
+                  plain
+                  className="thinking"
+                  onChange={(value) => void switchThinkingLevel(value)}
+                />
                 <Picker
                   title={
                     modelOptions.length > 0

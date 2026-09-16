@@ -16,6 +16,7 @@ import { ICON } from "@/lib/icon";
 import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } from "@shared/protocol";
+import type { ThinkingLevel } from "@shared/thinking-level";
 import { BranchTree } from "./features/BranchTree";
 import { Conversation } from "./features/Conversation";
 import { FirstRunGate } from "./features/FirstRunGate";
@@ -181,26 +182,50 @@ export default function App(): React.JSX.Element {
   }, []);
 
   /**
+   * 把某个会话的字段就地写回本地缓存（会话列表 + 当前会话）。
+   *
+   * 「选择已落库」的接口（模型、思考等级）都可能发生在**没有 worker** 的会话上：
+   * 那时 view 永远不会更新，不回写缓存的话，切走再回来（Conversation 以 sessionId 重挂载）
+   * 就会退回旧值，用户再次看到「选了没生效」。
+   */
+  const updateSessionCache = useCallback(
+    (sessionId: string, patch: (item: SessionInfo) => SessionInfo) => {
+      setSessionsByProject((map) => {
+        const next = new Map(map);
+        for (const [projectId, list] of next) {
+          if (!list.some((item) => item.id === sessionId)) continue;
+          next.set(
+            projectId,
+            list.map((item) => (item.id === sessionId ? patch(item) : item)),
+          );
+          break;
+        }
+        return next;
+      });
+      setActiveSession((current) => (current?.id === sessionId ? patch(current) : current));
+    },
+    [],
+  );
+
+  /**
    * 会话模型选择已落库后同步本地缓存，让 `sessionModelRef` 立刻反映新值。
    *
    * 不做这一步，切走再回来（Conversation 以 sessionId 为 key 重挂载）会退回旧值；
    * 而这类会话常常**没有 worker**，`view.model` 也补不上，用户会再次看到「选了没生效」。
    */
   const applySessionModel = useCallback((sessionId: string, modelRef: string) => {
-    setSessionsByProject((map) => {
-      const next = new Map(map);
-      for (const [projectId, list] of next) {
-        if (!list.some((item) => item.id === sessionId)) continue;
-        next.set(
-          projectId,
-          list.map((item) => (item.id === sessionId ? { ...item, modelRef } : item)),
-        );
-        break;
-      }
-      return next;
-    });
-    setActiveSession((current) => (current?.id === sessionId ? { ...current, modelRef } : current));
-  }, []);
+    updateSessionCache(sessionId, (item) => ({ ...item, modelRef }));
+  }, [updateSessionCache]);
+
+  /**
+   * 思考等级同理：它同样可能「只落库、没有 worker」，不回写缓存就会在重挂载后退回旧值。
+   */
+  const applySessionThinkingLevel = useCallback(
+    (sessionId: string, thinkingLevel: ThinkingLevel) => {
+      updateSessionCache(sessionId, (item) => ({ ...item, thinkingLevel }));
+    },
+    [updateSessionCache],
+  );
 
   // 切换项目时：展开该项目并拉取其会话
   useEffect(() => {
@@ -485,8 +510,12 @@ export default function App(): React.JSX.Element {
                 sessionId={activeSession.id}
                 cwd={activeProject.rootPath}
                 sessionModelRef={activeSession.modelRef}
+                sessionThinkingLevel={activeSession.thinkingLevel}
                 providers={providers}
                 onModelSelected={(modelRef) => applySessionModel(activeSession.id, modelRef)}
+                onThinkingLevelSelected={(level) =>
+                  applySessionThinkingLevel(activeSession.id, level)
+                }
               />
             ) : (
               <div className="flex h-full items-center justify-center">

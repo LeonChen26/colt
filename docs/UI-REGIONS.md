@@ -828,4 +828,54 @@
 （见 `NEXT-PHASE` §5 的纪律），而这条支路的失败方式（着色抛错）已被 `console.error` 显性化：
 本轮 `dock` 全程无 `[RENDERER:error]`，即证明该支路真的执行且没抛。
 
+### v1.38 —— 思考等级成为**会话配置**（默认「高」），修掉「/compact 点了没反应」（2026-09）
+
+> 依据：用户反馈「/compact 不生效」，并追问「compact 不生效和模型是否支持 thinking 有什么关系」。
+
+**根因（经真实请求实测，不是推断）：那句「关闭思考」是我们自己发出去的。**
+- Colt 从不设置思考等级 → 内核 `harness.js` 的 `thinkingLevel: options.thinkingLevel ?? "off"`
+  兜底成 `off`；
+- pi-ai 的 zai 兼容层见到 `off` 会**显式**写 `thinking:{"type":"disabled"}`，而 GLM-5.3-flash 对
+  **不带工具**的请求直接 400；
+- 手动压缩恰好是一条**不带工具**的请求 → 摘要生成失败 → `summarization_failed`（`kind=compaction`）
+  → `/compact` 看起来「点了没反应」。主对话之所以一直正常，是因为它**带工具**，同一条
+  `thinking:disabled` 被接受——所以「模型不支持思考」不是原因，**模型恰恰是「始终思考」**。
+
+> 压缩算法本身是**内核自带**的（`pi-agent-core` 的 `harness/compaction/`）：切点、摘要、保留尾部
+> 都在内核里，Colt 只负责入口、参数装配、失败翻译与提示。这次错的是**我们给它的参数**。
+
+**① 默认值不能再是 `off`**（`shared/thinking-level.ts`）
+- 界面只开放 `off | low | medium | high` 四档：其余档对多数 provider 会被钳制到相邻档，放出来
+  只会让人以为选了 A 实跑 B；默认 `high`。
+- 库里是 `NULL`（字段新增、从未选过）或历史脏值时一律回落到默认值，不把脏值透传给内核。
+
+**② 存量会话必须显式覆盖**（`worker/entry.ts`）
+- 内核的 `thinkingLevel` 种子**只对新建 lane 生效**，已存在的会话会沿用自己持久化的值——而老会话
+  存着的是当年的 `off`（那时谁都没选过），正是 400 的源头。故打开会话时与内核当前值比对，
+  有差异才 `setThinkingLevel`。
+- 比对不是多余的：`setThinkingLevel` 不做等值短路，无条件调用会让每开一次会话都多一条配置事件。
+
+**③ 不走内核的两条请求也得带上**（否则会「修好压缩、坏了放行」）
+- **审批分析器**（`main/approval/analyzer.ts`）不走 harness，且同样**不带工具**——它一直在同一条
+  400 上静默降级成手动确认。注意低层 API 收的是 `reasoningEffort`，不是 harness 那层的 `reasoning`。
+- 会话级落库（`sessions.thinking_level`，迁移 v9）；**草稿会话**先记在草稿里，首次发消息落库时写出。
+
+**④ 让「压缩失败」不再无声无息**
+- 此前两条失败路径都不显眼：accept 阶段被拒走 `Result.err`，而摘要失败（最常见的密钥 / 网络 /
+  模型错误）被内核结算成 `ok: true` + `status: "failed"`——只查 `Result.err` 依旧静默。
+  现按 `_tag` / `code` / `status` 翻译成一句话（`worker/lib/compact-error.ts`），成功时给绿色横条
+  并带上「压缩前约 N tokens」（`data-conv-compact-notice`）。
+
+**⑤ 界面**：输入区 `/compact` 右侧、模型选择器左边加思考等级下拉；「不思考」保留但写明风险
+（「始终思考」的模型会拒绝它，连带压缩与自动放行一起失败）。
+
+**影响**：`/compact`、**自动压缩**（内核默认 `enabled: true, reserveTokens: 16384`，Colt 未覆盖）
+与审批分析器三条链路共用同一套参数装配，改一处同时影响三者；会话多一列 `thinking_level`（迁移 v9，
+旧库留 `NULL`）。
+
+验收：`typecheck` / `build` / 单测 **557** 条（556 通过、1 跳过；新增「思考等级」6 条 + 「压缩失败
+翻译」5 条 + 迁移 v9 1 条，后者断言存量会话为 `NULL` 而**不是** `off`）。**真实请求已实测**：同一
+payload 下 `thinking:disabled` + 无 tools → **400**，`reasoning: high`（→ `thinking:enabled`）+
+无 tools → **200**。
+
 - 修改本文档需记录：**改了什么区域、依据什么事实、影响哪些已有设计**。

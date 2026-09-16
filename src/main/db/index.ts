@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   preset_id TEXT,
   /** 会话选定模型，格式 "providerId/modelId"，未选时为 NULL */
   model_ref TEXT,
+  /** 会话思考等级（off/low/medium/high）。NULL = 从未选过，按当前默认（high）下发 */
+  thinking_level TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   message_count INTEGER NOT NULL DEFAULT 0,
@@ -148,7 +150,7 @@ CREATE TABLE IF NOT EXISTS settings (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 /** 判断某表是否存在：迁移要兼容「早期形态」的旧库，某些表可能还没建 */
 function hasTable(instance: DatabaseSync, table: string): boolean {
@@ -231,6 +233,14 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
       addColumnIfMissing(instance, "file_changes", "net_added_lines", "INTEGER");
       addColumnIfMissing(instance, "file_changes", "net_removed_lines", "INTEGER");
     },
+  },
+  {
+    // v9：会话思考等级。旧库留 NULL =「从未选过」，打开会话时按当前默认（high）下发。
+    // 早于本次升级的会话在内核里存的都是 off（那时的默认值，谁都没选过），
+    // 而 off 会被 provider 兼容层翻译成「显式关闭思考」，对「始终思考」的模型必然 400
+    // （压缩、审批分析器都因此失效），故不能再沿用内核对老会话的持久值。
+    version: 9,
+    up: (instance) => addColumnIfMissing(instance, "sessions", "thinking_level", "TEXT"),
   },
 ];
 
