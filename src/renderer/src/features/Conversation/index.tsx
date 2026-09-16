@@ -667,12 +667,33 @@ export function Conversation({
   const submit = useCallback(async () => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
-    // 斜杠命令：只认白名单（`/compact`），未知的 `/xxx` 回落成普通提问照常发出。
-    // 命令**不消耗附件**，也不清空输入——压缩失败时用户还能改一改再发。
+    // 斜杠命令：只认白名单（`/compact` / `/skill`），未知的 `/xxx` 回落成普通提问照常发出。
+    // 命令一律**被消费**（清空输入）、但**不消耗附件**（附件留给下一条消息）。
     const command = parseSlashCommand(text);
-    if (command) {
+    if (command?.name === "compact") {
       setInput("");
       await compact();
+      return;
+    }
+    if (command?.name === "skill") {
+      // 注意：**这里判断不了成败**。`invoke` 返回的是「已投递」，worker 的校验与失败
+      // 走 `session.error` 推送（见下面的事件订阅）——所以名字打错时，那半句额外指示会
+      // 跟着输入一起没掉。代价可接受：错误里会**列出可用技能名**，改一个字重敲即可。
+      // 想彻底避免这个损失，得让渲染层拿到技能清单（`ConversationView` 目前没有这个字段），
+      // 那样就能在本地先校验再决定清不清——那也正是将来做技能选择器要补的那一块。
+      setInput("");
+      setError(null);
+      try {
+        await window.colt.invoke("session.skill", {
+          sessionId,
+          name: command.skillName,
+          instructions: command.instructions,
+          // 主进程凭 cwd 在 worker 被空闲回收后自动重建会话进程
+          cwd,
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
       return;
     }
     // 纯文本模型下适配器会按 model.input 静默丢弃图片。这里直接拦下并说明，

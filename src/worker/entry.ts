@@ -60,7 +60,14 @@ import {
   serializeArgs,
 } from "./lib/telemetry";
 import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
-import { describeSkills, loadSkillsForSession, skillDirs } from "./lib/skills";
+import { describeSkillError, unknownSkillMessage } from "./lib/skill-error";
+import {
+  composeSystemPrompt,
+  describeSkills,
+  loadSkillsForSession,
+  skillDirs,
+  type LoadedSkills,
+} from "./lib/skills";
 
 const context: Context = BACKGROUND_CONTEXT;
 
@@ -336,6 +343,12 @@ interface WorkerState {
   models: ReturnType<typeof createModels>;
   providerId: string;
   snapshot: LaneSnapshot;
+  /**
+   * 本会话装载到的技能。`/skill <名字>` 按它**先自查一遍**再交给内核——
+   * 内核的 `UnknownSkill` 只带名字、不带候选，而技能名是用户自己在磁盘上定的，
+   * 打错时必须把可用名一起给出来（见 `lib/skill-error.ts`）。
+   */
+  skills: LoadedSkills["skills"];
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
   meta: {
@@ -390,8 +403,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const session = await openSession(repo, command.kernelSessionId, cwd);
 
   // 技能（Agent Skills，agentskills.io 标准）：项目级 `.agents/skills` 与用户级 `~/.agents/skills`
-  // 各扫一遍，装到的交给内核进系统提示词；同名时项目级胜出。
-  // **装了什么、跳过了什么如实报给用户**——技能来自磁盘且会进提示词，是一条隐式信任通道，
+  // 各扫一遍，同名时项目级胜出。装到的**走两条路**、缺一不可：
+  // ① `composeSystemPrompt` 把技能清单拼进系统提示词（**内核不会自己拼**，见 lib/skills.ts）；
+  // ② `resources.skills` 让内核能按名取出整份正文（`lane.skill`）。
+  // **装了什么、跳过了什么如实报给用户**——技能来自磁盘且会改模型行为，是一条隐式信任通道，
   // 不该悄悄发生（见 `docs/SECURITY.md`）。加载失败只记告警，不拦会话。
   const skills = await loadSkillsForSession(executionEnv, skillDirs(cwd, homedir()), context);
   const skillsNotice = describeSkills(skills);
@@ -412,7 +427,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createComputerTools(hostBridge),
       ],
       toolContext: { env: executionEnv },
-      systemPrompt: systemPrompt(cwd),
+      systemPrompt: composeSystemPrompt(systemPrompt(cwd), skills.skills),
       // 只对**新建 lane** 生效；已存在的会话沿用自己持久化的值，
       // 故下面还有一步显式下发（见 lane 拿到之后的注释）
       thinkingLevel,
@@ -595,6 +610,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     models,
     providerId: providerConfig.id,
     snapshot: watch.snapshot,
+    skills: skills.skills,
     resnapshot: () => watch.resnapshot(context),
     meta,
     unsubscribe: () => watch.unsubscribe(),
@@ -745,6 +761,34 @@ async function handle(command: WorkerCommand): Promise<void> {
       state.snapshot = await state.resnapshot();
       send({ type: "view", view: project(state.snapshot, state.meta) });
       send({ type: "notice", message: compactDoneMessage(state.snapshot) });
+      return;
+    }
+
+    case "skill": {
+      if (!state) throw new Error("会话尚未初始化");
+      // 先按**本会话装到的清单**自查一遍再交给内核：内核的 UnknownSkill 只带名字、不带候选，
+      // 而技能名是用户自己在磁盘上定的——打错时必须把可用名一起给出来，否则用户无从修正。
+      if (!state.skills.some((item) => item.name === command.name)) {
+        send({
+          type: "error",
+          message: unknownSkillMessage(
+            command.name,
+            state.skills.map((item) => item.name),
+          ),
+          fatal: false,
+        });
+        return;
+      }
+      const result = await state.lane.skill(command.name, command.instructions, context);
+      // 内核的技能调用失败**走 `Result.err` 而不是抛异常**，不查返回值就是「敲了没反应」。
+      // （对照 `case "prompt"` 不查：那一条的失败由 view 里的 `lastRun` 终态体现；
+      //   而 LaneBusy / Closed / UnknownSkill 只走这条路，不查就静默。）
+      if (!result.ok) {
+        send({ type: "error", message: describeSkillError(result.error), fatal: false });
+        return;
+      }
+      // 运行结束后补推一次终态（同 prompt）
+      send({ type: "view", view: project(state.snapshot, state.meta) });
       return;
     }
 

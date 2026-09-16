@@ -12,7 +12,7 @@
 - **模型可换**：内置 DeepSeek，也可接任意 OpenAI 兼容 endpoint（含本地服务）。
 - **全程本地**：密钥用 Electron `safeStorage` 加密后落盘，明文只在内存与 worker 进程环境变量里；会话数据存在本机 SQLite。
 - **能力有闸门**：写文件、跑命令、开浏览器、控制桌面都要过审批，可记住放行规则。
-- **技能可继承**：按 Agent Skills（agentskills.io）开放标准，从 `<项目>/.agents/skills`（项目级）与 `~/.agents/skills`（用户级）装载 `SKILL.md`，装到的进系统提示词；同名时**项目级胜出**，装了什么、跳过了什么都如实提示。技能是**声明式文本、不经审批闸门**——这条边界的理由见 `docs/SECURITY.md`。
+- **技能可继承**：按 Agent Skills（agentskills.io）开放标准，从 `<项目>/.agents/skills`（项目级）与 `~/.agents/skills`（用户级）装载 `SKILL.md`；同名时**项目级胜出**，装了什么、跳过了什么都如实提示。进系统提示词的是**清单**（名字 / 说明 / 文件位置），正文由模型按需去读那个文件，不占常驻上下文。技能在**新建会话**时装载。技能是**声明式文本、不经审批闸门**——这条边界的理由见 `docs/SECURITY.md`。
 
 ## 这不是什么
 
@@ -38,7 +38,7 @@ npm run dev
 |---|---|
 | `npm run dev` | 开发模式启动（electron-vite） |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test，当前 **569** 条：568 通过 / 1 跳过） |
+| `npm test` | 单测（node:test，当前 **584** 条：583 通过 / 1 跳过） |
 | `npm run build` | 类型检查 + 构建产物到 `out/` |
 | `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
 | `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
@@ -63,7 +63,7 @@ npm run dev
 |---|---|---|
 | `basic` | 主界面自检 | 仅日志 |
 | `fixture` | 浏览器能力本体 | **25** |
-| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / 等待授权 / 装不下提示 / 适应宽度） | **189** |
+| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / `/skill` / 等待授权 / 装不下提示 / 适应宽度） | **193** |
 | `model` | 模型解析与降级六段 | **34**（7/6/6/6/1/8） |
 | `host` | 宿主能力往返 | 7 |
 | `advanced` / `approval` / `reenter` / `crash` | 长会话 / 审批四场景 / 重入 / 崩溃恢复 | 仅日志 |

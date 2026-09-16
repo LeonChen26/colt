@@ -489,6 +489,23 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
+  handle("session.skill", async (request) => {
+    // 与 session.compact 同理：可能把 worker 拉起来，那就必须先有会话行，
+    // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上），下次打开会另起一份历史。
+    materializeDraft(request.sessionId);
+    if (request.cwd) {
+      await sessionManager.skillOrReconnect(
+        request.sessionId,
+        request.name,
+        request.instructions,
+        () => openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
+      );
+    } else {
+      sessionManager.skill(request.sessionId, request.name, request.instructions);
+    }
+    return { ok: true } as const;
+  });
+
   handle("session.branches", (request) => sessionManager.branches(request.sessionId));
 
   handle("session.navigate", (request) => {

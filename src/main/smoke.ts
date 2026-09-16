@@ -2922,10 +2922,74 @@ async function runDock(
     ]);
     log(`  /compact 打桩：compact=${compactCalls.length}，prompt=${promptCalls.length}`);
 
+    // ---- `/skill` 斜杠命令（显式调用技能）----
+    // 「技能」在内核里是**两条互不相干的通道**：模型能不能看见清单（靠应用自己把
+    // `formatSkillsForSystemPrompt` 拼进系统提示词），与 `resources.skills` 提供的
+    // 「按名显式调用」完全是两码事——详见 ARCHITECTURE §四。本条验的是**输入框能不能
+    // 把后者叫出来**，以及两个最容易出事的边界：
+    //   · 名字打错 → 仍必须走技能通道（由 worker 报错并列出可用名），**不能**静默吞掉、
+    //     也不能偷偷变成一句普通提问；
+    //   · 只写 `/skill`（没给名字）→ 必须回落成普通提问（防误吞，与 `/compact …` 那条对称）。
+    // 「错误文案里带不带可用技能名」由 tests/skill-error.test.ts 断言——纯字符串逻辑，
+    // 不必为它真拉一个 worker 进程起来（与上面 `/compact` 同理：打桩**只记账、不转发**）。
+    const skillCalls: { name: string; instructions: string | undefined }[] = [];
+    const realSkill = sessionManager.skill.bind(sessionManager);
+    const realSkillOrReconnect = sessionManager.skillOrReconnect.bind(sessionManager);
+    sessionManager.skill = (_id: string, name: string, instructions: string | undefined) => {
+      skillCalls.push({ name, instructions });
+    };
+    sessionManager.skillOrReconnect = async (
+      _id: string,
+      name: string,
+      instructions: string | undefined,
+    ) => {
+      skillCalls.push({ name, instructions });
+    };
+
+    // ① 名字打错：仍走技能通道（worker 会回可见报错），绝不是普通提问
+    compactCalls.length = 0;
+    promptCalls.length = 0;
+    skillCalls.length = 0;
+    await typeAndEnter("/skill no-such-skill-colt");
+    await sleep(400);
+    checks.push([
+      "敲 /skill <未知名> 回车 → 走的是技能通道（没被静默吞掉）",
+      skillCalls.some((call) => call.name === "no-such-skill-colt") && promptCalls.length === 0,
+    ]);
+    checks.push([
+      "/skill 的输入框被清空（已消费；失败可见，靠 worker 的报错）",
+      (await inputValue()) === "",
+    ]);
+
+    // ② 只写 `/skill`：不给名字就不算命令 → 回落成普通提问（防误吞）
+    skillCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/skill");
+    await sleep(400);
+    checks.push([
+      "裸 /skill（没给名字）回落成普通提问，不被吞掉",
+      skillCalls.length === 0 && promptCalls.some((text) => text === "/skill"),
+    ]);
+
+    // ③ 技能名之后的额外指示要**原样**带过去（这条走的是渲染层 → IPC → 主进程整条链路）
+    skillCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/skill no-such-skill-colt 只改这一处");
+    await sleep(400);
+    checks.push([
+      "技能名之后的额外指示随调用一起送达",
+      skillCalls.some(
+        (call) => call.name === "no-such-skill-colt" && call.instructions === "只改这一处",
+      ) && promptCalls.length === 0,
+    ]);
+    log(`  /skill 打桩：skill=${skillCalls.length}，prompt=${promptCalls.length}`);
+
     // 复原打桩，避免影响后续断言（dock 到此也接近尾声）
     sessionManager.compact = realCompact;
     sessionManager.compactOrReconnect = realCompactOrReconnect;
     sessionManager.promptOrReconnect = realPromptOrReconnect;
+    sessionManager.skill = realSkill;
+    sessionManager.skillOrReconnect = realSkillOrReconnect;
 
     // ---- ①「等待授权」必须被看见（v1.39）----
     // 「等待授权」是本产品唯一需要用户**立刻拍板**的状态，且有 5 分钟超时；

@@ -183,6 +183,12 @@ export type WorkerCommand =
   | { type: "setModel"; provider: ProviderBuildConfig; modelId: string }
   | { type: "setThinkingLevel"; level: ThinkingLevel }
   | { type: "compact" }
+  /**
+   * 显式调用一个技能：内核按名从 `resources.skills` 取出**整份正文**，作为一条 user 消息发出
+   * （不只是提示词里那份清单）。名字不存在时**不回落**成普通提问——worker 回一条可见报错并
+   * 列出可用名：技能名是用户在磁盘上自己定的，打错时必须给回正确写法（见 `lib/skill-error.ts`）。
+   */
+  | { type: "skill"; name: string; instructions?: string }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
   /**

@@ -7,9 +7,22 @@
  *
  * 目录：项目级 `<cwd>/.agents/skills` 在前、用户级 `~/.agents/skills` 在后，
  * 同名时**项目级胜出**（标准里的优先级就是这么定的），被遮蔽的名字如实报出来。
+ *
+ * 内核的机制是**两套、缺一不可**：
+ * 1. 让模型**看见**——`formatSkillsForSystemPrompt` 生成 `<available_skills>` 块，
+ *    **内核只提供这个函数、不会自己调用**，得由应用拼进自己的系统提示词（见 `composeSystemPrompt`）；
+ * 2. 让应用**按名调用**——把 skills 放进 `resources.skills`，内核在 `lane.skill(name, …)`
+ *    时按名取出整份正文。只做第 2 条的话模型不知道技能存在，整个接入是空转。
  */
 import { join } from "node:path";
-import { loadSkills, type Context, type ExecutionEnv, type Skill, type SkillDiagnostic } from "@earendil-works/pi-agent-core";
+import {
+  formatSkillsForSystemPrompt,
+  loadSkills,
+  type Context,
+  type ExecutionEnv,
+  type Skill,
+  type SkillDiagnostic,
+} from "@earendil-works/pi-agent-core";
 
 /** 技能目录（**项目级在前**，同名时它胜出） */
 export function skillDirs(cwd: string, home: string): string[] {
@@ -97,8 +110,25 @@ export async function loadSkillsForSession(
   return { skills, shadowed, diagnostics, counts: groups.map((group) => group.length) };
 }
 
+/**
+ * 把技能的 `<available_skills>` 块拼到基础提示词后面。
+ *
+ * **这一步不能省**：内核只提供 `formatSkillsForSystemPrompt`，自己**从不调用**它
+ * （`resources.skills` 在内核里只被「按名显式调用」用到）。不拼的话模型收不到技能清单，
+ * 技能就等于没装——而且**失败是静默的**：装载、告警、计数全都正常，只有模型不知道。
+ *
+ * 块里**不含** `disableModelInvocation` 的技能（内核过滤），所以「已加载」不等于「模型看得见」。
+ */
+export function composeSystemPrompt(base: string, skills: Skill[]): string {
+  const block = formatSkillsForSystemPrompt(skills);
+  return block.length === 0 ? base : `${base}\n\n${block}`;
+}
+
 /** 告警最多列几条——列满屏就不是提示了，超出部分只报个数 */
 export const MAX_NOTICE_DIAGNOSTICS = 3;
+
+/** 通知里最多列几个技能名（列不下就只说个数） */
+export const MAX_NOTICE_SKILL_NAMES = 8;
 
 /**
  * 组装一条如实的提示；**没什么可说时返回 null**，不制造噪音。
@@ -111,7 +141,24 @@ export function describeSkills(loaded: LoadedSkills): string | null {
   const project = loaded.counts[0] ?? 0;
   const elsewhere = loaded.skills.length - project;
   if (loaded.skills.length > 0) {
-    parts.push(`已加载 ${loaded.skills.length} 个技能（项目级 ${project} · 用户级 ${elsewhere}）`);
+    // **顺带把命令教给用户**：`/skill` 没有任何界面入口（见 NEXT-PHASE 的 D3），
+    // 不在这里报出名字与用法，用户就永远不知道技能能调、也不知道有哪些名字。
+    // 这条通知只在**真装了技能**时才出现，所以不会变成噪音。
+    const names = loaded.skills.slice(0, MAX_NOTICE_SKILL_NAMES).map((item) => item.name);
+    const truncated = loaded.skills.length - names.length;
+    parts.push(
+      `已加载 ${loaded.skills.length} 个技能（项目级 ${project} · 用户级 ${elsewhere}）：` +
+        `${names.join("、")}${truncated > 0 ? " 等" : ""}——用 /skill <名字> 调用`,
+    );
+    // `disableModelInvocation` 的技能**不进**给模型看的清单（内核过滤）——它**不是坏了**，
+    // 只是不让模型自己挑，得用户用 `/skill <名字>` 显式调。必须说清是哪一种，
+    // 否则用户看到「已加载」却怎么都不触发，会以为技能是坏的。
+    const hidden = loaded.skills.filter((skill) => skill.disableModelInvocation === true).length;
+    if (hidden > 0) {
+      parts.push(
+        `其中 ${hidden} 个不对模型公开（disable-model-invocation）：模型不会自己用，需 /skill <名字> 显式调用`,
+      );
+    }
   }
   if (loaded.shadowed.length > 0) {
     parts.push(`项目级覆盖了同名用户级技能：${loaded.shadowed.join("、")}`);

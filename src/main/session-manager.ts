@@ -974,6 +974,11 @@ export class SessionManager {
     this.#post(sessionId, { type: "compact" });
   }
 
+  /** 显式调用技能；不带 cwd 时无法自愈重建（带 cwd 的路径见 `skillOrReconnect`） */
+  skill(sessionId: string, name: string, instructions: string | undefined): void {
+    this.#post(sessionId, { type: "skill", name, instructions });
+  }
+
   /**
    * 切换会话思考等级：落库 + 在池中时下发。
    *
@@ -1000,6 +1005,27 @@ export class SessionManager {
     const entry = this.#workers.get(sessionId);
     if (!entry) throw new Error(`会话未运行：${sessionId}`);
     this.#post(sessionId, { type: "compact" });
+  }
+
+  /**
+   * 显式调用一个技能；worker 已被空闲回收时先重建再投递（同 `compactOrReconnect`）。
+   *
+   * **刻意不做 `promptOrReconnect` 那样的 steer 回落**：运行中把一句话当插话送进去是自洽的，
+   * 但把一次技能调用偷偷降级成一句话会改变它的语义（用户以为调了技能，实际只是说了句话）。
+   * 恒发 `skill`，运行中由内核返回 `LaneBusy` → worker 回可见报错。
+   */
+  async skillOrReconnect(
+    sessionId: string,
+    name: string,
+    instructions: string | undefined,
+    recover: () => Promise<void>,
+  ): Promise<void> {
+    if (!this.#workers.has(sessionId)) {
+      await recover();
+    }
+    const entry = this.#workers.get(sessionId);
+    if (!entry) throw new Error(`会话未运行：${sessionId}`);
+    this.#post(sessionId, { type: "skill", name, instructions });
   }
 
   navigate(sessionId: string, targetId: string): void {

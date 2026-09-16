@@ -251,6 +251,7 @@ export const IPC_CHANNELS = [
   "session.setThinkingLevel",
   "session.steer",
   "session.compact",
+  "session.skill",
   "approval.list",
   "approval.resolve",
   "approval.mode.get",
@@ -514,6 +515,16 @@ export interface IpcInvokeMap {
   /** 手动触发上下文压缩。带 cwd 时在被空闲回收后自动重建会话进程（同 session.prompt） */
   "session.compact": {
     request: { sessionId: string; cwd?: string };
+    response: { ok: true };
+  };
+  /**
+   * 显式调用一个技能（输入框的 `/skill <名字> [额外指示]`）。
+   *
+   * 与 `session.prompt` 的区别：**运行中不转成 `steer`**。插话对「用户说了一句话」是自洽的，
+   * 但把一次技能调用偷偷变成一句话就变味了——由内核返回 `LaneBusy` 并给可见报错。
+   */
+  "session.skill": {
+    request: { sessionId: string; name: string; instructions?: string; cwd?: string };
     response: { ok: true };
   };
   /** 分支树 */

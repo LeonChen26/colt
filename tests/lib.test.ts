@@ -797,19 +797,60 @@ describe("观测条目详情（N1）", () => {
   });
 });
 
-/** 输入框的斜杠命令识别（`/compact`）。判错方向的代价不对称：漏认只是「原样发出去」。 */
+/** 输入框的斜杠命令识别（`/compact` / `/skill`）。判错方向的代价不对称：漏认只是「原样发出去」。 */
 describe("parseSlashCommand", () => {
   test("认下 /compact 及其前后空白与大小写", () => {
-    assert.equal(parseSlashCommand("/compact"), "compact");
-    assert.equal(parseSlashCommand("  /compact  "), "compact");
-    assert.equal(parseSlashCommand("/compact\n"), "compact");
-    assert.equal(parseSlashCommand("/COMPACT"), "compact");
+    assert.deepEqual(parseSlashCommand("/compact"), { name: "compact" });
+    assert.deepEqual(parseSlashCommand("  /compact  "), { name: "compact" });
+    assert.deepEqual(parseSlashCommand("/compact\n"), { name: "compact" });
+    assert.deepEqual(parseSlashCommand("/COMPACT"), { name: "compact" });
+    assert.deepEqual(parseSlashCommand("/Compact"), { name: "compact" });
   });
 
-  test("命令必须独占整条输入：后面带正文不算命令", () => {
+  test("零参数命令必须独占整条输入：后面带正文不算命令", () => {
     // 否则「用 /compact 手动压缩」这句会被当成命令吞掉，用户根本发不出去
     assert.equal(parseSlashCommand("/compact 一下"), null);
     assert.equal(parseSlashCommand("/compact please"), null);
+  });
+
+  test("/skill 带参数：名字与额外指示分开，内部空白原样保留", () => {
+    assert.deepEqual(parseSlashCommand("/skill pdf"), {
+      name: "skill",
+      skillName: "pdf",
+      instructions: undefined,
+    });
+    assert.deepEqual(parseSlashCommand("/skill pdf 帮我看第 3 页"), {
+      name: "skill",
+      skillName: "pdf",
+      instructions: "帮我看第 3 页",
+    });
+    assert.deepEqual(parseSlashCommand("  /skill   pdf   多  空格  "), {
+      name: "skill",
+      skillName: "pdf",
+      instructions: "多  空格",
+    });
+  });
+
+  test("/skill 的两道阀：命令字整段相等 + 必须真有一个名字", () => {
+    // 命令字不分大小写；**技能名原样传**——内核按精确名查找，替用户转小写等于偷偷改输入，
+    // 而打错大小写时那条报错会直接给出正确写法（自纠比猜意图稳）。
+    assert.deepEqual(parseSlashCommand("/SKILL pdf"), {
+      name: "skill",
+      skillName: "pdf",
+      instructions: undefined,
+    });
+    assert.deepEqual(parseSlashCommand("/skill PDF"), {
+      name: "skill",
+      skillName: "PDF",
+      instructions: undefined,
+    });
+    // 裸命令没有名字 → 放行（宁可原样发出去，也不猜）
+    assert.equal(parseSlashCommand("/skill"), null);
+    assert.equal(parseSlashCommand("/skill   "), null);
+    // 命令字必须**整段**等于 skill：别把 /skills / /skillfoo 认成命令
+    assert.equal(parseSlashCommand("/skills"), null);
+    assert.equal(parseSlashCommand("/skillfoo"), null);
+    assert.equal(parseSlashCommand("/skill/extra"), null);
   });
 
   test("未知命令一律回落成普通提问（宁可原样发出，不静默丢失）", () => {

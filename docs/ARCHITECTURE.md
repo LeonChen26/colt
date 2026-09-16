@@ -70,7 +70,7 @@
 
 | 契约 | 真源 | 强制方式 |
 |---|---|---|
-| 渲染层 → 主进程 | `src/shared/protocol.ts` 的 `IPC_CHANNELS`（47 条）+ `IpcInvokeMap`（类型） | 两者的**双向编译期断言**；`preload` 的白名单同源 |
+| 渲染层 → 主进程 | `src/shared/protocol.ts` 的 `IPC_CHANNELS`（48 条）+ `IpcInvokeMap`（类型） | 两者的**双向编译期断言**；`preload` 的白名单同源 |
 | 主进程 → 渲染层（推送） | 同文件的 `IPC_EVENTS`（7 条）+ `IpcEventMap` | 同上 |
 | main ↔ worker | `src/shared/worker-protocol.ts` 的 `WorkerCommand`（14 个）/ `WorkerMessage`（12 个）/ `ConversationView` | 类型联合 + 穷尽 switch |
 | 只读工具名单 | `src/shared/readonly-tools.ts`（**唯一真源**） | 被审批策略与「未经闸门即执行」告警共同消费——两份漂移会**要么刷假告警、要么遮蔽真漏报** |
@@ -118,9 +118,9 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 1. 读 pi 的 release notes，先列出改了什么。
 2. 改 `package.json` 的 pin（两个 pi 包 + `typebox`，理由见本节末）。
-3. `npm install` → `npm run typecheck` → `npm test`（569）→ `npm run build`。
+3. `npm install` → `npm run typecheck` → `npm test`（584）→ `npm run build`。
    **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
-4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（189）。
+4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（193）。
 5. **逐项核对「我们用过的内核字段」**：`LaneSnapshot.lastResult`（`status` / `kind`）、会话条目的 `seq`、
    `thinkingLevel`、`Usage` 各字段、`JsonlSessionMetadata`。
 6. 单独一个提交，消息里写明升到哪个版本、改了什么。
@@ -135,7 +135,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 | 内核已提供 | 我们的状态 |
 |---|---|
-| `loadSkills`（递归找 `SKILL.md` + frontmatter + ignore 规则 + 诊断） | **已接**——`worker/lib/skills.ts` 扫 `.agents/skills`（项目级）与 `~/.agents/skills`（用户级），装到的交给 `AgentHarnessOptions.resources.skills` 进系统提示词；同名项目级胜出，装载情况走 `notice` 如实告知（信任口径见 `docs/SECURITY.md`） |
+| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 扫 `.agents/skills`（项目级）与 `~/.agents/skills`（用户级），同名项目级胜出，装载情况走 `notice` 如实告知（信任口径见 `docs/SECURITY.md`）。**内核这里是两套机制、缺一不可**：`resources.skills` 只管「按名显式调用」（`lane.skill`，界面入口是输入框的 `/skill <名字>`，v1.42），让模型**看见**必须由应用把 `formatSkillsForSystemPrompt` 拼进系统提示词——**内核只导出这个函数、自己从不调用**，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住 |
 | `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
 | 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
 | 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |
