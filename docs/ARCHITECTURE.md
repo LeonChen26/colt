@@ -70,9 +70,12 @@
 
 | 契约 | 真源 | 强制方式 |
 |---|---|---|
-| 渲染层 → 主进程 | `src/shared/protocol.ts` 的 `IPC_CHANNELS`（48 条）+ `IpcInvokeMap`（类型） | 两者的**双向编译期断言**；`preload` 的白名单同源 |
-| 主进程 → 渲染层（推送） | 同文件的 `IPC_EVENTS`（7 条）+ `IpcEventMap` | 同上 |
-| main ↔ worker | `src/shared/worker-protocol.ts` 的 `WorkerCommand`（14 个）/ `WorkerMessage`（12 个）/ `ConversationView` | 类型联合 + 穷尽 switch |
+| 渲染层 → 主进程 | `src/shared/protocol.ts` 的 `IPC_CHANNELS` + `IpcInvokeMap`（类型） | 两者的**双向编译期断言**；`preload` 的白名单同源；**注册 ↔ 声明的双向相等**由 `tests/contract.test.ts` 守卫 |
+| 主进程 → 渲染层（推送） | 同文件的 `IPC_EVENTS` + `IpcEventMap` | 同上；**发送点 ↔ 声明的双向相等**同上 |
+| main ↔ worker | `src/shared/worker-protocol.ts` 的 `WorkerCommand` / `WorkerMessage` / `ConversationView` | 类型联合 + 穷尽 switch |
+
+> **不要再在文档里写「N 条 / N 个」**：这类数字会随增删漂移，而漂移没有守卫能发现（2026-09 实测：文档写 48、实际 49；删 3 个死通道后又变成 46）。
+> 要看条数就跑测试或读真源。
 | 只读工具名单 | `src/shared/readonly-tools.ts`（**唯一真源**） | 被审批策略与「未经闸门即执行」告警共同消费——两份漂移会**要么刷假告警、要么遮蔽真漏报** |
 
 **这条纪律的价值**：加一个通道时，编译器会替你找出所有没改的地方。所以**不要绕过它**——不要在渲染层拼通道名字符串，也不要在 worker 里读主进程的私有类型。
@@ -118,9 +121,9 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 1. 读 pi 的 release notes，先列出改了什么。
 2. 改 `package.json` 的 pin（两个 pi 包 + `typebox`，理由见本节末）。
-3. `npm install` → `npm run typecheck` → `npm test`（599）→ `npm run build`。
+3. `npm install` → `npm run typecheck` → `npm test` → `npm run build`。
    **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
-4. 冒烟：`COLT_SMOKE_MODE=fixture`（25）+ `COLT_SMOKE_MODE=dock`（207）。
+4. 冒烟：`COLT_SMOKE_MODE=fixture` + `COLT_SMOKE_MODE=dock`。
 5. **逐项核对「我们用过的内核字段」**：`LaneSnapshot.lastResult`（`status` / `kind`）、会话条目的 `seq`、
    `thinkingLevel`、`Usage` 各字段、`JsonlSessionMetadata`。
 6. 单独一个提交，消息里写明升到哪个版本、改了什么。
