@@ -246,7 +246,7 @@ const px = startVal - dx;
   验证拖拽需要用户手动操作，或用 `computer_action`（坐标易错，慎用）。
 
   **补充（2026-09）**：拖拽**可以**自动化——走**冒烟框架**而不是 `browser_act`。
-  `src/main/smoke.ts` 的 `run()` 就是主进程里的 `webContents.executeJavaScript`，
+  `src/dev/smoke/` 的 `run()` 就是主进程里的 `webContents.executeJavaScript`，
   能在渲染层**真派发 `MouseEvent`**（拖拽、双击），同时读主进程 `View.getVisible()`
   断言「原生视图是否真的收起」这类截图看不见的状态。右栏（⑦）的折叠 / 拖拽上下限 /
   宽度记忆 / ⑦-F 自动展开 / 折叠收起原生视图 /

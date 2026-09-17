@@ -74,7 +74,9 @@ function createWindow(): BrowserWindow {
         const smokeTarget = smokeArtifactPath(smokeName);
         // 动态导入失败（构建产物缺失 / 语法错误）必须落盘可见，
         // 否则表现为「窗口正常但冒烟一声不响」，极难排查。
-        void import("./smoke")
+        // 冒烟装置不住在生产源码树里（src/dev/），这里跨目录动态引入。
+        // 仍在 import.meta.env.DEV 守卫内，生产构建整段被树摇。
+        void import("../dev/smoke/index")
           .then(({ runSmoke }) => runSmoke(window, smokeTarget))
           .catch((error: unknown) => {
             console.error("[SMOKE] 加载失败", error);

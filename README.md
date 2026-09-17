@@ -38,7 +38,7 @@ npm run dev
 |---|---|
 | `npm run dev` | 开发模式启动（electron-vite） |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test，当前 **599** 条：598 通过 / 1 跳过） |
+| `npm test` | 单测（node:test；条数以运行输出为准，2026-09-17 实测 664 条：663 通过 / 1 跳过） |
 | `npm run build` | 类型检查 + 构建产物到 `out/` |
 | `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
 | `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
@@ -51,7 +51,7 @@ npm run dev
 
 ### 冒烟自检
 
-冒烟是主进程里的真实验证装置（`src/main/smoke.ts`），能在渲染层**真派发事件**并断言截图看不见的状态（原生视图矩形、页签数、IPC 落点）。**仅开发期存在**：用 `import.meta.env.DEV` 守卫，生产构建会把整段树摇掉。
+冒烟是主进程里的真实验证装置（`src/dev/smoke/`），能在渲染层**真派发事件**并断言截图看不见的状态（原生视图矩形、页签数、IPC 落点）。**仅开发期存在**：用 `import.meta.env.DEV` 守卫，生产构建会把整段树摇掉。
 
 ```powershell
 $env:COLT_SMOKE="dock.png"      # 产物文件名，固定落在 out/

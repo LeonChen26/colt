@@ -266,11 +266,11 @@ observe：console 4 / network 5 / downloads 1
 
 ## 6. 维护须知
 
-- **唯一数据源**：页面只在 [scripts/fixture-server.mjs](../scripts/fixture-server.mjs) 里。改页面文案时，需同步检查 [smoke.ts](../src/main/smoke.ts) 里 `runFixture` 按文案认领 ref 的正则，以及本文档的预期结果
+- **唯一数据源**：页面只在 [scripts/fixture-server.mjs](../scripts/fixture-server.mjs) 里。改页面文案时，需同步检查 [smoke.ts](../src/dev/smoke/modes/fixture.ts) 里 `runFixture` 按文案认领 ref 的正则，以及本文档的预期结果
 - 用例**不写死 ref 序号**：页面加元素不会让断言错位
 - 相关文件：
   - 夹具站：[fixture-server.mjs](../scripts/fixture-server.mjs) / [fixture-server.d.mts](../scripts/fixture-server.d.mts)
-  - 用例实现：[smoke.ts](../src/main/smoke.ts) 的 `runFixture`
+  - 用例实现：[modes/fixture.ts](../src/dev/smoke/modes/fixture.ts) 的 `runFixture`
   - 被验证的实现：[browser-host.ts](../src/main/host/browser-host.ts) / [browser-observe.ts](../src/main/host/browser-observe.ts) / [browser-tool.ts](../src/worker/lib/browser-tool.ts)
   - 内嵌形态的渲染层：[WorkspaceDock.tsx](../src/renderer/src/features/Conversation/WorkspaceDock.tsx)（页签 + 页面区域上报）/ [Conversation/index.tsx](../src/renderer/src/features/Conversation/index.tsx)（⑦-F 自动切页签）
   - 观测抽屉（B2）：[ObserveDrawer.tsx](../src/renderer/src/features/Conversation/ObserveDrawer.tsx)（UI）→ `browser.observe` → `HostBridge.browserObservation` → `BrowserHost.observe`
