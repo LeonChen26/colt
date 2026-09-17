@@ -3,7 +3,7 @@
  * 绝不写入日志、不入数据库、不跨 IPC 明文传给渲染层
  */
 import { app, safeStorage } from "electron";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /** 密钥键：内置 provider 用固定名，自定义 provider 用其 id */
@@ -25,13 +25,29 @@ function readStore(): SecretStoreFile {
   if (!existsSync(file)) return {};
   try {
     return JSON.parse(readFileSync(file, "utf8")) as SecretStoreFile;
-  } catch {
+  } catch (error) {
+    // 读不出来等于「所有密钥都没配」，用户只会看到「未配置」而看不到原因。
+    // 按项目最高原则（失败必须可见），这里必须留痕，不能静默返回空。
+    console.error("[secrets] 密钥文件解析失败，已按「未配置」处理", file, error);
     return {};
   }
 }
 
+/**
+ * 原子写：先写临时文件再改名覆盖。
+ * 密钥文件是单点存储，一次写盘崩溃（断电 / 磁盘满 / 被杀进程）会毁掉**全部**密钥；
+ * 直接 writeFileSync 到目标路径时，崩溃会留下半截 JSON，进而被 readStore 静默吞成空对象。
+ */
 function writeStore(store: SecretStoreFile): void {
-  writeFileSync(secretsPath(), JSON.stringify(store, null, 2), "utf8");
+  const file = secretsPath();
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
+  try {
+    renameSync(tmp, file);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
 }
 
 /** 写入密钥（加密） */
@@ -55,7 +71,11 @@ export function getSecret(key: SecretKey): string | undefined {
   if (!encoded) return undefined;
   try {
     return safeStorage.decryptString(Buffer.from(encoded, "base64"));
-  } catch {
+  } catch (error) {
+    // 解密失败通常是凭据环境变了（换账户 / 迁移 userData），不是文件坏。
+    // 返回值只能是 undefined（不能抛，UI 要用它判断「是否已配置」），但必须留痕，
+    // 否则用户看到「未配置」时无从区分「没配过」和「配过但解不开」。
+    console.error("[secrets] 密钥解密失败，已按「未配置」处理", key, error);
     return undefined;
   }
 }
@@ -73,12 +93,4 @@ export function deleteSecret(key: SecretKey): void {
   const store = readStore();
   delete store[key];
   writeStore(store);
-}
-
-/** 掩码展示，如 sk-8d***f2a */
-export function maskSecret(key: SecretKey): string | undefined {
-  const value = getSecret(key);
-  if (!value) return undefined;
-  if (value.length <= 10) return "*".repeat(value.length);
-  return `${value.slice(0, 5)}***${value.slice(-3)}`;
 }
