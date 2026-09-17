@@ -705,11 +705,15 @@ function SessionRow({
   const running = startedAt !== undefined;
   const [copied, setCopied] = useState(false);
 
+  // 同 Markdown.tsx：复位定时器挂到 effect 上，卸载即清，不对已卸载组件 setState
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
   const copyId = (): void => {
-    void navigator.clipboard.writeText(session.id).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    void navigator.clipboard.writeText(session.id).then(() => setCopied(true));
   };
 
   return (

@@ -5,7 +5,7 @@
  * 颜色统一走 styles.css 里的 --color-code-* 令牌（低饱和，与主题联动）。
  * 代码块带语言标签与复制按钮，复制读的是渲染后的文本，避免与高亮节点耦和。
  */
-import { Children, isValidElement, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -28,12 +28,17 @@ function CodeBlock({ children }: { children?: ReactNode }): React.JSX.Element {
     isValidElement<{ className?: string }>(child) ? child.props.className ?? "" : "";
   const language = /language-([\w-]+)/.exec(className)?.[1] ?? "";
 
+  // 「已复制」的复位交给 effect：定时器挂在组件上，卸载时一并清掉。
+  // 写在 copy() 里的话，复制完立刻切走消息，1.5s 后会对着一个已卸载的组件 setState。
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
   const copy = (): void => {
     const text = preRef.current?.textContent ?? "";
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    void navigator.clipboard.writeText(text).then(() => setCopied(true));
   };
 
   return (

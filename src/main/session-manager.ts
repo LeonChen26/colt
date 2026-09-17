@@ -8,13 +8,14 @@ import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, BranchNode, ProviderConfig } from "@shared/protocol";
+import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
 import { normalizeRootKey } from "./db/index";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
-import { ApprovalStore, DEFAULT_TIMEOUT_MS } from "./approval/store";
+import { ApprovalStore } from "./approval/store";
 import { getAnalyzeCommandAllowlist } from "./approval/config";
 import { analyzeToolCall } from "./approval/analyzer";
 import { createDeferred } from "./lib/deferred";
@@ -409,7 +410,7 @@ export class SessionManager {
     timeoutMs: number,
   ): void {
     // 兜底：worker 未上报 / 传了非法值时用默认 5 分钟，避免 setTimeout(undefined) 立即拒绝
-    const durationMs = timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
+    const durationMs = timeoutMs > 0 ? timeoutMs : APPROVAL_TIMEOUT_MS;
     const timer = setTimeout(() => {
       this.#approvalTimers.delete(toolCallId);
       const decision = this.approvals.resolve({

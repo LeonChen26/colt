@@ -445,8 +445,13 @@ describe("isInside 路径段边界（补充）", () => {
     assert.equal(isInside("/srv/app", "C:/srv/app/a.ts"), false);
   });
 
-  test("路径除盘符外大小写敏感，同目录不同大小写判为外部（保守方向）", () => {
-    assert.equal(isInside("E:/proj", "E:/PROJ/a.ts"), false);
+  test("同目录仅大小写不同视为项目内（Windows 文件系统本就大小写不敏感）", () => {
+    // 判据统一到 `lib/path-guard.ts` 的 `isWithinRoot`（用 `path.relative`）后，
+    // 这条从 false 变成 true。旧实现大小写敏感，会把 `E:/PROJ/a.ts` 判成越界——
+    // 那是**误报**：Windows 上它就是 `E:/proj/a.ts` 同一个文件，拦下来只是让用户
+    // 多确认一次，挡不住任何真越界。真正的越界（兄弟目录前缀、跨盘、`..` 逃逸）
+    // 不受这条影响，见本 describe 的其它用例与 `tests/path-guard.test.ts`。
+    assert.equal(isInside("E:/proj", "E:/PROJ/a.ts"), true);
   });
 });
 

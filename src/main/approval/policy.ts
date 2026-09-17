@@ -9,10 +9,14 @@
  * 其余一律进入确认。危险命令清单不参与放行决策，只用于把风险档位
  * 抬到 dangerous（更醒目的提示 + 免疫「不再询问」记忆）。
  *
- * 纯函数，不碰 IO，便于单测覆盖。
+ * 除一处外均为纯函数，便于单测覆盖：**越界判定会解析真实路径**（`isWithinRootReal`），
+ * 因为「根内的软链接指向根外」这件事只有问了文件系统才知道。命令文本、敏感路径、
+ * 风险分档这些仍是纯字符串判定；`isInside` 也仍是纯的（不碰磁盘），
+ * 供目标尚不存在或必须在任何 fs 访问之前下结论的场合使用。
  */
 
 import { READONLY_TOOLS } from "@shared/readonly-tools";
+import { isWithinRoot, isWithinRootReal } from "../lib/path-guard";
 
 /** 风险档位 */
 export type RiskLevel = "safe" | "moderate" | "dangerous";
@@ -180,49 +184,18 @@ function normalizePath(value: string): string {
   return /^[a-zA-Z]:\//.test(slashed) ? slashed[0]!.toLowerCase() + slashed.slice(1) : slashed;
 }
 
-/** 折叠相对路径中的 . 与 .. 段 */
-function collapseRelative(path: string): string {
-  const parts: string[] = [];
-  for (const segment of path.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      if (parts.length > 0 && parts[parts.length - 1] !== "..") parts.pop();
-      else parts.push("..");
-      continue;
-    }
-    parts.push(segment);
-  }
-  return parts.join("/");
-}
-
-/** 折叠绝对路径中的 . 与 .. 段，保留盘符 / 前导斜杠，越到根即停在根 */
-function collapseAbsolute(path: string): string {
-  const prefix = path.match(/^([a-zA-Z]:)?\//)?.[0] ?? "";
-  const parts: string[] = [];
-  for (const segment of path.slice(prefix.length).split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      parts.pop();
-      continue;
-    }
-    parts.push(segment);
-  }
-  return prefix + parts.join("/");
-}
-
-/** 判断路径是否位于根目录内（先折叠 . / .. 段，再按路径段比较，避免 /proj-evil 被当成 /proj 内） */
+/**
+ * 判断路径是否位于根目录内。
+ *
+ * 判定本体在 `main/lib/path-guard.ts` 的 `isWithinRoot`——**全仓只有那一份**，这里只转发。
+ * 此前这里自己折叠 `.` / `..` 再按段比较，与 `file-read.ts` 那份各写一套，结果
+ * 「软链接把根内的名字指到根外」这条防线只在预览路径上有、审批闸门上没有。
+ *
+ * ⚠️ 本函数是**纯字符串判定，不访问磁盘**（因此也适用于目标尚不存在的写入场景）。
+ * 真正放行前的调用点应当用 `isWithinRootReal`——它在纯判定之后再解一次真实路径。
+ */
 export function isInside(root: string, target: string): boolean {
-  const normalizedRoot = normalizePath(root).replace(/\/+$/, "");
-  const normalizedTarget = normalizePath(target);
-
-  // 相对路径：折叠后仍带前导 .. 即为越界
-  if (!/^([a-zA-Z]:)?\//.test(normalizedTarget)) {
-    const relative = collapseRelative(normalizedTarget);
-    return relative.length > 0 && relative !== ".." && !relative.startsWith("../");
-  }
-
-  const collapsed = collapseAbsolute(normalizedTarget);
-  return collapsed === normalizedRoot || collapsed.startsWith(`${normalizedRoot}/`);
+  return isWithinRoot(root, target);
 }
 
 /**
@@ -553,7 +526,8 @@ export function assessToolRisk(
     for (const { pattern, reason } of SENSITIVE_PATH_PATTERNS) {
       if (pattern.test(normalized)) return { risk: "dangerous", reason };
     }
-    if (!isInside(projectRoot, raw)) {
+    // 用 isWithinRootReal：软链接可以把「根内的名字」指到根外，纯字符串判定看不见
+    if (!isWithinRootReal(projectRoot, raw)) {
       return { risk: "dangerous", reason: "写入项目目录之外" };
     }
     return { risk: "moderate", reason: "修改项目内文件" };
@@ -578,7 +552,7 @@ export function assessToolRisk(
         for (const { pattern, reason } of SENSITIVE_PATH_PATTERNS) {
           if (pattern.test(normalized)) return { risk: "dangerous", reason: `上传敏感文件：${reason}` };
         }
-        if (!isInside(projectRoot, raw)) {
+        if (!isWithinRootReal(projectRoot, raw)) {
           return { risk: "dangerous", reason: `上传项目目录之外的文件：${raw}` };
         }
       }

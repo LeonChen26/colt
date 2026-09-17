@@ -440,6 +440,21 @@ describe("ApprovalStore 处置与记忆", () => {
     assert.ok("decision" in next, "工具级记忆应放行其他路径");
   });
 
+  test("入参无法解析时，不允许被工具级记忆放行", () => {
+    // 这条守的是「看不懂」不能被当成「不传参数」：空对象是一个**合法**入参形态，
+    // 若解析失败回落到 {}，下面的工具级记忆照常命中，一条内容未知的调用就自动通过了。
+    const instance = store();
+    askWrite(instance, "c1", "E:/proj/a.ts");
+    instance.resolve({ sessionId: SESSION, toolCallId: "c1", approved: true, remember: "tool" });
+
+    const next = instance.evaluate({
+      sessionId: SESSION, toolCallId: "c2", toolName: "edit",
+      argsJson: "{ 这不是 JSON", now: 2,
+    });
+    assert.ok("request" in next, "入参解析失败时必须挂起人工确认，不能自动放行");
+    assert.match(next.request.reason, /无法解析/);
+  });
+
   test("签名级记忆不跨路径生效", () => {
     const instance = store();
     askWrite(instance, "c1", "E:/proj/a.ts");

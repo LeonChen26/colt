@@ -33,6 +33,7 @@ import type {
   WorkerMessage,
 } from "@shared/worker-protocol";
 import { buildProvider } from "@shared/provider-factory";
+import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 
@@ -109,9 +110,6 @@ const pendingApprovals = new Map<
   string,
   { resolve: (value: { approved: boolean; reason: string }) => void; timer: NodeJS.Timeout }
 >();
-
-/** 审批等待上限；超时视为拒绝，避免 lane 永久挂起 */
-const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 已完成的工具调用耗时（toolCallId → ms），供工具卡片展示；有上限避免无界增长 */
 const toolDurations = new Map<string, number>();

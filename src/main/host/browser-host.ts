@@ -18,8 +18,10 @@
  * webRequest——与主应用同 session 时只能靠 webContentsId 过滤，独立 partition 后天然隔离。
  * 两者都在导航时清空。
  *
- * 文件：下载经 will-download 落盘到应用自有的下载目录（不写进用户的「下载」文件夹），并限制
- * 单会话条数与单文件体积。上传是唯一需要 CDP 的动作——input[type=file] 出于安全无法用 JS 赋值，
+ * 文件：下载经 will-download 落盘到应用自有的下载目录（不写进用户的「下载」文件夹），
+ * 限制**单文件体积**（超限取消并提示）。⚠️ 观测列表那 5 条的 `MAX_DOWNLOADS_PER_SESSION`
+ * 只做**缓冲截断**，不是下载数量上限——本类目前**不限制一个会话能下几个文件**。
+ * 上传是唯一需要 CDP 的动作——input[type=file] 出于安全无法用 JS 赋值，
  * 故用 Electron 内置的 webContents.debugger 调 DOM.setFileInputFiles（不新增依赖）。
  */
 import {
@@ -281,22 +283,17 @@ export class BrowserHost {
     this.#applyBounds(sessionId);
   }
 
-  /** 读取视图状态（渲染层挂载时对齐已加载的视图） */
+  /**
+   * 读取视图状态（渲染层挂载时对齐已加载的视图）。
+   *
+   * ⚠️ 该会话没有浏览器视图时**抛错**，不再返回一个「全空的 `loaded: false`」。
+   * 此前这里伪造的状态与「视图已建、页面还没加载」**完全同形**——后者由
+   * `#emitState(sessionId, false)` 推出，两者在渲染层无从区分，等于把
+   * 「没有浏览器」这件事伪装成「浏览器正在加载」（撞 `docs/ERRORS.md` 的「不许静默」）。
+   */
   stateOf(sessionId: string): BrowserViewState {
     const entry = this.#sessions.get(sessionId);
-    if (entry === undefined) {
-      return {
-        sessionId,
-        loaded: false,
-        url: "",
-        title: "",
-        canGoBack: false,
-        canGoForward: false,
-        viewport: null,
-        contentWidth: 0,
-        zoom: 1,
-      };
-    }
+    if (entry === undefined) throw new Error("该会话没有浏览器视图");
     const contents = entry.view.webContents;
     const history = contents.navigationHistory;
     return {
@@ -457,7 +454,10 @@ export class BrowserHost {
   /** 视图状态变化时推给渲染层 */
   #emitState(sessionId: string, loaded: boolean): void {
     if (this.#onState === undefined) return;
-    const state = loaded
+    // 并发保护：视图可能刚好在这时被关掉（`stateOf` 现在会抛错），
+    // 此时按「未加载」推——视图没了本来就该是未加载，不该让状态推送崩掉。
+    const alive = loaded && this.#sessions.has(sessionId);
+    const state = alive
       ? this.stateOf(sessionId)
       : ({
           sessionId,

@@ -10,6 +10,7 @@
  * worker 进程启停重置；删除会话（unregister）或退出应用即失效——权限决定不应
  * 悄悄长期生效。待审队列则与 worker 同寿命，进程没了即清空。
  */
+import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import type {
   ApprovalMode,
   ApprovalRequest,
@@ -24,9 +25,6 @@ export interface ApprovalDecision {
   /** 拒绝时回给模型的说明 */
   reason: string;
 }
-
-/** 审批等待上限的默认值（worker 未上报时兜底）：5 分钟 */
-export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 会话未显式设定审批模式时的默认值（模式无全局设定，一律以会话为单位） */
 const DEFAULT_MODE: ApprovalMode = "auto";
@@ -155,7 +153,10 @@ export class ApprovalStore {
     // 未登记的会话按最保守处理：不认识就放行会让审批形同虚设
     const projectRoot = state?.projectRoot ?? "";
 
-    const args = safeParseArgs(input.argsJson);
+    // 解析不出来时 args 仍按空对象参与判定（拿得到 risk / summary 用于展示），
+    // 但下面的自动放行会被拦下——「看不懂」不等于「不传参数」。
+    const parsedArgs = parseArgs(input.argsJson);
+    const args = parsedArgs ?? {};
     const invocation: ToolInvocation = { toolName: input.toolName, args };
     const signature = buildSignature(invocation);
 
@@ -184,6 +185,16 @@ export class ApprovalStore {
     }
 
     if (verdict.decision === "allow") {
+      // 入参无法解析 → 不给自动放行：命中放行规则的可能是「空参数」那条签名，
+      // 而本次到底要做什么并不可知。改为挂起人工确认，并把理由说清楚。
+      if (parsedArgs === null) {
+        return {
+          request: this.#enqueue(input, {
+            ...verdict,
+            reason: `无法解析本次工具入参，已改为人工确认（${verdict.reason}）`,
+          }),
+        };
+      }
       return { decision: { approved: true, reason: verdict.reason } };
     }
 
@@ -217,7 +228,7 @@ export class ApprovalStore {
     }
     // 分析不确定/拒绝：退回人工确认（而不是直接拒绝，把最终决定权留给用户）
     const verdict = evaluateTool(
-      { toolName: input.toolName, args: safeParseArgs(input.argsJson) },
+      { toolName: input.toolName, args: parseArgs(input.argsJson) ?? {} },
       {
         // 用 approval 模式重新判定，只为拿到展示用的 summary/signature/risk
         mode: "approval",
@@ -243,7 +254,7 @@ export class ApprovalStore {
       reason: verdict.reason,
       signature: verdict.signature,
       requestedAt: input.now,
-      timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      timeoutMs: input.timeoutMs ?? APPROVAL_TIMEOUT_MS,
     };
     this.sessions.get(input.sessionId)?.pending.set(input.toolCallId, request);
     return request;
@@ -355,17 +366,24 @@ export class ApprovalStore {
   }
 }
 
-/** 把 argsJson 安全解析成对象；非对象或解析失败一律当空对象（保守） */
-function safeParseArgs(argsJson: string): Record<string, unknown> {
+/**
+ * 解析 argsJson；解析不出来返回 **null**。
+ *
+ * ⚠️ **不要回落到空对象**。空参数是一个**合法**的入参形态（不带参数的工具调用），
+ * 回落之后「这次要干什么看不懂」会被当成「这次不传参数」，于是工具级的记忆放行规则
+ * 照常命中——等于让一条内容未知的调用自动通过。看不懂就该走人工确认，
+ * 由调用方升档处理（见 `evaluate`）。
+ */
+function parseArgs(argsJson: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(argsJson);
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
   } catch {
-    // 落到空对象
+    return null;
   }
-  return {};
+  return null;
 }
 
 /** 判断已记忆的规则是否覆盖本次调用 */

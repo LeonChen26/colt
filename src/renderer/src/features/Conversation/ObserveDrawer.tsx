@@ -269,11 +269,15 @@ function Detail({ fields }: { fields: ObsField[] }): React.JSX.Element {
     ref.current?.scrollIntoView({ block: "nearest" });
   }, []);
 
+  // 同 Markdown.tsx：复位定时器挂到 effect 上，卸载即清，不对已卸载组件 setState
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
   const copy = (): void => {
-    void navigator.clipboard.writeText(observeCopyText(fields)).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    void navigator.clipboard.writeText(observeCopyText(fields)).then(() => setCopied(true));
   };
 
   return (
