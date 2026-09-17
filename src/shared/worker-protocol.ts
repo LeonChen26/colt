@@ -97,8 +97,15 @@ export interface ViewRunOutcome {
 /** 会话视图：渲染层唯一的数据结构 */
 export interface ConversationView {
   sessionId: string;
-  lane: string;
-  cwd: string;
+  /*
+   * 这里曾经还有 `lane` / `cwd` / `faulted`，三者都在 worker 里投影出来、推给主进程，
+   * 然后**全仓没有一处读过**（渲染层、主进程都零读取）。空推的字段留在契约里是负债：
+   *   - `faulted` 尤其危险——名字看着像「本轮失败了」，实际是 harness `fault` 事件的
+   *     **会话级硬故障标记，且内核从不复位**（`ERRORS.md` §三、`AGENTS.md` §四 都记了这次翻车）。
+   *     它留在契约里，等于给下一个想表达「任务失败」的人准备了一个现成的错误答案；
+   *   - `lane` / `cwd` 则是「推了不用」，会让读契约的人以为这里有会话身份信息可依赖。
+   * 需要它们时按真实需求重新加（并补上读取点），别顺手恢复。
+   */
   model: string;
   /**
    * 当前模型是否支持图片输入。不支持时渲染层必须阻止发送图片并给出提示——
@@ -144,7 +151,6 @@ export interface ConversationView {
   lastRun: ViewRunOutcome | null;
   /** 排队中的消息条数（steer / followUp） */
   queuedCount: number;
-  faulted: boolean;
   stats: {
     messageCount: number;
     inputTokens: number;

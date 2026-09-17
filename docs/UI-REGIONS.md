@@ -181,6 +181,7 @@
 >   状态条不该为一次正常的结束留痕。判定是纯函数 `lib/format.ts` 的 `runStateOf`（有单测）。
 > - 终态取内核 `LaneSnapshot.lastResult` 且**只认 `kind === "run"`**（压缩 / 导航的终态不答「我交办的事」这一问）。
 >   ⚠️ **别用 `faulted`**：那是 harness `fault` 事件的会话级硬故障、内核从不复位它。
+>   （该字段已从 `ConversationView` 删除，见 `ERRORS.md` §三；判据仍是 `runStateOf`。）
 > - 状态是**电平**：结束态一直留到下一轮跑完，不是一闪而过的提示。
 > - 颜色只是**辅助**，每个态旁边都有文字（v3 §5「颜色必须配文字」）。
 > - 已知限制：`lastResult` 是 lane 生命期的记录，worker 被空闲回收后重建（切会话 / 重启）会丢 → 回落成「空闲」。

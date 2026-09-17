@@ -323,8 +323,6 @@ function project(
   const usage = snapshot.stats?.usage;
   return {
     sessionId: meta.sessionId,
-    lane: snapshot.lane,
-    cwd: meta.cwd,
     model: meta.model,
     imageInput: meta.imageInput,
     thinkingLevel: meta.thinkingLevel,
@@ -343,7 +341,6 @@ function project(
     running: operation !== null,
     lastRun: projectLastRun(snapshot.lastResult),
     queuedCount: snapshot.queues?.length ?? 0,
-    faulted: Boolean(snapshot.faulted),
     stats: {
       messageCount: snapshot.stats?.messageCount ?? 0,
       inputTokens: usage?.input ?? 0,

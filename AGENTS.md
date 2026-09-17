@@ -203,6 +203,8 @@ const px = startVal - dx;
   铁律：**用外部依赖（内核、宿主、协议）的字段前，先读它的定义与写入点**——
   尤其是那种「名字很自信、没人用过」的字段（`faulted` 在渲染层一处都没被读过）。
   正确信号是 `lastResult.status`（`completed | declined | aborted | failed` + `error`）。
+  （2026-09-17 补：该字段已连同同样零读取的 `lane` / `cwd` 从 `ConversationView` 删除；
+  删掉的是字段，留下的仍是上面那条铁律。）
 - **把「库提供了函数」当成「库会调用它」（这条**已经进过仓库**，比上一条更贵）**：接 Agent Skills 时，
   我把 skills 放进 `AgentHarnessOptions.resources.skills` 就以为接完了，通知还照常报「已加载 N 个技能」。
   实际上内核**只导出 `formatSkillsForSystemPrompt`、自己一处都不调用**（`resources.skills` 在

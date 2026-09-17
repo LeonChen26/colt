@@ -732,8 +732,6 @@ export async function runDock(
      */
     const viewBase: ConversationView = {
       sessionId,
-      lane: "main",
-      cwd: rootPath,
       model: "smoke/model",
       imageInput: false,
       thinkingLevel: DEFAULT_THINKING_LEVEL,
@@ -774,7 +772,6 @@ export async function runDock(
       running: false,
       lastRun: null,
       queuedCount: 0,
-      faulted: false,
       stats: {
         messageCount: 0,
         inputTokens: 0,
