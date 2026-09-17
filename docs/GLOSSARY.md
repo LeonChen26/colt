@@ -86,10 +86,15 @@
 |---|---|---|
 | `basic` | 主界面自检 | 仅日志 |
 | `fixture` | 浏览器能力本体 | 25 |
-| `dock` | 右栏 `⑦` 全家桶 | 207 |
+| `dock` | 右栏 `⑦` 全家桶 | 211 |
 | `model` | 模型解析与降级（六段） | 34 |
 | `host` | 宿主能力往返 | 7 |
+| `memory` | 记忆链路端到端：真实 worker → 索引落库 → 检索 → 项目隔离 | 24 |
+| `memory-e2e` | 记忆行为的真实调用验证（**打模型、计费**） | 12 |
 | `advanced` / `approval` / `reenter` / `crash` | 长会话 / 审批四场景 / 重入 / 崩溃恢复 | 仅日志 |
+
+> 上表条数**仅作量级参考，会随增删漂移**——`dock` 就在 2026-09 从 207 变成 211
+> （而文档里三处写死的数字没跟上）。**验收一律以运行输出为准**，不要拿这张表当判据。
 
 相关环境变量：`COLT_SMOKE`（产物名）、`COLT_SMOKE_MODE`、`COLT_SMOKE_CWD`、`COLT_SMOKE_PROMPT`、
 `COLT_SMOKE_WAIT`、`COLT_SMOKE_PANEL`、`COLT_SMOKE_MODEL`、`COLT_SMOKE_ONLY`、
