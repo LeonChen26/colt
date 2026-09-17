@@ -4,12 +4,15 @@
  */
 import { app, Notification, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { ApprovalMode, ApprovalRequest, BranchNode, ProviderConfig } from "@shared/protocol";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
 import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
+import { normalizeRootKey } from "./db/index";
+import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
 import { ApprovalStore, DEFAULT_TIMEOUT_MS } from "./approval/store";
 import { getAnalyzeCommandAllowlist } from "./approval/config";
@@ -478,6 +481,39 @@ export class SessionManager {
     entry.child.postMessage(result);
   }
 
+  /** 已报过「记忆索引失败」的会话：同一段失败期只报一次，恢复后不撤回 */
+  readonly #memoryIndexNoticed = new Set<string>();
+
+  /**
+   * 记忆文件快照入库（见 memory-index.ts）：文件是真源，这里只维护派生索引。
+   * 索引失败不影响注入与检索之外的任何功能，但要如实可见（docs/ERRORS.md）——
+   * 静默坏掉的检索会让模型以为「没有历史记忆」，比没有这个功能更糟。
+   */
+  async #handleMemoryIndex(
+    options: { sessionId: string; cwd: string },
+    message: Extract<WorkerMessage, { type: "memoryIndex" }>,
+  ): Promise<void> {
+    try {
+      indexMemorySnapshot({
+        scope: message.scope,
+        projectKey: message.scope === "project" ? normalizeRootKey(options.cwd) : "",
+        sourcePath:
+          message.scope === "project"
+            ? join(options.cwd, ".colt", "memory.md")
+            : join(homedir(), ".colt", "memory.md"),
+        content: message.content,
+        sessionId: options.sessionId,
+      });
+    } catch (error) {
+      if (this.#memoryIndexNoticed.has(options.sessionId)) return;
+      this.#memoryIndexNoticed.add(options.sessionId);
+      this.#emit("session.notice", {
+        sessionId: options.sessionId,
+        message: `记忆索引失败（检索将停在当前状态）：${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
   #sessionsRoot(): string {
     const dir = join(app.getPath("userData"), "sessions");
     mkdirSync(dir, { recursive: true });
@@ -595,6 +631,8 @@ export class SessionManager {
         COLT_PROVIDER_KEY: providerKey,
       },
     });
+    // 记忆检索的项目隔离依据：cwd 由主进程登记，不信任 worker 报值（见 memory-host.ts）
+    hostBridge.setMemoryContext(options.sessionId, options.cwd);
 
     // 就绪信号携带失败出口：worker 在发回 ready 之前退出时，exit 回调会 reject 它；
     // 进程活着但迟迟不发 ready（init 卡死）时由超时兑底。两者都保证 session.open 不会永久挂起。
@@ -755,8 +793,15 @@ export class SessionManager {
         }
 
         case "toolRpc": {
-          // 宿主能力（浏览器/桌面）由主进程执行，结果异步回发
+          // 宿主能力（浏览器/桌面/记忆检索）由主进程执行，结果异步回发
           void this.#handleToolRpc(entry, message);
+          break;
+        }
+
+        case "memoryIndex": {
+          // 记忆文件快照入库：文件是真源，这里只维护派生索引。
+          // 失败如实可见但不打断会话；同会话同一段失败期只报一次
+          void this.#handleMemoryIndex(options, message);
           break;
         }
 

@@ -53,6 +53,7 @@ import { HostBridge } from "./lib/host-bridge";
 import { captureBaseline } from "./lib/baseline";
 import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
+import { createMemoryTools } from "./lib/memory-tool";
 import {
   ToolCallTracker,
   buildUsageUpload,
@@ -67,6 +68,20 @@ import {
   loadSkillsForSession,
   skillDirs,
 } from "./lib/skills";
+import {
+  compactMemoryReminder,
+  createMemoryInjector,
+  describeMemory,
+  loadProjectMemory,
+  memoryFilePath,
+  readMemoryFile,
+  userMemoryFilePath,
+} from "./lib/memory";
+import {
+  createAgentsMdInjector,
+  describeAgentsMd,
+  loadAgentsMd,
+} from "./lib/agents-md";
 
 const context: Context = BACKGROUND_CONTEXT;
 
@@ -94,12 +109,13 @@ const toolDurations = new Map<string, number>();
 const TOOL_DURATION_LIMIT = 512;
 
 /**
- * 用户手动操作浏览器（前进 / 后退 / 刷新）的提示队列，等下一次模型请求前注入。
+ * 一次性「临时提醒」队列：等下一次模型请求前注入，不进 transcript、也不触发运行。
  *
- * 不直接 `send` 给界面、也不走 `steer`：它既不是用户发言、也不该触发新一轮运行，
- * 只是告诉模型「你手里那份页面状态已经过期了」。注入点与理由见 init 里的 transform_context。
+ * 现有两类：① 用户手动操作浏览器（前进 / 后退 / 刷新）后「你手里的页面状态过期了」；
+ * ② 压缩完成后的记忆沉淀提醒。都不是用户发言、也不该开启或插入一轮，
+ * 只是让模型下次开口前知道这件事。注入点与理由见 init 里的 transform_context。
  */
-const pendingBrowserNotices: string[] = [];
+const pendingEphemeralNotices: string[] = [];
 
 function rememberDuration(toolCallId: string, durationMs: number | null): void {
   if (durationMs === null) return;
@@ -421,6 +437,55 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const skillsNotice = describeSkills(skills);
   if (skillsNotice !== null) send({ type: "notice", message: skillsNotice });
 
+  // AGENTS.md（agents.md 标准）：人机共同维护的项目约定文档，从 cwd 一路向上
+  // 收集父目录。与记忆分工：AGENTS.md 收成文的约定（构建/风格/协作规范），
+  // 记忆收助手自己的沉淀；助手可以在用户要求时写它（opencode/codex 的 /init
+  // 同款语义），项目内文件、走常规审批。这里只做启动装载与告知（隐式信任通道，
+  // 见 docs/SECURITY.md）；真正的注入在下面的 transform_context——每请求重新
+  // 发现并读取，中途创建/更新下一次请求立即可见，文件集合变化会通知。
+  const agentsMd = await loadAgentsMd(cwd);
+  const agentsMdNotice = describeAgentsMd(agentsMd);
+  if (agentsMdNotice !== null) send({ type: "notice", message: agentsMdNotice });
+  const agentsMdInjector = createAgentsMdInjector(cwd, (message) =>
+    send({ type: "notice", message }),
+  );
+
+  // 双级记忆（.colt/memory.md + ~/.colt/memory.md）：助手自己维护的跨会话记忆，
+  // 项目级记项目内的事实，用户级记跨项目成立的偏好与习惯。
+  // 这里只装载与告知；真正的注入在下面的 transform_context——每次模型请求重读，
+  // 会话中途的写入立即生效。读取失败不拦会话——记忆缺位比会话打不开便宜得多。
+  // 注意用户级在项目之外：助手写它按 docs/SECURITY.md 属 dangerous、每次单独确认。
+  const memory = await loadProjectMemory(cwd);
+  const memoryNotice = describeMemory(memory, "project");
+  if (memoryNotice !== null) send({ type: "notice", message: memoryNotice });
+  const userMemory = await readMemoryFile(userMemoryFilePath(homedir()));
+  const userMemoryNotice = describeMemory(userMemory, "user");
+  if (userMemoryNotice !== null) send({ type: "notice", message: userMemoryNotice });
+
+  // 记忆检索索引（L3a）：文件是真源，主进程侧维护派生索引（data/memory.db）。
+  // 启动即报快照；此后注入器每请求重读，内容变化才续报（失败不报——没消息 = 维持原状，
+  // 读取失败不能被误当成「文件被删了」而把现行条目归档）。
+  const lastIndexed = new Map<"project" | "user", string | null>();
+  const reportMemoryIndex = (scope: "project" | "user", content: string | null) => {
+    if (lastIndexed.get(scope) === content) return;
+    lastIndexed.set(scope, content);
+    send({ type: "memoryIndex", scope, content });
+  };
+  if (memory.error === undefined) reportMemoryIndex("project", memory.content);
+  if (userMemory.error === undefined) reportMemoryIndex("user", userMemory.content);
+  const memoryInjector = createMemoryInjector({
+    filePath: memoryFilePath(cwd),
+    scope: "project",
+    onError: (message) => send({ type: "notice", message }),
+    onLoaded: (content) => reportMemoryIndex("project", content),
+  });
+  const userMemoryInjector = createMemoryInjector({
+    filePath: userMemoryFilePath(homedir()),
+    scope: "user",
+    onError: (message) => send({ type: "notice", message }),
+    onLoaded: (content) => reportMemoryIndex("user", content),
+  });
+
   const { harness, open } = await AgentHarness.create(
     {
       session,
@@ -434,8 +499,12 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         createBashTool(),
         ...createBrowserTools(hostBridge),
         ...createComputerTools(hostBridge),
+        ...createMemoryTools(hostBridge),
       ],
       toolContext: { env: executionEnv },
+      // create-time 静态部分只有：基础提示词 + 技能清单。
+      // AGENTS.md 与记忆块都不在这里拼——它们在 transform_context 里每请求重读注入
+      // （见下），中途创建/更新下一次请求立即可见
       systemPrompt: composeSystemPrompt(systemPrompt(cwd), skills.skills),
       // 只对**新建 lane** 生效；已存在的会话沿用自己持久化的值，
       // 故下面还有一步显式下发（见 lane 拿到之后的注释）
@@ -474,19 +543,30 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     return { block: { reason: decision.reason } };
   });
 
-  // 用户手动操作浏览器（前进 / 后退 / 刷新）→ 告知 agent。
+  // 临时提醒（浏览器手动操作后的页面过期提示、压缩后的沉淀提醒）→ 告知 agent。
   //
   // 用 transform_context 而不是 steer / prompt：这两种都会**开启或插入一轮**，让 agent 去回应，
-  // 而这里要的只是「它下次看页面之前先知道自己看到的那份可能过期了」。
-  // transform_context 是内核为此准备的扩展点（按注释：把应用自定义的信息转成模型上下文），
-  // 每个模型请求前都会跑一次、返回的 messages 只作用于**这一次请求**，故不写进 transcript——
+  // 而这里要的只是「它下次开口前知道这件事」。transform_context 是内核为此准备的扩展点
+  // （按注释：把应用自定义的信息转成模型上下文），每个模型请求前都会跑一次、
+  // 返回的 messages 只作用于**这一次请求**，故不写进 transcript——
   // 否则对话与分支树里会凭空多出一轮「用户说……」的假历史，还会被压缩摘要当成真实对话。
   harness.hooks.on("transform_context", (event) => {
-    if (pendingBrowserNotices.length === 0) return undefined;
-    const text = pendingBrowserNotices.splice(0, pendingBrowserNotices.length).join("\n");
+    if (pendingEphemeralNotices.length === 0) return undefined;
+    const text = pendingEphemeralNotices.splice(0, pendingEphemeralNotices.length).join("\n");
     return {
       messages: [...event.messages, { role: "user", content: text, timestamp: Date.now() }],
     };
+  });
+
+  // 每请求注入（与 messages 注入由内核按注册顺序串行组合，互不覆盖）：
+  // AGENTS.md（父链约定）→ 用户级记忆 → 项目级记忆，一般 → 具体，越具体的越靠近内容。
+  // 内容不变时拼出的串逐字相同，提示词缓存照常命中；变了才失效一次。
+  // 读取失败由各注入器回落/降级并只报一次。
+  harness.hooks.on("transform_context", async (event) => {
+    let withContext = await agentsMdInjector.systemPromptFor(event.systemPrompt);
+    withContext = await userMemoryInjector.systemPromptFor(withContext);
+    withContext = await memoryInjector.systemPromptFor(withContext);
+    return { systemPrompt: withContext };
   });
 
   // 纵深防御：若有影响性工具执行完却没经过闸门，说明拦截链路漏了。
@@ -706,7 +786,7 @@ async function handle(command: WorkerCommand): Promise<void> {
     // 注入时机是「下一次模型请求前」（init 里的 transform_context），所以 agent 空闲时
     // 这条提示会一直躺着直到它下次开口——不会凭空把 agent 叫醒。
     case "browserNotice": {
-      pendingBrowserNotices.push(command.text);
+      pendingEphemeralNotices.push(command.text);
       return;
     }
 
@@ -770,6 +850,11 @@ async function handle(command: WorkerCommand): Promise<void> {
       state.snapshot = await state.resnapshot();
       send({ type: "view", view: project(state.snapshot, state.meta) });
       send({ type: "notice", message: compactDoneMessage(state.snapshot) });
+      // 压缩是会话记忆的数据丢失时刻（摘要保 prose 不保事实）：
+      // 提醒助手把本轮值得留的事实沉淀进记忆文件。一次性提醒，随下一次请求注入；
+      // 已在队列就不重复推——连续压缩多次而中间没运行时，提醒只会有一条。
+      const reminder = compactMemoryReminder(state.meta.cwd);
+      if (!pendingEphemeralNotices.includes(reminder)) pendingEphemeralNotices.push(reminder);
       return;
     }
 

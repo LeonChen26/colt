@@ -8,5 +8,5 @@
  * 两份列表一旦漂移，要么对合法调用刷告警、要么遮蔽真正的漏报。
  */
 export const READONLY_TOOLS: ReadonlySet<string> = new Set([
-  "read", "grep", "glob", "ls", "list", "search", "todo",
+  "read", "grep", "glob", "ls", "list", "search", "todo", "memory_search",
 ]);

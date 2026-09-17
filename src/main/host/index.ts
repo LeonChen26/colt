@@ -9,6 +9,7 @@ import type { HostCapability, HostResult } from "@shared/worker-protocol";
 import type { BrowserWindow } from "electron";
 import { BrowserHost, type BrowserNavigation } from "./browser-host";
 import { ComputerHost } from "./computer-host";
+import { MemoryHost } from "./memory-host";
 
 export interface HostRequest {
   sessionId: string;
@@ -20,6 +21,7 @@ export interface HostRequest {
 export class HostBridge {
   readonly #browser = new BrowserHost();
   readonly #computer = new ComputerHost();
+  readonly #memory = new MemoryHost();
 
   /**
    * 内嵌浏览器需要宿主窗口才能挂 WebContentsView，故主进程建窗后必须登记。
@@ -27,6 +29,11 @@ export class HostBridge {
    */
   attachWindow(window: BrowserWindow): void {
     this.#browser.attachWindow(window);
+  }
+
+  /** 起会话进程时登记 cwd，记忆检索的项目隔离据此判定（见 memory-host.ts） */
+  setMemoryContext(sessionId: string, cwd: string): void {
+    this.#memory.setContext(sessionId, cwd);
   }
 
   /** 订阅内嵌浏览器视图状态（由 sessionManager 转成 browser.state 推给渲染层） */
@@ -70,6 +77,8 @@ export class HostBridge {
         return this.#browser.handle(request.sessionId, request.action, request.params);
       case "computer":
         return this.#computer.handle(request.sessionId, request.action, request.params);
+      case "memory":
+        return this.#memory.handle(request.sessionId, request.action, request.params);
       default:
         throw new Error(`未知的宿主能力：${String(request.capability)}`);
     }
@@ -78,6 +87,7 @@ export class HostBridge {
   disposeSession(sessionId: string): void {
     this.#browser.closeSession(sessionId);
     this.#computer.resetSession(sessionId);
+    this.#memory.clearSession(sessionId);
   }
 
   disposeAll(): void {

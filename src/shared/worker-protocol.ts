@@ -164,7 +164,7 @@ export interface ConversationView {
  * 宿主能力标识：由主进程（Electron GUI 侧）实现，worker 通过 toolRpc 远程调用。
  * 浏览器/桌面这类能力必须由宿主进程持有（窗口与 OS 权限），故 worker 只能发命令。
  */
-export type HostCapability = "browser" | "computer";
+export type HostCapability = "browser" | "computer" | "memory";
 
 /** 宿主能力的调用返回：文本 + 可选图片（截图等） */
 export interface HostResult {
@@ -284,6 +284,13 @@ export type WorkerMessage =
       action: string;
       params: Record<string, unknown>;
     }
+  /**
+   * 记忆文件快照上报：worker 每请求重读记忆文件，内容变化即发整份快照
+   * （null = 文件不存在，等于把该文件的现行条目归档进冷层）。
+   * 检索索引是文件内容的派生物，文件才是真源；来源路径由主进程按 scope
+   * 自行推算（项目级用会话 cwd），不信任 worker 报的路径。
+   */
+  | { type: "memoryIndex"; scope: "project" | "user"; content: string | null }
   | { type: "error"; message: string; fatal: boolean }
   /** 非错误的瞬时通知（如压缩完成）：主进程原样转成 session.notice 推给渲染层 */
   | { type: "notice"; message: string }
