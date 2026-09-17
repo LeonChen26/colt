@@ -205,14 +205,15 @@ export function createMemoryInjector(options: MemoryInjectorOptions): MemoryInje
           );
         }
       }
-      // 截断传感器：记忆长到要截断，是「该升级到检索（L3）或整理」的第一个信号。
+      // 截断传感器：记忆长到要截断，是「该整理记忆（L3b）」的信号——检索（L3a）已交付，
+      // 截断不再等于「信息不可达」（被裁掉的尾部仍可 memory_search），但每请求注入仍被裁剪。
       // 只在进入截断状态时报一次，退回限内后再次超限才再报——不刷屏，也不静默。
       if (content !== null && content.length > MAX_MEMORY_CHARS) {
         if (!truncationNoticed) {
           truncationNoticed = true;
           const display = SCOPE_DISPLAY[scope];
           onError?.(
-            `${display.word}（${display.displayPath}）超过 ${MAX_MEMORY_CHARS} 字上限，注入已被截断——模型只能看到前半部分。考虑整理记忆（合并/删过时条目）。`,
+            `${display.word}（${display.displayPath}）超过 ${MAX_MEMORY_CHARS} 字上限，注入已被截断——模型只能看到前半部分。被截掉的尾部仍可用 memory_search 检索到；考虑整理记忆（合并/删过时条目）。`,
           );
         }
       } else {
