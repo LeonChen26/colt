@@ -509,6 +509,20 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
+  handle("session.memoryTidy", async (request) => {
+    // 与 session.compact 同理：可能把 worker 拉起来，必须先有会话行，
+    // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上）。
+    materializeDraft(request.sessionId);
+    if (request.cwd) {
+      await sessionManager.memoryTidyOrReconnect(request.sessionId, () =>
+        openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
+      );
+    } else {
+      sessionManager.memoryTidy(request.sessionId);
+    }
+    return { ok: true } as const;
+  });
+
   handle("session.branches", (request) => sessionManager.branches(request.sessionId));
 
   handle("session.navigate", (request) => {

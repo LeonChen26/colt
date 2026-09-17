@@ -2,12 +2,13 @@
  * 输入框里的「斜杠命令」识别。
  *
  * 本仓**没有**命令注册表，也**不做**命令菜单 / 自动补全（`NEXT-PHASE.md` §3.2 的 D3：后端没有
- * 命令注册，画菜单就是死菜单）。这里只识别**确实有实现**的那两条命令，判定在前端本地，
+ * 命令注册，画菜单就是死菜单）。这里只识别**确实有实现**的那几条命令，判定在前端本地，
  * 不引入任何「点了没反应的入口」（`AGENTS.md` §3.6）。
  *
- * 两条命令的参数形状**不一样**，所以匹配规则也分两档：
- * - `/compact` 是**零参数**动作 → 必须**独占整条输入**（`"/compact"` 或 `"/compact  "`），
- *   不做前缀匹配——否则用户想发一段以 `/` 开头的正文（例如贴路径 `/usr/local/bin`）会被误吞。
+ * 几条命令的参数形状**不一样**，所以匹配规则也分两档：
+ * - `/compact` 与 `/memory-tidy` 是**零参数**动作 → 必须**独占整条输入**（`"/compact"` 或
+ *   `"/compact  "`），不做前缀匹配——否则用户想发一段以 `/` 开头的正文（例如贴路径
+ *   `/usr/local/bin`）会被误吞。
  * - `/skill <名字> [额外指示]` 是**带参数**命令 → 只能做前缀匹配，于是用两道阀守住代价：
  *   ① 命令字必须**整段相等**于 `skill`（`/skills`、`/skillfoo` 都不算命令）；
  *   ② 后面必须真有一个**非空名字段**，裸 `/skill` 一律放行。
@@ -25,10 +26,11 @@ import { unknownSkillMessage } from "@shared/skill-error";
 
 export type SlashCommand =
   | { name: "compact" }
+  | { name: "memory-tidy" }
   | { name: "skill"; skillName: string; instructions: string | undefined };
 
 /** 命令字 → 该命令是否接受参数。两张表分开，免得将来加命令时误用另一档的规则 */
-const NO_ARG_COMMANDS = ["compact"] as const;
+const NO_ARG_COMMANDS = ["compact", "memory-tidy"] as const;
 const ARG_COMMANDS = ["skill"] as const;
 
 /** `首段` + `其余原样`（其余可为空） */
@@ -54,7 +56,7 @@ export function parseSlashCommand(text: string): SlashCommand | null {
   if ((NO_ARG_COMMANDS as readonly string[]).includes(lower)) {
     // 零参数命令：**多出任何内容都不算命令**。若只取第一段比对，`/compact 一下` 会被吞掉——
     // 用户那句「用 /compact 手动压缩」就永远发不出去了（v1.34 的教训）。
-    return rest.length === 0 ? { name: "compact" } : null;
+    return rest.length === 0 ? { name: lower as (typeof NO_ARG_COMMANDS)[number] } : null;
   }
 
   if ((ARG_COMMANDS as readonly string[]).includes(lower)) {
@@ -137,6 +139,7 @@ export function slashCandidates(
   if (!typed.startsWith("/")) return [];
   const all: SlashCandidate[] = [
     { text: "/compact", insert: "/compact", hint: "压缩上下文" },
+    { text: "/memory-tidy", insert: "/memory-tidy", hint: "整理记忆（合并重复、删过时）" },
     ...(skills ?? []).map((name) => ({
       text: `/skill ${name}`,
       insert: `/skill ${name} `,

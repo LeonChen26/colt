@@ -1073,6 +1073,26 @@ export class SessionManager {
     this.#post(sessionId, { type: "skill", name, instructions });
   }
 
+  /** 显式整理记忆（/memory-tidy）：worker 在独立子 lane 后台跑一轮 */
+  memoryTidy(sessionId: string): void {
+    this.#post(sessionId, { type: "memoryTidy" });
+  }
+
+  /**
+   * 显式整理记忆；worker 已被空闲回收时先重建再投递（同 `compactOrReconnect` 的自愈）。
+   * 与 `skillOrReconnect` 同理不做 steer 回落：整理不是一句话，语义不能偷换。
+   * 恒发 `memoryTidy`，主 lane 忙时由 worker 回可见报错。
+   */
+  async memoryTidyOrReconnect(sessionId: string, recover: () => Promise<void>): Promise<void> {
+    if (!this.#workers.has(sessionId)) {
+      // 重建期间 worker 也可能被并发调用者拉起，recover 内部已用 #pending 去重
+      await recover();
+    }
+    const entry = this.#workers.get(sessionId);
+    if (!entry) throw new Error(`会话未运行：${sessionId}`);
+    this.#post(sessionId, { type: "memoryTidy" });
+  }
+
   navigate(sessionId: string, targetId: string): void {
     this.#post(sessionId, { type: "navigate", targetId });
   }

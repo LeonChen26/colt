@@ -129,6 +129,14 @@ dangerous、每次单独确认。**没有绕过 write/edit 的记忆写入入口
 | 冷层 | 「从记忆文件删掉」≠「记忆消失」：被移除的条目转入 archived、仍可检索。**彻底清除 = 删除 `data/memory.db`**（与核心库同目录，核心数据不受影响） |
 | 审批 | `memory_search` 只读、本地、无副作用 → 在 §二 白名单里，不进审批队列 |
 
+**整理面（L3b，`/memory-tidy` → worker 子 lane）**：显式命令触发一轮「合并重复、删过时」，
+需要时整体重写 `.colt/memory.md`。安全性质由既有设施兜住，**没有新开口子**：
+整理跑在独立子 lane（`harness.lane("memory-tidy")`），工具白名单硬性限为 `read / write / memory_search`；
+写文件**照常走审批闸门**（HookRegistry 全 harness 共享，子 lane 不豁免）；消耗不计入会话统计
+（telemetry 只采主 lane），但对记忆文件的改写**如实进会话的文件改动记录**（`after_tool` 的
+记录器不分 lane——诚实报告，不藏）。主 lane 忙时拒绝（避免与运行中任务的沉淀写入并发改
+同一个文件）；整理完成经 `notice` 报结果，被清理的条目就地归档进冷层。v1 不碰用户级记忆。
+
 ---
 
 ## 二、只读工具白名单：唯一真源

@@ -3021,6 +3021,44 @@ async function runDock(
     ]);
     log(`  /compact 打桩：compact=${compactCalls.length}，prompt=${promptCalls.length}`);
 
+    // ---- `/memory-tidy` 斜杠命令（显式整理记忆，L3b）----
+    // 与 /compact 同一条验证思路：命令识别在渲染层本地，路径选择要在 sessionManager
+    // 上打桩才看得见。同样**只记账、不转发**——整理是一次真实模型调用，
+    // 转发就破坏了「dock 不打模型、不计费」的约定（v1.41 的教训）。
+    const tidyCalls: string[] = [];
+    const realMemoryTidy = sessionManager.memoryTidy.bind(sessionManager);
+    const realMemoryTidyOrReconnect = sessionManager.memoryTidyOrReconnect.bind(sessionManager);
+    sessionManager.memoryTidy = (id: string) => {
+      tidyCalls.push(id);
+    };
+    sessionManager.memoryTidyOrReconnect = async (id: string) => {
+      tidyCalls.push(id);
+    };
+
+    tidyCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/memory-tidy");
+    await sleep(400);
+    checks.push(["敲 /memory-tidy 回车 → 派发了记忆整理", tidyCalls.includes(session.id)]);
+    checks.push(["/memory-tidy 不会被当成普通提问发出去", promptCalls.length === 0]);
+    checks.push(["/memory-tidy 输入框被清空（已消费，不会滞留）", (await inputValue()) === ""]);
+
+    // 带正文不算命令：与 /compact 同一条防误吞规则（零参数命令必须独占整条输入）
+    tidyCalls.length = 0;
+    promptCalls.length = 0;
+    await typeAndEnter("/memory-tidy 顺便删掉过时的");
+    await sleep(400);
+    checks.push([
+      "带正文的 /memory-tidy … 不被当成命令（回落成普通提问）",
+      tidyCalls.length === 0 && promptCalls.some((t) => t.includes("/memory-tidy 顺便删掉过时的")),
+    ]);
+
+    // 本段自己的桩立即恢复；promptOrReconnect 的桩还要服务后面的 /skill 段
+    sessionManager.memoryTidy = realMemoryTidy;
+    sessionManager.memoryTidyOrReconnect = realMemoryTidyOrReconnect;
+    // 与 /compact 段同款：打的是**最终态**——上一条带正文的输入应回落成了普通提问
+    log(`  /memory-tidy 打桩：tidy=${tidyCalls.length}，prompt=${promptCalls.length}`);
+
     // ---- `/skill` 斜杠命令（显式调用技能）----
     // 「技能」在内核里是**两条互不相干的通道**：模型能不能看见清单（靠应用自己把
     // `formatSkillsForSystemPrompt` 拼进系统提示词），与 `resources.skills` 提供的
@@ -3114,9 +3152,9 @@ async function runDock(
     await typeText("/");
     await sleep(250);
     checks.push([
-      "敲 / 弹出候选：/compact + 本会话每个技能各一项",
+      "敲 / 弹出候选：/compact + /memory-tidy + 本会话每个技能各一项",
       JSON.stringify(await menuItems()) ===
-        JSON.stringify(["/compact", "/skill pdf", "/skill code-review"]),
+        JSON.stringify(["/compact", "/memory-tidy", "/skill pdf", "/skill code-review"]),
     ]);
     // 「在 DOM 里」不等于「用户点得到」——浮层是绝对定位、祖先里还有 overflow-hidden，
     // 所以做命中测试：候选的中心点上最上面那一层必须是它自己（同小目标入口那条老坑）。

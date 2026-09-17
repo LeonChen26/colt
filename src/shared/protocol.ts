@@ -252,6 +252,7 @@ export const IPC_CHANNELS = [
   "session.steer",
   "session.compact",
   "session.skill",
+  "session.memoryTidy",
   "approval.list",
   "approval.resolve",
   "approval.mode.get",
@@ -525,6 +526,16 @@ export interface IpcInvokeMap {
    */
   "session.skill": {
     request: { sessionId: string; name: string; instructions?: string; cwd?: string };
+    response: { ok: true };
+  };
+  /**
+   * 显式整理记忆（输入框的 `/memory-tidy`）：worker 在独立子 lane 跑一轮整理，
+   * 合并重复、删除过时条目，需要时重写项目记忆文件。主 lane 忙时拒绝（避免与
+   * 运行中的任务并发写同一个记忆文件）。带 cwd 时在被空闲回收后自动重建会话进程
+   * （同 session.compact）。
+   */
+  "session.memoryTidy": {
+    request: { sessionId: string; cwd?: string };
     response: { ok: true };
   };
   /** 分支树 */

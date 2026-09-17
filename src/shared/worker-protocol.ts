@@ -201,6 +201,12 @@ export type WorkerCommand =
    * 列出可用名：技能名是用户在磁盘上自己定的，打错时必须给回正确写法（见 `@shared/skill-error`）。
    */
   | { type: "skill"; name: string; instructions?: string }
+  /**
+   * 显式整理记忆（/memory-tidy）：worker 在独立子 lane 跑一轮「合并重复、删过时」，
+   * 需要时重写项目记忆文件。与 compact 的区别：不重写对话，只整记忆文件；
+   * 子 lane 的消耗不计入会话统计（telemetry 只采主 lane）。主 lane 忙时拒绝（文件竞态）。
+   */
+  | { type: "memoryTidy" }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
   /**

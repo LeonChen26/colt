@@ -801,7 +801,7 @@ describe("观测条目详情（N1）", () => {
   });
 });
 
-/** 输入框的斜杠命令识别（`/compact` / `/skill`）。判错方向的代价不对称：漏认只是「原样发出去」。 */
+/** 输入框的斜杠命令识别（`/compact` / `/memory-tidy` / `/skill`）。判错方向的代价不对称：漏认只是「原样发出去」。 */
 describe("parseSlashCommand", () => {
   test("认下 /compact 及其前后空白与大小写", () => {
     assert.deepEqual(parseSlashCommand("/compact"), { name: "compact" });
@@ -815,6 +815,15 @@ describe("parseSlashCommand", () => {
     // 否则「用 /compact 手动压缩」这句会被当成命令吞掉，用户根本发不出去
     assert.equal(parseSlashCommand("/compact 一下"), null);
     assert.equal(parseSlashCommand("/compact please"), null);
+  });
+
+  test("认下 /memory-tidy（大小写同款），带正文同样不算命令", () => {
+    assert.deepEqual(parseSlashCommand("/memory-tidy"), { name: "memory-tidy" });
+    assert.deepEqual(parseSlashCommand("  /memory-tidy\n"), { name: "memory-tidy" });
+    assert.deepEqual(parseSlashCommand("/Memory-Tidy"), { name: "memory-tidy" });
+    // 连字符命令字同样整段相等才算：/memory-tidyfoo 不是命令
+    assert.equal(parseSlashCommand("/memory-tidyfoo"), null);
+    assert.equal(parseSlashCommand("/memory-tidy 顺便删掉过时的"), null);
   });
 
   test("/skill 带参数：名字与额外指示分开，内部空白原样保留", () => {
@@ -919,12 +928,18 @@ describe("slashCandidates（敲 / 之后浮层列什么）", () => {
   const unknownTexts = (text: string): string[] =>
     slashCandidates(text, undefined).map((item) => item.text);
 
-  test("裸 `/` → 两条命令都列（/compact + 每个技能一项）", () => {
-    assert.deepEqual(texts("/"), ["/compact", "/skill pdf", "/skill code-review"]);
+  test("裸 `/` → 内置命令都列（/compact + /memory-tidy + 每个技能一项）", () => {
+    assert.deepEqual(texts("/"), [
+      "/compact",
+      "/memory-tidy",
+      "/skill pdf",
+      "/skill code-review",
+    ]);
   });
 
-  test("按前缀过滤：`/c` 只剩 /compact，`/s` 只剩技能", () => {
+  test("按前缀过滤：`/c` 只剩 /compact，`/m` 只剩 /memory-tidy，`/s` 只剩技能", () => {
     assert.deepEqual(texts("/c"), ["/compact"]);
+    assert.deepEqual(texts("/m"), ["/memory-tidy"]);
     assert.deepEqual(texts("/s"), ["/skill pdf", "/skill code-review"]);
     // 命令字之后还能继续过滤技能名（用户记得开头几个字母就够了）
     assert.deepEqual(texts("/skill co"), ["/skill code-review"]);
@@ -938,6 +953,7 @@ describe("slashCandidates（敲 / 之后浮层列什么）", () => {
     // 这条是本函数的要害：少了它，用户敲对 `/compact` 之后按回车不会发送，
     // 而是被浮层「选中」重写一遍，得先按 Esc 才发得出去。
     assert.deepEqual(texts("/compact"), []);
+    assert.deepEqual(texts("/memory-tidy"), []);
     assert.deepEqual(texts("/skill pdf"), []);
     // 大小写不同也算「敲全了」
     assert.deepEqual(texts("/COMPACT"), []);
@@ -957,14 +973,14 @@ describe("slashCandidates（敲 / 之后浮层列什么）", () => {
     assert.deepEqual(texts("帮我看看"), []);
   });
 
-  test("清单**不知道**（undefined）→ 只列 /compact，不猜技能名", () => {
-    assert.deepEqual(unknownTexts("/"), ["/compact"]);
+  test("清单**不知道**（undefined）→ 只列内置命令，不猜技能名", () => {
+    assert.deepEqual(unknownTexts("/"), ["/compact", "/memory-tidy"]);
     // 「不知道」不等于「没有」：这里只是不列，不是报错，也不是把 /skill 也藏掉
     assert.deepEqual(unknownTexts("/s"), []);
   });
 
-  test("清单为空数组 → 同样只列 /compact（一个技能都没装）", () => {
-    assert.deepEqual(texts("/", []), ["/compact"]);
+  test("清单为空数组 → 同样只列内置命令（一个技能都没装）", () => {
+    assert.deepEqual(texts("/", []), ["/compact", "/memory-tidy"]);
   });
 
   test("技能候选的 insert 带**尾随空格**（好接着写额外指示），命令字大小写不敏感但名字保留原样", () => {

@@ -61,6 +61,15 @@ import {
   serializeArgs,
 } from "./lib/telemetry";
 import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
+import {
+  TIDY_LANE,
+  TIDY_TOOLS,
+  describeTidyError,
+  describeTidyOutcome,
+  memoryTidyDoneNotice,
+  memoryTidySystemPrompt,
+  memoryTidyTask,
+} from "./lib/memory-tidy";
 import { describeSkillError, unknownSkillMessage } from "@shared/skill-error";
 import {
   composeSystemPrompt,
@@ -368,6 +377,12 @@ interface WorkerState {
   snapshot: LaneSnapshot;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
+  /**
+   * 记忆索引上报（init 里装配的去重闭包）。整理（memoryTidy）刚改写过记忆文件时
+   * 立即重读上报一次用——常规同步靠下一次注入重读，那次可能很久以后才来；
+   * 刚整理完就该让检索索引跟上（被清理的条目就地归档进冷层）。
+   */
+  reportMemoryIndex: (scope: "project" | "user", content: string | null) => void;
   meta: {
     sessionId: string;
     cwd: string;
@@ -551,6 +566,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 返回的 messages 只作用于**这一次请求**，故不写进 transcript——
   // 否则对话与分支树里会凭空多出一轮「用户说……」的假历史，还会被压缩摘要当成真实对话。
   harness.hooks.on("transform_context", (event) => {
+    // 临时提醒是主对话的东西：整理 lane 的请求同样会触发本钩子，
+    // 不分流的话提醒会被整理那轮消费掉，主对话反而看不到。
+    if (event.lane === TIDY_LANE) return undefined;
     if (pendingEphemeralNotices.length === 0) return undefined;
     const text = pendingEphemeralNotices.splice(0, pendingEphemeralNotices.length).join("\n");
     return {
@@ -563,6 +581,11 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 内容不变时拼出的串逐字相同，提示词缓存照常命中；变了才失效一次。
   // 读取失败由各注入器回落/降级并只报一次。
   harness.hooks.on("transform_context", async (event) => {
+    // 整理 lane 用专用提示词：它不是编码助手，AGENTS.md / 记忆块对它没有意义。
+    // 必须在这里返回——不返回（undefined）就会沿用 harness 级的编码系统提示词。
+    if (event.lane === TIDY_LANE) {
+      return { systemPrompt: memoryTidySystemPrompt(cwd) };
+    }
     let withContext = await agentsMdInjector.systemPromptFor(event.systemPrompt);
     withContext = await userMemoryInjector.systemPromptFor(withContext);
     withContext = await memoryInjector.systemPromptFor(withContext);
@@ -701,6 +724,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     providerId: providerConfig.id,
     snapshot: watch.snapshot,
     resnapshot: () => watch.resnapshot(context),
+    reportMemoryIndex,
     meta,
     unsubscribe: () => watch.unsubscribe(),
   };
@@ -855,6 +879,54 @@ async function handle(command: WorkerCommand): Promise<void> {
       // 已在队列就不重复推——连续压缩多次而中间没运行时，提醒只会有一条。
       const reminder = compactMemoryReminder(state.meta.cwd);
       if (!pendingEphemeralNotices.includes(reminder)) pendingEphemeralNotices.push(reminder);
+      return;
+    }
+
+    case "memoryTidy": {
+      if (!state) throw new Error("会话尚未初始化");
+      // 主 lane 忙时拒绝：整理要重写记忆文件，而运行中的任务也可能正在沉淀记忆
+      // （压缩后的沉淀提醒就是这个流程）——两条 lane 并发写同一个文件是竞态。
+      // 渲染层有同款守卫（运行中不给发），这里兜直接调 IPC 的路径。
+      if (state.snapshot.operation !== null || state.snapshot.queues.length > 0) {
+        send({
+          type: "error",
+          message:
+            "当前会话有进行中的任务，无法整理记忆：整理会重写记忆文件，可能与任务同时改它。请等任务结束。",
+          fatal: false,
+        });
+        return;
+      }
+      // 独立子 lane 跑整理：不占主对话、消耗不计入会话统计（telemetry 只采主 lane）、
+      // 审批闸门照常生效（写记忆文件仍要走审批——安全设计，见 docs/SECURITY.md）。
+      // activeTools 按 lane 持久化，仅在确有差异时写（与 thinkingLevel 的等值短路同一理由）。
+      const tidy = await state.harness.lane(TIDY_LANE, context);
+      const wanted = [...TIDY_TOOLS];
+      const current = await tidy.getActiveTools(context);
+      if (current.join("\u0000") !== wanted.join("\u0000")) {
+        await tidy.setActiveTools(wanted, context);
+      }
+      const result = await tidy.prompt(memoryTidyTask(), undefined, context);
+      // 与 compact 同款的两条失败路径都要查（见 case "compact" 的注释），
+      // 否则用户敲了 /memory-tidy 只见「没反应」。
+      if (!result.ok) {
+        send({ type: "error", message: describeTidyError(result.error), fatal: false });
+        return;
+      }
+      if (result.value.status === "suspended") {
+        // 内核把 run 挂起（deferred）时它在后台继续：如实说，不谎报完成
+        send({ type: "notice", message: "记忆整理转入后台执行，完成后会另行通知。" });
+        return;
+      }
+      if (result.value.status !== "completed") {
+        send({ type: "error", message: describeTidyOutcome(result.value), fatal: false });
+        return;
+      }
+      // 整理刚可能重写过记忆文件：立即重读上报，让检索索引同步（被清理的条目就地归档，
+      // 仍可 memory_search 找回）。不等下一次注入重读——那次可能很久以后才来。
+      const fresh = await readMemoryFile(memoryFilePath(state.meta.cwd));
+      if (fresh.error === undefined) state.reportMemoryIndex("project", fresh.content);
+      // 完成通知：子 lane 对界面不可见（主 lane 的 watch 看不到它），这句是唯一的结果出口
+      send({ type: "notice", message: memoryTidyDoneNotice() });
       return;
     }
 

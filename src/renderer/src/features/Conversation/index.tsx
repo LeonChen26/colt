@@ -673,6 +673,27 @@ export function Conversation({
     }
   }, [sessionId, cwd]);
 
+  /**
+   * 显式整理记忆（`/memory-tidy`）：worker 在独立子 lane 合并重复、删过时条目，
+   * 完成后经 session.notice 报结果。
+   *
+   * 运行中不允许：整理会重写记忆文件，而运行中的任务也可能正在沉淀记忆
+   * （压缩后的沉淀提醒就是这个流程）——并发写同一个文件是竞态。与 worker 侧
+   * 同款的守卫（那边兜直接调 IPC 的路径），这里给界面内的即时反馈。
+   */
+  const memoryTidy = useCallback(async () => {
+    setError(null);
+    if (runningRef.current) {
+      setError("运行中无法整理记忆：整理会重写记忆文件，可能与任务同时改它。请等任务结束再试。");
+      return;
+    }
+    try {
+      await window.colt.invoke("session.memoryTidy", { sessionId, cwd });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [sessionId, cwd]);
+
   const submit = useCallback(async () => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
@@ -683,6 +704,11 @@ export function Conversation({
     if (command?.name === "compact") {
       setInput("");
       await compact();
+      return;
+    }
+    if (command?.name === "memory-tidy") {
+      setInput("");
+      await memoryTidy();
       return;
     }
     if (command?.name === "skill") {
