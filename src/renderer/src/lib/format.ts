@@ -83,6 +83,38 @@ export function formatAgo(ts: number, now: number = Date.now()): string {
 }
 
 /**
+ * 会话列表里的时间戳：今天 `HH:mm` / 昨天 / `M月D日`。
+ *
+ * ⚠️ 别与上面的 `formatAgo` 混为一谈——两者语义完全不同：`formatAgo` 给的是
+ * 「N 秒前」这种**相对时长**，本函数给的是**日期/时刻标签**。
+ * 当初这两个函数**同名都叫 `formatAgo`**（一个在本文件、一个是 `App.tsx` 里的私有函数），
+ * 将来谁想「统一一下」都会在不知不觉中改掉侧栏的时间显示。故在此显式分名。
+ *
+ * `now` 可注入，便于单测——跨天分支不该靠改系统时间才能验。
+ */
+export function formatSessionStamp(ts: number, now: number = Date.now()): string {
+  const d = new Date(ts);
+  const today = new Date(now);
+  if (
+    d.getFullYear() === today.getFullYear() &&
+    d.getMonth() === today.getMonth() &&
+    d.getDate() === today.getDate()
+  ) {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate()
+  ) {
+    return "昨天";
+  }
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/**
  * 在改动列表里找同路径的最近一次改动。
  * 入参路径可能是绝对路径而改动记录是相对路径，故用后缀匹配兜底。
  *

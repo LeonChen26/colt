@@ -10,6 +10,7 @@ import { classifyDiffLine } from "../src/renderer/src/lib/diff.ts";
 import {
   formatAgo,
   formatArgs,
+  formatSessionStamp,
   matchChangeByPath,
   runStateOf,
   samePath,
@@ -401,6 +402,45 @@ describe("formatAgo", () => {
     assert.equal(formatAgo(0, 5_000), "5s 前");
     assert.equal(formatAgo(0, 65_000), "1m 前");
     assert.equal(formatAgo(0, 3_601_000), "1h 前");
+  });
+});
+
+describe("formatSessionStamp", () => {
+  /** 用本地时间构造，避免用例结果随机器时区变化 */
+  const at = (y: number, mo: number, d: number, h = 0, mi = 0): number =>
+    new Date(y, mo - 1, d, h, mi).getTime();
+
+  test("同一天 → HH:mm（补零）", () => {
+    assert.equal(formatSessionStamp(at(2026, 9, 17, 14, 5), at(2026, 9, 17, 23, 59)), "14:05");
+    assert.equal(formatSessionStamp(at(2026, 9, 17, 9, 30), at(2026, 9, 17, 0, 1)), "09:30");
+  });
+
+  test("昨天 → 「昨天」", () => {
+    assert.equal(formatSessionStamp(at(2026, 9, 16, 8, 0), at(2026, 9, 17, 10, 0)), "昨天");
+  });
+
+  test("跨月边界也算「昨天」", () => {
+    // 2026 不是闰年，2 月只有 28 天
+    assert.equal(formatSessionStamp(at(2026, 2, 28, 23, 0), at(2026, 3, 1, 0, 30)), "昨天");
+  });
+
+  test("跨年边界也算「昨天」", () => {
+    assert.equal(formatSessionStamp(at(2025, 12, 31, 22, 0), at(2026, 1, 1, 8, 0)), "昨天");
+  });
+
+  test("更早 → M月D日", () => {
+    assert.equal(formatSessionStamp(at(2026, 9, 15, 8, 0), at(2026, 9, 17, 10, 0)), "9月15日");
+    assert.equal(formatSessionStamp(at(2026, 1, 3), at(2026, 9, 17)), "1月3日");
+  });
+
+  test("只差一天但已跨日（23:59 → 次日 00:01）不算同一天", () => {
+    assert.equal(formatSessionStamp(at(2026, 9, 16, 23, 59), at(2026, 9, 17, 0, 1)), "昨天");
+  });
+
+  test("已知取舍：更早的时间戳不带年份（侧栏宽度有限）", () => {
+    // 这不是 bug，是有意的取舍——写出来是为了让它成为**约定**而不是「碰巧如此」，
+    // 将来真要加年份时，这条用例会红，提醒改动者去核对侧栏是否放得下。
+    assert.equal(formatSessionStamp(at(2024, 5, 6), at(2026, 9, 17)), "5月6日");
   });
 });
 

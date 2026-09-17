@@ -34,12 +34,28 @@ import type { NetChangeResult } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import { FilePreview } from "./FilePreview";
 
-/** 容器发来的「进入下钻」请求。每次都是新对象，故 `useEffect` 的依赖判定永远生效 */
-export type DrillEntry =
-  | { layer: "list" }
-  | { layer: "content"; path: string; token: number };
+export type DrillLayer = "list" | "diff" | "content";
 
-type DrillLayer = "list" | "diff" | "content";
+/**
+ * 容器发来的「进入下钻 / 换层」**指令**。
+ *
+ * 它是指令，**不是**「当前在哪一层」——当前层由本组件持有（层内跳转不该绕一圈回到容器）。
+ * 所以容器手上那份随时可能滞后，**任何地方都不该读它来判断「现在是什么层」**。
+ *
+ * `nonce` 不能省：本组件靠它判断「这是一次新请求」，而不是靠对象身份。
+ * 对象身份是个隐式依赖——调用方一旦复用或 memo 化同一个对象（`setState` 收到同一个引用时
+ * React 还会直接 bail out），下面的 `useEffect` 就不再触发，症状是「点了没反应」，
+ * 而代码看上去毫无问题。把「新请求」写成数据，就不必再要求调用方自觉。
+ */
+export interface DrillRequest {
+  /** 单调递增；**同一层连续请求两次也必须是两个不同的值** */
+  readonly nonce: number;
+  readonly layer: DrillLayer;
+  /** 仅 `content` 层有意义 */
+  readonly path: string | null;
+  /** 仅 `content` 层有意义：重读同一文件靠它自增 */
+  readonly token: number;
+}
 
 /**
  * 「累计」这一档的记号（`diff` 层的历史切换里与 `#1 #2 #3` 并列的那个）。
@@ -218,7 +234,7 @@ export function ChangeDrilldown({
   sessionId: string;
   changes: ViewFileChange[];
   /** 容器发来的进入请求（点总账 = 清单层；点路径 = 内容层） */
-  entry: DrillEntry;
+  entry: DrillRequest;
   /** hover ④ 的工具卡时跟随高亮清单里对应的文件行（⑦-A 的现场联动） */
   highlightPath?: string | null;
   /** 「+」菜单开着时不接管 ESC——一次按键只该做一件事 */
@@ -242,7 +258,9 @@ export function ChangeDrilldown({
   /** 内容层的重读令牌：换文件时靠 `path` 变，重读同一文件靠它自增 */
   const [token, setToken] = useState(entry.layer === "content" ? entry.token : 0);
 
-  // 容器再次发来请求（④ 又点了一个路径 / 又点了总账）→ 按请求重置层
+  // 容器再次发来请求（④ 又点了一个路径 / 又点了总账）→ 按请求重置层。
+  // 依赖是 **`nonce`** 而不是 `entry` 对象本身：对象身份会因调用方的实现细节而变或不变，
+  // `nonce` 只随「真的有新请求」而变。理由见 `DrillRequest`。
   useEffect(() => {
     setLayer(entry.layer);
     setRevisionId(null);
@@ -250,7 +268,8 @@ export function ChangeDrilldown({
       setPath(entry.path);
       setToken(entry.token);
     }
-  }, [entry]);
+    // eslint 式的「依赖不全」在此是有意的：`entry` 的其余字段都随 `nonce` 一起换。
+  }, [entry.nonce]);
 
   const current = fileOf(path);
   const revision: ViewFileChange | null =

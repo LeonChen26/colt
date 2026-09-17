@@ -35,10 +35,3 @@ export function saveTheme(theme: Theme): void {
     // 忽略存储失败
   }
 }
-
-/** 三态循环顺序：暗 → 亮 → 跟随系统 → 暗 */
-export function nextTheme(theme: Theme): Theme {
-  if (theme === "dark") return "light";
-  if (theme === "light") return "system";
-  return "dark";
-}

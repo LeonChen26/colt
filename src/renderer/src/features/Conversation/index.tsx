@@ -46,15 +46,11 @@ import {
   type DockInstance,
   type DockKind,
 } from "./WorkspaceDock";
+import { clampDockWidth, dockWidthFromDrag } from "@/lib/dock";
 import type { ReactNode } from "react";
 
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
 const STALE_IDLE_SEC = 30;
-
-/** 右栏宽度下限（规则 ⑦-B）：允许拖到接近折叠条，「正在处理」这类窄内容也够用 */
-const MIN_DOCK_WIDTH = 220;
-/** 中栏可读下限：右栏最宽只能到「可用宽度 − 360」，否则会话流无法阅读（规则 ⑦-B） */
-const MIN_CENTER_WIDTH = 360;
 
 /** 待发送的图片附件；data 为不含 data URI 前缀的 base64（pi 的 ImageContent 约定） */
 interface Attachment {
@@ -113,6 +109,7 @@ export function Conversation({
   cwd,
   sessionModelRef,
   sessionThinkingLevel,
+  runStartedAt,
   providers,
   onModelSelected,
   onThinkingLevelSelected,
@@ -123,6 +120,12 @@ export function Conversation({
   sessionModelRef: string | null;
   /** 会话上次选定的思考等级（未选过为 null，按默认值回显） */
   sessionThinkingLevel: ThinkingLevel | null;
+  /**
+   * 本次运行开始时刻。真源在父组件（与侧栏计时共用同一份 Map）——若由本组件自持，
+   * 会像 modelRef / thinkingLevel 那样在重挂载后退回「更晚的时刻」，与侧栏对不上。
+   * 未运行时为 undefined。
+   */
+  runStartedAt?: number;
   providers: ProviderConfig[];
   /**
    * 模型选择已落库。父组件需据此刷新会话的 model_ref——否则切走再回来（重挂载）
@@ -200,12 +203,26 @@ export function Conversation({
   /** 是否已自动切过一次浏览器页签（规则 ⑦-F 只在「首次使用」切） */
   const browserAutoSwitchedRef = useRef(false);
   /**
-   * 工具卡的展开状态，以工具调用 id 为键。
-   * 同一个工具调用在「流式区」与「完成态消息」是两个树位置——完成的瞬间旧实例卸载、
-   * 新实例挂载，实例本地的 useState 会把用户手动展开的状态丢掉（正在读实时输出被收起）。
-   * 展开状态挂在这个组件外的 Map 上，两个渲染点共用，切换时状态跟着 id 走。
+   * 工具卡的展开状态，以工具调用 id 为键。**唯一真源在这里**，卡片自己不再留副本。
+   *
+   * 之前是「容器一个 Map + 卡片一份 useState」：卡片挂载时从 Map 取一次初值，之后
+   * 本地 state 说了算。两个问题——
+   *   ① 同一个 id 的两个实例同时挂载时（运行中工具与已完成消息都列到它），
+   *      改一个另一个不跟着变，屏幕上同一张卡片两个开合状态；
+   *   ② 初值只在挂载时取，等于把「谁先挂载」当成了真源。
+   *
+   * 用 state 而不是 ref：ref 改了不触发渲染，同步就无从发生。
    */
-  const toolOpenStateRef = useRef(new Map<string, boolean>());
+  const [toolOpenState, setToolOpenState] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const toggleToolOpen = useCallback((id: string, open: boolean): void => {
+    setToolOpenState((prev) => {
+      // 值没变就不换引用：省掉整条消息列表的一次重渲染
+      if (prev.get(id) === open) return prev;
+      const next = new Map(prev);
+      next.set(id, open);
+      return next;
+    });
+  }, []);
 
   /** 当前激活实例的 kind —— 决定渲染哪个视图、以及用哪个建议宽度 */
   const dockActiveKind =
@@ -327,23 +344,12 @@ export function Conversation({
   const dockWidth = useMemo(() => {
     // 折叠态优先：宽度固定为图标条宽度，用户拖拽值保留在 dockWidthUser 里，展开时恢复
     if (dockCollapsed) return DOCK_COLLAPSED_WIDTH;
-    const base = dockWidthUser ?? DOCK_DEFAULT_WIDTH;
-    if (dockSpace <= 0) return base;
-    const max = Math.max(MIN_DOCK_WIDTH, dockSpace - MIN_CENTER_WIDTH);
-    return Math.min(Math.max(MIN_DOCK_WIDTH, base), max);
+    return clampDockWidth(dockWidthUser ?? DOCK_DEFAULT_WIDTH, dockSpace);
   }, [dockCollapsed, dockWidthUser, dockSpace]);
 
   useEffect(() => {
     dockWidthRef.current = dockWidth;
   }, [dockWidth]);
-
-  /** 把任意宽度钳到 [220, 可用宽度 − 360]；窗口过窄时上限回退到下限，不与下限打架 */
-  const clampDockWidth = useCallback((px: number): number => {
-    const space = rootRef.current?.clientWidth ?? 0;
-    if (space <= 0) return Math.max(MIN_DOCK_WIDTH, px);
-    const max = Math.max(MIN_DOCK_WIDTH, space - MIN_CENTER_WIDTH);
-    return Math.min(Math.max(MIN_DOCK_WIDTH, px), max);
-  }, []);
 
   const onDockGripDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -362,9 +368,11 @@ export function Conversation({
     const onMove = (event: MouseEvent): void => {
       const start = dockDragRef.current;
       if (start === null) return;
-      // 把手在中栏↔右栏边界上：向左拖（dx<0）→ 右栏变宽，向右拖（dx>0）→ 变窄
-      const next = start.startWidth - (event.clientX - start.startX);
-      setDockWidthUser(clampDockWidth(next));
+      // 位移→宽度、以及钳制，都是 `lib/dock.ts` 里的纯函数（AGENTS.md §3.3 那次翻车的位置）。
+      // 这里读 ref 而不是 `dockSpace` state：拖拽期间要的是**当下**的可用宽度，
+      // 等 state 回流会晚一帧、出现可感知的滞后。
+      const next = dockWidthFromDrag(start.startWidth, start.startX, event.clientX);
+      setDockWidthUser(clampDockWidth(next, rootRef.current?.clientWidth ?? 0));
     };
     const onUp = (): void => setDockDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -375,7 +383,7 @@ export function Conversation({
       window.removeEventListener("mouseup", onUp);
       document.body.classList.remove("resizing");
     };
-  }, [dockDragging, clampDockWidth]);
+  }, [dockDragging]);
 
   // 心跳：运行期间每秒重渲染，驱动「已耗时 / 最后活动」显示
   const [now, setNow] = useState(() => Date.now());
@@ -385,11 +393,10 @@ export function Conversation({
     return () => clearInterval(timer);
   }, [view?.running]);
 
-  /** 本次运行开始时刻（running 变 true 时锁定；仅用于估算已耗时） */
-  const runStartedAtRef = useRef<number | null>(null);
-  useEffect(() => {
-    runStartedAtRef.current = view?.running ? (runStartedAtRef.current ?? Date.now()) : null;
-  }, [view?.running]);
+  // 「本次运行开始时刻」的真源在 App（它已为侧栏计时持有 runningSessions），此处只消费
+  // 由 props 传入的 runStartedAt。原先这里自持一个 ref、在 running 变 true 时锁 Date.now()，
+  // 但 Conversation 以 sessionId 为 key 重挂载（切走再切回）时 ref 归零、会重新锁一个**更晚**
+  // 的时刻 —— 于是会话内的计时比侧栏慢一截，两个数字当场对不上。
 
   /**
    * 运行态的 ref 镜像。`running` 的派生值在组件靠后处（⑥ 那一段）才算出来，
@@ -913,8 +920,7 @@ export function Conversation({
   const contextBarClass =
     contextRatio > 0.9 ? "bg-danger" : contextRatio > 0.7 ? "bg-warning" : "bg-accent-dim";
 
-  // 心跳派生值
-  const runStartedAt = runStartedAtRef.current;
+  // 心跳派生值（runStartedAt 来自 props，见上方说明）
   const elapsedSec = running && runStartedAt ? Math.floor((now - runStartedAt) / 1000) : 0;
   const elapsedLabel = `${String(Math.floor(elapsedSec / 60)).padStart(2, "0")}:${String(elapsedSec % 60).padStart(2, "0")}`;
   // 最后活动：取运行工具的最近 startedAt；无运行工具则用 now
@@ -1105,7 +1111,8 @@ export function Conversation({
                 changes={changes}
                 onHoverFile={setHoveredFile}
                 onOpenFile={openFile}
-                openState={toolOpenStateRef.current}
+                openState={toolOpenState}
+                onToggleOpen={toggleToolOpen}
               />
             ))}
 
@@ -1124,7 +1131,8 @@ export function Conversation({
                   <ToolCard
                     key={tool.id}
                     openId={tool.id}
-                    openState={toolOpenStateRef.current}
+                    openState={toolOpenState}
+                    onToggleOpen={toggleToolOpen}
                     name={tool.name}
                     args={tool.args}
                     running

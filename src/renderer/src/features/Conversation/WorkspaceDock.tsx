@@ -25,7 +25,7 @@
  *      否则原生视图会一直浮在界面上，盖住别的页签内容（原生视图不参与 DOM 叠层）。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Activity,
   ChartColumn,
@@ -46,7 +46,7 @@ import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
 import { FollowPanel } from "./FollowPanel";
 import { ObserveDrawer } from "./ObserveDrawer";
-import { ChangeDrilldown, type DrillEntry } from "./panels/ChangeDrilldown";
+import { ChangeDrilldown, type DrillLayer, type DrillRequest } from "./panels/ChangeDrilldown";
 import { RulesPanel } from "./panels/RulesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 
@@ -292,21 +292,45 @@ export function WorkspaceDock({
    */
   const [areaWidth, setAreaWidth] = useState(0);
   /**
-   * 「正在处理」是否处在下钻中；null = 停在 follow 层。
-   * 这里**只记「在不在下钻」与「怎么进来的」**，下钻到哪一层由 `ChangeDrilldown` 自己维护——
-   * 层内跳转（清单↔diff↔内容）不该绕一圈回到容器再下来。
+   * 下钻**指令**；null = 停在 follow 层。
+   *
+   * 它是指令，不是状态：当前在下钻的哪一层由 `ChangeDrilldown` 自己持有，
+   * 层内跳转（清单↔diff↔内容）不绕回容器。所以这里那份 `layer` 只描述「这次请求进哪一层」，
+   * **随时可能已经滞后于界面**——容器里唯一的合法读法是「是不是 null」，
+   * 别拿它去判断「现在在第几层」。要那种判断，就得把层状态整个搬上来，
+   * 而那样层内跳转要绕一圈回到容器，是这个设计明确要避免的。
    */
-  const [drillEntry, setDrillEntry] = useState<DrillEntry | null>(null);
+  const [drillRequest, setDrillRequest] = useState<DrillRequest | null>(null);
+  const drillNonce = useRef(0);
+  /**
+   * 发一条下钻指令。
+   *
+   * `nonce` 单调递增是**本函数的唯一职责里最关键的一条**：下钻层靠它判断「这是新请求」。
+   * 之前靠「每次都是新对象」这个隐式约定——一旦有人 memo 化或复用同一个对象，
+   * 重置就静默不发生（点了没反应），而代码看上去完全正常。
+   */
+  const sendDrill = useCallback(
+    (target: { layer: DrillLayer; path?: string; token?: number }): void => {
+      drillNonce.current += 1;
+      setDrillRequest({
+        nonce: drillNonce.current,
+        layer: target.layer,
+        path: target.path ?? null,
+        token: target.token ?? 0,
+      });
+    },
+    [],
+  );
 
   // 「要看某个文件」→ 进下钻的**内容层**（原 A3-2 的入口，行为等价，只是不再切页签）
   useEffect(() => {
     if (fileRequest === null) return;
-    setDrillEntry({ layer: "content", path: fileRequest.path, token: fileRequest.seq });
-  }, [fileRequest]);
+    sendDrill({ layer: "content", path: fileRequest.path, token: fileRequest.seq });
+  }, [fileRequest, sendDrill]);
 
   // 换会话时退出下钻：否则会停在上一个会话的文件上（那是另一个项目的路径）
   useEffect(() => {
-    setDrillEntry(null);
+    setDrillRequest(null);
   }, [sessionId]);
 
   // 点菜单外 / 按 Esc 收起「+」菜单。
@@ -721,21 +745,21 @@ export function WorkspaceDock({
         <UsagePanel sessionId={sessionId} />
       ) : activeKind === "rules" ? (
         <RulesPanel sessionId={sessionId} />
-      ) : drillEntry !== null ? (
+      ) : drillRequest !== null ? (
         /* 下钻中（⑦-G）：清单 → diff → 内容。只在「正在处理」这一页签内成立 */
         <ChangeDrilldown
           sessionId={sessionId}
           changes={view?.fileChanges ?? []}
-          entry={drillEntry}
+          entry={drillRequest}
           highlightPath={highlightPath}
           menuOpen={menuOpen}
-          onExit={() => setDrillEntry(null)}
+          onExit={() => setDrillRequest(null)}
         />
       ) : (
         <FollowPanel
           view={view}
           highlightPath={highlightPath}
-          onOpenChanges={() => setDrillEntry({ layer: "list" })}
+          onOpenChanges={() => sendDrill({ layer: "list" })}
         />
       )}
     </aside>

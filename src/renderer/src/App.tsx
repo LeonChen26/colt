@@ -12,6 +12,7 @@ import {
   Sun,
   Trash2,
 } from "lucide-react";
+import { formatSessionStamp } from "@/lib/format";
 import { ICON } from "@/lib/icon";
 import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
 import { hasUsableProvider } from "@shared/model-ref";
@@ -22,6 +23,7 @@ import { Conversation } from "./features/Conversation";
 import { FirstRunGate } from "./features/FirstRunGate";
 import { ProjectChanges } from "./features/ProjectChanges";
 import { Settings } from "./features/Settings";
+import { isDraftSession, mergeSessionList } from "./lib/session";
 import { cn } from "./lib/utils";
 
 /** 主区视图 */
@@ -194,10 +196,18 @@ export default function App(): React.JSX.Element {
       });
     });
   }, []);
-  /** 拉取某项目的会话列表并写入缓存；force 时重拉 */
+  /**
+   * 拉取某项目的会话列表并写入缓存。
+   *
+   * 不能直接拿 `session.list` 的结果整份替换：它只读库，**草稿**（首次发消息才落库）
+   * 不在其中，整份替换会让侧栏里那条草稿凭空消失、用户再也点不回来（切项目来回、
+   * 删同项目其它会话都会触发）。合并规则见 `lib/session.ts` 的 `mergeSessionList`。
+   */
   const loadProjectSessions = useCallback(async (projectId: string) => {
     const list = await window.colt.invoke("session.list", { projectId });
-    setSessionsByProject((map) => new Map(map).set(projectId, list));
+    setSessionsByProject((map) =>
+      new Map(map).set(projectId, mergeSessionList(map.get(projectId) ?? [], list)),
+    );
     return list;
   }, []);
 
@@ -258,9 +268,16 @@ export default function App(): React.JSX.Element {
       // 响应到达时可能已经切到别的项目（会话多、IPC 慢时后到）：不能把**上一个项目**
       // 的响应写进选中态，否则主区会用当前项目的 cwd 去开另一个项目的会话。
       if (stale) return;
-      setActiveSession((current) =>
-        current && list.some((item) => item.id === current.id) ? current : (list[0] ?? null),
-      );
+      setActiveSession((current) => {
+        if (!current) return list[0] ?? null;
+        // 在库列表里 → 保留
+        if (list.some((item) => item.id === current.id)) return current;
+        // 草稿不在 session.list 里（尚未落库），但它确实属于本项目、也还在侧栏里 → 保留，
+        // 否则切走再切回会被莫名换成别的会话。必须**同时**校验 projectId：当前会话若属于
+        // 另一个项目（切项目后响应到达），就该换掉，不能因为它是草稿就留住。
+        if (current.projectId === projectId && isDraftSession(current)) return current;
+        return list[0] ?? null;
+      });
     })();
     return () => {
       stale = true;
@@ -532,6 +549,7 @@ export default function App(): React.JSX.Element {
                 cwd={activeProject.rootPath}
                 sessionModelRef={activeSession.modelRef}
                 sessionThinkingLevel={activeSession.thinkingLevel}
+                runStartedAt={runningSessions.get(activeSession.id)}
                 providers={providers}
                 onModelSelected={(modelRef) => applySessionModel(activeSession.id, modelRef)}
                 onThinkingLevelSelected={(level) =>
@@ -599,29 +617,6 @@ function SidebarSection({
       {!collapsed && <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">{children}</div>}
     </div>
   );
-}
-
-/** 相对时间：今天 HH:mm / 昨天 / M月D日 */
-function formatAgo(ts: number): string {
-  const d = new Date(ts);
-  const now = new Date();
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  if (sameDay) {
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  }
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (
-    d.getFullYear() === yesterday.getFullYear() &&
-    d.getMonth() === yesterday.getMonth() &&
-    d.getDate() === yesterday.getDate()
-  ) {
-    return "昨天";
-  }
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 /** 已运行时长：mm:ss */
@@ -769,7 +764,7 @@ function SessionRow({
                   ? "异常中断 · 发送即恢复"
                   : offlineState === "dormant"
                     ? "空闲休眠 · 发送即恢复"
-                    : formatAgo(session.updatedAt)}
+                    : formatSessionStamp(session.updatedAt)}
           </span>
         </span>
       </button>

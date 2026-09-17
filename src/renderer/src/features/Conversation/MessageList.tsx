@@ -50,6 +50,7 @@ export function MessageBubble({
   onHoverFile,
   onOpenFile,
   openState,
+  onToggleOpen,
 }: {
   message: ViewMessage;
   resultMap: Map<string, ToolResult>;
@@ -58,7 +59,9 @@ export function MessageBubble({
   /** 点工具卡里的文件路径 → 在右栏预览它（A3-2） */
   onOpenFile?: (path: string) => void;
   /** 工具卡展开状态共享表（键 = 工具调用 id），与流式区共用，完成迁移时不丢展开态 */
-  openState?: Map<string, boolean>;
+  openState: ReadonlyMap<string, boolean>;
+  /** 卡片改了展开状态 → 回传容器（唯一真源在 `Conversation`） */
+  onToggleOpen: (id: string, open: boolean) => void;
 }): React.JSX.Element | null {
   // 工具结果已合并进各自的工具卡片，不再单独成条
   if (message.role === "toolResult") return null;
@@ -93,6 +96,7 @@ export function MessageBubble({
           key={call.id}
           openId={call.id}
           openState={openState}
+          onToggleOpen={onToggleOpen}
           name={call.name}
           args={call.args}
           durationMs={call.durationMs}
@@ -209,6 +213,7 @@ export function ToolCard({
   running,
   openId,
   openState,
+  onToggleOpen,
   onHoverFile,
   onOpenFile,
 }: {
@@ -218,22 +223,27 @@ export function ToolCard({
   durationMs?: number;
   change?: ViewFileChange;
   running?: boolean;
-  /** 展开 state 共享表里的键（工具调用 id）；与 openState 成对使用 */
-  openId?: string;
-  /** 跨「流式区 → 完成态」迁移的展开状态表；缺省时展开状态只在实例本地 */
-  openState?: Map<string, boolean>;
+  /** 展开 state 共享表里的键（工具调用 id） */
+  openId: string;
+  /** 展开状态的唯一真源（在 `Conversation`）；本组件只读，不留本地副本 */
+  openState: ReadonlyMap<string, boolean>;
+  /** 改动展开状态 → 回传真源 */
+  onToggleOpen: (id: string, open: boolean) => void;
   onHoverFile?: (path: string | null) => void;
   /** 点副标题里的文件路径 → 在右栏预览它（A3-2） */
   onOpenFile?: (path: string) => void;
 }): React.JSX.Element {
-  // 展开状态优先取共享表（同一工具调用在流式区与完成态是两次挂载，
-  // 实例本地 state 会在迁移时清零——用户正展开读实时输出，完成瞬间却被收起）。
-  const [open, setOpenState] = useState(
-    () => (openId !== undefined ? openState?.get(openId) : undefined) ?? Boolean(running),
-  );
+  /**
+   * 展开状态**不放在本组件里**：同一个工具调用在「流式区」与「完成态消息」是两次挂载，
+   * 本地 state 会让两个实例各持一份开合（改一个另一个不动），
+   * 且完成迁移时新建的实例只会「挂载时取一次初值」，等于把挂载时机当成真源。
+   *
+   * 未记录过时按运行状态给初值：运行中默认展开（用户在看实时输出），
+   * 已完成默认收起（结果已定，不必占屏）。
+   */
+  const open = openState.get(openId) ?? Boolean(running);
   const setOpen = (value: boolean): void => {
-    setOpenState(value);
-    if (openId !== undefined) openState?.set(openId, value);
+    onToggleOpen(openId, value);
   };
   const parsed = useMemo(() => parseArgsJson(args), [args]);
   const { icon, subtitle } = describeTool(name, parsed);
