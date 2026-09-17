@@ -36,6 +36,22 @@ function methodBody(name: string): string {
   return rest.slice(0, closing.index);
 }
 
+/**
+ * 取一个 IPC handler 的源码片段：从 `handle("<name>"` 起，到**下一个** `handle(` 为止。
+ *
+ * 不要写成「到某个具体的相邻 handler 为止」——早先这里是切到 `handle("session.steer"`，
+ * 而那个通道后来被当成死代码删掉了，切片边界随之失效（indexOf 返回 -1 → slice 到 -1 →
+ * 拿到空串 → 断言以「找不到」的形式失败，看不出是邻居没了）。以「下一个 handle」为界，
+ * 增删邻居都不会破。
+ */
+function handlerBody(name: string): string {
+  const start = IPC_SOURCE.indexOf(`handle("${name}"`);
+  assert.notEqual(start, -1, `找不到 ${name} 处理器`);
+  const rest = IPC_SOURCE.slice(start);
+  const next = /\n\s+handle(?:WithSender)?\("/.exec(rest.slice(1));
+  return next ? rest.slice(0, next.index + 1) : rest;
+}
+
 describe("session.setModel 的自愈契约", () => {
   test("setModelOrReconnect 先落库，再决定是否投递", () => {
     const body = methodBody("setModelOrReconnect");
@@ -74,9 +90,7 @@ describe("session.setModel 的自愈契约", () => {
   });
 
   test("IPC 处理：无密钥的 provider 只落库并回 needsKey，不启动会话", () => {
-    const start = IPC_SOURCE.indexOf('handle("session.setModel"');
-    assert.notEqual(start, -1, "找不到 session.setModel 处理器");
-    const body = IPC_SOURCE.slice(start, IPC_SOURCE.indexOf("handle(\"session.steer\"", start));
+    const body = handlerBody("session.setModel");
     assert.match(body, /hasSecret\(/, "必须先判断密钥：没密钥时启动 worker 必然失败");
     assert.match(body, /needsKey: true/, "无密钥要回可识别的信号，让界面引导去设置页");
     assert.match(

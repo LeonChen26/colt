@@ -939,11 +939,6 @@ export class SessionManager {
     this.cancelPending(sessionId);
   }
 
-  /** 显式插话（不管是否运行中） */
-  steer(sessionId: string, text: string): void {
-    this.#post(sessionId, { type: "steer", text });
-  }
-
   /**
    * 把「用户手动操作了浏览器（后退 / 前进 / 刷新）」告知 agent（B1）。
    *

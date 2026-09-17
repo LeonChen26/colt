@@ -3,7 +3,7 @@
  * 主进程、预加载、渲染进程共享此定义。
  */
 
-import type { ConversationView, ViewFileChange } from "./worker-protocol";
+import type { ConversationView } from "./worker-protocol";
 import type { ThinkingLevel } from "./thinking-level";
 
 /** 环境体检结果 */
@@ -225,7 +225,6 @@ export type SessionRunState = "idle" | "running" | "dormant" | "crashed";
  */
 export const IPC_CHANNELS = [
   "env.check",
-  "app.info",
   "firstRun.check",
   "firstRun.resolve",
   "dialog.confirm",
@@ -239,7 +238,6 @@ export const IPC_CHANNELS = [
   "session.close",
   "session.delete",
   "session.view",
-  "secrets.status",
   "secrets.set",
   "changes.list",
   "usage.list",
@@ -249,7 +247,6 @@ export const IPC_CHANNELS = [
   "providers.remove",
   "session.setModel",
   "session.setThinkingLevel",
-  "session.steer",
   "session.compact",
   "session.skill",
   "session.memoryTidy",
@@ -305,10 +302,6 @@ export interface IpcInvokeMap {
   "env.check": {
     request: void;
     response: EnvReport;
-  };
-  "app.info": {
-    request: void;
-    response: { version: string; userDataPath: string };
   };
   /** 首启检测：是否发现历史数据、是否需要引导 */
   "firstRun.check": {
@@ -394,10 +387,6 @@ export interface IpcInvokeMap {
   "session.view": {
     request: { sessionId: string };
     response: ConversationView | null;
-  };
-  "secrets.status": {
-    request: void;
-    response: { deepseek: boolean; deepseekMask?: string };
   };
   "secrets.set": {
     request: { key: "deepseek"; value: string };
@@ -506,11 +495,6 @@ export interface IpcInvokeMap {
   "session.setThinkingLevel": {
     /** cwd 用于 worker 已被空闲回收时自愈重建（同 session.setModel） */
     request: { sessionId: string; level: ThinkingLevel; cwd?: string };
-    response: { ok: true };
-  };
-  /** 显式插话 */
-  "session.steer": {
-    request: { sessionId: string; text: string };
     response: { ok: true };
   };
   /** 手动触发上下文压缩。带 cwd 时在被空闲回收后自动重建会话进程（同 session.prompt） */
@@ -781,7 +765,6 @@ export const IPC_EVENTS = [
   "session.status",
   "session.error",
   "session.notice",
-  "file.changed",
   "approval.pending",
   "browser.state",
 ] as const;
@@ -796,8 +779,6 @@ export interface IpcEventMap {
   "session.error": { sessionId: string; message: string };
   /** 会话级瞬时通知（非错误）：如压缩完成，渲染层短暂展示后自动消失 */
   "session.notice": { sessionId: string; message: string };
-  /** 文件改动（M2 接入） */
-  "file.changed": { sessionId: string; change: ViewFileChange };
   /** 待审批的工具调用（新增或清空时推送全量） */
   "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
   /** 内嵌浏览器视图状态变化（首次加载 / 导航 / 标题变化 / 销毁） */

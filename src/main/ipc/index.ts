@@ -34,7 +34,7 @@ import { readFileWithin } from "../file-read";
 import { computeNetChange } from "../net-change";
 import { closeDatabase, openDatabase } from "../db";
 import { closeMemoryDatabase, openMemoryDatabase } from "../db/memory-index";
-import { deleteSecret, hasSecret, maskSecret, setSecret } from "../secrets";
+import { deleteSecret, hasSecret, setSecret } from "../secrets";
 import {
   BUILTIN_DEEPSEEK,
   getProvider,
@@ -168,11 +168,6 @@ function materializeDraft(sessionId: string): void {
 
 export function registerIpcHandlers(): void {
   handle("env.check", () => runEnvCheck());
-
-  handle("app.info", () => ({
-    version: app.getVersion(),
-    userDataPath: app.getPath("userData"),
-  }));
 
   // 首启报告在 app.whenReady 时就已采集（需早于 openDatabase）
   handle("firstRun.check", () => firstRunReport ?? inspectUserData(app.getPath("userData")));
@@ -333,11 +328,6 @@ export function registerIpcHandlers(): void {
 
   handle("session.view", (request) => sessionManager.getView(request.sessionId) ?? null);
 
-  handle("secrets.status", () => ({
-    deepseek: hasSecret("deepseek"),
-    deepseekMask: maskSecret("deepseek"),
-  }));
-
   handle("secrets.set", (request) => {
     setSecret(request.key, request.value.trim());
     return { ok: true } as const;
@@ -455,11 +445,6 @@ export function registerIpcHandlers(): void {
             })
         : undefined,
     );
-    return { ok: true } as const;
-  });
-
-  handle("session.steer", (request) => {
-    sessionManager.steer(request.sessionId, request.text);
     return { ok: true } as const;
   });
 
