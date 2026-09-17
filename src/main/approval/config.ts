@@ -18,12 +18,28 @@ export function getAnalyzeCommandAllowlist(): string[] {
   const raw = getSetting(ALLOWLIST_KEY);
   // 从未配置：用内置默认
   if (raw === undefined) return [...DEFAULT_ANALYZE_COMMAND_ALLOWLIST];
+
+  // 存量脏数据：退回内置默认，避免一条坏记录把自动审批卡死。
+  //
+  // 「脏」的判定必须是「解析不出 JSON **数组**」，不能只判抛不抛异常：
+  // `setAnalyzeCommandAllowlist` 只往里写数组，所以解析出来不是数组的值，按定义都不是本程序写的。
+  // 早先只 catch 语法错，于是 `{"npm":true}` / `null` / `"npm"` 这类**能解析但非数组**的值
+  // 会一路走到 `normalizeAnalyzeAllowlist` → 返回空表 → 被当成「用户显式清空了白名单」，
+  // 结果是自动放行被悄悄关掉（用户只看到「怎么每条命令都要问我」，看不出原因）。
+  const parsed = parseStoredList(raw);
+  if (parsed === undefined) return [...DEFAULT_ANALYZE_COMMAND_ALLOWLIST];
+
+  // 已配置成数组：即便归一化后是空数组也照用（那是用户显式清空，表示关闭自动放行）
+  return normalizeAnalyzeAllowlist(parsed);
+}
+
+/** 解析存量设置值；不是 JSON、或不是数组，都返回 undefined（按坏记录处理） */
+function parseStoredList(raw: string): unknown[] | undefined {
   try {
-    // 已配置：即便解析成空数组也照用（那是用户显式清空，表示关闭自动放行）
-    return normalizeAnalyzeAllowlist(JSON.parse(raw));
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : undefined;
   } catch {
-    // 存量脏数据：退回内置默认，避免一条坏记录把自动审批卡死
-    return [...DEFAULT_ANALYZE_COMMAND_ALLOWLIST];
+    return undefined;
   }
 }
 
