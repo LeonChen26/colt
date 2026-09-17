@@ -751,8 +751,17 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       try {
         const target =
           operation.lane === lane.name ? lane : await harness.lane(operation.lane, context);
-        await target.resume(context);
+        const resumed = await target.resume(context);
         send({ type: "log", message: `已恢复未完成的运行：${operation.lane}` });
+        // 整理 lane 续跑完同样要有结果出口：子 lane 对界面不可见，崩溃打断的整理
+        // 如果恢复跑完不报一声，用户只会看到文件变了而没有任何解释。
+        if (operation.lane === TIDY_LANE && state && resumed.ok) {
+          if (resumed.value.status === "suspended") {
+            settleSuspendedTidy(target, resumed.value.operationId);
+          } else {
+            await settleTidyRun(state, resumed.value);
+          }
+        }
       } catch (error) {
         send({
           type: "error",
@@ -762,6 +771,40 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       }
     })();
   }
+}
+
+/**
+ * 整理落定后的统一出口：成功 → 立即重报记忆索引 + 完成通知；否则 → 可见报错。
+ *
+ * 子 lane 对界面不可见（主 lane 的 watch 看不到它），这就是整理唯一的「结果出口」——
+ * 正常结算、挂起后的补报、崩溃恢复后的补报三条路径共用，谁都不能悄悄结束。
+ */
+async function settleTidyRun(
+  current: WorkerState,
+  record: { status: string; error?: { code?: string; message?: string } } | undefined,
+): Promise<void> {
+  if (!record || record.status !== "completed") {
+    send({
+      type: "error",
+      message: describeTidyOutcome(record ?? { status: "failed" }),
+      fatal: false,
+    });
+    return;
+  }
+  // 整理刚可能重写过记忆文件：立即重读上报，让检索索引同步（被清理的条目就地归档，
+  // 仍可 memory_search 找回）。不等下一次注入重读——那次可能很久以后才来。
+  const fresh = await readMemoryFile(memoryFilePath(current.meta.cwd));
+  if (fresh.error === undefined) current.reportMemoryIndex("project", fresh.content);
+  send({ type: "notice", message: memoryTidyDoneNotice() });
+}
+
+/** 挂起的 run 落定后补报结果。通知没有别的机制会发——「完成后另行通知」必须由这里兑现 */
+function settleSuspendedTidy(target: AgentLane, operationId: string): void {
+  void target
+    .waitForIdle(context)
+    .then(() => target.getResult(operationId, context))
+    .then((settled) => (state ? settleTidyRun(state, settled) : undefined))
+    .catch(() => undefined);
 }
 
 /** 压缩完成提示：带上「压缩前多少 tokens」，用户才看得出压缩干了多少活 */
@@ -913,20 +956,13 @@ async function handle(command: WorkerCommand): Promise<void> {
         return;
       }
       if (result.value.status === "suspended") {
-        // 内核把 run 挂起（deferred）时它在后台继续：如实说，不谎报完成
-        send({ type: "notice", message: "记忆整理转入后台执行，完成后会另行通知。" });
+        // 内核把 run 挂起（deferred）时它在后台继续：如实说，并把结果出口也搬过去——
+        // 「完成（或失败）后再报一声」是本分支的承诺，必须由 settleSuspendedTidy 兑现。
+        send({ type: "notice", message: "记忆整理转入后台执行，完成（或失败）后会再报一声。" });
+        settleSuspendedTidy(tidy, result.value.operationId);
         return;
       }
-      if (result.value.status !== "completed") {
-        send({ type: "error", message: describeTidyOutcome(result.value), fatal: false });
-        return;
-      }
-      // 整理刚可能重写过记忆文件：立即重读上报，让检索索引同步（被清理的条目就地归档，
-      // 仍可 memory_search 找回）。不等下一次注入重读——那次可能很久以后才来。
-      const fresh = await readMemoryFile(memoryFilePath(state.meta.cwd));
-      if (fresh.error === undefined) state.reportMemoryIndex("project", fresh.content);
-      // 完成通知：子 lane 对界面不可见（主 lane 的 watch 看不到它），这句是唯一的结果出口
-      send({ type: "notice", message: memoryTidyDoneNotice() });
+      await settleTidyRun(state, result.value);
       return;
     }
 
