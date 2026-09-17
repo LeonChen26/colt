@@ -209,17 +209,37 @@ src/shared/protocol.ts(760,15): error TS2344:
 
 | # | 落点 |
 |---|---|
-| 1 | 运行起始时刻收敛为单一真源（抽 `lib/session.ts`，`tests/session-list.test.ts`）；草稿会话不再被 `continue` 守卫丢掉（`mergePersistedWithDrafts`） |
+| 1 | 运行起始时刻收敛为单一真源（真源是 `App.tsx` 的「会话 → 起始时刻」Map，侧栏计时与会话内计时都从它读，不再各记一份）；草稿会话不再被列表刷新丢掉（纯函数 `mergeSessionList`，`src/renderer/src/lib/session.ts:35`，`tests/session-list.test.ts` 覆盖） |
 | 2 | 越界用例改用目录联接（junction）——本机 `symlinkSync` 静默失败，故原用例一直永久跳过；现 0 skipped |
 | 3 | `clampDockWidth` / `dockWidthFromDrag` 抽到 `lib/dock.ts`；`tests/dock.test.ts` 含 §3.3 翻车的回归守卫 |
 | 4 | 删 `nextTheme`；`App.tsx` 的日期戳改名 `formatSessionStamp`（同名异义消除） |
 | 5 | `tests/helpers/temp.ts` 收走 12 个文件的临时目录生命周期（含异步版）；`net-change` 改为每例一棵新树，越界用例改为**真指向根外的存在文件** |
-| 6 | `contract.test.ts` 加「防漂移回退、非行为覆盖」定位注释；8 处「只验非空」改为断言具体值 |
+| 6 | `contract.test.ts` 加「防漂移回退、非行为覆盖」定位注释；「只验非空」改为断言具体值 |
 | 7 | ToolCard 展开态收敛为唯一真源（去掉实例本地镜像）；下钻请求带 `nonce`，不再依赖「对象身份」这个隐式依赖 |
 | 8 | 新增 `tests/env-check.test.ts` / `tests/approval-config.test.ts` / `tests/icon.test.ts`；**顺带修一个真 bug**：`approval/config.ts` 把「能解析但非数组」的脏数据当成「用户清空白名单」，静默关掉自动放行 |
 | 9 | `ConversationView` 删掉 `lane` / `cwd` / `faulted`（连动 worker 投影与冒烟夹具），契约里留注记防回加；`ERRORS.md` §三 / `UI-REGIONS.md` 加现状说明 |
 
 > 第 8 项里那个 bug 是本轮唯一**改动了产品行为**的修复，其余都是契约/测试/文档层面的收敛。
+
+### ⚠️ 第三轮（同日）对本表的更正
+
+第三轮逐项回读代码后发现**本表有两处措辞失真**，已就地改正并在下列明（改的是文字，落地情况本身没变）：
+
+- **#1 的函数名写错了**：原文写 `mergePersistedWithDrafts`，**全仓 0 命中**，真名是 `mergeSessionList`
+  （`src/renderer/src/lib/session.ts:35`）。且「运行起始时刻抽到 `lib/session.ts`」不准确——
+  该文件只管草稿判别与草稿合并，起始时刻的真源是 `App.tsx` 里的「会话 → 时刻」Map
+  （**收敛为单一真源这个结论成立，只是位置写错了**）。
+
+> 教训与本报告 §一 那条一致，只是这次落在**自己身上**：报告写完不回填执行状态，下一个人会去修
+> 已经修过的地方；**回填时写错函数名，下一个人会 grep 不到、以为没做**。
+> 文档里的标识符必须能被执行——写之前先 grep 一遍。
+
+**另有一条「查出来了但结论是虚惊」**，一并记下，免得下一个人重复翻：
+`tests/provider-factory.test.ts:26` 的 `assert.ok(model)` 与 `:78` 的 `assert.ok(fromCatalog.length > 0)`
+看着像「只验非空」的弱断言，**其实不是**——前者是给 `find()` 的返回值做**类型收窄**
+（后面每条用例都断言具体字段），后者是**防止目录为空时下面的 `deepEqual` 恒真**
+（注释里写明了）。判断「弱不弱」要看**这条断言独不独立承担验收**：
+它只是给后面的真断言清场时，就不是弱断言。
 
 ---
 

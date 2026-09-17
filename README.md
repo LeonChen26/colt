@@ -38,7 +38,7 @@ npm run dev
 |---|---|
 | `npm run dev` | 开发模式启动（electron-vite） |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test；条数以运行输出为准，2026-09-17 实测 664 条：663 通过 / 1 跳过） |
+| `npm test` | 单测（node:test；**条数以运行输出为准**——不写死：每增删一条用例就变，写下来的当天就过期） |
 | `npm run build` | 类型检查 + 构建产物到 `out/` |
 | `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
 | `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
