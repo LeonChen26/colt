@@ -8,6 +8,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { DEEPSEEK_MODELS } from "@earendil-works/pi-ai/providers/deepseek.models";
 import { buildProvider, type ProviderBuildConfig } from "@shared/provider-factory";
 import { LEGACY_MAX_TOKENS } from "@shared/model-option";
 
@@ -66,6 +67,21 @@ describe("buildProvider 按声明装配自定义模型", () => {
       kind: "deepseek",
       baseUrl: "https://api.deepseek.com",
     });
-    assert.ok(provider.getModels().length > 0, "内置工厂应自带模型目录");
+
+    // 与静态目录逐项对齐，而不是「有几个就行」：工厂走的是运行时 `deepseekProvider()`，
+    // 目录走的是 pi-ai 的静态数据模块，两条路径必须给出同一份模型表。
+    // 不写死 id 清单——来源模块的注释已说明「不手写常量，避免 pi-ai 升表后此处漂移」。
+    const fromCatalog = Object.values(DEEPSEEK_MODELS)
+      .map((model) => model.id)
+      .sort();
+    // 目录为空时下面的相等断言会恒真，先把它堵掉
+    assert.ok(fromCatalog.length > 0, "pi-ai 目录不该是空的");
+    assert.deepEqual(
+      provider
+        .getModels()
+        .map((model) => model.id)
+        .sort(),
+      fromCatalog,
+    );
   });
 });

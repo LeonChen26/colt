@@ -45,7 +45,7 @@ describe("parseVerdict", () => {
   test("reason 缺失时给默认文案", () => {
     const allow = parseVerdict('{"allow": true}');
     assert.equal(allow?.allow, true);
-    assert.ok((allow?.reason.length ?? 0) > 0);
+    assert.equal(allow?.reason, "模型判断为安全操作");
 
     const deny = parseVerdict('{"allow": false}');
     assert.equal(deny?.allow, false);
@@ -54,7 +54,7 @@ describe("parseVerdict", () => {
 
   test("空 reason 视为缺失", () => {
     const verdict = parseVerdict('{"allow": true, "reason": "   "}');
-    assert.ok((verdict?.reason.length ?? 0) > 0);
+    assert.equal(verdict?.reason, "模型判断为安全操作");
   });
 });
 
@@ -87,11 +87,11 @@ describe("parseVerdict 边界（补充）", () => {
   test("reason 非字符串时回落默认文案", () => {
     const allow = parseVerdict('{"allow": true, "reason": 42}');
     assert.equal(allow?.allow, true);
-    assert.ok((allow?.reason.length ?? 0) > 0);
+    assert.equal(allow?.reason, "模型判断为安全操作");
 
     const deny = parseVerdict('{"allow": false, "reason": {"a": 1}}');
     assert.equal(deny?.allow, false);
-    assert.ok((deny?.reason.length ?? 0) > 0);
+    assert.equal(deny?.reason, "模型判断为高风险操作");
   });
 
   test("reason 内含花括号不影响解析", () => {

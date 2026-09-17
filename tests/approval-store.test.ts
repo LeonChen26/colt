@@ -586,7 +586,16 @@ describe("ApprovalStore 生命周期", () => {
     assert.equal(rules[1]!.kind, "deny");
     assert.equal(rules[1]!.toolName, "bash");
     assert.equal(rules[1]!.scope, "tool");
-    assert.ok(rules.every((rule) => rule.id.length > 0), "每条规则应有稳定 id");
+    // id 是 `removeRule` 与界面定位规则的唯一凭据，必须具体（顺序号）且重复读取不换
+    assert.deepEqual(
+      rules.map((rule) => rule.id),
+      ["r1", "r2"],
+    );
+    assert.deepEqual(
+      instance.listRules(SESSION).map((rule) => rule.id),
+      ["r1", "r2"],
+      "重复读取不该换 id",
+    );
   });
 
   test("删除单条规则：立即不再生效，其余保留", () => {
