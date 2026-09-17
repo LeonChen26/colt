@@ -205,6 +205,22 @@ src/shared/protocol.ts(760,15): error TS2344:
 | **8** | 补 `env-check.resolveBash` / `approval/config` 脏数据回落 / `icon.ts` 的单测（§5） | 小 | 纯逻辑，成本低 |
 | **9** | `ConversationView` 去掉 `lane` / `cwd` / `faulted`（§4） | 小 | 契约变诚实；但**牵动夹具与投影**，要做就一次做净 |
 
+**执行状态（2026-09-17，九项已按上表顺序全部落地）**：
+
+| # | 落点 |
+|---|---|
+| 1 | 运行起始时刻收敛为单一真源（抽 `lib/session.ts`，`tests/session-list.test.ts`）；草稿会话不再被 `continue` 守卫丢掉（`mergePersistedWithDrafts`） |
+| 2 | 越界用例改用目录联接（junction）——本机 `symlinkSync` 静默失败，故原用例一直永久跳过；现 0 skipped |
+| 3 | `clampDockWidth` / `dockWidthFromDrag` 抽到 `lib/dock.ts`；`tests/dock.test.ts` 含 §3.3 翻车的回归守卫 |
+| 4 | 删 `nextTheme`；`App.tsx` 的日期戳改名 `formatSessionStamp`（同名异义消除） |
+| 5 | `tests/helpers/temp.ts` 收走 12 个文件的临时目录生命周期（含异步版）；`net-change` 改为每例一棵新树，越界用例改为**真指向根外的存在文件** |
+| 6 | `contract.test.ts` 加「防漂移回退、非行为覆盖」定位注释；8 处「只验非空」改为断言具体值 |
+| 7 | ToolCard 展开态收敛为唯一真源（去掉实例本地镜像）；下钻请求带 `nonce`，不再依赖「对象身份」这个隐式依赖 |
+| 8 | 新增 `tests/env-check.test.ts` / `tests/approval-config.test.ts` / `tests/icon.test.ts`；**顺带修一个真 bug**：`approval/config.ts` 把「能解析但非数组」的脏数据当成「用户清空白名单」，静默关掉自动放行 |
+| 9 | `ConversationView` 删掉 `lane` / `cwd` / `faulted`（连动 worker 投影与冒烟夹具），契约里留注记防回加；`ERRORS.md` §三 / `UI-REGIONS.md` 加现状说明 |
+
+> 第 8 项里那个 bug 是本轮唯一**改动了产品行为**的修复，其余都是契约/测试/文档层面的收敛。
+
 ---
 
 ## 八、方法论：我自己踩的坑（如实记录）
