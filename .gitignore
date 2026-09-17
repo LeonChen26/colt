@@ -10,4 +10,6 @@ release/
 .smoke-*.png
 
 # 助手私有记忆（会话级沉淀，不进版本库；项目约定在 AGENTS.md，那个要提交）
+# 目录已由 .colt/ 改名为 .workbuddy/（规则没跟着改，曾静默失效）
+.workbuddy/
 .colt/
