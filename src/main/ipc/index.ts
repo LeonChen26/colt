@@ -33,6 +33,7 @@ import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
 import { computeNetChange } from "../net-change";
 import { closeDatabase, openDatabase } from "../db";
+import { closeMemoryDatabase, openMemoryDatabase } from "../db/memory-index";
 import { deleteSecret, hasSecret, maskSecret, setSecret } from "../secrets";
 import {
   BUILTIN_DEEPSEEK,
@@ -187,6 +188,7 @@ export function registerIpcHandlers(): void {
 
     // 先关连接再删文件，否则 Windows 下文件被占用删不掉
     closeDatabase();
+    closeMemoryDatabase();
     try {
       return applyFirstRunChoice(userDataPath, request.choice);
     } finally {
@@ -196,6 +198,7 @@ export function registerIpcHandlers(): void {
       // 此处若再失败也不掩盖上面真正的失败原因，getDatabase 会在下次访问时自愈重试。
       try {
         openDatabase(userDataPath);
+        openMemoryDatabase(userDataPath);
       } catch (error) {
         console.error("[firstRun] 清空后重建数据库失败，将在下次访问时重试", error);
       }

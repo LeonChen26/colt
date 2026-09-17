@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { registerIpcHandlers, importKeyFromEnvIfMissing, setFirstRunReport } from "./ipc";
 import { openDatabase, shutdownDatabase } from "./db";
+import { openMemoryDatabase } from "./db/memory-index";
 import { inspectUserData } from "./first-run";
 import { hostBridge } from "./host";
 import { sessionManager } from "./session-manager";
@@ -136,6 +137,8 @@ function bootApp(): void {
     // 首启检测必须在 openDatabase 之前：后者会创建 data 目录，掩盖“全新环境”的判断
     setFirstRunReport(inspectUserData(app.getPath("userData")));
     openDatabase(app.getPath("userData"));
+    // 记忆检索索引（派生库，独立于核心库）：同样在首启检测之后开——它也会创建 data 目录
+    openMemoryDatabase(app.getPath("userData"));
     // 审批策略设置需在库打开后才能读（sessionManager 是模块级单例，构造期库尚未就绪）
     sessionManager.reloadAnalyzeCommandAllowlist();
     importKeyFromEnvIfMissing();

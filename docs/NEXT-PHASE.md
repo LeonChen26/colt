@@ -707,7 +707,7 @@
    npm run dev        # 夹具站在进程内以 port 0 拉起，无需另开终端
    ```
    看 `out/.smoke-dock.png.log` 末行是否 `通过 207/207`。
-   ⚠️ **计费**：`dock` 与 `fixture` 是**仅有的两个不调用模型**的模式（其余模式、含不给
+   ⚠️ **计费**：`dock`、`fixture` 与 `memory` 是**仅有的三个不调用模型**的模式（其余模式、含不给
    `COLT_SMOKE_MODE` 时的 `basic`，都会真实打模型并计费）。`dock` 曾经也会：它的 `/compact`
    段把打桩转给了真实现，会真发 `/compact 帮我看看` 与 `/usr/local/bin/node` 两句 prompt、
    计一次费，并把它们写进用户真实项目里的真实会话历史——v1.41 起该段改为**只记账、不转发**。
@@ -741,9 +741,26 @@
    免密钥的条目才整条挪走，`finally` 里先还全部密钥、再写回被挪走的条目。
    已实测：三段全绿（**34/34**），且跑完后用户的 `providers` 行与 `secrets.json` 的键都逐项核对过、
    与原值一致（`created_at` 都没变）。
-5. **应用内实测**：除 `fixture` / `dock` 外，各模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）
+5. **记忆检索端到端（改 `memory-index` / `memory-host` / worker 启动装载必跑）**：
+   ```powershell
+   $env:COLT_SMOKE=".smoke-memory.png"
+   $env:COLT_SMOKE_MODE="memory"
+   npm run dev
+   ```
+   看 `out/.smoke-memory.png.log` 末行是否 `通过 11/11`。不调用模型、不计费：真实 worker
+   起动即上报 `memoryIndex` → 主进程落派生库（`data/memory.db`）→ `hostBridge` memory 检索；
+   另验二字词 LIKE 兜底（FTS trigram 3 字下限）、项目隔离（对照条目在库里但检索不可见——
+   证明隔离是路由层强制而非空库巧合）、关会话清检索上下文（关闭后检索被拒）。
+   夹具在 `out/smoke-memory-fixture/`（gitignored，条目 upsert 幂等，可重复跑）。
+   ⚠️ **会话必须建在夹具自己的项目下**，且跑完前把仓库项目顶回 `project.list[0]`（最近打开优先）：
+   渲染层挂载会自动打开「当前项目」的最新会话并以项目 rootPath 为 cwd，卸载时还会
+   `session.close`（StrictMode 下挂载→卸载→重挂载）——会话若挂在仓库项目下、或夹具项目
+   恰好成了最近打开，worker 就会**就绪前被杀**或带着错误 cwd（2026-09 实测两轮翻车）。
+   ⚠️ 用户级记忆不注夹具：真家目录 `~/.colt/memory.md` 不可写（写就是污染用户数据），
+   其链路与项目级共用同一条消息路径，由单测覆盖。
+6. **应用内实测**：除 `fixture` / `dock` / `memory` 外，各模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）
    都会真实调用模型并**产生计费**，`host` 只是其中最费的一个；只想看界面时直接启动应用 + **系统级截图**即可
-6. 断言清单与手动用例：`docs/BROWSER-TEST-CASES.md`
+7. 断言清单与手动用例：`docs/BROWSER-TEST-CASES.md`
 
 ---
 

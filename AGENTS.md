@@ -409,3 +409,18 @@ const px = startVal - dx;
   铁律：① `electron` **精确 pin**，别用 `^`（`^44.2.0` 会解析回被拦的 44.3.0）；
   ② 升 Electron 之后**必须真起一次** `npx electron --version`，别只看 `build` 过没过；
   ③ 报 `spawn UNKNOWN` 时先按上面两条量，**不要**先去改项目代码（与业务代码无关）。
+
+- **冒烟里直连会话 IPC 时，渲染层是并发参与者，不是旁观者**（2026-09，memory 冒烟两轮翻车）。
+  症状：`session.open` 报「会话进程在就绪前退出」（三个 open 一起被拒），或 worker 起来了
+  却带着**项目根的 cwd** 而不是用例传的夹具 cwd。根因是三条叠加，缺一不会发作：
+  ① 渲染层挂载即自动选中「当前项目」的 `list[0]` 并以**项目 rootPath** 为 cwd 打开（App.tsx）；
+  ② Conversation 卸载即 `session.close`（StrictMode 下挂载→卸载→重挂载）——
+  就绪前的 worker 当场被杀，退出码 0、无任何 stderr，**看起来像神秘崩溃**；
+  ③ worker 复用分支只同步模型、**不校验 cwd**——先到者定 cwd，后来者被静默忽略。
+  三个 open 挂在同一个 pending 任务上时，一次死亡全体被拒，报错条数还会误导排查看错了对象。
+  铁律：① 冒烟里真实 fork worker 的会话，必须让渲染层「看不到它，或看到时 cwd 恰好一致」——
+  现行做法是**会话建在独立夹具项目下 + 跑前把仓库项目顶回 `project.list[0]`**（最近打开优先），
+  见 `NEXT-PHASE.md` §5 第 5 条（memory 模式）；② 判「worker 为什么死了」先看主进程
+  `disposeReason`（是 dispose 还是自发退出），别对着 exit 码猜；
+  ③ 顺带再记一笔同族案例：`openMemoryDatabase` 编译全绿、单测全绿，运行时**没有任何调用点**
+  （又是「只有定义、没有调用」）——这类缺口唯一可靠的探针就是把真实链路跑一遍。

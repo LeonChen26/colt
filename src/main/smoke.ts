@@ -11,9 +11,12 @@
  *       浏览器前进/后退/刷新（B1），以及 ⑥ Live Bar 的运行状态段（C1/C2：已中断 / 已失败 / 空闲）
  * model：未开启会话（无 worker）时也能选模型——落库的选定值照样回显、切换立即生效；
  *        以及**没有可用模型**时主区黄条与对话区共存（输入卡片的下半行不能被裁掉）
+ * memory：跨会话记忆检索（L3a）的真实跨进程链路——不开模型：真实 worker 起动即上报
+ *        memoryIndex → 主进程落派生库（data/memory.db）→ hostBridge memory 检索；
+ *        另验二字词 LIKE 兜底（FTS trigram 3 字下限）、项目隔离、关会话清检索上下文
  */
 import { app, BrowserWindow, clipboard, nativeImage, WebContentsView } from "electron";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import {
   upsertProject,
@@ -27,6 +30,14 @@ import {
 } from "./db/repo";
 import { hostBridge } from "./host";
 import { sessionManager } from "./session-manager";
+import { normalizeRootKey } from "./db/index";
+import {
+  indexMemorySnapshot,
+  isFts5Available,
+  openMemoryDatabase,
+  searchMemory,
+  type MemoryHit,
+} from "./db/memory-index";
 import { listProviders, removeProvider, saveProvider } from "./providers";
 import { deleteSecret, getSecret, setSecret } from "./secrets";
 import { writeOnboardedFlag } from "./first-run";
@@ -161,6 +172,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runReenter(window, project.id, sessionsDir, log, run);
     } else if (mode === "crash") {
       await runCrash(window, project.id, sessionsDir, log, run);
+    } else if (mode === "memory") {
+      await runMemory(log, run);
     } else if (mode === "dock") {
       await runDock(window, project.id, sessionsDir, log, run);
     } else if (mode === "model") {
@@ -3459,6 +3472,171 @@ async function runCrash(
     log("缺陷未修复：open 永久挂起，界面会卡在启动提示");
   } else if (String(result).startsWith("REJECTED")) {
     log("正确：open 快速失败，界面可提示错误而非无限转圈");
+  }
+}
+
+/**
+ * 跨会话记忆检索（L3a）端到端冒烟：不开模型，验真实跨进程链路。
+ *
+ * worker 由真实 utilityProcess 拉起（与生产同一条 session.open 通道），启动时读两级
+ * 记忆文件并上报 memoryIndex；主进程落派生库（data/memory.db）后，检索走 hostBridge
+ * 的 memory 能力——与 worker 里 memory_search 工具是同一条 toolRpc 路由。
+ * 这条链路单测够不到：worker 是独立进程，「库开没开」「消息走没走到」只有真实链路能作证。
+ *
+ * 用户级不注入夹具：真家目录 ~/.colt/memory.md 内容不可控、也不可写（写就是污染用户数据），
+ * 它与项目级共用同一条消息与处理路径，行为由单测覆盖；本机有真实用户记忆时它只会
+ * 多出「用户级」条目，所有断言都用 some/includes，不受影响。
+ * 夹具目录固定在 out/ 下（gitignored）：重复跑同一条目 upsert 幂等，不产生新垃圾。
+ */
+async function runMemory(
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const fixtureDir = join(process.cwd(), "out", "smoke-memory-fixture");
+  const memoryPath = join(fixtureDir, ".colt", "memory.md");
+  const fixtureKey = normalizeRootKey(fixtureDir);
+  mkdirSync(join(fixtureDir, ".colt"), { recursive: true });
+  const fixtureEntries = [
+    "部署流程：先 pnpm build，再 pnpm dist",
+    "约定：汇报用中文",
+    "冒烟夹具说明：本目录仅用于记忆链路验证",
+  ];
+  writeFileSync(memoryPath, `# 项目记忆（冒烟夹具）\n\n${fixtureEntries.join("\n")}\n`, "utf8");
+  log(`夹具记忆：${memoryPath}`);
+  log(`FTS5 可用：${isFts5Available()}（false 时全部走 LIKE 兜底，断言两种情况都成立）`);
+
+  // 对照项目：往库里塞一条**别的项目**的记忆，证明「检索不到它」是隔离层强制，
+  // 而不是「库里恰好没有」。跑完删掉（派生库，残留一行无害，但能删就删干净）。
+  const foreignKey = normalizeRootKey(join(fixtureDir, "对照项目"));
+  indexMemorySnapshot({
+    scope: "project",
+    projectKey: foreignKey,
+    sourcePath: join(fixtureDir, "对照项目", ".colt", "memory.md"),
+    sessionId: "smoke-memory",
+    content: "另一个项目的私有部署密钥：never-match-smoke",
+  });
+
+  const checks: [string, boolean][] = [];
+  // 会话建在**夹具自己的项目**下，这是绕开两条渲染层竞态的关键：
+  // ① App 挂载时会自动选中「当前项目」的 list[0] 并以项目 rootPath 为 cwd 打开——
+  //    若会话挂在仓库项目下且恰逢列表响应晚于建会话，渲染层会抢先打开我们的会话，
+  //    而 Conversation 卸载即 session.close（StrictMode 下挂载→卸载→重挂载），
+  //    worker 会在就绪前被杀，重开的 cwd 还是仓库根（首轮 6/10、二轮全崩的共同根因）。
+  // ② worker 复用分支只同步模型、不校验 cwd——先到者定 cwd，后来者被静默忽略。
+  // 夹具项目下渲染层要么不来看（当前项目是仓库），要么来看时 cwd 恰好也是夹具目录：
+  // 无论哪种时序，所有 fork 的 cwd 都正确。
+  const fixtureProject = upsertProject(fixtureDir);
+  // 渲染层初始 activeProject = project.list[0]（最近打开优先，App.tsx 挂载时选定）。
+  // 夹具项目刚被 upsert 刷新了「最近打开」，会把渲染层引到夹具项目上——它便自动打开
+  // 我们刚建的会话，而 Conversation 卸载即 session.close（StrictMode 下挂载→卸载→重挂载），
+  // 就绪前的 worker 当场被杀（探针证据：dispose reason=closed）。把仓库项目顶回 list[0]，
+  // 渲染层就去忙它自己的旧会话，不再碰这个会话。
+  upsertProject(process.env.COLT_SMOKE_CWD ?? process.cwd());
+  const session = createSession(
+    fixtureProject.id,
+    join(app.getPath("userData"), "sessions", fixtureProject.id),
+  );
+  log(`会话：${session.id}（项目：${fixtureProject.name}）`);
+
+  try {
+    await run(
+      `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: fixtureDir })})`,
+    );
+
+    // worker 启动即上报（不等模型发话），落库是异步的：轮询到出现为止
+    let firstHit: MemoryHit | undefined;
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      firstHit = searchMemory({ projectKey: fixtureKey, query: "部署流程" }).find(
+        (hit) => hit.content === fixtureEntries[0],
+      );
+      if (firstHit) break;
+      await sleep(500);
+    }
+    checks.push(["worker 启动即上报项目记忆并落库（真实跨进程链路）", firstHit !== undefined]);
+    if (firstHit) {
+      checks.push(
+        [
+          "入库行字段正确（scope/status/sourcePath）",
+          firstHit.scope === "project" &&
+            firstHit.status === "active" &&
+            firstHit.sourcePath === memoryPath,
+        ],
+      );
+    }
+
+    // 查询两条路都要通：≥3 字走 FTS（或降级 LIKE），二字词恒走 LIKE（trigram 3 字下限）
+    const twoChar = searchMemory({ projectKey: fixtureKey, query: "约定" });
+    checks.push(["二字词走 LIKE 兜底命中", twoChar.some((hit) => hit.content === fixtureEntries[1])]);
+    const latin = searchMemory({ projectKey: fixtureKey, query: "pnpm" });
+    checks.push(["拉丁词查询命中", latin.some((hit) => hit.content === fixtureEntries[0])]);
+
+    // 能力路由：与 worker 的 memory_search 同一条 hostBridge 通道
+    const viaHost = await hostBridge.handle({
+      sessionId: session.id,
+      capability: "memory",
+      action: "search",
+      params: { query: "部署流程" },
+    });
+    log(`memory.search：${viaHost.text.split("\n")[0]}`);
+    checks.push([
+      "hostBridge memory 检索命中且格式带「项目·现行」",
+      viaHost.text.includes("项目·现行") && viaHost.text.includes(fixtureEntries[0]),
+    ]);
+    const miss = await hostBridge.handle({
+      sessionId: session.id,
+      capability: "memory",
+      action: "search",
+      params: { query: "绝不匹配的词组xyz" },
+    });
+    checks.push(["无匹配时给「没有匹配」文案", miss.text.startsWith("没有匹配")]);
+
+    // 项目隔离：对照条目在库里（换个 projectKey 直查能见到），hostBridge 检索却看不见
+    const foreignDirect = searchMemory({ projectKey: foreignKey, query: "私有部署密钥" });
+    checks.push(["对照项目条目确实在库里（隔离不是空库巧合）", foreignDirect.length === 1]);
+    const foreignViaHost = await hostBridge.handle({
+      sessionId: session.id,
+      capability: "memory",
+      action: "search",
+      params: { query: "私有部署密钥" },
+    });
+    checks.push([
+      "项目隔离：hostBridge 检索看不到其它项目条目",
+      !foreignViaHost.text.includes("never-match-smoke"),
+    ]);
+
+    // 关会话：worker 没了，记忆检索上下文必须一起清（否则残留 cwd 继续放行检索）
+    const closed = await run<unknown>(
+      `window.colt.invoke("session.close", ${JSON.stringify({ sessionId: session.id })})`,
+    );
+    checks.push(["session.close 成功", JSON.stringify(closed).includes('"closed":true')]);
+    await sleep(500);
+    const afterClose = await hostBridge
+      .handle({
+        sessionId: session.id,
+        capability: "memory",
+        action: "search",
+        params: { query: "部署" },
+      })
+      .then(
+        () => "仍然可检索",
+        (error: unknown) => `已拒绝：${error instanceof Error ? error.message : String(error)}`,
+      );
+    log(`关闭后检索：${afterClose}`);
+    checks.push(["关闭后记忆上下文已清（检索被拒）", afterClose.startsWith("已拒绝")]);
+    checks.push(["关闭会话未抛未捕获异常", uncaughtErrors.length === 0]);
+  } finally {
+    // 先出结论再清理：删掉对照条目；夹具条目留给下一轮 upsert（同身份幂等覆盖）
+    try {
+      openMemoryDatabase(app.getPath("userData"))
+        .prepare("DELETE FROM memory_entries WHERE project_key = ?")
+        .run(foreignKey);
+    } catch (error) {
+      log(`清理对照条目失败（派生库，无害）：${error instanceof Error ? error.message : String(error)}`);
+    }
+    log("[memory] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
   }
 }
 
