@@ -13,9 +13,9 @@
  */
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
 import type { Skill } from "@earendil-works/pi-agent-core";
 import {
   appendMemoryBlock,
@@ -54,11 +54,11 @@ describe("loadProjectMemory（真文件系统）", () => {
   let dir = "";
 
   before(async () => {
-    dir = await mkdtemp(join(tmpdir(), "colt-memory-"));
+    dir = await makeTempDirAsync("colt-memory-");
   });
 
   after(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await removeTempDirAsync(dir);
   });
 
   test("文件不存在：不算失败，静默当空起点", async () => {
@@ -67,7 +67,7 @@ describe("loadProjectMemory（真文件系统）", () => {
   });
 
   test("文件存在：内容原样读出（保留手写格式）", async () => {
-    const dir2 = await mkdtemp(join(tmpdir(), "colt-memory-"));
+    const dir2 = await makeTempDirAsync("colt-memory-");
     try {
       const file = memoryFilePath(dir2);
       await mkdir(join(dir2, ".colt"), { recursive: true });
@@ -75,44 +75,44 @@ describe("loadProjectMemory（真文件系统）", () => {
       const memory = await loadProjectMemory(dir2);
       assert.deepEqual(memory, { exists: true, content: "# 约定\n\n- 用 pnpm\n" });
     } finally {
-      await rm(dir2, { recursive: true, force: true });
+      await removeTempDirAsync(dir2);
     }
   });
 
   test("全空白的文件：存在但不注入（没内容不值得占上下文）", async () => {
-    const dir3 = await mkdtemp(join(tmpdir(), "colt-memory-"));
+    const dir3 = await makeTempDirAsync("colt-memory-");
     try {
       await mkdir(join(dir3, ".colt"), { recursive: true });
       await writeFile(memoryFilePath(dir3), "  \n\t\n", "utf8");
       const memory = await loadProjectMemory(dir3);
       assert.deepEqual(memory, { exists: true, content: null });
     } finally {
-      await rm(dir3, { recursive: true, force: true });
+      await removeTempDirAsync(dir3);
     }
   });
 
   test("读取失败（memory.md 是个目录）：留在 error 里，不当成「没有记忆」", async () => {
-    const dir4 = await mkdtemp(join(tmpdir(), "colt-memory-"));
+    const dir4 = await makeTempDirAsync("colt-memory-");
     try {
       await mkdir(join(dir4, ".colt", "memory.md"), { recursive: true });
       const memory = await loadProjectMemory(dir4);
       assert.equal(memory.exists, false);
       assert.equal(memory.content, null);
-      assert.ok(typeof memory.error === "string" && memory.error.length > 0, memory.error);
+      assert.match(memory.error ?? "", /EISDIR/);
     } finally {
-      await rm(dir4, { recursive: true, force: true });
+      await removeTempDirAsync(dir4);
     }
   });
 
   test("readMemoryFile 按显式路径读：用户级记忆走 ~/.colt/memory.md 也能读到", async () => {
-    const home = await mkdtemp(join(tmpdir(), "colt-home-"));
+    const home = await makeTempDirAsync("colt-home-");
     try {
       await mkdir(join(home, ".colt"), { recursive: true });
       await writeFile(userMemoryFilePath(home), "跨项目偏好：中文交流\n", "utf8");
       const memory = await readMemoryFile(userMemoryFilePath(home));
       assert.deepEqual(memory, { exists: true, content: "跨项目偏好：中文交流\n" });
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await removeTempDirAsync(home);
     }
   });
 });
@@ -170,11 +170,11 @@ describe("createMemoryInjector（L2：每请求重读）", () => {
     createMemoryInjector({ filePath: fileOf(), scope: "project", onError });
 
   before(async () => {
-    dir = await mkdtemp(join(tmpdir(), "colt-injector-"));
+    dir = await makeTempDirAsync("colt-injector-");
   });
 
   after(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await removeTempDirAsync(dir);
   });
 
   test("第一次请求：base 原样在前，记忆块在后", async () => {
@@ -235,7 +235,7 @@ describe("createMemoryInjector（L2：每请求重读）", () => {
   });
 
   test("从头就没文件：注入空起点块，也不报错", async () => {
-    const fresh = await mkdtemp(join(tmpdir(), "colt-injector-"));
+    const fresh = await makeTempDirAsync("colt-injector-");
     try {
       const errors: string[] = [];
       const injector = createMemoryInjector({
@@ -248,12 +248,12 @@ describe("createMemoryInjector（L2：每请求重读）", () => {
       assert.ok(prompt.includes(memoryFilePath(fresh)), prompt);
       assert.equal(errors.length, 0);
     } finally {
-      await rm(fresh, { recursive: true, force: true });
+      await removeTempDirAsync(fresh);
     }
   });
 
   test("截断传感器：首次超限报一次、不刷屏，退回限内再超限再报（L3 的触发信号）", async () => {
-    const home = await mkdtemp(join(tmpdir(), "colt-home-"));
+    const home = await makeTempDirAsync("colt-home-");
     try {
       const notices: string[] = [];
       const injector = createMemoryInjector({
@@ -280,12 +280,12 @@ describe("createMemoryInjector（L2：每请求重读）", () => {
       await injector.systemPromptFor("BASE");
       assert.equal(notices.filter((m) => m.includes("超过")).length, 2, "再次超限是新的报警周期");
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await removeTempDirAsync(home);
     }
   });
 
   test("用户级注入器的报错用 ~ 展示路径（与项目级分得开）", async () => {
-    const home = await mkdtemp(join(tmpdir(), "colt-home-"));
+    const home = await makeTempDirAsync("colt-home-");
     try {
       const errors: string[] = [];
       const injector = createMemoryInjector({
@@ -299,14 +299,14 @@ describe("createMemoryInjector（L2：每请求重读）", () => {
       assert.ok(errors[0]?.includes(USER_MEMORY_RELATIVE_PATH), errors[0] ?? "");
       assert.ok(errors[0]?.includes("用户级记忆"), errors[0] ?? "");
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await removeTempDirAsync(home);
     }
   });
 });
 
 describe("onLoaded 回调（检索索引的同步点）", () => {
   test("成功读取（含缺失=null）时回调，读取失败不回调——失败不能被误当成删除", async () => {
-    const project = await mkdtemp(join(tmpdir(), "colt-proj-"));
+    const project = await makeTempDirAsync("colt-proj-");
     try {
       const memPath = memoryFilePath(project);
       const seen: (string | null)[] = [];
@@ -328,7 +328,7 @@ describe("onLoaded 回调（检索索引的同步点）", () => {
       await injector.systemPromptFor("BASE");
       assert.equal(seen.length, 2, "读取失败不回调（索引维持原状）");
     } finally {
-      await rm(project, { recursive: true, force: true });
+      await removeTempDirAsync(project);
     }
   });
 });

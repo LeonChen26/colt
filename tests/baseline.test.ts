@@ -8,22 +8,22 @@
  */
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { BASELINE_TEXT_LIMIT, captureBaseline } from "../src/worker/lib/baseline.ts";
 
 let root = "";
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), "colt-baseline-"));
+  root = makeTempDir("colt-baseline-");
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "a.ts"), "一\n二\n");
   writeFileSync(join(root, "bin.dat"), Buffer.from([0x41, 0x00, 0x42]));
 });
 
 after(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeTempDir(root);
 });
 
 describe("captureBaseline", () => {

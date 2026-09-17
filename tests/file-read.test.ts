@@ -2,38 +2,73 @@
  * 项目内文件读取的安全边界测试。
  *
  * 这些用例是 A3-2 里最该被测的部分：入参来自渲染层，一旦边界写错，
- * 等于把任意读盘能力交出去。所以逃逸（`../`、绝对路径、软链接）逐条钉住，
+ * 等于把任意读盘能力交出去。所以逃逸（`../`、绝对路径、链接）逐条钉住，
  * 上限与二进制判定也一并覆盖。
+ *
+ * 关于「根内链接指向根外」那条：`readFileWithin` 有三重校验，其中第二重
+ * （`realpath` 之后再判一次）**只有链接才能触发**——没有它，这条安全不变量
+ * 就永远不被验证。所以本文件用**目录联接（junction）**来构造，理由见下面的注释。
  */
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { FILE_TEXT_LIMIT, readFileWithin } from "../src/main/file-read.ts";
 
 let root = "";
 let outside = "";
+/** 指向根外的链接（相对根的路径，喂给 readFileWithin）；空串表示没建出来 */
+let escapePath = "";
+/** 没建出来时的实况，写进 skip 原因，免得「跳过了」变成一句无从追查的废话 */
+let escapeNote = "";
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), "colt-root-"));
-  outside = mkdtempSync(join(tmpdir(), "colt-outside-"));
+  root = makeTempDir("colt-root-");
+  outside = makeTempDir("colt-outside-");
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "docs", "a.md"), "# 标题\n正文\n");
   writeFileSync(join(root, "bin.dat"), Buffer.from([0x41, 0x00, 0x42]));
   writeFileSync(join(root, "big.txt"), "x".repeat(FILE_TEXT_LIMIT + 1));
   writeFileSync(join(root, "dot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   writeFileSync(join(outside, "secret.txt"), "机密");
+
+  // 造一个「根内的名字 → 根外」的链接。优先**目录联接（junction）**：
+  // 它不需要开发者模式或管理员权限，任何用户都能建（POSIX 上等价于普通目录软链接）。
+  //
+  // 为什么不用文件软链接打头：在 Windows 上建软链接需要开发者模式/管理员权限，而
+  // **没权限时 `symlinkSync` 未必抛错**——实测本环境里它返回正常，但 `lstat` 报 ENOENT、
+  // 目录里根本没有那个条目（静默不生效）。所以判定「建成了没」**一律以 existsSync 为准**，
+  // 不能只看有没有抛异常。
+  //
+  // junction 指向的是**目录**，故逃逸路径是「escape-dir/secret.txt」：它先从纯字符串
+  // 包含性判断里过去（第一重校验放行），再由 `realpath` 解析到根外、被第二重拦下——
+  // 这正是这条用例要钉住的那道判定。
   try {
-    symlinkSync(join(outside, "secret.txt"), join(root, "link.txt"), "file");
-  } catch {
-    // Windows 未开开发者模式（或非管理员）时不允许建软链接，相关用例会自行跳过
+    symlinkSync(outside, join(root, "escape-dir"), "junction");
+  } catch (e) {
+    escapeNote = `junction: ${(e as NodeJS.ErrnoException).code} ${(e as Error).message}`;
+  }
+  if (existsSync(join(root, "escape-dir"))) {
+    escapePath = "escape-dir/secret.txt";
+  } else {
+    // 退一步用文件软链接（开发者模式下的 Windows / 类 Unix 一般可行）
+    try {
+      symlinkSync(join(outside, "secret.txt"), join(root, "escape-file.txt"), "file");
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      escapeNote += `${escapeNote ? " | " : ""}symlink: ${err.code} ${err.message}`;
+    }
+    if (existsSync(join(root, "escape-file.txt"))) escapePath = "escape-file.txt";
+  }
+  if (escapePath === "") {
+    escapeNote += `${escapeNote ? " | " : ""}两种都没建成（权限不足？）`;
   }
 });
 
 after(() => {
-  rmSync(root, { recursive: true, force: true });
-  rmSync(outside, { recursive: true, force: true });
+  // 递归删目录（`rmSync`）**不会穿透 junction**（实测：链接目标仍在），故此处安全。
+  removeTempDir(root, outside);
 });
 
 describe("readFileWithin", () => {
@@ -96,11 +131,20 @@ describe("readFileWithin", () => {
     assert.match(result.kind === "image" ? result.dataUrl : "", /^data:image\/png;base64,/);
   });
 
-  test("根内的软链接指向根外时被拒", (t) => {
-    if (!existsSync(join(root, "link.txt"))) {
-      t.skip("软链接未能创建（Windows 需要开发者模式或管理员权限）");
+  test("根内的链接指向根外时被拒（realpath 之后的第二重判定）", (t) => {
+    if (escapePath === "") {
+      // 真建不出来才跳过，并把实况写清楚——否则「跳过了」会变成一句无从追查的废话，
+      // 而这条守的是安全不变量，长期静默跳过等于这道防线无人验证。
+      t.skip(`建不出指向根外的链接，跳过 | ${escapeNote}`);
       return;
     }
-    assert.throws(() => readFileWithin(root, "link.txt"), /越界/);
+    // 先确认第一重（纯字符串包含性）确实**放行**了它——否则这个用例可能只是因为
+    // 撞上了 `../` 那类检查才变绿，根本没走到 realpath 那一步，等于空转。
+    assert.equal(
+      escapePath.includes(".."),
+      false,
+      "链接名本身不该含 ..，否则测的就不是第二重判定了",
+    );
+    assert.throws(() => readFileWithin(root, escapePath), /越界/);
   });
 });

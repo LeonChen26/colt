@@ -9,9 +9,9 @@
  */
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
 import {
   agentsMdCandidates,
   appendAgentsMdBlock,
@@ -48,13 +48,13 @@ describe("loadAgentsMd（真文件系统）", () => {
   let child = "";
 
   before(async () => {
-    parent = await mkdtemp(join(tmpdir(), "colt-agents-"));
+    parent = await makeTempDirAsync("colt-agents-");
     child = join(parent, "sub");
     await mkdir(child, { recursive: true });
   });
 
   after(async () => {
-    await rm(parent, { recursive: true, force: true });
+    await removeTempDirAsync(parent);
   });
 
   test("一份都没有：files 与 errors 双空（缺失是常态，不算失败）", async () => {
@@ -74,7 +74,7 @@ describe("loadAgentsMd（真文件系统）", () => {
   });
 
   test("单份读不了（是目录）不拦其它文件：能读的照读，失败进 errors", async () => {
-    const dir2 = await mkdtemp(join(tmpdir(), "colt-agents-"));
+    const dir2 = await makeTempDirAsync("colt-agents-");
     const sub = join(dir2, "sub");
     try {
       await mkdir(join(sub, "AGENTS.md"), { recursive: true });
@@ -85,18 +85,18 @@ describe("loadAgentsMd（真文件系统）", () => {
       assert.equal(loaded.errors.length, 1);
       assert.ok(loaded.errors[0]?.includes(join(sub, "AGENTS.md")), loaded.errors[0] ?? "");
     } finally {
-      await rm(dir2, { recursive: true, force: true });
+      await removeTempDirAsync(dir2);
     }
   });
 
   test("全空白的文件跳过：没内容的约定不值得占上下文", async () => {
-    const dir3 = await mkdtemp(join(tmpdir(), "colt-agents-"));
+    const dir3 = await makeTempDirAsync("colt-agents-");
     try {
       await writeFile(join(dir3, "AGENTS.md"), "  \n\t\n", "utf8");
       const loaded = await loadAgentsMd(dir3);
       assert.deepEqual(loaded, { files: [], errors: [] });
     } finally {
-      await rm(dir3, { recursive: true, force: true });
+      await removeTempDirAsync(dir3);
     }
   });
 });
@@ -145,14 +145,14 @@ describe("formatAgentsMdBlock", () => {
 describe("createAgentsMdInjector（每请求重读）", () => {
   /** 每个用例独立建父子目录，避免用例间状态耦合 */
   const setup = async () => {
-    const parent = await mkdtemp(join(tmpdir(), "colt-agents-inj-"));
+    const parent = await makeTempDirAsync("colt-agents-inj-");
     const child = join(parent, "sub");
     await mkdir(child, { recursive: true });
     return {
       parent,
       child,
       async dispose() {
-        await rm(parent, { recursive: true, force: true });
+        await removeTempDirAsync(parent);
       },
     };
   };

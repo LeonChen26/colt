@@ -4,9 +4,7 @@
  */
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase } from "../src/main/db/index.ts";
 import {
   createSession,
@@ -36,13 +34,13 @@ let root: string;
 
 beforeEach(() => {
   closeDatabase();
-  root = mkdtempSync(join(tmpdir(), "colt-repo-"));
+  root = makeTempDir("colt-repo-");
   openDatabase(root);
 });
 
 afterEach(() => {
   closeDatabase();
-  rmSync(root, { recursive: true, force: true });
+  removeTempDir(root);
 });
 
 describe("projects", () => {

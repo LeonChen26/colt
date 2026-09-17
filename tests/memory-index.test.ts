@@ -5,9 +5,8 @@
  */
 import { describe, beforeEach, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import {
   closeMemoryDatabase,
   indexMemorySnapshot,
@@ -29,12 +28,12 @@ describe("parseMemoryEntries", () => {
 describe("indexMemorySnapshot + searchMemory", () => {
   let root = "";
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "colt-memidx-"));
+    root = makeTempDir("colt-memidx-");
     openMemoryDatabase(root);
   });
   afterEach(() => {
     closeMemoryDatabase();
-    rmSync(root, { recursive: true, force: true });
+    removeTempDir(root);
   });
 
   const projKey = () => normalizeRootKey("/proj");

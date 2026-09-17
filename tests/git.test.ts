@@ -4,14 +4,10 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { parseHeadContent, readGitStatus } from "../src/main/git.ts";
-
-function makeTemp(): string {
-  return mkdtempSync(join(tmpdir(), "colt-git-"));
-}
 
 describe("parseHeadContent", () => {
   test("指向分支时取分支名", () => {
@@ -39,18 +35,18 @@ describe("parseHeadContent", () => {
 
 describe("readGitStatus", () => {
   test("识别仓库并读出分支", () => {
-    const root = makeTemp();
+    const root = makeTempDir("colt-git-");
     try {
       mkdirSync(join(root, ".git"));
       writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
       assert.deepEqual(readGitStatus(root), { isRepo: true, branch: "main", detached: false });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTempDir(root);
     }
   });
 
   test("从子目录向上找到仓库", () => {
-    const root = makeTemp();
+    const root = makeTempDir("colt-git-");
     try {
       mkdirSync(join(root, ".git"));
       writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/dev\n");
@@ -58,12 +54,12 @@ describe("readGitStatus", () => {
       mkdirSync(nested, { recursive: true });
       assert.equal(readGitStatus(nested).branch, "dev");
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTempDir(root);
     }
   });
 
   test("worktree / submodule：.git 是指向 gitdir 的文件", () => {
-    const root = makeTemp();
+    const root = makeTempDir("colt-git-");
     try {
       const real = join(root, "real-git");
       mkdirSync(real);
@@ -73,12 +69,12 @@ describe("readGitStatus", () => {
       writeFileSync(join(wt, ".git"), `gitdir: ${real}\n`);
       assert.deepEqual(readGitStatus(wt), { isRepo: true, branch: "wt", detached: false });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTempDir(root);
     }
   });
 
   test("非仓库目录返回 isRepo=false", () => {
-    const root = makeTemp();
+    const root = makeTempDir("colt-git-");
     try {
       assert.deepEqual(readGitStatus(join(root, "nope")), {
         isRepo: false,
@@ -86,17 +82,17 @@ describe("readGitStatus", () => {
         detached: false,
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTempDir(root);
     }
   });
 
   test("仓库内 HEAD 缺失时不抛错，仅隐藏分支", () => {
-    const root = makeTemp();
+    const root = makeTempDir("colt-git-");
     try {
       mkdirSync(join(root, ".git"));
       assert.deepEqual(readGitStatus(root), { isRepo: true, branch: null, detached: false });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTempDir(root);
     }
   });
 });

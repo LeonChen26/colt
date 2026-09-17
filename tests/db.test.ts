@@ -9,21 +9,21 @@
  */
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase, getDatabase, shutdownDatabase } from "../src/main/db/index.ts";
 
 let root: string;
 
 beforeEach(() => {
   shutdownDatabase();
-  root = mkdtempSync(join(tmpdir(), "colt-db-"));
+  root = makeTempDir("colt-db-");
 });
 
 afterEach(() => {
   shutdownDatabase();
-  rmSync(root, { recursive: true, force: true });
+  removeTempDir(root);
 });
 
 function dbFile(userDataPath: string): string {

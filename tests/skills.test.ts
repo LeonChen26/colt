@@ -9,9 +9,9 @@
  */
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
 import { BACKGROUND_CONTEXT, type Skill } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import {
@@ -199,16 +199,15 @@ describe("真装载（内核 loader + 真目录）", () => {
   };
 
   before(async () => {
-    base = await mkdtemp(join(tmpdir(), "colt-skills-"));
-    outside = await mkdtemp(join(tmpdir(), "colt-skills-out-"));
+    base = await makeTempDirAsync("colt-skills-");
+    outside = await makeTempDirAsync("colt-skills-out-");
     await writeSkill(base, "processing-pdfs", "name: processing-pdfs\ndescription: 处理 PDF。Use when the user mentions PDFs.");
     await writeSkill(outside, "user-level", "name: user-level\ndescription: 用户级技能。");
     await writeSkill(base, "broken-skill", "name: broken-skill");
   });
 
   after(async () => {
-    await rm(base, { recursive: true, force: true });
-    await rm(outside, { recursive: true, force: true });
+    await removeTempDirAsync(base, outside);
   });
 
   test("标准目录里的 SKILL.md 装得出来；工作区外的用户级目录同样读得到", async () => {

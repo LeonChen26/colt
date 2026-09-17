@@ -5,9 +5,9 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
@@ -17,12 +17,12 @@ let root: string;
 
 beforeEach(() => {
   closeDatabase();
-  root = mkdtempSync(join(tmpdir(), "colt-migrate-"));
+  root = makeTempDir("colt-migrate-");
 });
 
 afterEach(() => {
   closeDatabase();
-  rmSync(root, { recursive: true, force: true });
+  removeTempDir(root);
 });
 
 function columns(db: DatabaseSync, table: string): string[] {

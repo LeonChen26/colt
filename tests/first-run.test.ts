@@ -6,19 +6,19 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { applyFirstRunChoice, inspectUserData } from "../src/main/first-run.ts";
 
 let root: string;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "colt-firstrun-"));
+  root = makeTempDir("colt-firstrun-");
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeTempDir(root);
 });
 
 /** 造一个含项目/会话记录的历史库 */
