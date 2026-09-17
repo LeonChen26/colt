@@ -14,6 +14,9 @@
  * memory：跨会话记忆检索（L3a）的真实跨进程链路——不开模型：真实 worker 起动即上报
  *        memoryIndex → 主进程落派生库（data/memory.db）→ hostBridge memory 检索；
  *        另验二字词 LIKE 兜底（FTS trigram 3 字下限）、项目隔离、关会话清检索上下文
+ * memory-e2e：记忆行为的真实调用验证（**打模型、计费**）——注入可见性（不读文件答密语）、
+ *        沉淀落盘+索引同步、/memory-tidy 整理（合并/删过时/归档/通知/改动记录）、
+ *        冷层检索（现行文件已删的条目仍能被 memory_search 答出）
  */
 import { app, BrowserWindow, clipboard, nativeImage, WebContentsView } from "electron";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,6 +27,7 @@ import {
   deleteSession,
   getProject,
   getSession,
+  listSessionFileChanges,
   listSessions,
   recordFileBaseline,
   setSessionModel,
@@ -174,6 +178,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runCrash(window, project.id, sessionsDir, log, run);
     } else if (mode === "memory") {
       await runMemory(log, run);
+    } else if (mode === "memory-e2e") {
+      await runMemoryE2e(window, log, run);
     } else if (mode === "dock") {
       await runDock(window, project.id, sessionsDir, log, run);
     } else if (mode === "model") {
@@ -3673,6 +3679,291 @@ async function runMemory(
       log(`清理对照条目失败（派生库，无害）：${error instanceof Error ? error.message : String(error)}`);
     }
     log("[memory] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+  }
+}
+
+/**
+ * 记忆端到端（真实调用）——唯一打模型的记忆验证。
+ *
+ * 免费的 `memory` 模式只验「跨进程链路」（worker→索引→检索），全是结构性断言；
+ * 本模式验的是**行为质量**：注入真的让模型「知道」、沉淀真的写对文件并进索引、
+ * /memory-tidy 真的合并重复并删过时、被清理的条目真的能从冷层找回。
+ * 共四次真实模型调用，**计费**——模式名带 e2e，跑之前想清楚。
+ *
+ * 夹具预置 5 条记忆：1 条注入探针（密语）+ 2 条语义重复（pnpm）+ 1 条自相矛盾的
+ * 过时条目（往一台「已停用删除」的服务器上做每日部署）+ 1 条有效条目。刻意把
+ * 「该合并」「该删除」设计成几乎无歧义的形态，把模型非确定性造成的假红降到最低；
+ * 偶发不达标时先看落盘文件与回答日志（全量进 log），再定性是用例歧义还是产品缺陷。
+ */
+async function runMemoryE2e(
+  window: BrowserWindow,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const fixtureDir = join(process.cwd(), "out", "smoke-memory-e2e-fixture");
+  const memoryPath = join(fixtureDir, ".colt", "memory.md");
+  const fixtureKey = normalizeRootKey(fixtureDir);
+  mkdirSync(join(fixtureDir, ".colt"), { recursive: true });
+  const secretEntry = "项目密语是「菠萝披萨」（用于验证注入，勿删）";
+  const keepEntry = "代码注释用中文";
+  const duplicateA = "包管理器用 pnpm，不要用 npm";
+  const duplicateB = "包管理器固定用 pnpm（工程约定）";
+  const staleEntry =
+    "部署方式：每天手工 FTP 上传到 old-server.example（该服务器已于 2025-01 停用删除）";
+  writeFileSync(
+    memoryPath,
+    `# 项目记忆（记忆端到端夹具）\n\n${[secretEntry, duplicateA, duplicateB, staleEntry, keepEntry].join("\n")}\n`,
+    "utf8",
+  );
+  log(`夹具记忆：${memoryPath}`);
+
+  const checks: [string, boolean][] = [];
+  const fixtureProject = upsertProject(fixtureDir);
+  // ⚠️ 刻意**不**把仓库项目顶回 list[0]（与免费 memory 模式相反）：本模式需要渲染层
+  // 把这个会话显示出来——/memory-tidy 从输入框走的是「当前会话」，textarea 属于
+  // 渲染层自己的 activeSession。夹具项目刚刷新了「最近打开」+ 会话是项目内最新，
+  // App 挂载自动打开的就是它，cwd = 项目 rootPath = 夹具目录，恰好正确。
+  // StrictMode 的挂载→卸载→重挂载会杀一次就绪前的 worker，重挂载会重新打开——
+  // 没有第二个人跟它抢，让它自己收敛即可（免费模式的教训只在不该有人抢时成立）。
+  const session = createSession(
+    fixtureProject.id,
+    join(app.getPath("userData"), "sessions", fixtureProject.id),
+  );
+  log(`会话：${session.id}（项目：${fixtureProject.name}）`);
+
+  /** 主进程直读视图：不绕渲染层 invoke（那条路慢，还受界面状态影响） */
+  const getView = (): ConversationView | undefined => sessionManager.getView(session.id);
+
+  /** 等一轮运行落定。判据：不在运行中，且（终态异常 或 出现了本轮的新助手消息）——
+   *  只看 running=false 会把「上一轮已结束」的瞬时状态误判成本轮完成。 */
+  const waitRunSettled = async (before: number, timeoutMs: number): Promise<ConversationView> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const view = getView();
+      if (view && !view.running) {
+        const failed = view.lastRun !== null && view.lastRun.status !== "completed";
+        const answered =
+          view.messages.length > before &&
+          view.messages.some((m, i) => i >= before && m.role === "assistant");
+        if (failed || answered) {
+          if (failed) {
+            log(
+              `运行终态异常：${view.lastRun?.status}${view.lastRun?.error ? `（${view.lastRun.error}）` : ""}`,
+            );
+          }
+          return view;
+        }
+      }
+      if (Date.now() > deadline) throw new Error("等待运行结束超时");
+      await sleep(2000);
+    }
+  };
+
+  /** 从视图取最后一条助手回答 */
+  const lastAnswer = (view: ConversationView): string => {
+    for (let i = view.messages.length - 1; i >= 0; i -= 1) {
+      const m = view.messages[i]!;
+      if (m.role === "assistant") return m.text;
+    }
+    return "";
+  };
+
+  /** 发一轮真实 prompt（走 IPC 与用户同一条路）并等它落定，返回视图与回答 */
+  const askAndSettle = async (text: string, timeoutMs = 180_000) => {
+    const before = getView()?.messages.length ?? 0;
+    await run(
+      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: session.id, text })})`,
+    );
+    const view = await waitRunSettled(before, timeoutMs);
+    return { view, before, answer: lastAnswer(view) };
+  };
+
+  const readMemory = (): string => readFileSync(memoryPath, "utf8");
+  const pollFile = async (
+    predicate: (text: string) => boolean,
+    timeoutMs: number,
+  ): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (predicate(readMemory())) return true;
+      if (Date.now() > deadline) return false;
+      await sleep(2000);
+    }
+  };
+  const pollIndex = async (
+    predicate: () => boolean,
+    timeoutMs: number,
+  ): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (predicate()) return true;
+      if (Date.now() > deadline) return false;
+      await sleep(2000);
+    }
+  };
+
+  /** 把文本敲进输入框并回车（React 受控组件须用原生 setter；同 dock 段的形态） */
+  const typeAndEnter = (text: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const ta = document.querySelector("textarea");
+      if (!ta) return false;
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, ${JSON.stringify(text)});
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter", bubbles: true, cancelable: true,
+      }));
+      return true;
+    })()`);
+
+  try {
+    // 前置检查：没有可用模型时显式失败——真实调用验证不该静默跑成一场空
+    if (!hasUsableProvider(listProviders())) {
+      checks.push(["前置：存在已配密钥的模型服务（没有就无法真实调用）", false]);
+      log("没有已配密钥的模型服务。请先在设置里配好一个服务再跑本模式。");
+      return;
+    }
+    checks.push(["前置：存在已配密钥的模型服务", true]);
+
+    window.reload();
+    await sleep(4000);
+    // 等渲染层自动打开夹具会话、worker 就绪（视图出现即就绪）
+    const readyDeadline = Date.now() + 60_000;
+    let opened = false;
+    while (Date.now() < readyDeadline) {
+      if (getView()) {
+        opened = true;
+        break;
+      }
+      await sleep(1000);
+    }
+    checks.push(["渲染层自动打开夹具会话（worker 就绪）", opened]);
+    if (!opened) return;
+
+    // 整理与沉淀都要写记忆文件：夹具会话切 full-access，写路径不被审批卡住。
+    // 审批模式是会话级的，只影响这个夹具会话，不碰用户其它会话。
+    await run(
+      `window.colt.invoke("approval.mode.set", ${JSON.stringify({ sessionId: session.id, mode: "full-access" })})`,
+    );
+
+    // ---- TC-A 注入可见性（1 次调用）----
+    // 明令禁止工具：模型若读文件就不是「注入生效」的证据，所以工具动用单独断言。
+    const tcA = await askAndSettle(
+      "测试开始。不要调用任何工具、不要读取任何文件，直接凭你上下文里已有的信息回答：本项目记忆里记的「项目密语」是什么？只回答密语本身。",
+    );
+    const usedToolsInA = tcA.view.messages.some(
+      (m, i) => i >= tcA.before && m.role === "assistant" && m.toolCalls.length > 0,
+    );
+    log(`TC-A 回答：${tcA.answer}`);
+    checks.push(["TC-A 注入：模型没有动用工具（否则注入未被证明）", !usedToolsInA]);
+    checks.push(["TC-A 注入：不读文件也答出了记忆里的密语", tcA.answer.includes("菠萝披萨")]);
+
+    // ---- TC-B 沉淀落盘 + 索引同步（1 次调用）----
+    const tcB = await askAndSettle(
+      "请把这条事实沉淀进项目记忆（.colt/memory.md）：冒烟夹具站的端口固定是 0（SMOKE_PORT_ZERO）。完成后告诉我写好了。",
+    );
+    log(`TC-B 回答：${tcB.answer}`);
+    const sedimented = await pollFile((text) => text.includes("SMOKE_PORT_ZERO"), 60_000);
+    checks.push(["TC-B 沉淀：事实真的写进了记忆文件", sedimented]);
+    const indexed = await pollIndex(
+      () =>
+        searchMemory({ projectKey: fixtureKey, query: "SMOKE_PORT_ZERO" }).some(
+          (h) => h.status === "active",
+        ),
+      30_000,
+    );
+    checks.push(["TC-B 索引同步：新条目可被 memory_search 检索到", indexed]);
+
+    // ---- TC-C 整理（1 次调用，走渲染层输入框——产品真实入口）----
+    // 整理跑在子 lane，主视图 running 恒为 false：以**文件落盘**为完成信号，
+    // 同时并行盯两类瞬时 DOM（完成通知 / 可见报错），谁先出现都提前收敛。
+    let tidyNotice: string | null = null;
+    let tidyError: string | null = null;
+    const domWatcher = (async () => {
+      const deadline = Date.now() + 280_000;
+      while (Date.now() < deadline && tidyNotice === null && tidyError === null) {
+        const notice = await run<string | null>(
+          `(() => { const el = document.querySelector("[data-conv-compact-notice]"); return el ? el.textContent : null; })()`,
+        ).catch(() => null);
+        if (notice !== null && notice.includes("记忆整理完成")) {
+          tidyNotice = notice;
+          break;
+        }
+        const error = await run<string | null>(
+          `(() => { const el = document.querySelector("[data-conv-error]"); return el ? el.textContent : null; })()`,
+        ).catch(() => null);
+        if (error !== null && error.includes("记忆整理")) {
+          tidyError = error;
+          break;
+        }
+        await sleep(500);
+      }
+    })();
+    await typeAndEnter("/memory-tidy");
+    const tidyOk = await pollFile((text) => {
+      const pnpmLines = text.split("\n").filter((l) => l.includes("pnpm"));
+      return (
+        pnpmLines.length <= 1 &&
+        !text.includes("old-server") &&
+        text.includes("菠萝披萨") &&
+        text.includes(keepEntry)
+      );
+    }, 240_000);
+    await domWatcher;
+    checks.push([
+      "TC-C 整理：重复合并（pnpm 2→1）、过时删除（old-server）、有效保留（密语/注释）",
+      tidyOk,
+    ]);
+    log(`整理后的记忆文件：\n${readMemory()}`);
+    checks.push([
+      "TC-C 完成通知出现在界面（子 lane 不可见，通知是唯一结果出口）",
+      tidyNotice !== null,
+    ]);
+    if (tidyError !== null) log(`整理的可见报错：${tidyError}`);
+    // 索引口径：被清理的条目就地归档，冷层仍可检索
+    const archived = await pollIndex(
+      () =>
+        searchMemory({ projectKey: fixtureKey, query: "old-server" }).some(
+          (h) => h.status === "archived",
+        ),
+      30_000,
+    );
+    checks.push(["TC-C 冷层归档：被删条目 archived 且仍可检索", archived]);
+    // 改动记录口径：对记忆文件的改写如实落库（SECURITY.md「整理面」的承诺）
+    const tidyChanges = listSessionFileChanges(session.id).filter((c) =>
+      c.path.replace(/\\/g, "/").endsWith(".colt/memory.md"),
+    );
+    checks.push([
+      "TC-C 改动记录：记忆文件的改写进了会话的文件改动（诚实报告）",
+      tidyChanges.length > 0,
+    ]);
+
+    // ---- TC-D 冷层检索（1 次调用）----
+    // 现行文件此时已无部署条目（TC-C 验过）：答出 old-server 的唯一来源是冷层。
+    const tcD = await askAndSettle(
+      "不要读取记忆文件。用 memory_search 工具查一下「部署」，告诉我：这个项目以前的部署方式在记忆原文里是怎么写的？引用原文回答。",
+    );
+    log(`TC-D 回答：${tcD.answer}`);
+    checks.push([
+      "TC-D 冷层检索：现行已删的条目仍能被 memory_search 答出",
+      tcD.answer.includes("old-server"),
+    ]);
+
+    checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
+  } finally {
+    // 先出结论再清理：夹具条目按 project_key 整段删除（派生库，可随时重建）；
+    // 会话行留在库里，与其它冒烟模式一致
+    try {
+      openMemoryDatabase(app.getPath("userData"))
+        .prepare("DELETE FROM memory_entries WHERE project_key = ?")
+        .run(fixtureKey);
+    } catch (error) {
+      log(`清理夹具条目失败（派生库，无害）：${error instanceof Error ? error.message : String(error)}`);
+    }
+    log("[memory-e2e] 端到端断言");
     for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
     log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
   }

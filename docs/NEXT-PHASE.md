@@ -758,9 +758,28 @@
    恰好成了最近打开，worker 就会**就绪前被杀**或带着错误 cwd（2026-09 实测两轮翻车）。
    ⚠️ 用户级记忆不注夹具：真家目录 `~/.colt/memory.md` 不可写（写就是污染用户数据），
    其链路与项目级共用同一条消息路径，由单测覆盖。
-6. **应用内实测**：除 `fixture` / `dock` / `memory` 外，各模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）
+6. **记忆行为端到端（真实调用、计费；改注入 / 沉淀 / `memory-tidy` 必跑）**：
+   ```powershell
+   $env:COLT_SMOKE=".smoke-memory-e2e.png"
+   $env:COLT_SMOKE_MODE="memory-e2e"
+   npm run dev
+   ```
+   看 `out/.smoke-memory-e2e.png.log` 末行是否 `通过 12/12`。免费的 `memory` 模式只验
+   **跨进程链路**，本模式验**行为质量**，固定 4 次真实调用：①注入可见性（明令禁止工具，
+   模型不读文件也答出记忆里的密语——工具动用单独断言，读了文件就不算注入生效）；
+   ②沉淀真的写进 `.colt/memory.md` 且新条目可被检索（active）；③`/memory-tidy` 从渲染层
+   输入框真实进入（子 lane 对主视图不可见，以**文件落盘**为完成信号，并行盯完成通知与
+   可见报错两类瞬时 DOM）：重复合并（pnpm 2→1）、过时删除（old-server）、有效保留、
+   完成通知出现在界面、被删条目就地归档（archived 仍可检索）、改写进了会话的文件改动；
+   ④冷层检索：现行文件已无部署条目时，`memory_search` 仍能答出原文。
+   夹具在 `out/smoke-memory-e2e-fixture/`，条目跑完按 project_key 整段清理（派生库，可重建）。
+   ⚠️ 夹具技巧与 `memory` 模式**相反**：刻意**不**把仓库项目顶回 `list[0]`——`/memory-tidy`
+   从输入框走的是「当前会话」，夹具会话必须是渲染层自动打开的那个（无竞争者，StrictMode
+   杀一次就绪前的 worker 后会自行收敛）。
+   首跑（2026-09-17）：12/12 全绿；冷层条目的回答连归档状态与日期都如实引用了。
+7. **应用内实测**：除 `fixture` / `dock` / `memory` 外，各模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）
    都会真实调用模型并**产生计费**，`host` 只是其中最费的一个；只想看界面时直接启动应用 + **系统级截图**即可
-7. 断言清单与手动用例：`docs/BROWSER-TEST-CASES.md`
+8. 断言清单与手动用例：`docs/BROWSER-TEST-CASES.md`
 
 ---
 
