@@ -6,6 +6,7 @@
  * 工具卡里若副标题**就是该工具操作的文件**，则该路径可点 → onOpenFile（A3-2「点任意文件路径」）。
  */
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -41,6 +42,7 @@ import {
   NEAR_BOTTOM_PX,
   windowStart,
 } from "../../lib/message-window";
+import { describeSteps, groupTurns, summarizeSteps } from "../../lib/turn-groups";
 import { cn } from "../../lib/utils";
 
 /**
@@ -171,17 +173,23 @@ export const MessageBubble = memo(function MessageBubble({
 });
 
 /**
- * 消息窗口：长会话只挂最近一段，更早的按需展开（算术见 `@/lib/message-window`）。
+ * 消息窗口：长会话只挂最近一段，更早的按需展开（算术见 `@/lib/message-window`）；
+ * 「只看问答」时再把每轮的**过程**收成一行（分组见 `@/lib/turn-groups`）。
  *
- * 为什么需要它：渲染成本与**挂载条数**成正比，而真实库里最长的那个会话有近 3000 条
+ * 为什么需要窗口：渲染成本与**挂载条数**成正比，而真实库里最长的那个会话有近 3000 条
  * 可渲染消息（带 2600+ 个工具卡）——一次性挂上去要好几秒、界面全程不能动。
  * 而绝大多数会话在 31 条以内，窗口对它们是**零影响**（还没到一个窗口）。
  *
- * 两个容易做错的地方，这里都显式处理：
+ * 为什么需要折叠：一轮十几个工具调用就是十几行，正文被中间步骤淹掉。规则 ④-C 要求卡片
+ * **不可省略、不可简化成一行纯文本**，所以收起来的那一行必须是**可展开的入口**，不是把卡片删掉。
+ *
+ * 三个容易做错的地方，这里都显式处理：
  * - **上翻时先把窗口钉住**：否则流式期间新消息一来、窗口跟着底部挪，
  *   用户正在读的那几行会被卸掉——表现为「内容在眼皮底下消失」。
  * - **展开时补偿滚动位置**：更早的条目插在**上方**，会把视野整体往下推，
  *   不补的话每展开一次就跳一次。
+ * - **「过程」展开过的轮要记住**：展开态按**轮键**存，而不是按消息下标——
+ *   流式追加会让下标整体漂移，按下标记等于「展开的轮自己换了一个」。
  */
 export function MessageWindow({
   sessionId,
@@ -193,6 +201,7 @@ export function MessageWindow({
   openState,
   onToggleOpen,
   scrollRef,
+  folded,
 }: {
   sessionId: string;
   messages: ViewMessage[];
@@ -204,6 +213,8 @@ export function MessageWindow({
   onToggleOpen: (id: string, open: boolean) => void;
   /** 消息流的滚动容器：窗口要知道滚到哪了，展开时也要把 `scrollTop` 补回去 */
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  /** 「只看问答」：把每轮的过程（思考 + 工具卡）收成一行 */
+  folded: boolean;
 }): React.JSX.Element {
   /** 窗口起点。`FOLLOW_BOTTOM` = 还没显式展开过，窗口跟着最新内容走 */
   const [head, setHead] = useState<number>(FOLLOW_BOTTOM);
@@ -251,6 +262,37 @@ export function MessageWindow({
     return () => node.removeEventListener("scroll", onScroll);
   }, [scrollRef, loadEarlier, messages.length]);
 
+  /** 切轮。只对**挂出来的这段**切：窗口外的部分不参与渲染，切了也没用 */
+  const turns = useMemo(() => groupTurns(messages.slice(start)), [messages, start]);
+
+  /** 被手动展开过过程的轮（键 = 轮键）。空集 = 全收着，这是「只看问答」的常态 */
+  const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleTurn = useCallback((key: string): void => {
+    setExpandedTurns((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  /** 一行 = 一条消息。每行套一层带标记的容器：冒烟要能**按行**数「挂了多少条」、
+   *  也要认得出挂的是哪几条。这层是给探针用的稳定锚点（别让用例靠层级去猜，见 AGENTS.md §五 ⑫）。 */
+  const row = (message: ViewMessage): React.JSX.Element => (
+    <div key={message.id} data-msg-row={message.id}>
+      <MessageBubble
+        sessionId={sessionId}
+        message={message}
+        resultMap={resultMap}
+        changes={changes}
+        onHoverFile={onHoverFile}
+        onOpenFile={onOpenFile}
+        openState={openState}
+        onToggleOpen={onToggleOpen}
+      />
+    </div>
+  );
+
   return (
     <>
       {start > 0 && (
@@ -265,21 +307,45 @@ export function MessageWindow({
           </button>
         </div>
       )}
-      {/* 每行套一层带标记的容器：冒烟要能**按行**数「挂了多少条」、也要认得出挂的是哪几条。
-          这层是给探针用的稳定锚点（别让用例靠层级去猜，见 AGENTS.md §五 ⑫）。 */}
-      {messages.slice(start).map((message) => (
-        <div key={message.id} data-msg-row={message.id}>
-          <MessageBubble
-            sessionId={sessionId}
-            message={message}
-            resultMap={resultMap}
-            changes={changes}
-            onHoverFile={onHoverFile}
-            onOpenFile={onOpenFile}
-            openState={openState}
-            onToggleOpen={onToggleOpen}
-          />
-        </div>
+      {/* 一轮一轮地挂。折叠打开时，一轮的「过程」收成一行**可展开的入口**——
+          规则 ④-C 要求工具卡不可省略、不可简化成一行纯文本，收起来也不能是把它删掉。 */}
+      {turns.map((turn) => (
+        <Fragment key={turn.key}>
+          {turn.user !== null && row(turn.user)}
+          {folded && turn.steps.length > 0 && !expandedTurns.has(turn.key) ? (
+            <AssistantRow>
+              <button
+                type="button"
+                data-conv-steps-summary={turn.key}
+                onClick={() => toggleTurn(turn.key)}
+                title="这一轮的中间步骤已收起，点开看思考与工具调用"
+                className="flex items-center gap-1.5 self-start rounded-[8px] border border-line bg-surface-raised px-3 py-2 text-[12px] text-text-muted transition hover:border-line-strong hover:text-text-primary"
+              >
+                <ChevronRight {...ICON.sm} className="shrink-0" />
+                {describeSteps(summarizeSteps(turn.steps))}
+              </button>
+            </AssistantRow>
+          ) : (
+            <>
+              {folded && turn.steps.length > 0 && (
+                <AssistantRow>
+                  {/* 收起入口留在原处（过程上方），展开/收起时这一行不跳位 */}
+                  <button
+                    type="button"
+                    data-conv-steps-collapse={turn.key}
+                    onClick={() => toggleTurn(turn.key)}
+                    className="flex items-center gap-1.5 self-start text-[12px] text-text-muted transition hover:text-text-secondary"
+                  >
+                    <ChevronRight {...ICON.sm} className="shrink-0 -rotate-90" />
+                    收起过程
+                  </button>
+                </AssistantRow>
+              )}
+              {turn.steps.map(row)}
+            </>
+          )}
+          {turn.final !== null && row(turn.final)}
+        </Fragment>
       ))}
     </>
   );

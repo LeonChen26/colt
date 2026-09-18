@@ -50,7 +50,12 @@ import {
   WINDOW_CHUNK,
   windowStart,
 } from "../src/renderer/src/lib/message-window.ts";
-import type { ViewFileChange } from "@shared/worker-protocol";
+import {
+  describeSteps,
+  groupTurns,
+  summarizeSteps,
+} from "../src/renderer/src/lib/turn-groups.ts";
+import type { ViewFileChange, ViewMessage } from "@shared/worker-protocol";
 import type {
   ConsoleEntry,
   DownloadEntry,
@@ -1175,5 +1180,112 @@ describe("messageWindow（长会话只挂最近一段）", () => {
     assert.equal(chunkSize(LONG, FOLLOW_BOTTOM), WINDOW_CHUNK);
     assert.equal(chunkSize(LONG, 100), WINDOW_CHUNK);
     assert.equal(chunkSize(30, FOLLOW_BOTTOM), 0);
+  });
+});
+
+describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
+  const user = (id: string, text = "问"): ViewMessage => ({
+    id,
+    role: "user",
+    text,
+    toolCalls: [],
+  });
+  const step = (id: string, tools: number, thought = false): ViewMessage => ({
+    id,
+    role: "assistant",
+    text: "",
+    thought: thought ? "先看清结构再动手" : undefined,
+    toolCalls: Array.from({ length: tools }, (_, index) => ({
+      id: `${id}-c${index}`,
+      name: "read",
+      args: "{}",
+    })),
+  });
+  const reply = (id: string, text = "答"): ViewMessage => ({
+    id,
+    role: "assistant",
+    text,
+    toolCalls: [],
+  });
+
+  test("一轮里多条助手消息：最后一条是最终回复，其余都是过程", () => {
+    const turns = groupTurns([user("u1"), step("a1", 2), step("a2", 1), reply("a3")]);
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.user?.id, "u1");
+    assert.deepEqual(
+      turns[0]?.steps.map((message) => message.id),
+      ["a1", "a2"],
+    );
+    assert.equal(turns[0]?.final?.id, "a3");
+  });
+
+  test("「最后一条」是靠顶替维持的：连来两条助手，前一条会降级为过程", () => {
+    // 少了这句顶替，一轮里就会出现两条「最终回复」——收起来时会连正文一起藏掉
+    const turns = groupTurns([user("u1"), reply("a1"), reply("a2")]);
+    assert.deepEqual(
+      turns[0]?.steps.map((message) => message.id),
+      ["a1"],
+    );
+    assert.equal(turns[0]?.final?.id, "a2");
+  });
+
+  test("一轮只有一条助手消息：没有过程可收，整轮就是问答", () => {
+    const turns = groupTurns([user("u1"), reply("a1")]);
+    assert.deepEqual(turns[0]?.steps, []);
+    assert.equal(turns[0]?.final?.id, "a1");
+  });
+
+  test("连着两条提问：各成一「轮」，第一轮没有助手消息也不吞掉提问", () => {
+    const turns = groupTurns([user("u1"), user("u2"), reply("a1")]);
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0]?.user?.id, "u1");
+    assert.equal(turns[0]?.final, null);
+    assert.equal(turns[1]?.user?.id, "u2");
+    assert.equal(turns[1]?.final?.id, "a1");
+  });
+
+  test("会话以助手消息开头（恢复出来的转录）：照样成轮，不整段丢掉", () => {
+    const turns = groupTurns([reply("a1"), user("u1"), reply("a2")]);
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0]?.user, null);
+    assert.equal(turns[0]?.final?.id, "a1");
+    assert.equal(turns[1]?.user?.id, "u1");
+    assert.equal(turns[1]?.final?.id, "a2");
+  });
+
+  test("other 不参与成轮（它本来就不成条）", () => {
+    const other: ViewMessage = { id: "o1", role: "other", text: "结构节点", toolCalls: [] };
+    const turns = groupTurns([user("u1"), other, reply("a1"), other]);
+    assert.equal(turns.length, 1);
+    assert.deepEqual(turns[0]?.steps, []);
+    assert.equal(turns[0]?.final?.id, "a1");
+  });
+
+  test("不变式：每条 user/assistant 都落在某一轮里，且顺序不变", () => {
+    const all = [reply("a0"), user("u1"), step("a1", 1), reply("a2"), user("u2"), reply("a3")];
+    const flat = groupTurns(all).flatMap((turn) => [
+      ...(turn.user ? [turn.user] : []),
+      ...turn.steps,
+      ...(turn.final ? [turn.final] : []),
+    ]);
+    assert.deepEqual(
+      flat.map((message) => message.id),
+      all.map((message) => message.id),
+    );
+  });
+
+  test("摘要只数**被收起来**的东西：工具按调用数、思考按步骤数", () => {
+    // 一轮里一张卡可能带好几个调用，所以数的是 toolCalls 的总数，不是消息数
+    assert.deepEqual(summarizeSteps([step("a1", 3, true), step("a2", 2), step("a3", 0, true)]), {
+      toolCount: 5,
+      thoughtCount: 2,
+    });
+  });
+
+  test("摘要文案只报确实有的：没有的不提，都没有时说「过程」", () => {
+    assert.equal(describeSteps({ toolCount: 0, thoughtCount: 0 }), "过程");
+    assert.equal(describeSteps({ toolCount: 0, thoughtCount: 1 }), "已思考");
+    assert.equal(describeSteps({ toolCount: 4, thoughtCount: 0 }), "4 个工具调用");
+    assert.equal(describeSteps({ toolCount: 4, thoughtCount: 2 }), "已思考 · 4 个工具调用");
   });
 });

@@ -14,6 +14,7 @@ import {
   GitBranch,
   ImagePlus,
   Loader2,
+  MessagesSquare,
   ShieldCheck,
   Shrink,
   Square,
@@ -35,6 +36,7 @@ import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCand
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageWindow, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
+import { PanelToggle } from "./PanelToggle";
 import { QuestionCards } from "./QuestionCard";
 import { useBlockingCards } from "./useBlockingCards";
 import { useStableView } from "./use-stableView";
@@ -596,6 +598,11 @@ export function Conversation({
     if (node) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
   }, []);
 
+  // 会话头（②）的「只看问答」——规则 ④-E：④-A 的信息密度只到「逐卡」，
+  // 这里补的是**整轮**那一档：把每轮的过程（思考 + 工具卡）收成一行，只留提问与最终回复。
+  // **默认关**：它改变的是「每次打开看到什么」，不该替所有会话做主（工具卡是叙事的一部分，见 ④-C）。
+  const [foldSteps, setFoldSteps] = useState(false);
+
 
 
   /**
@@ -988,6 +995,13 @@ export function Conversation({
             </button>
           )}
           <PanelToggle
+            active={foldSteps}
+            icon={<MessagesSquare {...ICON.sm} />}
+            label="只看问答"
+            title="把每轮的思考与工具调用收成一行，只留你的提问与最终回复；点在收起的那一行上可展看过程"
+            onClick={() => setFoldSteps((value) => !value)}
+          />
+          <PanelToggle
             active={dockActiveKind === "usage"}
             icon={<ChartColumn {...ICON.sm} />}
             label="统计"
@@ -1100,6 +1114,7 @@ export function Conversation({
               openState={toolOpenState}
               onToggleOpen={toggleToolOpen}
               scrollRef={scrollRef}
+              folded={foldSteps}
             />
 
             {/* 流式中的助手内容：思考轨 + 流式文本 + 运行中工具，
@@ -1613,37 +1628,5 @@ function Picker({
         </div>
       )}
     </div>
-  );
-}
-
-/** 头部右侧的面板切换按钮 */
-function PanelToggle({
-  active,
-  icon,
-  label,
-  title,
-  onClick,
-}: {
-  active: boolean;
-  icon: ReactNode;
-  label: string;
-  title?: string;
-  onClick: () => void;
-}): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      className={cn(
-        "flex items-center gap-1.5 rounded-[6px] border px-2 py-1 text-[11.5px] transition",
-        active
-          ? "border-accent bg-accent-soft text-text-primary"
-          : "border-line text-text-secondary hover:text-text-primary",
-      )}
-    >
-      {icon}
-      {label}
-    </button>
   );
 }

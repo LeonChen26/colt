@@ -391,6 +391,101 @@ export async function runPerf(
     await run<boolean>(`document.querySelector("[data-conv-scroll]").scrollTop > 24`),
   ]);
 
+  // ---- 五、「只看问答」：一轮的过程收成一行 ----
+  // 判据分两层：**收了没有**（摘要行出现、行数变少），以及**有没有把东西弄丢**——
+  // 折叠最容易犯的错不是没收，是把提问或最终回复一起收掉了（那就不是阅读视图，是丢内容）。
+  // 夹具的节奏是「每 14 条一个用户轮」，据此能认出「提问行」与「轮末回复行」。
+  log("[五] 只看问答（一轮的过程收成一行）");
+  const foldState = (): Promise<{ rows: string[]; summaries: number; collapses: number }> =>
+    run(`(() => {
+      const area = document.querySelector("[data-conv-scroll]");
+      if (!area) return { rows: [], summaries: 0, collapses: 0 };
+      return {
+        rows: [...area.querySelectorAll("[data-msg-row]")].map((n) => n.getAttribute("data-msg-row") || ""),
+        summaries: area.querySelectorAll("[data-conv-steps-summary]").length,
+        collapses: area.querySelectorAll("[data-conv-steps-collapse]").length,
+      };
+    })()`);
+  const clickText = (text: string): Promise<boolean> =>
+    run<boolean>(
+      `(() => {
+        const b = [...document.querySelectorAll("button")].find((x) => (x.textContent || "").trim() === ${JSON.stringify(text)});
+        if (b) b.click();
+        return b !== null;
+      })()`,
+    );
+  const clickNth = (selector: string, nth: number): Promise<boolean> =>
+    run<boolean>(
+      `(() => {
+        const list = [...document.querySelectorAll(${JSON.stringify(selector)})];
+        const el = list[${nth}];
+        if (el) el.click();
+        return el !== null;
+      })()`,
+    );
+  /** 夹具里 m<下标>：每 14 条一个用户轮，轮末是这 14 条里的最后一条助手消息 */
+  const isUserRow = (id: string): boolean => Number(id.slice(1)) % 14 === 0;
+  const isTurnEndRow = (id: string): boolean => Number(id.slice(1)) % 14 === 13;
+
+  // 先离开顶端：贴着顶时补一次高度或滚动都可能触发「滚到顶自动加载」，行数会被搅动
+  await scrollToBottom();
+  await sleep(300);
+  const unfolded = await foldState();
+  const userBefore = unfolded.rows.filter(isUserRow).length;
+  const turnEndBefore = unfolded.rows.filter(isTurnEndRow).length;
+  checks.push([
+    `默认「完整」：一条过程都没收起来（摘要行 ${unfolded.summaries} 个）`,
+    unfolded.summaries === 0 && unfolded.rows.length > 0,
+  ]);
+
+  const foldClicked = await clickText("只看问答");
+  await sleep(500);
+  const folded = await foldState();
+  checks.push([
+    `点开「只看问答」后每轮收成一行（摘要行 ${folded.summaries} 个，行数 ${unfolded.rows.length} → ${folded.rows.length}）`,
+    foldClicked && folded.summaries > 0 && folded.rows.length < unfolded.rows.length,
+  ]);
+  checks.push([
+    `提问一条不少（用户行 ${userBefore} → ${folded.rows.filter(isUserRow).length}）`,
+    userBefore > 0 && folded.rows.filter(isUserRow).length === userBefore,
+  ]);
+  checks.push([
+    `最终回复没被一起收掉（轮末回复行 ${turnEndBefore} → ${folded.rows.filter(isTurnEndRow).length}）`,
+    turnEndBefore > 0 && folded.rows.filter(isTurnEndRow).length === turnEndBefore,
+  ]);
+
+  // 收起来的那一行必须是**可展开的入口**（规则 ④-C：卡片不可省略、不可简化成一行纯文本）
+  const summaryClicked = await clickNth("[data-conv-steps-summary]", 0);
+  await sleep(400);
+  const expanded = await foldState();
+  checks.push([
+    `点开摘要行能看回过程（行数 ${folded.rows.length} → ${expanded.rows.length}）`,
+    summaryClicked && expanded.rows.length > folded.rows.length,
+  ]);
+  checks.push([
+    `展开只影响那一轮，别的轮仍收着（摘要行 ${folded.summaries} → ${expanded.summaries}，收起入口 ${expanded.collapses} 个）`,
+    expanded.summaries === folded.summaries - 1 && expanded.collapses === 1,
+  ]);
+
+  const collapseClicked = await clickNth("[data-conv-steps-collapse]", 0);
+  await sleep(400);
+  const refolded = await foldState();
+  checks.push([
+    `再点「收起过程」回到一行摘要（行数 ${expanded.rows.length} → ${refolded.rows.length}）`,
+    collapseClicked &&
+      refolded.summaries === folded.summaries &&
+      refolded.rows.length === folded.rows.length,
+  ]);
+
+  // 关掉开关要**完全复原**：它只是显示层的收纳，不许留下被藏起来的内容
+  await clickText("只看问答");
+  await sleep(500);
+  const restored = await foldState();
+  checks.push([
+    `关掉开关完全复原（行数回到 ${unfolded.rows.length}，摘要行归零）`,
+    restored.summaries === 0 && restored.rows.length === unfolded.rows.length,
+  ]);
+
   for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
   log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
 }
