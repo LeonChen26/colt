@@ -7,12 +7,13 @@
  * 由 scripts/split-smoke.mjs 从 src/dev/smoke/index.ts 逐字切出，内容与拆分前一致。
  */
 import { app, BrowserWindow } from "electron";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   createSession,
   deleteSession,
   getSession,
+  listProjects,
   listSessions,
   setSessionModel,
   upsertProject,
@@ -588,6 +589,9 @@ export async function runModelNoUsable(
  *    一个字都没发过）。现在侧栏以库为准，草稿要等**首次发消息落库**后才出现。
  * ③ **转正靠落库时机**：首次发消息时主进程先落库、再拉起 worker，所以「草稿有了进程」
  *    就等价于「它已经落库」——渲染层据此把它拉进侧栏（判据是进程状态，不依赖模型回话）。
+ * ④ **起手态的排布与出口**：输入卡片不再贴着会话区底部，而是与提示块一起上移到相对中间
+ *    （判据是**几何**：卡片底边到会话区底边的留白远大于贴底时的固定量，不看 class）；
+ *    并能一键「新建工作目录」——主进程真的在磁盘上建出目录、登记成项目、界面切过去。
  *
  * 断言全部落在「可观察的事实」上：主进程的会话表、有没有 worker、DOM 里有没有输入框与哪一行。
  * 全程不打模型：provider 指到 example.invalid，只用来让会话「有个模型可用」。
@@ -602,6 +606,9 @@ export async function runSessionDraft(
   const PROVIDER_ID = "smoke-draft-local";
   const checks: [string, boolean][] = [];
   const cwd = process.env.COLT_SMOKE_CWD ?? process.cwd();
+  // 起手区「新建工作目录」的落点：由 harness 指到 out/ 下（见 smoke/index.ts 顶部）。
+  // 期望值从**同一个环境变量**读出来，不把 out/ 的路径写死在用例里——同源才不会被改漏。
+  const scratchRoot = process.env.COLT_WORKSPACE_ROOT ?? "";
   const savedDeepseekKey = getSecret("deepseek");
   // 另起一个**空**项目：只有它一个会话都没有，才谈得上「打开就见输入框」。
   // 路径固定（不随机），免得每跑一次就往库里多塞一行项目记录。
@@ -621,6 +628,35 @@ export async function runSessionDraft(
       rows: document.querySelectorAll("[data-session-row]").length,
     };
   })()`;
+
+  /**
+   * 起手态的排布：提示块、输入卡片，以及它们相对**会话区**（那一格网格）的位置。
+   *
+   * 会话区按「输入卡片往上最近的那个带 grid-rows-* 的祖先」认，与 model/no-usable 同一条
+   * 找法：不靠层级硬猜结构（AGENTS.md §五⑫）。
+   */
+  const startProbe = `(() => {
+    const box = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom) };
+    };
+    const card = document.querySelector("[data-conv-card]");
+    const root = card ? card.closest('[class*="grid-rows-"]') : null;
+    const dir = document.querySelector("[data-conv-workdir]");
+    return {
+      start: box(document.querySelector("[data-conv-start]")),
+      card: box(card),
+      root: box(root),
+      workdir: dir ? dir.textContent : null,
+    };
+  })()`;
+  interface StartProbe {
+    start: { top: number; bottom: number } | null;
+    card: { top: number; bottom: number } | null;
+    root: { top: number; bottom: number } | null;
+    workdir: string | null;
+  }
 
   /** 该项目行里的「+」。按 data-project-row 认项目，不按 DOM 顺序猜（多项目时顺序会变） */
   const newButton = (projectRowId: string): string =>
@@ -661,6 +697,68 @@ export async function runSessionDraft(
     checks.push(["侧栏没有会话行（草稿不进侧栏）", opened.rows === 0]);
     checks.push(["自动建的那条草稿没有落库", listSessions(emptyProject.id).length === 0]);
     draftId = opened.session;
+
+    // ---- 起手态：输入框上移到相对中间，并且能换目录 / 建目录 ----
+    const start = await run<StartProbe>(startProbe);
+    log(
+      `起手态：提示块 ${JSON.stringify(start.start)}｜输入卡片 ${JSON.stringify(start.card)}｜` +
+        `会话区 ${JSON.stringify(start.root)}｜目录 ${start.workdir ?? "（无）"}`,
+    );
+    checks.push([
+      "空项目的中间区是起手提示块 + 输入卡片（不是空白，也不是干等）",
+      start.start !== null && start.card !== null,
+    ]);
+    checks.push([
+      "提示块在输入卡片上方（两块是一个整块）",
+      start.start !== null && start.card !== null && start.start.bottom <= start.card.top,
+    ]);
+    // 「不再贴底」的判据：卡片底边到会话区底边留下的空隙，应**远大于**贴底时的固有高度
+    // （Live Bar + 内边距 ≈ 44px，与窗口尺寸无关）。窗口固定 1440×900，起手态这段留白实测
+    // 248px（会话区 42→864、卡片底 616），取 150 作阈值：既咬得住「回退成贴底」，
+    // 也不会因为提示块多一行就红。
+    checks.push([
+      "输入卡片不再贴着会话区底部（上移到相对中间）",
+      start.root !== null && start.card !== null && start.root.bottom - start.card.bottom > 150,
+    ]);
+    checks.push([
+      "起手区显示的目录就是这条会话的项目目录",
+      (start.workdir ?? "").includes("smoke-draft-empty-fixture"),
+    ]);
+    // 小目标入口照例做命中测试：只查「在 DOM 里」发现不了「被顶出可视区 / 上面盖着别的元素」
+    const newdirHit = await run<string>(`(() => {
+      const btn = document.querySelector("[data-conv-newdir]");
+      if (!btn) return "missing";
+      const r = btn.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return "zero-size";
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return at && (at === btn || btn.contains(at)) ? "ok" : "blocked";
+    })()`);
+    checks.push([`「新建工作目录」按钮落在可视区且命中它自己（${newdirHit}）`, newdirHit === "ok"]);
+
+    // 什么都不选时的一键出口：点它 → 主进程建目录 + 登记项目 → 界面切过去。
+    // 落点由 harness 指到 out/ 下且**固定**，所以这里既不碰真实家目录，也不会攒目录/项目行。
+    if (scratchRoot) {
+      await run(`(() => { document.querySelector("[data-conv-newdir]")?.click(); return null; })()`);
+      let switched: StartProbe | null = null;
+      for (let i = 0; i < 20; i += 1) {
+        switched = await run<StartProbe>(startProbe);
+        if (switched.workdir === scratchRoot) break;
+        await sleep(400);
+      }
+      const registered = listProjects().some((item) => item.rootPath === scratchRoot);
+      log(
+        `点「新建工作目录」后：界面目录=${switched?.workdir ?? "（无）"}｜已登记项目=${registered}`,
+      );
+      checks.push(["新工作目录真的建在磁盘上", existsSync(scratchRoot)]);
+      checks.push(["它已登记成项目（下次不必重造）", registered]);
+      checks.push(["界面上的工作目录换成了新目录", switched?.workdir === scratchRoot]);
+      checks.push([
+        "换目录后仍是起手态（新项目也没有会话，输入卡片留在中间）",
+        Boolean(switched?.start),
+      ]);
+    } else {
+      log("跳过「新建工作目录」：未设 COLT_WORKSPACE_ROOT，环境前提未建立（AGENTS.md §五⑬）");
+    }
 
     // 那个 + 平时是 opacity-0、靠 hover 显形，所以必须做命中测试：只查「在 DOM 里」
     // 发现不了「被顶出可视区 / 上面盖着别的元素」（小目标入口的老坑）。

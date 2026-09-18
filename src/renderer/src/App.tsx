@@ -104,6 +104,23 @@ export default function App(): React.JSX.Element {
     () => new Set([...approvalSessions, ...questionSessions]),
     [approvalSessions, questionSessions],
   );
+  /**
+   * 当前会话**自己**属于哪个项目——中间区的工作目录（cwd）由此推出，而不是取当前选中的项目。
+   *
+   * 「会话归哪个项目」与「worker 在哪个目录里干活」必须是同一条链：归属由 `projectId` 决定
+   * （主进程落库、建 JSONL 时用的也是它），而切项目那一下 `activeProject` 会**先**变、
+   * `activeSession` 要等会话列表 IPC 回来才变——那一瞬间若 cwd 取 `activeProject`，就成了
+   * 「会话落进 A、worker 在 B 里跑」（草稿首次发送必然新 fork，没有已在跑的 worker 兜底，
+   * 所以这一档尤其要按会话自己的项目走）。抽出会话自己的项目后，`activeProject` 只剩
+   * 「左栏高亮 / 展开谁 / 新建会话建到哪」这几件事。
+   *
+   * 反查不到（理论不该发生：会话都来自某个在列项目的 list）时退回 `activeProject`，
+   * 免得中间区整块空掉。
+   */
+  const conversationProject = useMemo(() => {
+    if (!activeSession) return null;
+    return projects.find((item) => item.id === activeSession.projectId) ?? activeProject;
+  }, [projects, activeSession, activeProject]);
   const [now, setNow] = useState(() => Date.now());
 
   // 主题挂载到下 <html>，并在变更时持久化
@@ -404,6 +421,22 @@ export default function App(): React.JSX.Element {
   }, []);
 
   /**
+   * 新建一个工作目录（`~/.colt/<年月日-时分秒>/workspace`）并切过去——起手区「什么都不选」时的一键出口。
+   *
+   * 与 `pickProject` 只差「目录从哪来」：一个走原生选目录框，一个由主进程直接造。
+   * 切过去之后草稿会由自动草稿那条路重建（旧草稿随「离开就丢掉」退场），所以这里不必手动建会话。
+   */
+  const createWorkspace = useCallback(async () => {
+    try {
+      const project = await window.colt.invoke("project.createScratch", undefined);
+      setProjects(await window.colt.invoke("project.list", undefined));
+      setActiveProject(project);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  /**
    * 新建会话。`projectId` 必须由调用方显式传入：侧栏每个项目行都有自己的「+」，
    * 点的是哪个项目就建在哪个项目——不能依赖闭包里的 `activeProject`，
    * 否则「先 setActiveProject(B)、再同步调 newSession()」时，读到的还是**本次渲染**的 A，
@@ -674,11 +707,11 @@ export default function App(): React.JSX.Element {
               <Settings />
             ) : mainView === "changes" && activeProject ? (
               <ProjectChanges key={activeProject.id} projectId={activeProject.id} />
-            ) : activeSession && activeProject ? (
+            ) : activeSession && conversationProject ? (
               <Conversation
                 key={activeSession.id}
                 sessionId={activeSession.id}
-                cwd={activeProject.rootPath}
+                cwd={conversationProject.rootPath}
                 sessionModelRef={activeSession.modelRef}
                 sessionThinkingLevel={activeSession.thinkingLevel}
                 runStartedAt={runningSessions.get(activeSession.id)}
@@ -687,6 +720,8 @@ export default function App(): React.JSX.Element {
                 onThinkingLevelSelected={(level) =>
                   applySessionThinkingLevel(activeSession.id, level)
                 }
+                onPickDirectory={() => void pickProject()}
+                onNewWorkspace={() => void createWorkspace()}
               />
             ) : (
               <div className="flex h-full items-center justify-center">

@@ -8,10 +8,20 @@
  * ipc 层依赖 Electron，node 测试里起不了真进程，故这里做**源码契约**校验，
  * 把「谁负责落库」这条不变量钉住：一旦有人在 create 里重新写库、或让草稿提前拉起
  * worker，用例立刻变红。端到端行为由冒烟的 [session/draft] 用例覆盖。
+ *
+ * 后半段是同一族的两件事：**丢弃草稿**（`session.discardDraft`）与**起手区的新工作目录**
+ * （`project.createScratch` + `scratch-dir` 的路径算术）——它们都只在「会话还没用起来」时出场。
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  WORKSPACE_LEAF,
+  defaultScratchBase,
+  scratchDirName,
+  scratchRootPath,
+} from "../src/main/lib/scratch-dir.ts";
 
 const IPC_SOURCE = readFileSync(new URL("../src/main/ipc/index.ts", import.meta.url), "utf8");
 
@@ -78,5 +88,84 @@ describe("草稿会话：首次发消息才落库", () => {
       "必须沿用界面手里的那个 id，否则界面持有的会话不存在",
     );
     assert.match(body, /if \(draft\.modelRef\) setSessionModel\(/, "草稿期选定的模型要跟着落库");
+  });
+});
+
+describe("丢弃草稿：session.discardDraft", () => {
+  test("只丢内存记录，不去动库（能用它的一定还没落库）", () => {
+    const body = handlerBody("session.discardDraft");
+    assert.match(body, /drafts\.delete\(request\.sessionId\)/, "丢弃要落到那张内存表上");
+    assert.doesNotMatch(body, /deleteSession\(/, "它不该去删库里的行——那属于 session.delete");
+  });
+
+  test("如实回报「丢掉了没」：渲染层据此知道该不该刷新侧栏", () => {
+    assert.match(handlerBody("session.discardDraft"), /discarded:/);
+  });
+});
+
+describe("新建工作目录：project.createScratch", () => {
+  test("先建目录、再登记项目（否则库里会多出一个不存在的路径）", () => {
+    const body = handlerBody("project.createScratch");
+    const mkdirAt = body.indexOf("mkdirSync(");
+    const upsertAt = body.indexOf("upsertProject(");
+    assert.notEqual(mkdirAt, -1, "找不到建目录");
+    assert.notEqual(upsertAt, -1, "找不到登记项目");
+    assert.ok(mkdirAt < upsertAt, "目录必须先存在：登记之后渲染层马上会去打开它");
+    assert.match(body, /scratchRootPath\(/, "路径要由纯函数算，别在 handler 里现拼时间戳");
+  });
+});
+
+describe("起手区的目录算术（scratch-dir）", () => {
+  test("默认父目录是家目录下的 .colt/（与用户级记忆同一个命名空间）", () => {
+    assert.equal(defaultScratchBase(join("/home", "u")), join("/home", "u", ".colt"));
+  });
+
+  test("目录名精确到秒，月/日/时/分/秒都补零", () => {
+    // 用本地时间构造，避免时区把断言带偏
+    assert.equal(scratchDirName(new Date(2026, 8, 19, 15, 30, 45)), "20260919-153045");
+    assert.equal(scratchDirName(new Date(2026, 0, 2, 3, 4, 5)), "20260102-030405");
+  });
+
+  test("完整路径是 <父目录>/<时间戳>/workspace：项目根名固定，引用它不必跟着时间戳变", () => {
+    assert.equal(
+      scratchRootPath("/base", new Date(2026, 8, 19, 15, 30, 45)),
+      join("/base", "20260919-153045", "workspace"),
+    );
+    // 最后一段必须就是那个固定叶子——换名会让「项目根目录叫 workspace」这条承诺失效
+    assert.equal(
+      scratchRootPath("/base", new Date(2026, 8, 19, 15, 30, 45)).split(/[\\/]/).pop(),
+      WORKSPACE_LEAF,
+    );
+  });
+
+  test("相隔一秒的两次「新建工作目录」得到**两个**目录（两次意图不能共用一个地方）", () => {
+    const first = scratchRootPath("/base", new Date(2026, 8, 19, 15, 30, 45));
+    const second = scratchRootPath("/base", new Date(2026, 8, 19, 15, 30, 46));
+    assert.notEqual(first, second);
+    // 而且必须只差最后那个时间戳层：父目录与叶子都不能跟着变
+    assert.equal(dirname(dirname(first)), dirname(dirname(second)));
+  });
+
+  test("同一秒内重复算出同一个路径（那是双击，一次意图别攒两个空目录）", () => {
+    const a = scratchRootPath("/base", new Date(2026, 8, 19, 15, 30, 45, 100));
+    const b = scratchRootPath("/base", new Date(2026, 8, 19, 15, 30, 45, 900));
+    assert.equal(a, b);
+  });
+
+  test("override 非空时原样使用（冒烟靠它把产物钉在 out/ 下、不污染真实家目录）", () => {
+    const at = new Date(2026, 8, 19, 15, 30);
+    assert.equal(scratchRootPath("/base", at, "/tmp/x"), "/tmp/x");
+    assert.equal(scratchRootPath("/base", at, "  /tmp/x  "), "/tmp/x");
+    // 原样 = 既不拼时间戳也不拼 workspace/：覆盖的是**最终项目根**，不是父目录
+    assert.equal(scratchRootPath("/base", at, "/tmp/x").endsWith(WORKSPACE_LEAF), false);
+  });
+
+  test("override 为空串或纯空白时回落到默认（空串不等于「指定了目录」）", () => {
+    const at = new Date(2026, 8, 19, 15, 30, 45);
+    // 这条测的是**回落行为**，不是时间戳格式（格式由上面两条钉住），所以按同源函数算期望
+    const expected = join("/base", scratchDirName(at), "workspace");
+    assert.equal(scratchRootPath("/base", at, ""), expected);
+    assert.equal(scratchRootPath("/base", at, "   "), expected);
+    assert.equal(scratchRootPath("/base", at), expected);
   });
 });

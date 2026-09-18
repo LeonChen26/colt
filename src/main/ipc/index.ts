@@ -7,12 +7,13 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { existsSync, readdirSync, rmSync, type Dirent } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
 import { readGitStatus } from "../git";
+import { defaultScratchBase, scratchRootPath } from "../lib/scratch-dir";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
 import {
@@ -249,6 +250,28 @@ export function registerIpcHandlers(): void {
   });
 
   handle("project.list", () => listProjects());
+
+  /**
+   * 新建工作目录：在 `~/.colt/<年月日-时分秒>/workspace` 造一个目录并登记为项目。
+   *
+   * 落在**家目录**下（而不是应用数据目录）：它是用户的**工作产物**存放地，必须能被找到；
+   * `.colt` 沿用仓库既有的用户级命名空间（用户级记忆 `~/.colt/memory.md` 就在那儿，
+   * 见 worker/lib/memory.ts），家目录里只开这一个口子。
+   * 时间戳到**秒**：两次不同时刻的意图必须拿到两个不同目录（只到分钟时，一分钟内点两次会
+   * 落到**同一个**已经装了东西的目录）。同一**秒**内重复调用才落到同一路径，
+   * `upsertProject` 按 root_key 去重——那几乎只是双击，不该攒目录、攒项目行。
+   * `COLT_WORKSPACE_ROOT` 指到别处时直接用它本身（见 `scratchRootPath`）：冒烟靠它把产物
+   * 钉在 `out/` 下，免得每跑一次就往真实家目录写东西（AGENTS.md §五⑩）。
+   */
+  handle("project.createScratch", () => {
+    const root = scratchRootPath(
+      defaultScratchBase(app.getPath("home")),
+      new Date(),
+      process.env.COLT_WORKSPACE_ROOT,
+    );
+    mkdirSync(root, { recursive: true });
+    return upsertProject(root);
+  });
 
   handle("session.create", (request) => {
     const now = Date.now();

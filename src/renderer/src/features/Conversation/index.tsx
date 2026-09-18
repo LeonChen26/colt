@@ -44,6 +44,7 @@ import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageWindow, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
 import { HistoryPanel } from "./HistoryPanel";
+import { StartPanel } from "./StartPanel";
 import { TurnRail } from "./TurnRail";
 import { PanelToggle } from "./PanelToggle";
 import { Picker } from "./Picker";
@@ -129,6 +130,8 @@ export function Conversation({
   providers,
   onModelSelected,
   onThinkingLevelSelected,
+  onPickDirectory,
+  onNewWorkspace,
 }: {
   sessionId: string;
   cwd: string;
@@ -150,6 +153,14 @@ export function Conversation({
   onModelSelected?: (modelRef: string) => void;
   /** 思考等级已落库，同 onModelSelected：父组件要刷新缓存，否则重挂载会退回旧值 */
   onThinkingLevelSelected?: (level: ThinkingLevel) => void;
+  /**
+   * 起手态（还没有任何消息）里按「换一个目录…」：走原生选目录框，选完切到那个项目
+   * （=换 cwd，见 App 的 pickProject）。目录决定这条会话归哪个项目，所以只在起手态可换——
+   * 发完第一条消息，project_id / JSONL 目录 / worker 的 cwd 就都定死了。
+   */
+  onPickDirectory: () => void;
+  /** 起手态里按「新建工作目录」：不必自己挑，让主进程在家目录下造一个空的并切过去 */
+  onNewWorkspace: () => void;
 }): React.JSX.Element {
   // 初值取缓存：本会话若是重挂（切走切回 / worker 被空闲回收后重开），立刻就有内容可画，
   // 不必干等 worker 把整份 JSONL 重放完——那段时间原本是纯白 + 转圈（见 view-cache.ts）。
@@ -955,12 +966,30 @@ export function Conversation({
     resizeInput();
   }, [input, resizeInput]);
 
+  /**
+   * 起手态：还没有任何内容可看——没消息、没在启动、没报错、也没待办提示。
+   *
+   * `view` 为 null 时（草稿会话没有 worker）用 `?? 0` 兜底：`null === 0` 是 false，
+   * 写死比较会让草稿会话落进「非起手态」，用户看到的是一个既没有提示、也没有报错的空白区。
+   *
+   * `notice` 也算进来：那条「还差一步配密钥」的黄条住在消息区里，而起手态要**收起消息区**
+   * （见渲染处），若不把它排除掉就会把黄条一起藏起来——那正是用户唯一能看到的行动指引，
+   * 藏掉就等于静默失败（见 ERRORS.md）。宁可这时不显示起手提示块。
+   */
+  const empty = (view?.messages.length ?? 0) === 0 && !opening && !error && !notice;
+
   return (
     // 两列三行：左列「会话头 / 消息流 / 输入区」，右列是满高的工作区（页签容器）。
     // 用网格而不是嵌套，确保输入区不会横向伸到工作区下方（高保真的分栏模型）。
+    // **起手态换行高**：正常态「消息流 1fr、输入区 auto」把输入区压在底；起手态把第 3 行
+    // 变成 1fr 并收起第 2 行，于是输入列拿到整块剩余高度，靠 `justify-center` 把
+    // 「提示块 + 输入区」一起挪到相对中间（用户要的就是输入区别贴底）。
     <div
       ref={rootRef}
-      className="relative grid h-full grid-rows-[auto_1fr_auto] overflow-hidden"
+      className={cn(
+        "relative grid h-full overflow-hidden",
+        empty ? "grid-rows-[auto_auto_1fr]" : "grid-rows-[auto_1fr_auto]",
+      )}
       style={{ gridTemplateColumns: `minmax(0, 1fr) ${dockWidth}px` }}
     >
       <div className="conv-head col-start-1 row-start-1 flex shrink-0 items-center justify-between gap-2 border-b border-line px-3.5 py-2">
@@ -1039,7 +1068,12 @@ export function Conversation({
         </div>
       </div>
 
-      <div className="relative col-start-1 row-start-2 flex min-h-0 min-w-0">
+      {/* 消息区。起手态整块 `hidden`：此时没有内容可滚，留着它只会占掉第 2 行
+          （`auto` 行仍被 `py-4` 撑出 32px），把「提示块 + 输入区」挤得偏下。
+          用 `hidden` 而不是不渲染：`scrollRef` 与 `data-conv-scroll` 两个锚点因此仍在。 */}
+      <div
+        className={cn("relative col-start-1 row-start-2 flex min-h-0 min-w-0", empty && "hidden")}
+      >
         <div ref={scrollRef} onScroll={onScroll} data-conv-scroll="" className="flex-1 overflow-y-auto px-4 py-4">
           {opening && (
             <div className="flex items-center gap-2 text-[12.5px] text-text-muted">
@@ -1086,38 +1120,6 @@ export function Conversation({
             >
               原选定模型 {display.driftedFrom} 已不可用（服务或模型已被删除），本会话实际使用{" "}
               {selectedModelRef}。可在上方切换其他模型。
-            </div>
-          )}
-
-          {/*
-            `view` 为 null（无 worker，如草稿会话）时也要显示空态：用 `?? 0` 兜底，
-            否则 null === 0 为 false，用户会看到一个既没有空态文案、也没有报错的空白区。
-          */}
-          {(view?.messages.length ?? 0) === 0 && !opening && !error && (
-            <div className="flex h-full flex-col items-center justify-center gap-2.5">
-              <div className="mb-1 text-[10px] uppercase tracking-[2px] text-text-muted">
-                Colt · 本地编码 Agent
-              </div>
-              <h2 className="m-0 text-[22px] font-semibold tracking-[-.3px] text-text-primary">
-                今天要修哪个 bug？
-              </h2>
-              <p className="m-0 text-[12.5px] text-text-secondary">
-                描述你想做的事，Colt 会先给你一份计划。
-              </p>
-              <div className="mt-3 flex max-w-[560px] flex-wrap justify-center gap-2">
-                {["修复登录超时", "给 utils 补单测", "把日志换成 pino", "解释这段代码"].map(
-                  (suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      onClick={() => setInput(suggestion)}
-                      className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
-                    >
-                      {suggestion}
-                    </button>
-                  ),
-                )}
-              </div>
             </div>
           )}
 
@@ -1210,8 +1212,26 @@ export function Conversation({
         </div>
       </div>
 
-      <div className="conv-center col-start-1 row-start-3 min-w-0 shrink-0">
-        <div className="mx-auto max-w-[796px] px-[18px] pb-3.5">
+      {/*
+        输入列。正常态贴底（`conv-center`）；起手态拿到第 3 行的整块高度，把起手提示块
+        与输入卡片**一起**居中——用户要的就是「草稿会话里输入框别再贴着底」。
+        `overflow-y-auto` 兜住窗口过矮时（居中内容比这一格还高）不至于顶出可视区。
+      */}
+      <div
+        className={cn(
+          "col-start-1 row-start-3 min-w-0 shrink-0",
+          empty ? "flex flex-col justify-center overflow-y-auto py-4" : "conv-center",
+        )}
+      >
+        {empty && (
+          <StartPanel
+            cwd={cwd}
+            onPickDirectory={onPickDirectory}
+            onNewWorkspace={onNewWorkspace}
+            onSuggestion={setInput}
+          />
+        )}
+        <div className={cn("mx-auto max-w-[796px] px-[18px] pb-3.5", empty && "mt-3")}>
           {/*
             输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行）。
             `data-conv-session` 标出「输入框此刻属于哪条会话」——草稿会话不进侧栏，

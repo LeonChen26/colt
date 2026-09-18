@@ -234,6 +234,7 @@ export const IPC_CHANNELS = [
   "dialog.confirm",
   "project.pick",
   "project.list",
+  "project.createScratch",
   "session.create",
   "session.list",
   "session.open",
@@ -344,6 +345,19 @@ export interface IpcInvokeMap {
   "project.list": {
     request: void;
     response: Project[];
+  };
+  /**
+   * 新建一个**工作目录**并登记为项目：`~/.colt/<年月日-时分秒>/workspace`（时间戳到秒，
+   * 两次不同的意图拿到两个不同目录；同一秒内重复调用落在同一个路径上，按 root_key 去重）。
+   * 父目录与用户级记忆同一个命名空间。
+   *
+   * 存在的理由：会话必须落在一个真实目录上（worker 的 cwd），而「先去文件管理器里造个文件夹」
+   * 不该是开始对话的前置步骤——草稿态什么都不选时，这个是「就给我一个地方开工」的一键出口。
+   * 环境变量 `COLT_WORKSPACE_ROOT` 可把位置指到别处（指了就用它本身，不再拼时间戳）。
+   */
+  "project.createScratch": {
+    request: void;
+    response: Project;
   };
   /**
    * 新建会话：**只分配 id，不落库**（草稿）。

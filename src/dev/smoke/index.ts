@@ -17,7 +17,10 @@
  *       观测抽屉（B2）与它的**条目详情**（N1：点行展开完整字段 + 复制到剪贴板）、
  *       浏览器前进/后退/刷新（B1），以及 ⑥ Live Bar 的运行状态段（C1/C2：已中断 / 已失败 / 空闲）
  * model：未开启会话（无 worker）时也能选模型——落库的选定值照样回显、切换立即生效；
- *        以及**没有可用模型**时主区黄条与对话区共存（输入卡片的下半行不能被裁掉）
+ *        以及**没有可用模型**时主区黄条与对话区共存（输入卡片的下半行不能被裁掉）；
+ *        另有「还没用起来的会话」一条链：空项目直接给草稿（打开就见输入框）、草稿不进侧栏、
+ *        首次发消息才落库转正，以及**起手态**的排布（输入卡片上移到相对中间）与出口
+ *        （「新建工作目录」真的在磁盘上建出目录并切过去）
  * memory：跨会话记忆检索（L3a）的真实跨进程链路——不开模型：真实 worker 起动即上报
  *        memoryIndex → 主进程落派生库（data/memory.db）→ hostBridge memory 检索；
  *        另验二字词 LIKE 兜底（FTS trigram 3 字下限）、项目隔离、关会话清检索上下文
@@ -46,7 +49,7 @@ import { app, BrowserWindow } from "electron";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { upsertProject } from "../../main/db/repo";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setActiveOutputPath, uncaughtErrors } from "./context";
 import { runAskUser } from "./modes/ask-user";
 import { runAskUserE2e } from "./modes/ask-user-e2e";
@@ -72,6 +75,12 @@ import { runReenter } from "./modes/reenter";
 export async function runSmoke(window: BrowserWindow, outputPath: string): Promise<void> {
   // outputPath 由 launcher 归一化到 out/ 下（见 main/index.ts 的 smokeArtifactPath）
   setActiveOutputPath(outputPath);
+  // 起手区「新建工作目录」（`project.createScratch`）默认落在**家目录**的 Colt/ 下——
+  // 那是用户真实的工作产物目录，自动跑时绝不能碰。指到 out/ 下（已 gitignore），
+  // 且路径**固定**（override 是原样使用的，不拼时间戳）：于是 upsertProject 按 root_key
+  // 去重，跑一百次也只留一行项目，不会攒出一串只在冒烟里存在的目录（AGENTS.md §五⑩）。
+  // 调用方自己设了就用它（`??=`）——那是有意为之，别覆盖。
+  process.env.COLT_WORKSPACE_ROOT ??= join(dirname(outputPath), "smoke-workspace");
   // 同时落盘：Windows 上 Electron 主进程 stdout 不接父终端，只看控制台会丢日志。
   // 每行立即追加，保证卡死时也能看到「卡在哪一步」，而不是等 finally 才写出。
   const lines: string[] = [];
