@@ -5,7 +5,7 @@
  * 角色标签在右。工具卡片走语义化图标 + 路径 + 增删行数 + 耗时 + 内嵌 diff。
  * 工具卡里若副标题**就是该工具操作的文件**，则该路径可点 → onOpenFile（A3-2「点任意文件路径」）。
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Brain,
   Check,
@@ -68,8 +68,21 @@ export function AssistantRow({ children }: { children: ReactNode }): React.JSX.E
   );
 }
 
-/** 一条消息：正文 + 其发起的工具调用卡片 */
-export function MessageBubble({
+/**
+ * 一条消息：正文 + 其发起的工具调用卡片。
+ *
+ * 包 `memo` 是因为流式期间视图每 50ms 整份重推一次（`ConversationView` 是全量快照）：
+ * 不包的话**每条消息**都要跟着重渲染，实测 370 条时每帧 544ms（约 5fps）、
+ * 而那 370 条里真正变的往往只有 1 条。
+ *
+ * 敢用**默认浅比较**（而不是自定义比较器）的前提是 props 的对象引用已被
+ * `useStableView` 稳定住；自定义比较器漏比一个字段就等于静默不更新，
+ * 这类错比「慢」难查得多。
+ *
+ * 已知代价：`openState` 换引用（用户点开合某张卡）时整列表会重渲染一次。
+ * 它由点击触发、不在流式路径上；要消掉得把开合状态按消息切片下发，收益不抵复杂度。
+ */
+export const MessageBubble = memo(function MessageBubble({
   sessionId,
   message,
   resultMap,
@@ -138,7 +151,7 @@ export function MessageBubble({
       ))}
     </AssistantRow>
   );
-}
+});
 
 /** 折叠的思考摘要：默认收起，展开看完整推理（氛围组，不抢主回复） */
 function ThoughtBlock({ text }: { text: string }): React.JSX.Element {

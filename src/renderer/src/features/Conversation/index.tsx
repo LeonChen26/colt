@@ -33,10 +33,11 @@ import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
 import { Markdown } from "../../components/Markdown";
-import { AssistantRow, MessageBubble, ThinkingRail, ToolCard, type ToolResult } from "./MessageList";
+import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCards } from "./QuestionCard";
 import { useBlockingCards } from "./useBlockingCards";
+import { useStableView } from "./use-stableView";
 import {
   createDockInstance,
   defaultDockInstances,
@@ -844,17 +845,15 @@ export function Conversation({
     [sessionId],
   );
 
-  // toolCallId → 工具输出，供工具卡片展开时查阅
-  const resultMap = useMemo(() => {
-    // 值直接用契约里的 ViewToolResult（含 hasImage）——别在这里收窄成 {output,isError}，
-    // 否则「图在视图外」这个字段会被静默丢掉，卡片就永远读不回截图
-    const map = new Map<string, ToolResult>();
-    for (const item of view?.toolResults ?? []) map.set(item.id, item);
-    return map;
-  }, [view?.toolResults]);
+  /**
+   * 消息、工具结果、文件改动统一先过一次「稳定投影」（规则见 `use-stableView`）：
+   * 视图是全量快照、每 50ms 整份重推，内容没变的必须保持同一引用，否则 `memo` 形同虚设。
+   * `resultMap` 的值就是契约里的 `ViewToolResult`（含 `hasImage`）——别在这里收窄成
+   * `{output,isError}`，否则「图在视图外」会被静默丢掉，卡片就永远读不回截图。
+   */
+  const { messages, resultMap, changes } = useStableView(view);
 
   const running = view?.running ?? false;
-  const changes = view?.fileChanges ?? [];
 
   // 当前会话所用 provider 与模型。
   // 取值规则见 displayModelRef：**落库的选择优先**，但已失效时必须改显示「实际会用」的那个，
@@ -1088,7 +1087,8 @@ export function Conversation({
           )}
 
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            {view?.messages.map((message) => (
+            {/* 走稳定投影后的 messages：内容没变的条目引用不变，配合 `MessageBubble` 的 memo */}
+            {messages.map((message) => (
               <MessageBubble
                 key={message.id}
                 sessionId={sessionId}

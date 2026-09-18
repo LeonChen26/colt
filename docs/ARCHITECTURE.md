@@ -66,6 +66,11 @@
   带图的工具结果因此在视图里只留 `hasImage`：图片由 worker 落盘一次（`worker/lib/tool-image-spill.ts`），
   卡片展开时才用 `session.toolOutput` 从主进程读回（命名与校验见 `shared/tool-output.ts`、读取见 `main/tool-output.ts`）。
   往视图里加新字段前先问一句：**它会不会很大、以及会不会每 50ms 重发一次？**
+  同一个「重推」在**渲染层**还有第二个后果：每次推送都新建 `messages` / `toolResults` / `fileChanges`
+  三个数组，**每个元素都是新对象**——哪怕内容没变。所以渲染层拿到视图后先过一遍「稳定投影」
+  （纯函数 `renderer/src/lib/stable-view.ts`，挂在 `Conversation/use-stableView.ts`），
+  把没变的部分换回旧引用，`MessageBubble` 的 `memo` 才生效。少了这层，剪掉的只是**传输**成本，
+  重渲染成本一点没少（实测 370 条消息时每帧 566ms → 加这层后 53ms，且不再随历史长度增长）。
 
 ---
 

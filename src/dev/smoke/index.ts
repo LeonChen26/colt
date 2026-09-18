@@ -21,6 +21,10 @@
  * memory-e2e：记忆行为的真实调用验证（**打模型、计费**）——注入可见性（不读文件答密语）、
  *        沉淀落盘+索引同步、/memory-tidy 整理（合并/删过时/归档/通知/改动记录）、
  *        冷层检索（现行文件已删的条目仍能被 memory_search 答出）
+ * perf：长会话的**渲染**开销（不调模型、不计费）——用 rAF 采样最长帧：条数扫描量「打开长会话」
+ *        的挂载成本；再量流式期间「每 50ms 整份重推」的每帧成本，且分三组对照——「只动最后一条」
+ *        （真实流式）、「内容一个字节都不变」（稳定投影的纯度检验）、「空历史」
+ *        （把消息列表的成本从容器自身的固定成本里分出来）
  *
  * 本文件只做**调度**：建 log / run 两个闭包、按 COLT_SMOKE_MODE 分派、收尾截图与落日志。
  * 各模式的正文在 `modes/` 下，共享件在 `context.ts`。
@@ -44,6 +48,7 @@ import { runDock } from "./modes/dock";
 import { runFixture } from "./modes/fixture";
 import { runHost } from "./modes/host";
 import { runMemory, runMemoryE2e } from "./modes/memory";
+import { runPerf } from "./modes/perf";
 import {
   runModelFallback,
   runModelKeyless,
@@ -150,6 +155,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runMemoryE2e(window, log, run);
     } else if (mode === "dock") {
       await runDock(window, project.id, sessionsDir, log, run);
+    } else if (mode === "perf") {
+      await runPerf(window, project.id, sessionsDir, log, run);
     } else if (mode === "model") {
       await runModelSelect(window, sessionsDir, project.id, log, run);
       await runModelFallback(window, sessionsDir, project.id, log, run);
