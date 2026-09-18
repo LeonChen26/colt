@@ -2,7 +2,8 @@
  * 对话面板：消息流 + 流式文本 + 工具实时输出 + 状态栏（Live Bar）+ 右侧面板编排。
  * 具体的改动 / 统计 / 工具 / 分支面板已拆到 panels/ 与 BranchTree。
  * 会话头（②）的入口：统计 / 规则（按 ⑦-H 收敛成这两个），外加两个**会话级显示**入口——
- * 「目录」（跳转到某一轮 + 搜历史，浮层，见 HistoryPanel）与「只看问答」（整轮折叠，见 ④-E）。
+ * 「搜索」（搜历史，浮层，见 HistoryPanel）与「只看问答」（整轮折叠，见 ④-E）；
+ * 按轮次跳转收在 ④ 左缘的点链（见 TurnRail），目录不再是浮层里的一半。
  * 「改动」由「正在处理」底部的总账接管（⑦-G）、「工具」的聚合与明细都并入「统计」；
  * 两者仍可从 ⑦ 的「+」菜单打开（删的是入口，不是能力）。
  */
@@ -40,6 +41,7 @@ import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageWindow, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
 import { HistoryPanel } from "./HistoryPanel";
+import { TurnRail } from "./TurnRail";
 import { PanelToggle } from "./PanelToggle";
 import { Picker } from "./Picker";
 import { QuestionCards } from "./QuestionCard";
@@ -1006,8 +1008,8 @@ export function Conversation({
           <PanelToggle
             active={history.open}
             icon={<ListTree {...ICON.sm} />}
-            label="目录"
-            title="列出这个会话里的每条提问，或搜历史文字；点一行跳到那一轮（只滚动，不改会话）"
+            label="搜索"
+            title="搜历史文字：提问与回复都搜；点命中跳到那一轮（只滚动，不改会话）"
             onClick={history.toggle}
           />
           <PanelToggle
@@ -1179,7 +1181,10 @@ export function Conversation({
             />
           </div>
 
-          {/* 目录 / 搜历史：贴在会话区上方的浮层（数据就在渲染层，不牵 worker） */}
+          {/* 轮次点链（④ 左缘）：离开顶部才浮现，点一点跳到那一轮（只读定位，落浮动段） */}
+          <TurnRail messages={messages} scrollRef={scrollRef} onJump={history.jumpTo} />
+
+          {/* 历史搜索：贴在会话区上方的浮层（数据就在渲染层，不牵 worker） */}
           {history.open && (
             <HistoryPanel messages={messages} onJump={history.jumpTo} onClose={history.close} />
           )}

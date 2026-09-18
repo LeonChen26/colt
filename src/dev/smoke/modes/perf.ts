@@ -486,18 +486,50 @@ export async function runPerf(
     restored.summaries === 0 && restored.rows.length === unfolded.rows.length,
   ]);
 
-  // ---- 六、目录与搜索：跳到某一轮 ----
-  // 「翻历史」的另一半是**找**。判据分三层：① 目录列的是提问、搜索只回命中；
-  // ② 点一行真的跳过去；③ 跳过去之后**没有**把中间几千条一起挂出来——
+  // ---- 六、轮次点链与搜索：跳到某一轮 ----
+  // 「翻历史」的另一半是**找**。判据分四层：① 点链（目录的常驻化）在离开顶部后浮现，
+  // 可见点数是默认的 11、总点数等于轮数、当前点跟着滚动走；
+  // ② 搜索只回命中；③ 点命中/点链上的点真的跳过去；
+  // ④ 跳过去之后**没有**把中间几千条一起挂出来——
   // 沿用「一直挂到末尾」就等于把窗口废掉，这是这一步最容易做错的地方。
-  log("[六] 目录 / 搜历史（跳到某一轮）");
-  const historyState = (): Promise<{ open: boolean; items: string[]; hits: string[] }> =>
+  log("[六] 轮次点链 / 搜历史（跳到某一轮）");
+  const railState = (): Promise<{
+    shell: boolean;
+    shown: boolean;
+    visible: number;
+    total: number;
+    current: number | null;
+  }> =>
+    run(`(() => {
+      const shell = document.querySelector("[data-turn-rail-shell]");
+      if (shell === null) return { shell: false, shown: false, visible: 0, total: 0, current: null };
+      const dots = [...document.querySelectorAll("[data-turn-rail-dot]")];
+      const viewport = document.querySelector("[data-turn-rail]");
+      let visible = dots.length;
+      if (viewport !== null) {
+        const vrect = viewport.getBoundingClientRect();
+        // 视口内可见的点数：rect 落在滚动视口内的才算「展示着」
+        visible = dots.filter((n) => {
+          const r = n.getBoundingClientRect();
+          return r.top >= vrect.top - 1 && r.bottom <= vrect.bottom + 1;
+        }).length;
+      }
+      const cur = document.querySelector("[data-turn-rail-dot][data-current]");
+      const current = cur !== null ? Number(cur.getAttribute("data-turn")) : null;
+      return {
+        shell: true,
+        shown: getComputedStyle(shell).opacity !== "0",
+        visible,
+        total: dots.length,
+        current,
+      };
+    })()`);
+  const historyState = (): Promise<{ open: boolean; hits: string[] }> =>
     run(`(() => {
       const panel = document.querySelector("[data-conv-history]");
-      if (panel === null) return { open: false, items: [], hits: [] };
+      if (panel === null) return { open: false, hits: [] };
       return {
         open: true,
-        items: [...panel.querySelectorAll("[data-conv-history-item]")].map((n) => n.getAttribute("data-conv-history-item") || ""),
         hits: [...panel.querySelectorAll("[data-conv-history-hit]")].map((n) => n.getAttribute("data-conv-history-hit") || ""),
       };
     })()`);
@@ -527,16 +559,26 @@ export async function runPerf(
   await push(800);
   await scrollToBottom();
   await sleep(300);
-  const opened = await clickText("目录");
+  // 夹具每 14 条一个用户轮，**i=0 也是一轮**：m0、m14、…、m798，共 58 轮（58 > 11，点链必须自己滚）。
+  // 期望值从夹具节奏现算，不写死——上一版写死 57（漏数了 i=0 那轮），红断言查出来才纠正
+  const EXPECT_TURNS = Math.ceil(800 / 14);
+  const railBottom = await railState();
+  checks.push([
+    `滚离顶部后点链浮现（${EXPECT_TURNS} 轮全部在列，视口内可见 ${railBottom.visible} 个点，当前点在第 ${railBottom.current} 轮）`,
+    railBottom.shell &&
+      railBottom.shown &&
+      railBottom.total === EXPECT_TURNS &&
+      railBottom.visible === 11 &&
+      railBottom.current !== null &&
+      railBottom.current >= 50,
+  ]);
+
+  const opened = await clickText("搜索");
   await sleep(400);
   const panel = await historyState();
   checks.push([
-    `「目录」拉出浮层、列出每条提问（${panel.items.length} 条：首 ${panel.items[0]} 尾 ${panel.items[panel.items.length - 1]}）`,
-    opened &&
-      panel.open &&
-      panel.items.length > 1 &&
-      panel.items[0] === "0" &&
-      panel.items[panel.items.length - 1] === "798",
+    `「搜索」拉出浮层（目录已不在浮层里，由点链承担）`,
+    opened && panel.open,
   ]);
 
   // 搜一段**只出现在一条消息里**的文字（夹具里只有 i % 3 === 0 的助手消息带正文）
@@ -587,18 +629,27 @@ export async function runPerf(
     backClicked && !stillFloating && latest.lastIndex === 799 && latest.atBottom,
   ]);
 
-  // 从目录直接跳到**开头**：最坏的一跳（后面还有 799 条），挂载也必须还是一个窗口
-  await clickText("目录");
-  await sleep(400);
-  const firstItem = await clickNth("[data-conv-history-item]", 0);
+  // 从点链直接跳到**开头**：最坏的一跳（后面还有 799 条），挂载也必须还是一个窗口。
+  // 点第 1 轮的点——它在视口外（rail 正停在末尾那几轮），但 click 照样命中
+  const dotClicked = await run<boolean>(`(() => {
+    const dot = document.querySelector('[data-turn-rail-dot][data-turn="1"]');
+    if (dot === null) return false;
+    dot.click();
+    return true;
+  })()`);
   await sleep(600);
   const atStart = await windowState();
+  const railAtTop = await railState();
   checks.push([
-    `从目录跳到开头：只挂一个窗口（首=${atStart.firstIndex} 尾=${atStart.lastIndex}，挂载 ${atStart.mounted} 条）`,
-    firstItem &&
+    `从点链跳到开头：只挂一个窗口（首=${atStart.firstIndex} 尾=${atStart.lastIndex}，挂载 ${atStart.mounted} 条）`,
+    dotClicked &&
       atStart.firstIndex === 0 &&
       atStart.mounted <= 100 &&
       atStart.lastIndex !== 799,
+  ]);
+  checks.push([
+    `跳回开头后滚动位置也回到顶部，点链随之淡出`,
+    railAtTop.shell && !railAtTop.shown,
   ]);
 
   for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);

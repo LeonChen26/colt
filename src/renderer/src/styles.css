@@ -168,6 +168,15 @@ body {
   background-clip: padding-box;
 }
 
+/* 隐藏滚动条但保留滚动（点链这类细窄滚动视口用） */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* 运行中呼吸点 */
 @keyframes colt-pulse {
   0% {

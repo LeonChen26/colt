@@ -35,6 +35,31 @@ export type SearchHit = {
 };
 
 /**
+ * 可见消息属于第几轮（轮次点链的「当前点」联动靠它）。
+ *
+ * 输入是**消息下标**而不是轮次：可见行给的是消息 id，先换成下标再归轮。
+ * 二分找「最后一个起点 ≤ 该下标」的轮——一轮从提问开始，提问之后的回复、
+ * 工具卡都算那一轮的。下标落在第一条提问之前（开头可能有分支摘要之类的消息）时
+ * 钳到第 1 轮：视口还在开头，说「在第 1 轮」比说「不在任何一轮」更接近用户的心智。
+ */
+export function turnAt(items: OutlineItem[], messageIndex: number): number {
+  if (items.length === 0) return 0;
+  let lo = 0;
+  let hi = items.length - 1;
+  let turn = items[0]!.turn;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (items[mid]!.index <= messageIndex) {
+      turn = items[mid]!.turn;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return turn;
+}
+
+/**
  * 取一行摘要：**第一行非空文字**、把连续空白压平、超长截断。
  *
  * 取第一行而不是整段：提问动辄几十行，界面上那一行要给的是「我要找的是哪一问」，

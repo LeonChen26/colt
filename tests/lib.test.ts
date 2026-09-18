@@ -65,6 +65,7 @@ import {
   labelOf,
   outlineOf,
   searchHistory,
+  turnAt,
 } from "../src/renderer/src/lib/session-outline.ts";
 import type { ViewFileChange, ViewMessage } from "@shared/worker-protocol";
 import type {
@@ -1406,5 +1407,37 @@ describe("sessionOutline（会话目录与历史搜索）", () => {
   test("搜索：other 不参与（它本来就不成条）", () => {
     const other: ViewMessage = { id: "o1", role: "other", text: "命中", toolCalls: [] };
     assert.deepEqual(searchHistory([other], "命中"), []);
+  });
+});
+
+describe("turnAt（可见消息属于第几轮——点链的「当前点」靠它）", () => {
+  const user = (id: string, text: string): ViewMessage => ({ id, role: "user", text, toolCalls: [] });
+  const bot = (id: string, text: string): ViewMessage => ({
+    id,
+    role: "assistant",
+    text,
+    toolCalls: [],
+  });
+  // u1(0) a1(1) a2(2) | u2(3) a3(4) —— 两轮，回复都归各自的提问
+  const messages = [user("u1", "一"), bot("a1", "一答"), bot("a2", "二答"), user("u2", "二"), bot("a3", "三答")];
+  const items = outlineOf(messages);
+
+  test("回复归它前面最近的那个提问（一轮从提问开始）", () => {
+    assert.equal(turnAt(items, 0), 1); // 提问本身
+    assert.equal(turnAt(items, 1), 1); // 第 1 轮的回复
+    assert.equal(turnAt(items, 2), 1);
+    assert.equal(turnAt(items, 3), 2); // 第 2 轮的提问
+    assert.equal(turnAt(items, 4), 2);
+  });
+
+  test("下标落在第一条提问之前（开头有分支摘要之类）→ 钳到第 1 轮", () => {
+    // 开头多一条不成条的消息，把提问整体往后推
+    const shifted = [{ id: "s0", role: "other" as const, text: "", toolCalls: [] }, ...messages];
+    const items2 = outlineOf(shifted);
+    assert.equal(turnAt(items2, 0), 1);
+  });
+
+  test("空目录 → 0（调用方把它当「没有当前点」）", () => {
+    assert.equal(turnAt([], 5), 0);
   });
 });
