@@ -475,10 +475,13 @@ export function Conversation({
       if (!next.loaded) browserAutoSwitchedRef.current = false;
     };
 
-    // 挂载时对齐：本组件卸载期间（切会话）该会话可能已经加载过浏览器
+    // 挂载时对齐：本组件卸载期间（切会话）该会话可能已经加载过浏览器。
+    // null = 该会话没有浏览器视图——常态缺省，不是错误（协议里就是这么定的）
     void window.colt
       .invoke("browser.state.get", { sessionId })
-      .then(apply)
+      .then((next) => {
+        if (next !== null) apply(next);
+      })
       .catch(() => undefined);
 
     const off = window.colt.on("browser.state", (state) => {

@@ -46,8 +46,8 @@ export class HostBridge {
     this.#browser.setBounds(sessionId, rect);
   }
 
-  /** 读取会话的内嵌浏览器状态 */
-  browserState(sessionId: string): BrowserViewState {
+  /** 读取会话的内嵌浏览器状态；null = 该会话没有浏览器视图（常态缺省，不是错误） */
+  browserState(sessionId: string): BrowserViewState | null {
     return this.#browser.stateOf(sessionId);
   }
 

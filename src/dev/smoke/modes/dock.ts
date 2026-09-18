@@ -1571,7 +1571,14 @@ export async function runDock(
         el.click();
         return true;
       })()`);
-    const navUrl = (): string => hostBridge.browserState(sessionId).url;
+    // 这一段的前提是「浏览器视图已建立」（上面真实加载过页面才走到这）。
+    // 前提由用例自己建立、自己断言：不成立时明确炸出来，而不是让 null 悄悄往下流
+    const mustState = () => {
+      const state = hostBridge.browserState(sessionId);
+      if (state === null) throw new Error("冒烟前提不成立：浏览器视图应已建立");
+      return state;
+    };
+    const navUrl = (): string => mustState().url;
 
     const nav0 = await navButtons();
     checks.push(["浏览器头部有后退 / 前进 / 刷新三个按钮", nav0.present]);
@@ -1754,7 +1761,7 @@ export async function runDock(
 
     await gotoPage("narrow.html");
     await sleep(700);
-    const needPx = hostBridge.browserState(session.id).contentWidth;
+    const needPx = mustState().contentWidth;
     const beforeFit = await readAreaRect();
     log(
       `  [适应宽度] 最窄栏：区域 ${JSON.stringify(beforeFit)}，页面需要 ${needPx}px，主进程 ${JSON.stringify(hostBridge.browserState(session.id))}`,

@@ -593,10 +593,14 @@ export interface IpcInvokeMap {
     request: { sessionId: string; rect: BrowserRect | null };
     response: { ok: true };
   };
-  /** 读取会话的内嵌浏览器状态（渲染层挂载时对齐已加载的视图，避免切会话后丢页签） */
+  /**
+   * 读取会话的内嵌浏览器状态（渲染层挂载时对齐已加载的视图，避免切会话后丢页签）。
+   * `null` = 该会话没有浏览器视图——这是常态缺省（大多数会话从未打开过浏览器），
+   * 刻意不走错误通道，也不伪造「loaded: false」（那与「正在加载」同形，见 docs/ERRORS.md）。
+   */
   "browser.state.get": {
     request: { sessionId: string };
-    response: BrowserViewState;
+    response: BrowserViewState | null;
   };
   /**
    * 读取浏览器观测快照（B2）：控制台 / 网络 / 下载三份结构化缓冲。

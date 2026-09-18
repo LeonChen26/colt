@@ -29,7 +29,6 @@ import {
   session,
   WebContentsView,
   type BrowserWindow,
-  type Rectangle,
   type WebContents,
 } from "electron";
 import { existsSync, mkdirSync } from "node:fs";
@@ -63,72 +62,17 @@ import {
   SNAPSHOT_SCRIPT,
   typeScript,
 } from "./browser-scripts";
-
-/** 单次页面加载上限 */
-const NAV_TIMEOUT_MS = 30_000;
-/** did-fail-load 的 ERR_ABORTED：多为导航被新请求取代，不算页面故障 */
-const ERR_ABORTED = -3;
-/**
- * 浏览器专属 partition：持久化（persist: 前缀）以便登录态跨会话保留，
- * 同时与主应用的 defaultSession 隔离——网络/下载观测因此不必再靠 webContentsId
- * 把应用自身的流量剔除出去。
- */
-const BROWSER_PARTITION = "persist:colt-browser";
-/**
- * 渲染层尚未上报矩形时的兜底视口。
- * 自动化冒烟（runFixture）直接驱动宿主、没有渲染层参与，页面仍需一个非退化视口
- * 才能让响应式重排可观测，故给一个合理的默认值。
- */
-const DEFAULT_RECT: Rectangle = { x: 0, y: 0, width: 1024, height: 768 };
-
-/**
- * 「重新量页面内容宽度」的去抖延时。
- * 拖动分隔条时宽度逐像素变化，而每量一次都要查一次页面布局，故等手停下来再量。
- */
-const MEASURE_DEBOUNCE_MS = 300;
-
-/**
- * 「页面还在装载、这次量不成」时的重试间隔与次数上限。
- * `did-finish-load` 触发时子资源可能还在飞（`isLoading()` 仍为 true），只量一次会**静默漏掉**，
- * 故等一小会儿再试；重试有上限，免得页面永远加载不完时留下一个常驻定时器。
- */
-const MEASURE_RETRY_MS = 500;
-const MEASURE_MAX_ATTEMPTS = 3;
-
-/**
- * 「适应宽度」的缩放下限（可读下限）。
- *
- * 缩放能让固定宽度的页面整体塞进更窄的停靠区，但字会一起变小：最窄停靠区 219px
- * 要装下 768px 的页面得缩到 29%，12px 的字就剩 3.5px——那时候「全都看得见」已经没有意义。
- * 所以缩到这个比例就停手，**如实告诉用户「还需拖宽右栏」**，而不是给他一屏读不了的蚂蚁字。
- */
-const MIN_FIT_ZOOM = 0.6;
-
-interface SessionBrowser {
-  view: WebContentsView;
-  /** 控制台与网络观测缓冲，导航时清空 */
-  capture: CaptureBuffer;
-  /** 渲染层上报的页面区域；null 表示尚未上报（用兜底矩形） */
-  bounds: Rectangle | null;
-  /**
-   * 渲染层明确表示「当前不可见」（切到了别的页签 / 会话切走）。
-   * 注意不能用 bounds === null 表达隐藏：自动化冒烟没有渲染层参与、
-   * 视图从未被上报过，此时必须保持可见，否则 setBounds 不生效、响应式重排无从观测。
-   */
-  hidden: boolean;
-  /** viewport 动作的临时覆盖尺寸（响应式联调用），null 表示未覆盖 */
-  viewport: { width: number; height: number } | null;
-  /** 页面够不到的内容宽度（0 = 没有；口径见 browser-scripts.ts 的 CONTENT_WIDTH_SCRIPT），报给界面用于提示 */
-  contentWidth: number;
-  /** 当前缩放比例（1 = 100%），「适应宽度」生效时小于 1；见 setZoom */
-  zoom: number;
-  /** 用户是否开着「适应宽度」（**意图**，跨导航保留：换一页仍按它决定要不要缩） */
-  fit: boolean;
-  /** 上一次摆放用的宽度：宽度一变页面就重排，「够不够看」要重新量 */
-  appliedWidth: number;
-  /** 去抖用的重测定时器（拖分隔条时每像素都会走到 #applyBounds） */
-  measureTimer?: NodeJS.Timeout;
-}
+import {
+  BROWSER_PARTITION,
+  DEFAULT_RECT,
+  ERR_ABORTED,
+  MEASURE_DEBOUNCE_MS,
+  MEASURE_MAX_ATTEMPTS,
+  MEASURE_RETRY_MS,
+  MIN_FIT_ZOOM,
+  NAV_TIMEOUT_MS,
+  type SessionBrowser,
+} from "./browser-view";
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -212,18 +156,26 @@ export class BrowserHost {
   /**
    * 读取视图状态（渲染层挂载时对齐已加载的视图）。
    *
-   * ⚠️ 该会话没有浏览器视图时**抛错**，不再返回一个「全空的 `loaded: false`」。
-   * 此前这里伪造的状态与「视图已建、页面还没加载」**完全同形**——后者由
-   * `#emitState(sessionId, false)` 推出，两者在渲染层无从区分，等于把
-   * 「没有浏览器」这件事伪装成「浏览器正在加载」（撞 `docs/ERRORS.md` 的「不许静默」）。
+   * 该会话没有浏览器视图时返回 **null**：「没有」是常态缺省（大多数会话从未打开过浏览器），
+   * 不是失败，不该走错误通道——此前抛错，渲染层虽然接住了，但 Electron 会把 handler 的拒绝
+   * 记进主进程日志，正常切个会话就刷一条看着像故障的红字。
+   * ⚠️ 但也**不能**返回「全空的 `loaded: false`」来代替：那与「视图已建、页面还没加载」
+   * **完全同形**——后者由 `#emitState(sessionId, false)` 推出，两者在渲染层无从区分，等于把
+   * 「没有浏览器」伪装成「浏览器正在加载」（撞 `docs/ERRORS.md` 的「不许静默」）。
+   * `null` 与「加载中」「已加载」都可区分，这才是那个缺了的第三种形态。
    */
-  stateOf(sessionId: string): BrowserViewState {
+  stateOf(sessionId: string): BrowserViewState | null {
     const entry = this.#sessions.get(sessionId);
-    if (entry === undefined) throw new Error("该会话没有浏览器视图");
+    if (entry === undefined) return null;
+    return this.#buildState(sessionId, entry);
+  }
+
+  /** 组装一份视图状态。调用方已确认 `entry` 存在（没有视图的场合由 `stateOf` 判 null） */
+  #buildState(sessionId: string, entry: SessionBrowser): BrowserViewState {
     const contents = entry.view.webContents;
     const history = contents.navigationHistory;
     return {
-      sessionId,
+      sessionId: sessionId,
       loaded: true,
       url: contents.getURL(),
       title: contents.getTitle(),
@@ -250,7 +202,7 @@ export class BrowserHost {
     this.#applyFit(sessionId);
     // 推给界面：头部据此收起「视口 × 恢复」标记
     this.#emitState(sessionId, true);
-    return this.stateOf(sessionId);
+    return this.#buildState(sessionId, entry);
   }
 
   /**
@@ -267,7 +219,7 @@ export class BrowserHost {
     if (entry === undefined) throw new Error("浏览器尚未加载，无法缩放");
     entry.fit = fit;
     this.#applyFit(sessionId);
-    return this.stateOf(sessionId);
+    return this.#buildState(sessionId, entry);
   }
 
   /**
@@ -290,10 +242,10 @@ export class BrowserHost {
     const history = contents.navigationHistory;
 
     if (action === "back" && !history.canGoBack()) {
-      return { state: this.stateOf(sessionId), notice: "" };
+      return { state: this.#buildState(sessionId, entry), notice: "" };
     }
     if (action === "forward" && !history.canGoForward()) {
-      return { state: this.stateOf(sessionId), notice: "" };
+      return { state: this.#buildState(sessionId, entry), notice: "" };
     }
 
     // 目的页从历史里**现取**：goBack()/goForward() 是异步的，此后再读 getURL() 拿到的还是旧页面，
@@ -308,7 +260,7 @@ export class BrowserHost {
 
     return {
       // 这里读到的是**发起时**的状态；真正的新状态由 did-navigate 随后推送
-      state: this.stateOf(sessionId),
+      state: this.#buildState(sessionId, entry),
       notice: formatNavigationNotice(action, target.url, target.title),
     };
   }
@@ -384,12 +336,13 @@ export class BrowserHost {
   /** 视图状态变化时推给渲染层 */
   #emitState(sessionId: string, loaded: boolean): void {
     if (this.#onState === undefined) return;
-    // 并发保护：视图可能刚好在这时被关掉（`stateOf` 现在会抛错），
+    // 并发保护：视图可能刚好在这时被关掉，
     // 此时按「未加载」推——视图没了本来就该是未加载，不该让状态推送崩掉。
-    const alive = loaded && this.#sessions.has(sessionId);
-    const state = alive
-      ? this.stateOf(sessionId)
-      : ({
+    const entry = this.#sessions.get(sessionId);
+    const state =
+      loaded && entry !== undefined
+        ? this.#buildState(sessionId, entry)
+        : ({
           sessionId,
           loaded: false,
           url: "",
