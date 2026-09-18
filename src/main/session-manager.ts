@@ -2,29 +2,39 @@
  * SessionManager：每会话一个 worker 进程（utilityProcess）
  * 负责启动、路由命令、转发视图、进程池上限与回收
  */
-import { app, Notification, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
+import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import type { ConversationView, HostResult, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
-import type { ApprovalMode, ApprovalRequest, BranchNode, ProviderConfig } from "@shared/protocol";
+import type { ConversationView, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
+import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
+import { handleToolRpc } from "./host/tool-rpc";
+import { QuestionStore } from "./question-store";
 import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
 import { normalizeRootKey } from "./db/index";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
 import { ApprovalStore } from "./approval/store";
+import { notifyApproval, notifyQuestion } from "./approval/notify";
 import { getAnalyzeCommandAllowlist } from "./approval/config";
 import { analyzeToolCall } from "./approval/analyzer";
 import { createDeferred } from "./lib/deferred";
+import { isDev } from "./lib/app-mode";
+import { isSessionPinned } from "./session-pins";
+import { evictionVictim, reapTargets } from "./worker-pool";
 import { hostBridge } from "./host";
 
 /** 进程池上限，超出时回收最久未活动的空闲会话 */
 const MAX_WORKERS = 6;
-/** 空闲超过该时长且未运行的 worker 会被回收 */
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * 空闲超过该时长且未运行的 worker 会被回收。
+ * 2026-09-18 由 5 分钟放宽到 30 分钟：切走不再杀 worker（见 Conversation 卸载处的注释）之后，
+ * 这条成了唯一的「定时回收」，而它捞的往往正是用户还要回来的会话——取舍刻意往「响应优先」偏。
+ */
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * worker 启动上限。长历史会话重放 JSONL 可能数十秒，阀值要给够；
  * 但一旦超过就说明 worker 卡住再也发不出 ready，必须拒绝等待方，
@@ -45,7 +55,7 @@ const DISPOSE_GRACE_MS = 3 * 1000;
  */
 const KEYLESS_PLACEHOLDER = "colt-local-no-key";
 
-interface WorkerEntry {
+export interface WorkerEntry {
   sessionId: string;
   child: UtilityProcess;
   lastActiveAt: number;
@@ -145,8 +155,23 @@ export class SessionManager {
    * 分组不是为了分组本身——会话待审清空时要能精确回收这一份，否则集合跟着进程无界增长。
    */
   readonly #notifiedApprovals = new Map<string, Set<string>>();
+  /** 已就提问喊过注意的会话（按会话去重，理由见 #syncAttention） */
+  readonly #notifiedQuestions = new Set<string>();
   /** 任务栏是否正在闪烁。flashFrame 表达的是一个**状态**而非开关，重复调用无意义，故自己记一份 */
   #flashing = false;
+  /**
+   * 待答提问的状态中枢：与审批**分开存**，理由见 `question-store.ts` 文件头。
+   * 队列、超时、出队与回发全在 QuestionStore 里（IPC 直接调它），本文件只留这一个字段
+   * 与三处「worker 没了要收尾」的调用——避免把提问的状态机摊进本文件（它有体量闸）。
+   */
+  readonly questions = new QuestionStore({
+    post: (sessionId, command) => {
+      // worker 已回收时静默丢弃：提问随 worker 同寿命，回给已死的进程毫无意义
+      if (this.#workers.has(sessionId)) this.#post(sessionId, command);
+    },
+    emit: (sessionId, requests) => this.#emit("userquestion.pending", { sessionId, requests }),
+    attention: (sessionId) => this.#syncAttention(sessionId),
+  });
 
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
@@ -175,25 +200,29 @@ export class SessionManager {
   #emitPending(sessionId: string): void {
     const requests = this.approvals.listPending(sessionId);
     this.#emit("approval.pending", { sessionId, requests });
-    this.#syncAttention(sessionId, requests);
+    this.#syncAttention(sessionId);
   }
 
   /**
-   * 根据「有哪些会话在等授权」决定要不要请求用户注意。
+   * 根据「有哪些会话在等人」决定要不要请求用户注意。
    *
-   * 「等待授权」是本产品唯一需要用户**立刻拍板**的状态，而窗口常常不在前台；
-   * 不喊人，一条卡住的审批就只能干等到 5 分钟超时被自动拒绝，用户还以为是模型慢。
-   * 但也不抢焦点——用户可能正在别处打字，抢焦点等同于打断。
-   * 于是只用任务栏闪烁 + 桌面通知这两种「可以不理会」的方式请求注意。
+   * 「等人回话」是本产品唯一需要用户**立刻拍板**的状态，而窗口常常不在前台；
+   * 不喊人，一条卡住的审批就只能干等到 5 分钟超时被自动拒绝，用户还以为是模型慢；
+   * 提问同理，只是它超时后的落点是「模型按假设继续」。但也不抢焦点——用户可能正在别处
+   * 打字，抢焦点等同于打断。于是只用任务栏闪烁 + 桌面通知这两种「可以不理会」的方式。
    */
-  #syncAttention(sessionId: string, requests: ApprovalRequest[]): void {
-    if (requests.length > 0) {
+  #syncAttention(sessionId: string): void {
+    const requests = this.approvals.listPending(sessionId);
+    const pendingQuestions = this.questions.list(sessionId);
+    if (requests.length > 0 || pendingQuestions.length > 0) {
       this.#pendingSessions.add(sessionId);
     } else {
       this.#pendingSessions.delete(sessionId);
-      // 该会话已无待审：提醒记录一并回收，否则它会跟着进程一直涨
+      // 该会话已无人等待：提醒记录一并回收，否则它会跟着进程一直涨
       this.#notifiedApprovals.delete(sessionId);
     }
+    // 提问清空即视为这一轮打断结束（否则同会话还有待审挂着时，下一次提问就再也不提醒了）
+    if (pendingQuestions.length === 0) this.#notifiedQuestions.delete(sessionId);
 
     const window = this.#window;
     const focused = window !== undefined && !window.isDestroyed() && window.isFocused();
@@ -201,37 +230,20 @@ export class SessionManager {
     this.#setFlashing(!focused && this.#pendingSessions.size > 0);
     if (focused) return;
 
+    // 提问按**会话**去重而不是按题去重：一次提问可能含四个问题，但那是一次打断，
+    // 连发四条通知只会让人把通知关掉
+    if (pendingQuestions.length > 0 && !this.#notifiedQuestions.has(sessionId)) {
+      this.#notifiedQuestions.add(sessionId);
+      notifyQuestion(pendingQuestions[0].questions, () => this.#window);
+    }
+
     const notified = this.#notifiedApprovals.get(sessionId) ?? new Set<string>();
     // 本方法随每次 flush 被高频调用，不去重就是通知轰炸
     const fresh = requests.filter((item) => !notified.has(item.toolCallId));
     if (fresh.length === 0) return;
     for (const item of fresh) notified.add(item.toolCallId);
     this.#notifiedApprovals.set(sessionId, notified);
-    this.#notifyApproval(fresh);
-  }
-
-  /**
-   * 桌面通知：给「窗口不在前台」的用户一个看得见的提醒。
-   * 点击只把窗口叫到前台、不代用户切换会话——那要另开一条「主进程指示渲染层切会话」的通道，
-   * 而侧栏此刻已经标出了是哪个会话在等授权，用户点一下即可。
-   */
-  #notifyApproval(requests: ApprovalRequest[]): void {
-    const first = requests[0];
-    if (!first || !Notification.isSupported()) return;
-    const more = requests.length > 1 ? `（另有 ${requests.length - 1} 条）` : "";
-    const notification = new Notification({
-      title: "有操作等待你的授权",
-      body: `${first.summary}${more}`,
-    });
-    notification.on("click", () => {
-      const window = this.#window;
-      if (!window || window.isDestroyed()) return;
-      // 最小化时先还原：直接 focus() 只是把焦点给了任务栏上那个仍然最小化的窗口
-      if (window.isMinimized()) window.restore();
-      window.show();
-      window.focus();
-    });
-    notification.show();
+    notifyApproval(fresh, () => this.#window);
   }
 
   /**
@@ -443,6 +455,8 @@ export class SessionManager {
         reason,
       });
     }
+    // 提问同批处理：中断后不该留一张「还能点」的卡片，工具也必须收到答复才能收尾
+    this.questions.cancelAll(sessionId);
   }
 
   #clearApprovalTimer(toolCallId: string): void {
@@ -451,35 +465,6 @@ export class SessionManager {
       clearTimeout(timer);
       this.#approvalTimers.delete(toolCallId);
     }
-  }
-
-  /**
-   * 执行一次宿主能力调用（浏览器/桌面）并回发结果。
-   * 期间 worker 可能已被回收/替换，回给已死的进程毫无意义，直接丢弃。
-   */
-  async #handleToolRpc(
-    entry: WorkerEntry,
-    message: Extract<WorkerMessage, { type: "toolRpc" }>,
-  ): Promise<void> {
-    let result: WorkerCommand;
-    try {
-      const value: HostResult = await hostBridge.handle({
-        sessionId: entry.sessionId,
-        capability: message.capability,
-        action: message.action,
-        params: message.params,
-      });
-      result = { type: "toolRpcResult", requestId: message.requestId, ok: true, result: value };
-    } catch (error) {
-      result = {
-        type: "toolRpcResult",
-        requestId: message.requestId,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-    if (this.#workers.get(entry.sessionId) !== entry) return;
-    entry.child.postMessage(result);
   }
 
   /** 已报过「记忆索引失败」的会话：同一段失败期只报一次，恢复后不撤回 */
@@ -620,7 +605,7 @@ export class SessionManager {
     // 诊断钩子（仅开发态）：指向故障注入脚本，用于验证就绪失败路径。
     // 打包后一律使用真实 worker，避免误配指向恶意脚本。
     const workerPath =
-      (!app.isPackaged && process.env.COLT_WORKER_OVERRIDE) || join(__dirname, "worker.js");
+      (isDev && process.env.COLT_WORKER_OVERRIDE) || join(__dirname, "worker.js");
     const child = utilityProcess.fork(workerPath, [], {
       serviceName: `colt-session-${options.sessionId.slice(0, 8)}`,
       stdio: "pipe",
@@ -793,9 +778,20 @@ export class SessionManager {
           break;
         }
 
+        case "askUserRequest": {
+          // 与审批不同：这里**没有**策略裁决——任何审批模式下提问都必须由人来答
+          this.questions.enqueue(
+            options.sessionId,
+            message.toolCallId,
+            message.questions,
+            message.timeoutMs,
+          );
+          break;
+        }
+
         case "toolRpc": {
           // 宿主能力（浏览器/桌面/记忆检索）由主进程执行，结果异步回发
-          void this.#handleToolRpc(entry, message);
+          void handleToolRpc(entry, message, (item) => this.#workers.get(item.sessionId) === item);
           break;
         }
 
@@ -848,6 +844,9 @@ export class SessionManager {
         this.#emit("session.status", { sessionId: options.sessionId, state: "crashed" });
         const dropped = this.approvals.clearPending(options.sessionId);
         for (const item of dropped) this.#clearApprovalTimer(item.toolCallId);
+        // 提问同理：worker 没了就没人能作答，不清会让卡片留到 5 分钟超时，
+        // 且该会话一直被算作「有人在等」——任务栏会一直闪
+        this.questions.cancelAll(options.sessionId);
         if (dropped.length > 0) this.#emitPending(options.sessionId);
         entry.pendingBranches.length = 0;
         this.#emit("session.error", {
@@ -1131,15 +1130,10 @@ export class SessionManager {
   }
 
   /**
-   * 关闭会话 worker（渲染层卸载时调用）。
-   * 运行中的会话不关闭——避免措断正在进行的 Agent 运行，
-   * 让它在空闲回收或下次 open 时自然收敛。
-   */
-  /**
-   * 关闭会话 worker（渲染层卸载时调用）。
-   * 运行中的会话不关闭——避免措断正在进行的 Agent 运行，
-   * 让它在空闲回收或下次 open 时自然收敛。
-   * 这属于用户主动切走，不是“会话被系统收起来”，故标 closed 静默。
+   * 关闭会话 worker。
+   * 运行中的会话不关闭——避免掐断正在进行的 Agent 运行，让它在空闲回收或下次 open 时自然收敛。
+   * 2026-09-18 起渲染层**不再**在卸载时调它：切走只是失焦，worker 交给空闲回收与进程池上限兜底
+   * （见 Conversation 卸载处的注释）。这里留给显式关闭与冒烟装置，故标 closed 静默。
    */
   close(sessionId: string): boolean {
     const entry = this.#workers.get(sessionId);
@@ -1163,6 +1157,8 @@ export class SessionManager {
     // worker 没了就无人能响应审批，待审条目必须清掉，否则界面残留幽灵卡片
     const dropped = this.approvals.clearPending(entry.sessionId);
     for (const item of dropped) this.#clearApprovalTimer(item.toolCallId);
+    // 提问同理：worker 没了就无人能作答，留着会让卡片与「有人在等」的标记一直挂着
+    this.questions.cancelAll(entry.sessionId);
     if (dropped.length > 0) this.#emitPending(entry.sessionId);
     // 无人再能响应分支查询；清空队列，等待方各自的超时会收敛
     entry.pendingBranches.length = 0;
@@ -1180,13 +1176,11 @@ export class SessionManager {
     entry.child.once("exit", () => clearTimeout(forceKill));
   }
 
-  /** 超出进程池上限时，回收最久未活动的空闲 worker */
+  /** 超出进程池上限时，淘汰一条空闲 worker（钉住的最后才动，见 worker-pool.ts） */
   #evictIfNeeded(): void {
     if (this.#workers.size < MAX_WORKERS) return;
-    const idle = [...this.#workers.values()]
-      .filter((entry) => !entry.running)
-      .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
-    const victim = idle[0];
+    const victimId = evictionVictim([...this.#workers.values()], isSessionPinned);
+    const victim = victimId === undefined ? undefined : this.#workers.get(victimId);
     if (!victim) throw new Error(`并发会话已达上限（${MAX_WORKERS}），请先结束一个运行中的会话。`);
     // 与超时回收同类：都是被系统收起来，提示「空闲休眠」
     this.#disposeWorker(victim, "idle");
@@ -1196,11 +1190,10 @@ export class SessionManager {
   startIdleReaper(): void {
     if (this.#reaper) return;
     this.#reaper = setInterval(() => {
-      const now = Date.now();
-      for (const entry of [...this.#workers.values()]) {
-        if (!entry.running && now - entry.lastActiveAt > IDLE_TIMEOUT_MS) {
-          this.#disposeWorker(entry, "idle");
-        }
+      const targets = reapTargets([...this.#workers.values()], Date.now(), IDLE_TIMEOUT_MS, isSessionPinned);
+      for (const sessionId of targets) {
+        const entry = this.#workers.get(sessionId);
+        if (entry) this.#disposeWorker(entry, "idle");
       }
     }, IDLE_SWEEP_MS);
     // 不阻止进程退出

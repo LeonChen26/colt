@@ -5,6 +5,7 @@
  */
 import { BrowserWindow } from "electron";
 import { createSession } from "../../../main/db/repo";
+import { isDev } from "../../../main/lib/app-mode";
 import { sleep } from "../context";
 
 /**
@@ -18,6 +19,18 @@ export async function runCrash(
   log: (message: string) => void,
   run: <T>(expression: string) => Promise<T>,
 ): Promise<void> {
+  // 这条模式**只有真装上故障才有意义**：不装的话 session.open 会正常成功、打出「OK」，
+  // 等于把「就绪前退出能否快速失败」这条路径**全绿地放过去**。实测踩过（2026-09-18）：
+  // 当时 `!app.isPackaged` 的运行期漂移让注入永远装不上，这里却什么都没说。
+  // 所以先自证前提，缺了就**明说跳过**，而不是交出一份看着通过的日志。
+  if (!isDev || !process.env.COLT_WORKER_OVERRIDE) {
+    log(
+      "跳过：未装故障注入，这条模式验不了任何东西。" +
+        `当前 isDev=${isDev}、COLT_WORKER_OVERRIDE=${JSON.stringify(process.env.COLT_WORKER_OVERRIDE)}；` +
+        "请设 COLT_WORKER_OVERRIDE=<仓库>/scripts/crash-worker.cjs 再跑。",
+    );
+    return;
+  }
   const session = createSession(projectId, sessionsDir);
   log(`会话：${session.id}`);
   window.reload();
@@ -29,7 +42,7 @@ export async function runCrash(
     (async () => {
       const timeout = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 15000));
       const attempt = window.colt
-        .invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD })})
+        .invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd() })})
         .then(() => "OK")
         .catch((e) => "REJECTED: " + e.message);
       return Promise.race([attempt, timeout]);

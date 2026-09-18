@@ -62,16 +62,16 @@ export async function runMemory(
   // 会话建在**夹具自己的项目**下，这是绕开两条渲染层竞态的关键：
   // ① App 挂载时会自动选中「当前项目」的 list[0] 并以项目 rootPath 为 cwd 打开——
   //    若会话挂在仓库项目下且恰逢列表响应晚于建会话，渲染层会抢先打开我们的会话，
-  //    而 Conversation 卸载即 session.close（StrictMode 下挂载→卸载→重挂载），
-  //    worker 会在就绪前被杀，重开的 cwd 还是仓库根（首轮 6/10、二轮全崩的共同根因）。
+  //    于是真正 fork 的是**它**那条（cwd = 仓库根），把我们要验的夹具 cwd 顶掉。
+  //    （原注释还记了一条「Conversation 卸载即 session.close 会把就绪前的 worker 杀掉」：
+  //    2026-09-18 起渲染层不再在卸载时关 worker，那条已不成立，但**结论不变**。）
   // ② worker 复用分支只同步模型、不校验 cwd——先到者定 cwd，后来者被静默忽略。
   // 夹具项目下渲染层要么不来看（当前项目是仓库），要么来看时 cwd 恰好也是夹具目录：
   // 无论哪种时序，所有 fork 的 cwd 都正确。
   const fixtureProject = upsertProject(fixtureDir);
   // 渲染层初始 activeProject = project.list[0]（最近打开优先，App.tsx 挂载时选定）。
   // 夹具项目刚被 upsert 刷新了「最近打开」，会把渲染层引到夹具项目上——它便自动打开
-  // 我们刚建的会话，而 Conversation 卸载即 session.close（StrictMode 下挂载→卸载→重挂载），
-  // 就绪前的 worker 当场被杀（探针证据：dispose reason=closed）。把仓库项目顶回 list[0]，
+  // 我们刚建的会话，抢在我们前面用仓库根把它打开。把仓库项目顶回 list[0]，
   // 渲染层就去忙它自己的旧会话，不再碰这个会话。
   upsertProject(process.env.COLT_SMOKE_CWD ?? process.cwd());
   const session = createSession(

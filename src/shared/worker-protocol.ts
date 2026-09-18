@@ -172,13 +172,36 @@ export interface ConversationView {
  */
 export type HostCapability = "browser" | "computer" | "memory";
 
-/** 宿主能力的调用返回：文本 + 可选图片（截图等） */
+/** 一次宿主能力的调用返回：文本 + 可选图片（截图等） */
 export interface HostResult {
   /** 给模型与界面看的文本 */
   text: string;
   /** 图片结果，base64 不含 data URI 前缀 */
   image?: { data: string; mimeType: string };
 }
+
+/**
+ * 模型向用户提的一个问题（`ask_user` 工具）。
+ *
+ * 上限不是随手定的：`MAX_QUESTIONS` / `MAX_OPTIONS` 与界面一屏能放下多少直接相关，
+ * `header` 长度限制是为了让多题分组标题不换行。校验在 worker 侧做（见
+ * `worker/lib/ask-user-tool.ts`），主进程只做转发、不重复校验。
+ */
+export interface AskUserQuestion {
+  question: string;
+  /** 短标签（≤12 字符），多题时作为分组标题；单题可省 */
+  header?: string;
+  /** 2~4 个选项 */
+  options: { label: string; description: string }[];
+  multiSelect?: boolean;
+}
+
+/** 用户跳过了提问——必须区分是超时还是中断，两者的文案与后续动作不同 */
+/**
+ * 没拿到答案的原因。三档都必须是**如实**的：模型据此决定怎么继续，
+ * 把「用户点了跳过」说成「对话被中断」就是撒谎（`docs/ERRORS.md`）。
+ */
+export type AskUserSkipReason = "timeout" | "skipped" | "cancelled";
 
 /** main → worker */
 export type WorkerCommand =
@@ -225,6 +248,20 @@ export type WorkerCommand =
   | { type: "browserNotice"; text: string }
   /** 主进程对一条审批的答复，worker 据此决定放行还是阻断 */
   | { type: "approvalResult"; toolCallId: string; approved: boolean; reason?: string }
+  /**
+   * 主进程对一次提问的答复。
+   *
+   * ⚠️ **必须与审批分开**：审批的默认值是「放行」（`auto` / `full-access` 模式会静默批准），
+   * 而提问的默认值必须是「没答案」——走审批通道的话，用户切到全权模式后模型每次提问都会
+   * 收到一个「已通过」而不是答案，那比没有提问工具更糟：它会持续撒谎（见 `docs/DESIGN-ask-user.md` §3）。
+   */
+  | {
+      type: "askUserResult";
+      toolCallId: string;
+      /** 问题 → 所选 label（多选时以「、」分隔）；skipped 时无值 */
+      answers?: Record<string, string>;
+      skipped?: AskUserSkipReason;
+    }
   /** 主进程对一次宿主能力调用的答复（成功） */
   | { type: "toolRpcResult"; requestId: string; ok: true; result: HostResult }
   /** 主进程对一次宿主能力调用的答复（失败） */
@@ -285,6 +322,17 @@ export type WorkerMessage =
       /** 完整入参的 JSON 串；无法序列化时为 "{}" */
       argsJson: string;
       /** 审批等待上限（毫秒），主进程与界面据此显示倒计时 */
+      timeoutMs: number;
+    }
+  /**
+   * 模型提问：worker 已阻塞在 `ask_user` 的 execute 里，等主进程回 askUserResult。
+   * 与 approvalRequest 同形不同义——它不受审批策略管辖，任何模式下都必须由人来答。
+   */
+  | {
+      type: "askUserRequest";
+      toolCallId: string;
+      /** 已过校验的问卷（校验在 worker 侧，主进程不重复校验） */
+      questions: AskUserQuestion[];
       timeoutMs: number;
     }
   | { type: "modelChanged"; providerId: string; modelId: string }

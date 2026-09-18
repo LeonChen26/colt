@@ -3,7 +3,7 @@
  * 主进程、预加载、渲染进程共享此定义。
  */
 
-import type { ConversationView } from "./worker-protocol";
+import type { AskUserQuestion, ConversationView } from "./worker-protocol";
 import type { ThinkingLevel } from "./thinking-level";
 
 /** 环境体检结果 */
@@ -113,7 +113,7 @@ export interface BrowserViewState {
    * 写死在 `<html>` 上）——此时被裁掉的部分既没有滚动条也没有别的入口。
    * 所以主进程只在**后者**才报数，前者一律报 0（表示「不存在够不到的内容」）。
    *
-   * 测量口径见 `browser-host.ts` 的 `CONTENT_WIDTH_SCRIPT`——两处实测出来的坑都记在那里
+   * 测量口径见 `browser-scripts.ts` 的 `CONTENT_WIDTH_SCRIPT`——两处实测出来的坑都记在那里
    * （不要去遍历全元素求右边界；也不要拿 `documentElement.scrollWidth` 当「有滚动条」的依据）。
    */
   contentWidth: number;
@@ -238,6 +238,8 @@ export const IPC_CHANNELS = [
   "session.close",
   "session.delete",
   "session.view",
+  "session.setPinned",
+  "session.listPinned",
   "secrets.set",
   "changes.list",
   "usage.list",
@@ -252,6 +254,9 @@ export const IPC_CHANNELS = [
   "session.memoryTidy",
   "approval.list",
   "approval.resolve",
+  "userquestion.list",
+  "userquestion.answer",
+  "userquestion.skip",
   "approval.mode.get",
   "approval.mode.set",
   "approval.rules.list",
@@ -388,6 +393,19 @@ export interface IpcInvokeMap {
     request: { sessionId: string };
     response: ConversationView | null;
   };
+  /**
+   * 钉住 / 取消钉住一条会话：钉住的不被空闲回收，进程池满时也**最后**才淘汰。
+   * 只活本次运行（worker 本就不跨重启，重启后一切都要重放，钉不钉没区别），故不落库。
+   */
+  "session.setPinned": {
+    request: { sessionId: string; pinned: boolean };
+    response: { ok: true };
+  };
+  /** 当前被钉住的会话 id——渲染层挂载时据此把图钉状态对齐回来 */
+  "session.listPinned": {
+    request: void;
+    response: string[];
+  };
   "secrets.set": {
     request: { key: "deepseek"; value: string };
     response: { ok: true };
@@ -415,6 +433,21 @@ export interface IpcInvokeMap {
   /** 处置一条审批 */
   "approval.resolve": {
     request: { sessionId: string } & ApprovalResolution;
+    response: { ok: true };
+  };
+  /** 当前待答的模型提问（ask_user） */
+  "userquestion.list": {
+    request: { sessionId: string };
+    response: UserQuestionRequest[];
+  };
+  /** 作答一条提问 */
+  "userquestion.answer": {
+    request: { sessionId: string; toolCallId: string; answers: Record<string, string> };
+    response: { ok: true };
+  };
+  /** 跳过一条提问（未作答，工具会收到对应说明） */
+  "userquestion.skip": {
+    request: { sessionId: string; toolCallId: string };
     response: { ok: true };
   };
   /** 读取会话的审批模式（审批模式是会话级状态，无全局设定） */
@@ -766,6 +799,7 @@ export const IPC_EVENTS = [
   "session.error",
   "session.notice",
   "approval.pending",
+  "userquestion.pending",
   "browser.state",
 ] as const;
 
@@ -781,6 +815,8 @@ export interface IpcEventMap {
   "session.notice": { sessionId: string; message: string };
   /** 待审批的工具调用（新增或清空时推送全量） */
   "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
+  /** 待答的模型提问（新增或清空时推送全量）；与审批分开推，语义不同 */
+  "userquestion.pending": { sessionId: string; requests: UserQuestionRequest[] };
   /** 内嵌浏览器视图状态变化（首次加载 / 导航 / 标题变化 / 销毁） */
   "browser.state": BrowserViewState;
 }
@@ -822,6 +858,15 @@ export interface ApprovalRequest {
   signature: string;
   requestedAt: number;
   /** 审批等待上限（毫秒），界面据此显示倒计时 */
+  timeoutMs: number;
+}
+
+/** 一条待答的模型提问（ask_user） */
+export interface UserQuestionRequest {
+  toolCallId: string;
+  questions: AskUserQuestion[];
+  requestedAt: number;
+  /** 等待上限（毫秒），界面据此显示倒计时 */
   timeoutMs: number;
 }
 

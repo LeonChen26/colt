@@ -976,7 +976,7 @@ payload 下 `thinking:disabled` + 无 tools → **400**，`reasoning: high`（�
   ≈ **423**；而固定宽度的站点（实测某搜索首页 768px）会被裁掉**且禁了横向滚动**——
   右边既没有滚动条也没有别的入口。要装下 768 得把 `minWidth` 抬到 1369，**会挡掉 1366 宽的屏**，故不抬。
 - 于是改成「让它说出来」：主进程量一个「页面够不到的内容宽度」
-  （`browser-host.ts` 的 `CONTENT_WIDTH_SCRIPT`），渲染层拿它与自己的区域宽比，
+  （`browser-scripts.ts` 的 `CONTENT_WIDTH_SCRIPT`），渲染层拿它与自己的区域宽比，
   装不下就在页面上方挂一条横条（`data-browser-clipped`），写明「需要 Npx / 可视区 Mpx」
   与唯一的出口（拖宽右栏 / 最大化窗口）；拉宽到装得下**自行消失**。
   **判据是算出来的，不是「栏一窄就报警」**——响应式页面在窄栏里会自己重排，

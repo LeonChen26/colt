@@ -57,6 +57,12 @@ import {
   type DownloadEntry,
   type WaitMode,
 } from "./browser-observe";
+import {
+  clickScript,
+  CONTENT_WIDTH_SCRIPT,
+  SNAPSHOT_SCRIPT,
+  typeScript,
+} from "./browser-scripts";
 
 /** 单次页面加载上限 */
 const NAV_TIMEOUT_MS = 30_000;
@@ -112,7 +118,7 @@ interface SessionBrowser {
   hidden: boolean;
   /** viewport 动作的临时覆盖尺寸（响应式联调用），null 表示未覆盖 */
   viewport: { width: number; height: number } | null;
-  /** 页面够不到的内容宽度（0 = 没有；口径见 CONTENT_WIDTH_SCRIPT），报给界面用于提示 */
+  /** 页面够不到的内容宽度（0 = 没有；口径见 browser-scripts.ts 的 CONTENT_WIDTH_SCRIPT），报给界面用于提示 */
   contentWidth: number;
   /** 当前缩放比例（1 = 100%），「适应宽度」生效时小于 1；见 setZoom */
   zoom: number;
@@ -123,56 +129,6 @@ interface SessionBrowser {
   /** 去抖用的重测定时器（拖分隔条时每像素都会走到 #applyBounds） */
   measureTimer?: NodeJS.Timeout;
 }
-
-/** 页面内取可交互元素：给每个元素打稳定 ref，返回一段人类/模型可读的清单 */
-const SNAPSHOT_SCRIPT = `(() => {
-  const selector = 'a,button,input,select,textarea,[role="button"],[role="link"],[contenteditable="true"]';
-  const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 200);
-  let seq = Number(window.__coltRefSeq || 0);
-  const lines = nodes.map((el) => {
-    let ref = el.getAttribute('data-colt-ref');
-    if (!ref) { seq += 1; ref = 'e' + seq; el.setAttribute('data-colt-ref', ref); }
-    const raw = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.innerText || el.value || '';
-    const name = String(raw).replace(/\\s+/g, ' ').trim().slice(0, 80);
-    const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    return '[' + ref + '] ' + role + ' "' + name + '"';
-  });
-  window.__coltRefSeq = seq;
-  return 'URL: ' + location.href + '\\nTITLE: ' + document.title + '\\n' + lines.join('\\n');
-})()`;
-
-/**
- * 量「页面内容实际需要的宽度」。
- *
- * 只关心一种无解的情形：内容比视口宽、而页面又把横向滚动关掉了
- * （`<html>` / `<body>` 上写死 `overflow-x: hidden`）。此时右边被裁掉的部分
- * 既没有滚动条、也没有别的入口，只能由界面告诉用户。
- * 页面自己能横向滚动（用户滚得到）或内容本来就装得下，一律返回 0。
- *
- * 两个易错点（都是实测出来的，不是推的）：
- *   ① 内容宽度**不要**去遍历全元素取右边界最大值：那样会把已经被内层滚动容器裁住的
- *      内容也算进来——宽表格套在 `overflow-x: auto` 的壳里时，它超出的是那个壳而不是视口，
- *      用户滚那个壳就能看到。文档级的 `scrollWidth` 天然不含这种内层裁剪。
- *   ② 用「根 / body 的 `overflow-x` 是不是 hidden」判「用户滚不到」，而**不要**用
- *      `documentElement.scrollWidth > clientWidth` 当「有横向滚动条」的依据：
- *      实测这条不成立——夹具页视口 219、内容 700、`<html>` 写了 `overflow-x: hidden`，
- *      而 `documentElement.scrollWidth` 照样报 700（并没有被钳到 clientWidth）。
- *      照那个判据走会把「真的够不到」误判成「用户自己能滚」，于是永远不提示。
- *      （`overflow: hidden` 只是禁止**用户**滚动，脚本仍能改 scrollLeft，所以也不能拿
- *      「试着滚一下看动不动」当判据。）
- */
-const CONTENT_WIDTH_SCRIPT = `(() => {
-  const doc = document.documentElement;
-  const viewport = doc.clientWidth || 0;
-  if (viewport <= 0) return 0;
-  const body = document.body;
-  const content = Math.max(doc.scrollWidth, body ? body.scrollWidth : 0);
-  if (content <= viewport + 1) return 0;
-  const off = (value) => value === 'hidden' || value === 'clip';
-  const reachable =
-    !off(getComputedStyle(doc).overflowX) && !(body && off(getComputedStyle(body).overflowX));
-  return reachable ? 0 : Math.ceil(content);
-})()`;
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -203,36 +159,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-function clickScript(ref: string): string {
-  const selector = JSON.stringify(`[data-colt-ref="${ref}"]`);
-  return `(() => {
-    const el = document.querySelector(${selector});
-    if (!el) return '未找到元素 ${ref}，请重新执行 snapshot';
-    el.scrollIntoView({ block: 'center' });
-    if (typeof el.click === 'function') el.click();
-    else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    return '已点击 ${ref}';
-  })()`;
-}
-
-function typeScript(ref: string, text: string): string {
-  const selector = JSON.stringify(`[data-colt-ref="${ref}"]`);
-  const value = JSON.stringify(text);
-  return `(() => {
-    const el = document.querySelector(${selector});
-    if (!el) return '未找到元素 ${ref}，请重新执行 snapshot';
-    el.focus();
-    if ('value' in el) {
-      el.value = ${value};
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      el.textContent = ${value};
-    }
-    return '已输入到 ${ref}';
-  })()`;
 }
 
 /** 用户手动导航的结果：给渲染层的新状态，以及（页面真变了时）给 agent 的提示 */
@@ -438,6 +364,10 @@ export class BrowserHost {
     try {
       entry.view.setBounds({ x: base.x, y: base.y, width: size.width, height: size.height });
       entry.view.setVisible(!entry.hidden);
+      // 可见时必须**关掉后台节流**，收起时才恢复：被节流的页面会自报 `visibilityState: hidden`，
+      // 而 hidden 的页面**不重排**——于是「页面比停靠区宽 / 适应宽度」那套读数全是冻结的旧值
+      // （实测：视图已设 1280，页面却仍停在上一次的 543；关掉节流立刻重排）。
+      entry.view.webContents.setBackgroundThrottling(entry.hidden);
     } catch {
       // 视图可能正好在销毁中；摆放失败不该打断调用方
     }
@@ -537,7 +467,7 @@ export class BrowserHost {
   }
 
   /**
-   * 量一次「页面够不到的内容宽度」并推给界面（口径见 CONTENT_WIDTH_SCRIPT）。
+   * 量一次「页面够不到的内容宽度」并推给界面（口径见 browser-scripts.ts 的 CONTENT_WIDTH_SCRIPT）。
    *
    * `did-finish-load` 触发时 `isLoading()` **仍可能是 true**（favicon 之类的子资源还在飞），
    * 此刻的布局不作数，所以不能量一次就完——那样会是**静默失败**：页面确实装不下，

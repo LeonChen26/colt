@@ -60,8 +60,11 @@ export async function runApproval(
     `JSON.stringify({ root: document.getElementById("root")?.children.length ?? -1, text: document.body.innerText.slice(0, 120) })`,
   );
   log(`  DOM 自检：${dom}`);
+  // cwd 是 `session.open` 的**必填**项；JSON.stringify 会抹掉 undefined，
+  // 于是漏填时 worker 拿 undefined 去调内核路径解析，报出与现场无关的
+  // `undefined.startsWith`（见 AGENTS.md §五「环境前提必须显式建立」）。
   await run(
-    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd() })})`,
   );
 
   // ---- 场景一：只读命令应当自动放行 ----
@@ -103,6 +106,18 @@ export async function runApproval(
     return;
   }
 
+  // 场景三/四的前提是「拦下来的是 edit / write」——选用哪个工具由**模型**决定，不由本用例定。
+  // 实测（2026-09-18）：模型没听「用 edit 工具」，改用 `bash … 2>/dev/null`（含重定向，照样被拦），
+  // 于是「批准后文件真的改了」这条前提根本没成立，照断言只会打出一条**假的落空**。
+  // 按 AGENTS.md §五⑬：这类前提要么显式建立，要么**明说没建立**，不能默认它成立。
+  const writeItem = pending.find((item) => item.toolName === "edit" || item.toolName === "write");
+  if (!writeItem) {
+    log(`  被拦下的是 ${pending.map((i) => i.toolName).join(",")}，不是 edit/write；`);
+    log(`  工具调用轨迹：${await toolTrail(session.id)}`);
+    log("  场景三/四依赖模型选用写入工具，本轮前提未成立，跳过（「拦截」本身已由场景二验证，这不是缺陷）。");
+    return;
+  }
+
   // ---- 场景三：批准后工具应真的执行 ----
   // 先截一张待审状态的图，处置后卡片就消失了
   const pendingShot = activeOutputPath.replace(/\.png$/, "-pending.png");
@@ -112,11 +127,11 @@ export async function runApproval(
     log(`  待审截图：${pendingShot}`);
   }
 
-  log("[场景3] 批准该调用，预期文件真的被改");
+  log(`[场景3] 批准该写入（${writeItem.toolName}），预期文件真的被改`);
   await run(
     `window.colt.invoke("approval.resolve", ${JSON.stringify({
       sessionId: session.id,
-      toolCallId: pending[0]!.toolCallId,
+      toolCallId: writeItem.toolCallId,
       approved: true,
     })})`,
   );
@@ -160,13 +175,26 @@ export async function runApproval(
     );
     await sleep(20000);
 
-    const after = await run<{
-      fileChanges: unknown[];
-      messages: { role: string; text: string }[];
-      running: boolean;
-    } | null>(`window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`);
+    // 不用「固定 sleep 后只读一次」：被拒之后模型可能接着去调 `ask_user`——那是在**等用户作答**，
+    // 不是卡死，而这时 `running` 本就该是 true（一轮还没结束）。读一次就下结论会打出假红。
+    // 改成等它落地（有上限），仍未落地时把工具轨迹一并打出来：真卡死与「在等用户」在轨迹上分得开。
+    const viewAt = () =>
+      run<{
+        fileChanges: unknown[];
+        messages: { role: string; text: string }[];
+        running: boolean;
+      } | null>(`window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`);
+    let after = await viewAt();
+    const settleDeadline = Date.now() + 30000;
+    while (after?.running && Date.now() < settleDeadline) {
+      await sleep(1000);
+      after = await viewAt();
+    }
     log(`  拒绝后文件改动：${after?.fileChanges.length ?? 0}（预期仍为 ${changesBefore}）`);
     log(`  会话运行中：${after?.running}（预期 false，说明未卡死）`);
+    if (after?.running) {
+      log(`  仍未落地，工具调用轨迹：${await toolTrail(session.id)}（含 ask_user 则是在等用户，不是卡死）`);
+    }
     const last = after?.messages.at(-1);
     log(`  末条消息[${last?.role}]：${(last?.text ?? "").slice(0, 80)}`);
   } else {

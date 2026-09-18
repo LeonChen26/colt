@@ -3,6 +3,10 @@
  * basic：建项目 → 建会话 → 真实对话 → 截图
  * advanced：多会话并行 → 分支查询 → navigateTree 分叉 → 截图
  * fixture：以本地夹具站为靶子，不开模型跑完浏览器能力（观测 + 上传下载 + 弹窗拦截）
+ * ask-user：模型提问（ask_user）的阻塞链路——卡片真的出现、选项真的能点、答案载荷与选择一致、
+ *       跳过与超时各自收尾、全权模式下照样弹（不打模型、不计费）
+ * ask-user-e2e：同上链路的**真实模型**版——模型真的看见并调用 ask_user、全权模式下不被
+ *       静默放行、答案作为工具结果回到模型且它接着往下做（**打模型、计费**）
  * dock：工作区（右栏）界面行为——折叠/展开、拖拽调宽与上下限、宽度记忆、⑦-F 自动展开、
  *       ⑦-G 的「正在处理」（进行中的动作 + 底部总账）与它的下钻（清单 → diff → 内容）、
  *       点文件路径 → 下钻内容层（工具卡入口）、页签关闭与「+」新增视图、
@@ -30,6 +34,8 @@ import { writeFile } from "node:fs/promises";
 import { upsertProject } from "../../main/db/repo";
 import { join } from "node:path";
 import { setActiveOutputPath, uncaughtErrors } from "./context";
+import { runAskUser } from "./modes/ask-user";
+import { runAskUserE2e } from "./modes/ask-user-e2e";
 import { runBasic } from "./modes/basic";
 import { runAdvanced } from "./modes/advanced";
 import { runApproval } from "./modes/approval";
@@ -130,6 +136,10 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runAdvanced(window, project.id, sessionsDir, log, run);
     } else if (mode === "approval") {
       await runApproval(window, project.id, sessionsDir, log, run);
+    } else if (mode === "ask-user") {
+      await runAskUser(window, project.id, sessionsDir, log, run);
+    } else if (mode === "ask-user-e2e") {
+      await runAskUserE2e(window, log, run);
     } else if (mode === "reenter") {
       await runReenter(window, project.id, sessionsDir, log, run);
     } else if (mode === "crash") {

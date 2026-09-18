@@ -50,6 +50,28 @@
 - 调试代码**当场清**，不要攒到最后。
 - 清理后**读一遍文件结尾**确认（`read` 最后 20 行），不要凭记忆判断清干净了。
 
+### 1.4 碰「已知大户」前先算净增行数，别等闸红了再拆
+
+**事故**（2026-09，做 `ask_user` 时）：改完 `session-manager.ts` 与 `worker/entry.ts` 才跑测试，
+体量闸当场报「多出 **152** 行 / **24** 行」。于是被迫在同一轮里连做三次与本功能无关的抽取
+（提问队列 → `main/question-store.ts`、纯投影 `project()` → `worker/lib/project.ts`、
+通知与宿主能力调用 → 两个小模块）。抽完的结果是对的，但**顺序是反的**——
+本可以在动手前就把「要搬哪块」写进计划。
+
+**根因**：把 `RATCHET` 当成了「提醒别写太啰嗦」，其实它的上限 = **建闸那天的实测行数**，
+也就是**零余量**：给大户加功能，必须**同时搬走等量旧代码**。这不是意外，是闸的设计。
+
+**铁律**：
+1. 动手前先量：`node -e "console.log(require('fs').readFileSync('src/main/session-manager.ts','utf8').split('\n').length)"`
+   ——**闸用的是 `split("\n").length`，与 `wc -l` 差 1**，两套数别混用（闸文件头也写了）。
+2. 量完先决定「搬哪块」，再开始写功能。搬的块要**机械可验证、自成一体**：纯函数、
+   一个完整的往返、一段通知——**不顺手改行为**。
+3. 搬完立刻 `npm run typecheck && npm test`（体量闸就在这套里）；搬移的本质是「位置变了、行为没变」，
+   全绿才算搬对。
+4. 闸对「已知大户」的另一个副作用：**别把新功能塞进大户**。提问链路最后落在
+   `question-store.ts` + `QuestionCard.tsx` + `useBlockingCards.ts` 三个新文件里，
+   大户只留一行委托——这是闸逼出来的结构，也确实更好读。
+
 ---
 
 ## 二、需求理解纪律
@@ -268,6 +290,19 @@ const px = startVal - dx;
   **原生视图与「页面区域」逐像素对齐**（含反复收起/展开 5 轮）与**视口联调标记 / 「恢复」**，
   已由 `COLT_SMOKE_MODE=dock` 覆盖
   （断言条数以运行输出为准，见 `docs/NEXT-PHASE.md` §5 第 3 条）；`fixture` 模式另有浏览器能力本体的用例。
+  **`ask-user` 模式**（2026-09，23 条）单独一条：模型提问的阻塞链路——卡片真出现、选项真的能点、
+  提交后主进程收到的载荷键值都对（多选以「、」相连）、跳过走 `skipped` 而不是 `cancelled`、
+  超时自己收尾、`full-access` 下照样弹卡、全程不留悬空卡（含 worker 被回收时）。
+  不跑模型、不计费；
+  提问走**真实入队函数** `sessionManager.questions.enqueue()`（就是 worker 发来 `askUserRequest`
+  时主进程调用的那个），作答载荷用主进程打桩读回（同 `/compact` 那套，但**要转发**——
+  「出队」正是被验的一半，且这次转发不调模型、不写历史）。
+  **`ask-user-e2e` 模式**（2026-09，11 条，**打模型、计费**）补的是**入队之前**那段：
+  让模型自己看见并调用 `ask_user`，验 worker 侧 `before_tool` 跳过 `ask_user` 的那条守卫、
+  以及「全权模式下提问仍要弹」（`approvals.listPending` 为空是物证）。做法同 `memory-e2e`：
+  **worker 的生死交给渲染层**（`upsertProject(夹具)` 后 `window.reload()`，等它自动打开会话、
+  就绪）——冒烟直连 `session.open` 会与渲染层的自动打开 + StrictMode 卸载抢同一个 worker，
+  表现为「会话进程在就绪前退出」（`AGENTS.md` 本节末条）。
   十三个坑：① 拖拽要拆成
   「按下」与「移动+抬起」两次 `executeJavaScript`，否则监听器还没挂上就丢了 move 事件；
   ② 断言要用与产品同源的公式算期望值，别写死像素。
@@ -414,6 +449,9 @@ const px = startVal - dx;
   ① 渲染层挂载即自动选中「当前项目」的 `list[0]` 并以**项目 rootPath** 为 cwd 打开（App.tsx）；
   ② Conversation 卸载即 `session.close`（StrictMode 下挂载→卸载→重挂载）——
   就绪前的 worker 当场被杀，退出码 0、无任何 stderr，**看起来像神秘崩溃**；
+  ⚠️ **2026-09-18 起这一条不成立了**：渲染层不再在卸载时关 worker（切走只是失焦，见
+  Conversation 卸载处的注释与 `reenter` 的两条新断言）。上面那场翻车的**结论仍然有效**——
+  渲染层依旧是并发参与者，仍要按铁律①处理；只是「它会把 worker 杀掉」这个具体机制没了。
   ③ worker 复用分支只同步模型、**不校验 cwd**——先到者定 cwd，后来者被静默忽略。
   三个 open 挂在同一个 pending 任务上时，一次死亡全体被拒，报错条数还会误导排查看错了对象。
   铁律：① 冒烟里真实 fork worker 的会话，必须让渲染层「看不到它，或看到时 cwd 恰好一致」——
@@ -422,3 +460,96 @@ const px = startVal - dx;
   `disposeReason`（是 dispose 还是自发退出），别对着 exit 码猜；
   ③ 顺带再记一笔同族案例：`openMemoryDatabase` 编译全绿、单测全绿，运行时**没有任何调用点**
   （又是「只有定义、没有调用」）——这类缺口唯一可靠的探针就是把真实链路跑一遍。
+
+- **`ELECTRON_RUN_AS_NODE` 会把 `electron.exe` 变成 Node，而报错看着像产物坏了**（2026-09 实测）。
+  症状：`npm run dev` 报
+  `SyntaxError: The requested module 'electron' does not provide an export named 'BrowserWindow'`
+  （指向 `out/main/index.js` 第一行那句 import），并打出 `Node.js v24.x`。
+  实际是**根本没起 Electron**，那行 import 是在 Node 的 ESM 加载器里被解析的。
+
+  判据（一条命令定性）：
+
+  ```bash
+  ./node_modules/electron/dist/electron.exe --version
+  # 打 v24.x  → 被按成了 Node（环境变量问题）
+  # 打 v44.x  → 真的 Electron
+  ```
+
+  **坑**：把变量设成**空串不算清掉**——Electron 侧是 C++ `getenv()` 判断，空串照样算「已设置」。
+  必须 **unset**，并顺手去掉环境里挂的 `NODE_OPTIONS`（可能有 `--require` 钩子）：
+
+  ```bash
+  env -u ELECTRON_RUN_AS_NODE -u NODE_OPTIONS COLT_SMOKE=dock.png COLT_SMOKE_MODE=dock npm run dev
+  ```
+
+  铁律：`--version` 打出 Node 版本号时**先查环境变量**，别去翻 `out/`、也别怀疑打包配置。
+
+- **跑单测要用仓库自己的加载器**：`npx tsx --test tests/x.test.ts` **不认** tsconfig 里的
+  `@shared/*` 路径别名（会 `ERR_MODULE_NOT_FOUND: Cannot find package '@shared/...'`），
+  而这看起来很像「别名写错了/文件没了」。用仓库的方式跑：
+
+  ```bash
+  node --import ./tests/ts-resolve.mjs --test tests/ask-user.test.ts   # 单个文件
+  npm test                                                            # 全量
+  ```
+
+- **冒烟产物落在 `out/` 且已被 gitignore**（`out/<名字>.png` + `<名字>.log`）。
+  结论以 `.log` 为准（Windows 上 Electron 主进程 stdout 不接父终端，只看控制台会丢日志）；
+  跑完记得看 `通过 N/M` 那一行，别只看「DONE」。
+
+- **被「后台节流」的内嵌浏览页会自报 hidden，而 hidden 的页面不重排**（2026-09-18 定位并修复）。
+  症状：`dock` 掉 3 条——**全是读「页面自己的 `window.innerWidth`」**的那几条
+  （`覆盖尺寸真的落到页面 … 页面 innerWidth=543，期望 1280`、
+  `右栏拉宽后比例自动重算 … 页面 CSS 视口 365 ≈ 需要宽 700`、`「还原」后回到 100% … 页面 365`）；
+  `fixture` 掉 `viewport 窄屏生效`。**主进程侧的断言一律全绿**（原生视图 `getBounds()` 确实成了 1280、
+  与「页面区域」逐像素对齐、缩放比例算得对）——只有**页面侧的布局读数**是冻结的。
+  根因（探针实测，不是推测）：把内嵌页与应用 UI **并排量一次**——同一时刻**应用 UI `visibilityState=visible`、
+  `hasFocus=true`**，主窗口 `visible / 未最小化 / focused`，而**内嵌页 `visibilityState=hidden`、
+  `innerWidth` 冻在 543**。Electron 的 `backgroundThrottling`（默认开）**同时驱动 Page Visibility API**，
+  于是被节流的页面自报 hidden；**而 Chromium 不给 hidden 的页面重排**——视图设了多大都白搭。
+  对照实验（缺了它就会误判成「环境问题」）：空等 1.5s 读数不变，
+  `webContents.setBackgroundThrottling(false)` 一关**立刻**从 543 变 1280。
+  **不是「窗口没在前台」**（加 `window.show()+focus()` 照样红，那条假设已被证伪）；
+  也**不是「无人值守才有的环境噪音」**——同代码的作者绿记录 `out/dock.png.log` 只是碰巧没进节流态。
+  修法：`browser-host.ts` 的 `#applyBounds` 里**成对**做——可见时 `setBackgroundThrottling(false)`、
+  收起时恢复 `true`（收起时保留节流，免得隐藏页的定时器白烧 CPU）。修完 `dock` 211/211、`fixture` 25/25。
+  铁律：① **「视图摆成多大」和「页面按多大重排」是两件事**；判「重排没重排」只能读**页面自己的**
+  `window.innerWidth`（且必须从**浏览器视图的 webContents** 读）——主进程侧全绿**不能**当作页面也对；
+  ② 页面被判 hidden 时，**先怀疑节流**（`backgroundThrottling` 会连带 Page Visibility API），
+  别一上来去改布局/尺寸代码；③ 看到「主进程都对、只有页面侧不对」，**别急着归因到环境**——
+  这次它长得像环境问题，实际是条件性缺陷（用户拖右栏时页面可能就卡在旧布局）。
+
+- **`app.isPackaged` 会在启动过程中「晚值漂移」，任何运行期求值都可能误判成「已打包」**（2026-09-18 定位并修复）。
+  症状：`crash` 冒烟已经装了故障注入（`COLT_WORKER_OVERRIDE=scripts/crash-worker.cjs`）却打出
+  `session.open 结果：OK（2ms）`——**看着通过，其实注入根本没生效**。临时探针打出
+  `packaged=true override="…crash-worker.cjs" path=out\main\worker.js`：worker 被 fork 的那一刻
+  （`ready-to-show`）`app.isPackaged` 已经**从 false 漂成了 true**，于是 `!app.isPackaged` 这道闸门恒为假。
+  这不是崩溃，是**静默失效**——比崩溃更难发现：`build` / `typecheck` / 单测全绿，只是那条路径根本没被走到。
+  修法：抽 `src/main/lib/app-mode.ts` 的 `isDev = process.defaultApp === true || !app.isPackaged`，
+  **在启动早期求值一次、之后一律复用这个常量**；dev 资源加载与 `Colt` / `Colt-dev` 数据目录分流共用它。
+  另一层：`crash` 模式**自己自证前提**——不满足 `isDev && COLT_WORKER_OVERRIDE` 就打印
+  「跳过：未装故障注入…」并返回，而不是交出一份看着通过的日志（修后：装上注入 → `REJECTED … 耗时 107ms`；
+  没装 → 明说跳过）。
+  铁律：① 凡是「运行期才求值」的 `app.isPackaged`，都要怀疑晚值漂移——**要用就在启动早期定格**；
+  ② 故障注入类用例必须**先自证「注入真的装上了」**，否则它验的是一个不存在的场景；
+  ③ 「用例通过」与「被测路径被走到」是两回事，前者不蕴含后者。
+
+- **`session.open` 的 `cwd` 是必填，而 `JSON.stringify` 会静默抹掉 `undefined`**（2026-09-18，`advanced` 冒烟）。
+  症状：`advanced` 报 `Cannot read properties of undefined (reading 'startsWith')`，栈落在
+  `resolvePath` ← `NodeExecutionEnv.absolutePath` ← `JsonlSessionRepo.resolveCreateDestination` ——
+  **报错现场与真实原因毫无关系**，看着像内核坏了。根因：用例写的是 `cwd: process.env.COLT_SMOKE_CWD`
+  （没设就是 `undefined`），`JSON.stringify` 把整个键丢掉，主进程照契约收下这份「缺 cwd」的请求，
+  一路带到内核做路径解析才炸。铁律：① 冒烟里 `cwd` 一律写 `process.env.COLT_SMOKE_CWD ?? process.cwd()`，
+  别裸传环境变量（`advanced` / `approval` / `crash` / `reenter` / `host` 已统一）；② 见到
+  「与现场无关的 `undefined.xxx`」先怀疑**某个必填入参在序列化时没了**；③ 这与上一条同源——都是
+  「用例的环境前提没显式建立」（见本节 ⑬）。
+
+- **`approval` 冒烟的场景三/四，前提是「模型会选用 edit/write」——而选工具的是模型，不是用例**（2026-09-18）。
+  症状：日志打出 `文件改动：0 项（预期 >=1）`，看着像「批准后文件没改」的产品缺陷。
+  根因：模型没听「用 edit 工具」，改用 `bash … 2>/dev/null`（含重定向，**照样被正确拦下**，
+  风险分级本身是好的），于是被批准的其实是个 `ls/find`——「批准后文件真的改了」这条前提根本没成立。
+  修法：先在被拦条目里找 `edit`/`write`，找不到就**明说「前提未成立，跳过」**并打出工具轨迹，
+  而不是照打一条假红；场景四的 `running` 也改成**轮询等它落地**——模型被拒后可能接着去调 `ask_user`，
+  那是在**等用户作答**、`running` 本就该是 true，固定 sleep 读一次必然打成假红。
+  铁律：断言要挂在「用例自己能定的前提」上；前提由外部（这里是模型）决定时，要么显式建立、
+  要么**明说没建立**，不要让它默认成立。

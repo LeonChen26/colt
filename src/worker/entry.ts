@@ -21,13 +21,8 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createModels, type ImageContent } from "@earendil-works/pi-ai";
 import type {
-  ConversationView,
   FileBaseline,
   ViewFileChange,
-  ViewMessage,
-  ViewRunOutcome,
-  ViewRunningTool,
-  ViewToolResult,
   WorkerBranchNode,
   WorkerCommand,
   WorkerMessage,
@@ -41,26 +36,18 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import {
   countPatchLines,
-  extractImage,
-  extractText,
-  extractThinking,
-  extractToolCalls,
-  extractToolText,
+  project,
   projectBranchNodes,
   toRelative,
   type BranchEntry,
 } from "./lib/project";
 import { HostBridge } from "./lib/host-bridge";
 import { captureBaseline } from "./lib/baseline";
+import { createAskUserGateway, createAskUserTools, isQuestionTool } from "./lib/ask-user-tool";
 import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
 import { createMemoryTools } from "./lib/memory-tool";
-import {
-  ToolCallTracker,
-  buildUsageUpload,
-  contextUsedFromUsage,
-  serializeArgs,
-} from "./lib/telemetry";
+import { ToolCallTracker, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
 import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
 import {
   TIDY_LANE,
@@ -110,6 +97,12 @@ const pendingApprovals = new Map<
   string,
   { resolve: (value: { approved: boolean; reason: string }) => void; timer: NodeJS.Timeout }
 >();
+
+/**
+ * 提问的阻塞往返（状态与超时都在这个对象里，见 `lib/ask-user-tool.ts`）。
+ * 超时上限与审批共用 `APPROVAL_TIMEOUT_MS`——两侧不一致会静默挂死（`shared/limits.ts`）。
+ */
+const questions = createAskUserGateway(send, APPROVAL_TIMEOUT_MS);
 
 /** 已完成的工具调用耗时（toolCallId → ms），供工具卡片展示；有上限避免无界增长 */
 const toolDurations = new Map<string, number>();
@@ -199,157 +192,6 @@ function toImageContent(
   return images.map((image) => ({ type: "image", ...image }));
 }
 
-/** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
-/**
- * 把内核的「最近一次操作结果」投影成 ⑥ 需要的**运行终态**（C1）。
- *
- * 只认 `kind === "run"`：压缩 / 导航也会写 `lastResult`，但它们在状态条上答非所问
- * （用户问的是「我刚交办的那件事怎么样了」）。没有跑过、或最近一次是别的操作 → `null` → 「空闲」。
- */
-function projectLastRun(result: LaneSnapshot["lastResult"]): ViewRunOutcome | null {
-  if (result === undefined || result.kind !== "run") return null;
-  return {
-    status: result.status,
-    ...(result.error !== undefined ? { error: result.error.message } : {}),
-  };
-}
-
-function project(
-  snapshot: LaneSnapshot,
-  meta: {
-    sessionId: string;
-    cwd: string;
-    model: string;
-    /** 当前模型是否支持图片输入（取自模型目录的 input 能力），决定界面能否发图 */
-    imageInput: boolean;
-    /** 会话思考等级，供界面下拉回显 */
-    thinkingLevel: ThinkingLevel;
-    /**
-     * 本会话装载到的技能名字（装载后固定）。
-     *
-     * 渲染层要拿它**就地**判「这个名字存不存在」：名字打错时它不清空输入、把可用名报出来，
-     * 用户改一个字母就能重敲。没有它，那半句额外指示会跟着输入一起没掉。
-     */
-    skills: string[];
-    fileChanges: ViewFileChange[];
-    /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
-    contextUsed: number;
-  },
-): ConversationView {
-  const messages: ViewMessage[] = [];
-  const toolResults: ViewToolResult[] = [];
-
-  for (const entry of snapshot.transcript) {
-    if ((entry as { type?: string }).type !== "message") continue;
-    const record = entry as unknown as {
-      id: string;
-      message: { role: string; content: unknown; timestamp?: number };
-    };
-    const role = record.message.role;
-
-    // toolResult 消息另存一份，供工具卡片展开时按 toolCallId 查阅
-    // 注意：toolCallId 在 message 层级，content 是扁平的文本/图片块
-    if (role === "toolResult") {
-      const result = record.message as unknown as {
-        toolCallId?: string;
-        content?: unknown;
-        isError?: boolean;
-      };
-      if (typeof result.toolCallId === "string") {
-        toolResults.push({
-          id: result.toolCallId,
-          output: extractText(result.content),
-          isError: Boolean(result.isError),
-          // 截图等图片结果另存一份，供工具卡片直接展示
-          image: extractImage(result.content),
-        });
-      }
-    }
-
-    messages.push({
-      id: record.id,
-      role:
-        role === "user" || role === "assistant" || role === "toolResult"
-          ? (role as ViewMessage["role"])
-          : "other",
-      text: extractText(record.message.content),
-      // 用户随消息发送的图片回显到对话里；与工具截图同源，均为不含前缀的 base64
-      image: role === "user" ? extractImage(record.message.content) : undefined,
-      toolCalls:
-        role === "assistant"
-          ? extractToolCalls(record.message.content).map((call) => ({
-              ...call,
-              durationMs: toolDurations.get(call.id),
-            }))
-          : [],
-      thought: role === "assistant" ? extractThinking(record.message.content) || undefined : undefined,
-      timestamp: record.message.timestamp,
-    });
-  }
-
-  const operation = snapshot.operation;
-  const streamingText = operation?.streamingMessage
-    ? extractText(operation.streamingMessage.content)
-    : null;
-  const streamingThought = operation?.streamingMessage
-    ? extractThinking(operation.streamingMessage.content)
-    : "";
-
-  const runningTools: ViewRunningTool[] = (operation?.runningTools ?? []).map((tool) => {
-    const record = tool as unknown as {
-      toolCallId?: string;
-      id?: string;
-      toolName?: string;
-      name?: string;
-      args?: unknown;
-      startedAt?: number;
-      result?: unknown;
-    };
-    const details = (record.result as { details?: { fullOutputPath?: string } } | undefined)?.details;
-    return {
-      id: record.toolCallId ?? record.id ?? "",
-      name: record.toolName ?? record.name ?? "",
-      // 内核在 runningTools 上已经带上了入参，序列化后供渲染层实时展示命令
-      args: serializeArgs(record.args) ?? "{}",
-      // bash 等工具在运行中会不断把全量输出快照写回 result
-      output: extractToolText(record.result),
-      fullOutputPath: details?.fullOutputPath,
-      startedAt: record.startedAt ?? Date.now(),
-    };
-  });
-
-  const usage = snapshot.stats?.usage;
-  return {
-    sessionId: meta.sessionId,
-    model: meta.model,
-    imageInput: meta.imageInput,
-    thinkingLevel: meta.thinkingLevel,
-    skills: meta.skills,
-    messages,
-    toolResults,
-    fileChanges: meta.fileChanges,
-    streamingText: streamingText && streamingText.length > 0 ? streamingText : null,
-    thought: streamingThought.length > 0 ? streamingThought : null,
-    runningTools,
-    // operation 非 null 即为「有一次 run/compaction/navigation 正在飞行」：
-    // 内核 reducer 在 *_start 时写入该对象，在 *_end 时才置回 null。
-    // 注意不要看 operation.status —— OperationStatus 只有 running|open|aborting，
-    // 而 run_start 写入的恰是 "open"（表示「进行中的操作」而非「已完成」），
-    // 用它判定会把整个运行期误判为空闲。
-    running: operation !== null,
-    lastRun: projectLastRun(snapshot.lastResult),
-    queuedCount: snapshot.queues?.length ?? 0,
-    stats: {
-      messageCount: snapshot.stats?.messageCount ?? 0,
-      inputTokens: usage?.input ?? 0,
-      outputTokens: usage?.output ?? 0,
-      totalTokens: usage?.totalTokens ?? 0,
-      costUsd: usage?.cost?.total ?? 0,
-      contextUsed: meta.contextUsed,
-    },
-  };
-}
-
 async function openSession(
   repo: JsonlSessionRepo,
   kernelSessionId: string | undefined,
@@ -415,7 +257,7 @@ function scheduleFlush(): void {
   if (flushTimer || !state) return;
   flushTimer = setTimeout(() => {
     flushTimer = undefined;
-    if (state) send({ type: "view", view: project(state.snapshot, state.meta) });
+    if (state) send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
   }, 50);
 }
 
@@ -510,6 +352,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createBrowserTools(hostBridge),
         ...createComputerTools(hostBridge),
         ...createMemoryTools(hostBridge),
+        ...createAskUserTools(questions),
       ],
       toolContext: { env: executionEnv },
       // create-time 静态部分只有：基础提示词 + 技能清单。
@@ -538,6 +381,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   /** 已经报过基线的路径：同一文件后续改动只报增量，不重发全文（主进程也按「最早那份」为准） */
   const baselineSent = new Set<string>();
   harness.hooks.on("before_tool", async (event) => {
+    // ask_user 不受审批管辖：它是「向人要信息」，走审批通道会被 auto / full-access
+    // 模式静默批准成「已通过」——模型拿到的是假答案（见 docs/DESIGN-ask-user.md §3）
+    if (isQuestionTool(event.toolName)) return undefined;
     gatedToolCalls.add(event.toolCallId);
     if (
       (event.toolName === "edit" || event.toolName === "write") &&
@@ -590,7 +436,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 纵深防御：若有影响性工具执行完却没经过闸门，说明拦截链路漏了。
   // 宁可吐一个显眼告警，也不能静默地把它放过去。
   harness.hooks.on("after_tool", (event) => {
-    if (READONLY_TOOLS.has(event.toolName)) return undefined;
+    // 提问同样不必过闸门（同上），别让纵深防御把它误报成「拦截链路漏了」
+    if (READONLY_TOOLS.has(event.toolName) || isQuestionTool(event.toolName)) return undefined;
     if (gatedToolCalls.has(event.toolCallId)) return undefined;
     trace(`安全告警：${event.toolName} 未经闸门即执行`);
     send({
@@ -738,7 +585,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     cwd,
     model: meta.model,
   });
-  send({ type: "view", view: project(state.snapshot, meta) });
+  send({ type: "view", view: project(state.snapshot, meta, toolDurations) });
 
   // 恢复上次退出时未完成的运行
   for (const operation of open) {
@@ -825,6 +672,11 @@ async function handle(command: WorkerCommand): Promise<void> {
       settleApproval(command.toolCallId, command.approved, command.reason);
       return;
 
+    // 提问答复：同样必须能唤醒阻塞的工具（ask_user 的 execute 正挂在这上面）
+    case "askUserResult":
+      questions.settle(command.toolCallId, command.answers, command.skipped);
+      return;
+
     // 宿主能力答复：唤醒阻塞在 callHost 的工具，同样不能依赖会话状态
     case "toolRpcResult":
       hostBridge.settle(command.requestId, command.ok, command.ok ? command.result : command.error);
@@ -834,7 +686,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       if (!state) throw new Error("会话尚未初始化");
       await state.lane.prompt(command.text, toImageContent(command.images), context);
       // 运行结束后补推一次终态
-      if (state) send({ type: "view", view: project(state.snapshot, state.meta) });
+      if (state) send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
       return;
     }
 
@@ -881,7 +733,7 @@ async function handle(command: WorkerCommand): Promise<void> {
         providerId: targetProviderId,
         modelId: command.modelId,
       });
-      send({ type: "view", view: project(state.snapshot, state.meta) });
+      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
       return;
     }
 
@@ -889,7 +741,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       if (!state) throw new Error("会话尚未初始化");
       await state.lane.setThinkingLevel(command.level, context);
       state.meta.thinkingLevel = command.level;
-      send({ type: "view", view: project(state.snapshot, state.meta) });
+      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
       return;
     }
 
@@ -910,7 +762,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       }
       // 压缩重写了 transcript，增量事件不足以重建，必须重新取快照
       state.snapshot = await state.resnapshot();
-      send({ type: "view", view: project(state.snapshot, state.meta) });
+      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
       send({ type: "notice", message: compactDoneMessage(state.snapshot) });
       // 压缩是会话记忆的数据丢失时刻（摘要保 prose 不保事实）：
       // 提醒助手把本轮值得留的事实沉淀进记忆文件。一次性提醒，随下一次请求注入；
@@ -984,7 +836,7 @@ async function handle(command: WorkerCommand): Promise<void> {
         return;
       }
       // 运行结束后补推一次终态（同 prompt）
-      send({ type: "view", view: project(state.snapshot, state.meta) });
+      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
       return;
     }
 
@@ -1000,7 +852,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       await state.lane.navigateTree(command.targetId, { summarize: false }, context);
       // 跳转换了整条分支，transcript 需要整体重建
       state.snapshot = await state.resnapshot();
-      send({ type: "view", view: project(state.snapshot, state.meta) });
+      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
       send({ type: "branches", nodes: await projectBranches(state) });
       return;
     }
@@ -1014,6 +866,8 @@ async function handle(command: WorkerCommand): Promise<void> {
       }
       // 作废所有待决宿主调用，否则工具会一直挂到超时
       hostBridge.dispose();
+      // 提问同理：还挂着的话，工具要收到「已取消」才能收尾，不能干等到超时
+      questions.dispose();
       process.exit(0);
     }
   }

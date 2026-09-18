@@ -28,6 +28,7 @@ import {
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
+import { dropSessionPin, listPinnedSessions, setSessionPinned } from "../session-pins";
 import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
@@ -323,10 +324,18 @@ export function registerIpcHandlers(): void {
     removeSessionJsonl(session.kernelSessionId);
     // 会话已永久删除：清掉审批状态，否则会话级模式/记忆规则会滞留在内存
     sessionManager.approvals.unregister(request.sessionId);
+    dropSessionPin(request.sessionId);
     return { ok: true } as const;
   });
 
   handle("session.view", (request) => sessionManager.getView(request.sessionId) ?? null);
+
+  handle("session.setPinned", (request) => {
+    setSessionPinned(request.sessionId, request.pinned);
+    return { ok: true } as const;
+  });
+
+  handle("session.listPinned", () => listPinnedSessions());
 
   handle("secrets.set", (request) => {
     setSecret(request.key, request.value.trim());
@@ -350,6 +359,18 @@ export function registerIpcHandlers(): void {
       remember: request.remember,
       deny: request.deny,
     });
+    return { ok: true } as const;
+  });
+
+  handle("userquestion.list", (request) => sessionManager.questions.list(request.sessionId));
+
+  handle("userquestion.answer", (request) => {
+    sessionManager.questions.answer(request.sessionId, request.toolCallId, request.answers);
+    return { ok: true } as const;
+  });
+
+  handle("userquestion.skip", (request) => {
+    sessionManager.questions.skip(request.sessionId, request.toolCallId);
     return { ok: true } as const;
   });
 

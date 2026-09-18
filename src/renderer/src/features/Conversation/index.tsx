@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
-import type { ApprovalMode, ApprovalRequest, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
 import { displayModelRef, resolveSessionModel, splitModelRef } from "@shared/model-ref";
 import {
   DEFAULT_THINKING_LEVEL,
@@ -35,6 +35,8 @@ import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCand
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
+import { QuestionCards } from "./QuestionCard";
+import { useBlockingCards } from "./useBlockingCards";
 import {
   createDockInstance,
   defaultDockInstances,
@@ -47,6 +49,7 @@ import {
   type DockKind,
 } from "./WorkspaceDock";
 import { clampDockWidth, dockWidthFromDrag } from "@/lib/dock";
+import { getCachedView } from "./view-cache";
 import type { ReactNode } from "react";
 
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
@@ -135,7 +138,9 @@ export function Conversation({
   /** 思考等级已落库，同 onModelSelected：父组件要刷新缓存，否则重挂载会退回旧值 */
   onThinkingLevelSelected?: (level: ThinkingLevel) => void;
 }): React.JSX.Element {
-  const [view, setView] = useState<ConversationView | null>(null);
+  // 初值取缓存：本会话若是重挂（切走切回 / worker 被空闲回收后重开），立刻就有内容可画，
+  // 不必干等 worker 把整份 JSONL 重放完——那段时间原本是纯白 + 转圈（见 view-cache.ts）。
+  const [view, setView] = useState<ConversationView | null>(() => getCachedView(sessionId));
   const [input, setInput] = useState("");
   /**
    * `/` 候选浮层的状态：`slashActive` 是高亮项下标，`slashDismissed` 记住**哪段输入被 Esc 收掉了**。
@@ -166,8 +171,16 @@ export function Conversation({
    * 顶部那条 error 在消息滚到底时根本不在视野内，等于没说。
    */
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  /** 阻塞态队列（审批 + 提问）的订阅与处置，见 `useBlockingCards.ts` */
+  const {
+    approvals,
+    questions,
+    refresh: refreshBlocking,
+    resolveApproval,
+    answerQuestion,
+    skipQuestion,
+  } = useBlockingCards(sessionId, setError);
   const [opening, setOpening] = useState(true);
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [mode, setMode] = useState<ApprovalMode>("auto");
   /** 跟随线联动：hover 工具卡片时高亮它碰的文件 */
   const [hoveredFile, setHoveredFile] = useState<string | null>(null);
@@ -486,7 +499,6 @@ export function Conversation({
     setError(null);
     setNotice(null);
     setCompactNotice(null);
-    setApprovals([]);
 
     const offView = window.colt.on("session.view", (next) => {
       if (disposed || next.sessionId !== sessionId) return;
@@ -503,10 +515,6 @@ export function Conversation({
       setCompactNotice(payload.message);
       clearTimeout(noticeTimer);
       noticeTimer = setTimeout(() => setCompactNotice(null), 5000);
-    });
-    const offApproval = window.colt.on("approval.pending", (payload) => {
-      if (disposed || payload.sessionId !== sessionId) return;
-      setApprovals(payload.requests);
     });
 
     void (async () => {
@@ -539,9 +547,8 @@ export function Conversation({
         await window.colt.invoke("session.open", { sessionId, cwd });
         const snapshot = await window.colt.invoke("session.view", { sessionId });
         if (!disposed && snapshot) setView(snapshot);
-        // 重新打开时可能已有堆积的待审，需主动拉一次
-        const pending = await window.colt.invoke("approval.list", { sessionId });
-        if (!disposed) setApprovals(pending);
+        // 重新打开时可能已有堆积的待审 / 待答，需主动拉一次
+        if (!disposed) await refreshBlocking();
       } catch (e) {
         if (!disposed) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -555,10 +562,10 @@ export function Conversation({
       offView();
       offError();
       offNotice();
-      offApproval();
-      // 卸载时释放该会话的 worker。运行中会被主进程拒绝，交给空闲回收兼顾；
-      // 重新打开时靠 JSONL 重放恢复，代价仅是一次启动延迟。
-      void window.colt.invoke("session.close", { sessionId }).catch(() => undefined);
+      // **不再**在这里 `session.close`。切走即杀会让「去别的会话瞄一眼再回来」付一整次
+      // worker 重启（重放整份 JSONL，长会话可能数十秒），而那是最高频的动作。
+      // 现在切走只是「失焦」：worker 交给空闲回收与进程池上限兜底，切回来直接复用
+      // （`#spawnWorker` 的复用分支）。代价是常驻内存高一些——刻意的「响应优先」取舍。
     };
   }, [sessionId, cwd]);
 
@@ -588,31 +595,7 @@ export function Conversation({
     if (node) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
   }, []);
 
-  const resolveApproval = useCallback(
-    async (
-      toolCallId: string,
-      input: {
-        approved: boolean;
-        remember?: "signature" | "tool";
-        deny?: "signature" | "tool";
-      },
-    ) => {
-      // 乐观移除：主进程随后会推全量待审覆盖
-      setApprovals((list) => list.filter((item) => item.toolCallId !== toolCallId));
-      try {
-        await window.colt.invoke("approval.resolve", {
-          sessionId,
-          toolCallId,
-          approved: input.approved,
-          remember: input.remember,
-          deny: input.deny,
-        });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [sessionId],
-  );
+
 
   /**
    * 把 File（粘贴 / 拖拽 / 选择）读成 base64 附件。
@@ -1021,7 +1004,7 @@ export function Conversation({
       </div>
 
       <div className="relative col-start-1 row-start-2 flex min-h-0 min-w-0">
-        <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-4 py-4">
+        <div ref={scrollRef} onScroll={onScroll} data-conv-scroll="" className="flex-1 overflow-y-auto px-4 py-4">
           {opening && (
             <div className="flex items-center gap-2 text-[12.5px] text-text-muted">
               <Loader2 {...ICON.md} className="animate-spin" />
@@ -1143,7 +1126,7 @@ export function Conversation({
               </AssistantRow>
             )}
 
-            {/* 审批卡片放在消息流末尾：lane 正阻塞在这里，不处理就不会往下走 */}
+            {/* 阻塞态卡片放在消息流末尾：lane 正卡在这里，不处理就不会往下走 */}
             {approvals.map((request) => (
               <ApprovalCard
                 key={request.toolCallId}
@@ -1152,6 +1135,11 @@ export function Conversation({
                 onResolve={(input) => void resolveApproval(request.toolCallId, input)}
               />
             ))}
+            <QuestionCards
+              requests={questions}
+              onAnswer={(toolCallId, answers) => void answerQuestion(toolCallId, answers)}
+              onSkip={(toolCallId) => void skipQuestion(toolCallId)}
+            />
           </div>
 
           {awayFromBottom && (

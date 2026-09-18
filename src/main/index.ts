@@ -9,18 +9,11 @@ import { openDatabase, shutdownDatabase } from "./db";
 import { openMemoryDatabase } from "./db/memory-index";
 import { inspectUserData } from "./first-run";
 import { hostBridge } from "./host";
+import { isDev } from "./lib/app-mode";
 import { sessionManager } from "./session-manager";
 
 /** reload 会再次触发 ready-to-show，防止冒烟流程重入 */
 let smokeStarted = false;
-
-/**
- * 开发期判定：打包后 process.defaultApp 为 undefined。
- * 不单看 app.isPackaged —— 经验上在 dev 启动（electron .）过程中该 getter 会出现
- * 晚值漂移，在 ready-to-show 时读到 true，从而误判为「已打包」，把冒烟与 dev
- * 资源加载一起关掉（表现为窗口正常但冒烟一声不响）。
- */
-const isDev = process.defaultApp === true || !app.isPackaged;
 
 // 必须在 app ready 之前设置，userData 路径依赖应用名
 appNameSetup();

@@ -30,10 +30,15 @@ export async function runHost(
 
   // 默认用带视觉的模型：截图工具的价值全在「模型能看见画面」，
   // 纯文本模型（如默认的 deepseek-v4-flash）会丢掉工具结果里的图片。
+  // 默认值是内置 deepseek：**本机没配它时这里会全线失败**，而失败长得像
+  // 「浏览器能力坏了」（[1b] 那 7 条观测断言全红）。上一轮就是这么被误导的，
+  // 所以把口径写在日志里——没有可用模型时请用 COLT_SMOKE_MODEL 指到已配置的服务。
   const model = process.env.COLT_SMOKE_MODEL ?? "deepseek/deepseek-v4-flash-vision-exp";
-  log(`模型：${model}`);
+  log(`模型：${model}（本机未配置该服务时用 COLT_SMOKE_MODEL=<provider>/<model> 覆盖）`);
+  // cwd 是 `session.open` 的**必填**项；JSON.stringify 会抹掉 undefined，
+  // 于是漏填时 worker 拿 undefined 调内核路径解析，报出 `undefined.startsWith`。
   await run(
-    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD, model })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd(), model })})`,
   );
   const modeInfo = await run<{ mode: string }>(
     `window.colt.invoke("approval.mode.get", ${JSON.stringify({ sessionId: session.id })})`,

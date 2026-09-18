@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Check,
   ChevronDown,
@@ -7,6 +7,7 @@ import {
   FolderOpen,
   Monitor,
   Moon,
+  Pin,
   Plus,
   Settings as SettingsIcon,
   Sun,
@@ -20,6 +21,7 @@ import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } 
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { BranchTree } from "./features/BranchTree";
 import { Conversation } from "./features/Conversation";
+import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
 import { ProjectChanges } from "./features/ProjectChanges";
 import { Settings } from "./features/Settings";
@@ -69,13 +71,28 @@ export default function App(): React.JSX.Element {
     new Map(),
   );
   /**
-   * 有待用户处置的授权请求的会话 id。
+   * 被用户「钉住」的会话 id：系统不再自动回收它们的 worker（空闲不回收、池满最后才淘汰）。
    *
-   * 与「运行中」正交：会话确实还在跑，但 Agent 正阻塞在一个待批的工具调用上不动了。
-   * 只显示「运行中 · mm:ss」会让人以为它在正常干活，实际上它在等用户拍板——
-   * 而这个状态是有代价的：5 分钟内没人处置就被自动拒绝。
+   * 真相在主进程（`session-pins.ts`），这里只是让图钉的视觉状态跟上——所以每次切换都
+   * 回主进程写一次，挂载时用 `session.listPinned` 对齐回来（dev 下 reload 也走这条）。
    */
-  const [pendingSessions, setPendingSessions] = useState<Set<string>>(() => new Set());
+  const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(() => new Set());
+  /**
+   * 有待用户处置的请求的会话 id：审批（等人给许可）与提问（等人给信息）两类。
+   *
+   * 与「运行中」正交：会话确实还在跑，但 Agent 正阻塞在等人回话上不动了。
+   * 只显示「运行中 · mm:ss」会让人以为它在正常干活，实际上它在等用户拍板——
+   * 而这个状态是有代价的：5 分钟内没人处置，审批被自动拒绝、提问则落到「按假设继续」。
+   *
+   * 两类**分开存**：同一会话可能同时挂着审批与提问，合成一份集合就会互相清标记——
+   * 审批处置完提问还在，标记不能跟着一起消失。
+   */
+  const [approvalSessions, setApprovalSessions] = useState<Set<string>>(() => new Set());
+  const [questionSessions, setQuestionSessions] = useState<Set<string>>(() => new Set());
+  const pendingSessions = useMemo(
+    () => new Set([...approvalSessions, ...questionSessions]),
+    [approvalSessions, questionSessions],
+  );
   const [now, setNow] = useState(() => Date.now());
 
   // 主题挂载到下 <html>，并在变更时持久化
@@ -184,18 +201,54 @@ export default function App(): React.JSX.Element {
     });
   }, []);
 
-  // 全局监听待授权列表：侧栏据此标出「等待你的授权」。
+  // 全局监听两张等人回话的队列：侧栏据此标出「在等你」。
   // 主进程已在窗口不在前台时额外闪任务栏并发系统通知，这里只负责让状态在界面上可见。
   useEffect(() => {
-    return window.colt.on("approval.pending", ({ sessionId, requests }) => {
-      setPendingSessions((prev) => {
-        const next = new Set(prev);
-        if (requests.length > 0) next.add(sessionId);
+    const track =
+      (setter: Dispatch<SetStateAction<Set<string>>>) =>
+      ({ sessionId, requests }: { sessionId: string; requests: unknown[] }): void => {
+        setter((prev) => {
+          const next = new Set(prev);
+          if (requests.length > 0) next.add(sessionId);
+          else next.delete(sessionId);
+          return next;
+        });
+      };
+    const offApproval = window.colt.on("approval.pending", track(setApprovalSessions));
+    const offQuestion = window.colt.on("userquestion.pending", track(setQuestionSessions));
+    return () => {
+      offApproval();
+      offQuestion();
+    };
+  }, []);
+
+  // 图钉只活在主进程内存里（不进库），挂载时对齐回来——dev 下 reload 之后也走这条
+  useEffect(() => {
+    void (async () => {
+      const list = await window.colt
+        .invoke("session.listPinned", undefined)
+        .catch(() => [] as string[]);
+      setPinnedSessions(new Set(list));
+    })();
+  }, []);
+
+  /**
+   * 切换图钉。写主进程的是**绝对状态**（pinned: true/false）而非「翻转」，
+   * 所以即便重放/重试，重复写同一个值也不会把状态翻回去。
+   */
+  const togglePin = useCallback(
+    (sessionId: string) => {
+      const pinned = !pinnedSessions.has(sessionId);
+      setPinnedSessions((set) => {
+        const next = new Set(set);
+        if (pinned) next.add(sessionId);
         else next.delete(sessionId);
         return next;
       });
-    });
-  }, []);
+      void window.colt.invoke("session.setPinned", { sessionId, pinned }).catch(() => {});
+    },
+    [pinnedSessions],
+  );
   /**
    * 拉取某项目的会话列表并写入缓存。
    *
@@ -332,6 +385,15 @@ export default function App(): React.JSX.Element {
         });
         if (!confirmed) return;
         await window.colt.invoke("session.delete", { sessionId: session.id });
+        // 缓存与库同寿命：会话删了，渲染层那份「最后视图」也别留着
+        dropCachedView(session.id);
+        // 主进程那份图钉标记已随 session.delete 清掉（见 ipc 的 dropSessionPin），这里同步视觉状态
+        setPinnedSessions((set) => {
+          if (!set.has(session.id)) return set;
+          const next = new Set(set);
+          next.delete(session.id);
+          return next;
+        });
         const list = await loadProjectSessions(session.projectId);
         setActiveSession((current) => {
           if (current?.id !== session.id) return current;
@@ -481,6 +543,7 @@ export default function App(): React.JSX.Element {
                               startedAt={runningSessions.get(session.id)}
                               offlineState={offlineSessions.get(session.id)}
                               waiting={pendingSessions.has(session.id)}
+                              pinned={pinnedSessions.has(session.id)}
                               now={now}
                               onClick={() => {
                                 if (project.id !== activeProject?.id) setActiveProject(project);
@@ -488,6 +551,7 @@ export default function App(): React.JSX.Element {
                                 setMainView("chat");
                                 setActiveSession(session);
                               }}
+                              onTogglePin={() => togglePin(session.id)}
                               onDelete={() => void deleteSession(session)}
                             />
                           ))
@@ -684,8 +748,10 @@ function SessionRow({
   startedAt,
   offlineState,
   waiting,
+  pinned,
   now,
   onClick,
+  onTogglePin,
   onDelete,
 }: {
   session: SessionInfo;
@@ -698,8 +764,11 @@ function SessionRow({
   offlineState?: "dormant" | "crashed";
   /** 有待用户处置的授权请求。比「运行中」更该被看见，故显示时优先于它 */
   waiting: boolean;
+  /** 被钉住的会话不被自动回收。与 offlineState 正交：钉住只是「别收」，不代表进程还活着 */
+  pinned: boolean;
   now: number;
   onClick: () => void;
+  onTogglePin: () => void;
   onDelete: () => void;
 }): React.JSX.Element {
   const running = startedAt !== undefined;
@@ -771,6 +840,21 @@ function SessionRow({
                     : formatSessionStamp(session.updatedAt)}
           </span>
         </span>
+      </button>
+      <button
+        type="button"
+        onClick={onTogglePin}
+        title={pinned ? "已钉住 · 不会被自动回收" : "钉住：不让它被自动回收"}
+        aria-label={pinned ? "取消钉住" : "钉住会话"}
+        aria-pressed={pinned}
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] transition hover:bg-surface-raised focus:opacity-100",
+          pinned
+            ? "text-accent opacity-100"
+            : "text-text-muted opacity-0 group-hover/session:opacity-100 hover:text-text-primary",
+        )}
+      >
+        <Pin {...ICON.xs} className={pinned ? "fill-current" : undefined} />
       </button>
       <button
         type="button"

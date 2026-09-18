@@ -264,6 +264,38 @@
   该列与该表、**旧库保留**（恒 NULL、无人读，无害）。两条路径都实测过：旧库（v6，带 `preset_id` 与
   `presets` 行）升级后数据不丢、建会话正常；全新库无该列 / 该表、建会话正常
 
+- **扩展宿主层（加载第三方扩展）——2026-09 明确不做**（方案选型后拍板）。
+  触发背景：评估过 Pi 生态（`pi-mcp-adapter` / `pi-web-access` / `pi-subagents` / `pi-lens` /
+  `rpiv-ask-user-question` / `rpiv-todo`，**全部 MIT**、源码已解包复查，见
+  `.workbuddy/pi-ext-review/`），结论是**抄设计、不装包、也不自建扩展宿主**。三条否决理由：
+  ① **UI 挂载点对不上**——那些包依赖 `pi-coding-agent` 的 `ctx.ui`（`setStatus` / overlay，
+  终端 TUI 抽象），Colt 是 React + IPC 双进程，装进来逻辑能跑、**画不出东西**，等于死入口
+  （`AGENTS.md` §3.6）；Colt 用的是 `pi-agent-core`，不是 `pi-coding-agent`，本就没有那层 API。
+  ② **绕过审批闸门**——扩展是**代码**，在 worker 内以完整权限运行，其副作用不是工具调用，
+  天然躲开 `before_tool`；技能那条隐式信任通道之所以可接受，靠的是「只是文本、不改盘」
+  （`SECURITY.md` §技能节），代码扩展连这个辩护都没有，会在 §零「这不是沙箱」上开口子。
+  ③ **验收手段失效**——664 条单测 + `dock` 211 条冒烟都是对**自己代码**的断言，
+  对第三方扩展内容无效，而冒烟仅开发期存在，生产侧无兜底。
+  **替代路径（已选定）**：能力**内建**（像 `browser` / `computer` / `memory` 一样进
+  `AgentHarness.create({ tools: [...] })` 数组，每个都过审批闸门）；可编程的行为交给
+  **已支持的 Agent Skills**（声明式 `SKILL.md`、社区包直接丢进 `.agents/skills`）。
+  **复用 Pi 生态的正确姿势是读它的源码抄设计，不是加载它的包。**
+
+- **能力补齐进度（方案 C 之下，2026-09 起）**。顺序与依据来自那轮 Pi 生态对比：
+
+  | # | 能力 | 状态 | 落点 |
+  |---|---|---|---|
+  | ① | `ask_user` | **已实施**（2026-09-18） | 设计 + 验收：`docs/DESIGN-ask-user.md`；单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）；冒烟 `COLT_SMOKE_MODE=ask-user`（23 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
+  | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
+  | ③ | MCP | 未开工（先出设计） | MCP 工具调用天然过 `before_tool`；审批层抄 `pi-mcp-adapter` 的 `session-approvals.ts` |
+  | ④ | todo | 未开工 | 状态落 SQLite（不能只活在消息历史里） |
+  | ⑤ | 子代理 | 未开工（先设计 fork 语义） | 多 lane 有 `TIDY_LANE` 先例 |
+  | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
+
+  ①的入口级遗留（别当成验过了）写在 `DESIGN-ask-user.md` §8 末尾：worker 侧跳过闸门那条守卫
+  与「全权模式下提问仍要弹」已由 `ask-user-e2e`（打模型）覆盖；仍未覆盖的是 worker **意外崩溃**
+  那一支的收尾、以及提问的桌面通知（`notifyQuestion`）。
+
 ### 3.3 v3 §10 优先级表里**仍开着**的项（不排期，但别丢）
 
 > 其余项均已落地：P0 现场状态栏 / 授权卡 / 工具卡内嵌 diff；P1 思考轨 /「长时间无事件」；
@@ -707,12 +739,52 @@
    npm run dev        # 夹具站在进程内以 port 0 拉起，无需另开终端
    ```
    看 `out/.smoke-dock.png.log` 末行是否 `通过 211/211`。
-   ⚠️ **计费**：`dock`、`fixture` 与 `memory` 是**仅有的三个不调用模型**的模式（其余模式、含不给
+   ⚠️ **计费**：`dock`、`fixture`、`memory` 与 `ask-user` 是**仅有的四个不调用模型**的模式（其余模式、含不给
    `COLT_SMOKE_MODE` 时的 `basic`，都会真实打模型并计费）。`dock` 曾经也会：它的 `/compact`
    段把打桩转给了真实现，会真发 `/compact 帮我看看` 与 `/usr/local/bin/node` 两句 prompt、
    计一次费，并把它们写进用户真实项目里的真实会话历史——v1.41 起该段改为**只记账、不转发**。
   若 `npm run dev` 直接报 `Error: spawn UNKNOWN`，**先看 `AGENTS.md` 最后一节**——
    那是本机「智能应用控制」拦了未签名的 `electron.exe`，与业务代码无关（`electron` 已精确 pin）。
+  若它报的是 `does not provide an export named 'BrowserWindow'`，看 `AGENTS.md` 同一节的
+  `ELECTRON_RUN_AS_NODE` 那条（那个环境变量会把 Electron 按成 Node，**要 unset，设成空串没用**）。
+
+   **3-b. 提问（ask_user）端到端：改会话流里的阻塞态卡片、或改 `main/question-store.ts` /
+   `renderer/.../QuestionCard.tsx` / `useBlockingCards.ts`、或改 `session-manager.ts` 里
+   「worker 没了要收尾」那几处时必跑**（2026-09 加，23 条）：
+
+   ```powershell
+   $env:COLT_SMOKE="ask-user.png"
+   $env:COLT_SMOKE_MODE="ask-user"
+   npm run dev
+   ```
+
+   看 `out/ask-user.png.log` 末行是否 `通过 23/23`。它验的是**静默失败高发区**：卡片是否真的出现、
+  选项是否真的能点（不是死按钮）、提交后主进程收到的载荷键值对不对（多选以「、」相连）、
+  跳过是否走 `skipped` 而不是 `cancelled`、超时是否自己收尾、`full-access` 下是否照样弹、
+  以及全程不留悬空卡（**含 worker 被回收那一段**——审批与提问的收尾必须成对，漏一处就是
+  卡片留到 5 分钟超时 + 任务栏一直闪）。不跑模型、不计费。
+
+   **3-c. 提问（ask_user）真实模型端到端：改 `worker/lib/ask-user-tool.ts` 的注册/校验、
+   或 `worker/entry.ts` 里 `before_tool` 跳过 `ask_user` 的那条守卫、或审批与提问的边界时必跑**
+   （2026-09 加，11 条，**打模型、计费**）：
+
+   ```powershell
+   $env:COLT_SMOKE=".smoke-ask-user-e2e.png"
+   $env:COLT_SMOKE_MODE="ask-user-e2e"
+   npm run dev
+   ```
+
+   看 `out/.smoke-ask-user-e2e.png.log` 末行是否 `通过 11/11`。免费的 `ask-user` 从
+   `sessionManager.questions.enqueue()` **直接入队**，验的是入队之后的一切；**入队之前**那段
+   （模型是否看得见并调用 `ask_user`、是否被 `before_tool` 当待审工具弹卡）只有真模型能走到。
+   它在 `full-access` 下让模型自己发起提问，断言：模型真的调用了 `ask_user` 且问卷内容对得上、
+   提问**没有**流进审批通道（`approvals.listPending` 为空）、作答后出队、答案作为工具结果回到
+   模型（含「用户已回答」与所选 label）、模型接着往下做并复述所选项。夹具在
+   `out/smoke-ask-user-e2e-fixture/`，worker 的生死交给渲染层（同 `memory-e2e`，`window.reload()`
+   等它自动打开、worker 就绪）——**别**自己抢 `session.open`（`AGENTS.md` §五末条）。
+   **它测不到** worker **意外崩溃**那一支的收尾与提问的桌面通知；缺口写在
+   `docs/DESIGN-ask-user.md` §8 末尾。
+
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell
    $env:COLT_SMOKE="model.png"
@@ -777,8 +849,9 @@
    从输入框走的是「当前会话」，夹具会话必须是渲染层自动打开的那个（无竞争者，StrictMode
    杀一次就绪前的 worker 后会自行收敛）。
    首跑（2026-09-17）：12/12 全绿；冷层条目的回答连归档状态与日期都如实引用了。
-7. **应用内实测**：除 `fixture` / `dock` / `memory` 外，各模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）
-   都会真实调用模型并**产生计费**，`host` 只是其中最费的一个；只想看界面时直接启动应用 + **系统级截图**即可
+7. **应用内实测**：除 `fixture` / `dock` / `memory` / `ask-user` 外，各模式（含不给 `COLT_SMOKE_MODE`
+   时的 `basic`）都会真实调用模型并**产生计费**，`host` 只是其中最费的一个；只想看界面时直接启动
+   应用 + **系统级截图**即可
 8. 断言清单与手动用例：`docs/BROWSER-TEST-CASES.md`
 
 ---
@@ -786,7 +859,10 @@
 ## 6. 推进节奏建议
 
 - 一次一件事（仓库既有习惯：一个提交只做一件事）。**每件跑 §5 的 1**；
-  改到 ⑦ / ⑥ / 浏览器就**同时跑 §5 的 2 或 3**（§5 每步都写了「什么时候必跑」）
+  改到 ⑦ / ⑥ / 浏览器就**同时跑 §5 的 2 或 3**（§5 每步都写了「什么时候必跑」）；
+  改到会话流里的**阻塞态卡片**（授权卡 / 提问卡）或 `useBlockingCards.ts`，跑 §5 的 3-b。
+  ⚠️ `npm test` 里含**体量闸**：给已知大户加功能必须同时搬走等量旧代码，动手前先算
+  净增行数（`AGENTS.md` §1.4）
 - **当前处于新一阶段的起点**：批次 A / B / C 全部收口（见 §3.4 索引），**计划见 §3.1**，推荐顺序 **N1 → N2 → N3 → N4**
 - 另有一批**独立工作**「右栏工作现场重组」（⑦-G / ⑦-H，不在 N1…N4 里）**四步已全部落地、已收口**
   （`UI-REGIONS` v1.29 / v1.30 / v1.31 / v1.32）；
