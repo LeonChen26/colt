@@ -877,8 +877,7 @@ export class BrowserHost {
    *
    * 注意顺序与判活：webContents 一旦 destroyed，访问它的任何属性都会抛
    * 「Object has been destroyed」。这里先把视图摘出树、再关 webContents，
-   * 并且每一步前都判活——这条路径正是历史上出过「关会话弹主进程错误框」的地方
-   * （见 BROWSER-TEST-CASES 断言 22）。
+   * 并且每一步前都判活——这条路径正是历史上出过「关会话弹主进程错误框」的地方。
    */
   closeSession(sessionId: string): void {
     const entry = this.#sessions.get(sessionId);

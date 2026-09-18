@@ -6,8 +6,7 @@
  *
  * 与审批闸门**并列但独立**：两者都是「worker 阻塞、主进程回答」的同形往返，
  * 但语义相反——审批的默认值是放行（`auto` / `full-access` 会静默批准），
- * 提问的默认值是「没答案」。所以它没有走 `approvalRequest`，而是自己一条通道
- * （理由见 `docs/DESIGN-ask-user.md` §3）。
+ * 提问的默认值是「没答案」。所以它没有走 `approvalRequest`，而是自己一条通道。
  *
  * 校验与文案都在本文件，且都是**纯函数**（`validateQuestionnaire` / `formatAnswers` /
  * 三条回落文案），便于单测覆盖——这条链路的失败模式是静默，能测的部分必须测到。
@@ -20,7 +19,7 @@ import type {
   WorkerMessage,
 } from "@shared/worker-protocol";
 
-/** 上限与界面一屏能放下多少直接相关，改之前先看 `docs/DESIGN-ask-user.md` §4 */
+/** 上限与界面一屏能放下多少直接相关 */
 export const MAX_QUESTIONS = 4;
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;

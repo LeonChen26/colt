@@ -169,6 +169,27 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 `@earendil-works/coding-agent` 不是我们的依赖——拿不到它的版本号，也收不到变更通知，而那个路径还在
 `experimental/` 下。**改动 worker 形态时记住这一点。**
 
+**Pi 生态的「扩展宿主」给了什么、我们为什么不用**（2026-09 记）
+
+`@juicesharp/rpiv-todo` 一类包（源码解包在 `.workbuddy/pi-ext-review/`）依赖的**不是** `pi-agent-core`，
+而是另一个包 `pi-coding-agent`（+ `pi-tui`）。它把四样权力交给插件，**四样本仓一样都没有**：
+
+| 宿主给的权力 | 扩展怎么用 | 本仓对应 |
+|---|---|---|
+| **加载权**：`package.json` 的 `pi.extensions` + jiti 直接加载 `.ts`，调用默认导出的 `(pi: ExtensionAPI) => void` | 包的入口就是那个函数 | ❌ **不自建扩展宿主**；能力**内建**进 `AgentHarness.create({ tools })`（`worker/entry.ts`） |
+| **提示词组装权**：`registerTool` 的 `promptSnippet` / `promptGuidelines` | 模型「知道该用这个工具」靠宿主把这些字符串拼进系统提示词 | ❌ 内核 `AgentTool` 只有 `name / label / description / parameters / execute`（`pi-agent-core/dist/types.d.ts`）——引导只能写进 `description` 或 `composeSystemPrompt` |
+| **TUI 渲染权**：`ctx.ui.setWidget(key, factory, { placement })`（`render(width) => string[]`）、`ui.custom` / `ui.notify` / `ui.onTerminalInput` | 面板、交互表单、键盘拦截 | ❌ 本仓是 React + 主进程原生视图；对应物是渲染层组件 + IPC 通道 |
+| **会话生命周期**：`pi.on("session_start" / "session_compact" / "session_tree" / "session_shutdown")` | 重放状态、按前台 / 子会话分派、清理 | 🔸 内核**没有同名事件**；对应点要在 `session-manager` 与 worker 侧自己找 |
+
+结论与 `NEXT-PHASE.md` §3.2「扩展宿主层：明确不做」互为印证：**装进来逻辑能跑、画不出东西**，等于死入口；
+且扩展是**代码**，在 worker 内以完整权限运行，其副作用不是工具调用，天然躲开 `before_tool` 闸门。
+
+⚠️ 但它有**半套机制本仓可以直接用**——因为它只吃内核既有能力、不经过扩展宿主：
+**工具结果自带全量快照**（`AgentToolResult.details`）+ 从会话分支重放（`sessionManager.getBranch()`，
+取最后一条匹配的 toolResult，last-write-wins）；`rpiv-todo` 靠这两条做到「不落盘也能在 `/reload`
+与压缩后活下来」。⚠️ 该重放依赖「分支里还找得到最后一条快照」这个前提（pi 的压缩保不保留最近
+toolResult，**未在本仓内核上验证**）；且本仓还多一条它没有的约束：**worker 会被空闲回收重启**。
+
 ---
 
 ## 五、新增能力要走哪几步

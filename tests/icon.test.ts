@@ -24,8 +24,8 @@ import { ICON, ICON_STROKE } from "../src/renderer/src/lib/icon.ts";
 const TIERS = ["xs", "sm", "md", "lg"] as const;
 
 describe("ICON 档位表", () => {
-  test("四档尺寸与设计文档一致（11/13/14/16）", () => {
-    // 改这几个数就等于改版式规范，应同时更新 docs/UI-DESIGN-v3.md；
+  test("四档尺寸与界面尺寸规范一致（11/13/14/16）", () => {
+    // 改这几个数就等于改版式规范，应同时核对界面区域定义 `docs/UI-REGIONS.md`；
     // 让这里的失败充当那次同步的提醒。
     assert.deepEqual(
       TIERS.map((tier) => ICON[tier].size),

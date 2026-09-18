@@ -416,7 +416,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const baselineSent = new Set<string>();
   harness.hooks.on("before_tool", async (event) => {
     // ask_user 不受审批管辖：它是「向人要信息」，走审批通道会被 auto / full-access
-    // 模式静默批准成「已通过」——模型拿到的是假答案（见 docs/DESIGN-ask-user.md §3）
+    // 模式静默批准成「已通过」——模型拿到的是假答案
     if (isQuestionTool(event.toolName)) return undefined;
     gatedToolCalls.add(event.toolCallId);
     if (
