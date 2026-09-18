@@ -1,8 +1,10 @@
 /**
  * 对话面板：消息流 + 流式文本 + 工具实时输出 + 状态栏（Live Bar）+ 右侧面板编排。
  * 具体的改动 / 统计 / 工具 / 分支面板已拆到 panels/ 与 BranchTree。
- * 会话头（②）的入口按 ⑦-H 收敛为**两个**（统计 / 规则）：「改动」由「正在处理」底部的总账接管（⑦-G）、
- * 「工具」的聚合与明细都并入「统计」；两者仍可从 ⑦ 的「+」菜单打开（删的是入口，不是能力）。
+ * 会话头（②）的入口：统计 / 规则（按 ⑦-H 收敛成这两个），外加两个**会话级显示**入口——
+ * 「目录」（跳转到某一轮 + 搜历史，浮层，见 HistoryPanel）与「只看问答」（整轮折叠，见 ④-E）。
+ * 「改动」由「正在处理」底部的总账接管（⑦-G）、「工具」的聚合与明细都并入「统计」；
+ * 两者仍可从 ⑦ 的「+」菜单打开（删的是入口，不是能力）。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -13,6 +15,7 @@ import {
   Folder,
   GitBranch,
   ImagePlus,
+  ListTree,
   Loader2,
   MessagesSquare,
   ShieldCheck,
@@ -36,9 +39,12 @@ import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCand
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageWindow, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
+import { HistoryPanel } from "./HistoryPanel";
 import { PanelToggle } from "./PanelToggle";
+import { Picker } from "./Picker";
 import { QuestionCards } from "./QuestionCard";
 import { useBlockingCards } from "./useBlockingCards";
+import { useHistoryNav } from "./use-history-nav";
 import { useStableView } from "./use-stableView";
 import {
   createDockInstance,
@@ -53,7 +59,6 @@ import {
 } from "./WorkspaceDock";
 import { clampDockWidth, dockWidthFromDrag } from "@/lib/dock";
 import { getCachedView } from "./view-cache";
-import type { ReactNode } from "react";
 
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
 const STALE_IDLE_SEC = 30;
@@ -603,7 +608,8 @@ export function Conversation({
   // **默认关**：它改变的是「每次打开看到什么」，不该替所有会话做主（工具卡是叙事的一部分，见 ④-C）。
   const [foldSteps, setFoldSteps] = useState(false);
 
-
+  // 「目录 / 搜历史」浮层与「跳到某一轮」的请求（状态与「换会话要清掉」的纪律都在 hook 里）
+  const history = useHistoryNav(sessionId);
 
   /**
    * 把 File（粘贴 / 拖拽 / 选择）读成 base64 附件。
@@ -995,6 +1001,13 @@ export function Conversation({
             </button>
           )}
           <PanelToggle
+            active={history.open}
+            icon={<ListTree {...ICON.sm} />}
+            label="目录"
+            title="列出这个会话里的每条提问，或搜历史文字；点一行跳到那一轮（只滚动，不改会话）"
+            onClick={history.toggle}
+          />
+          <PanelToggle
             active={foldSteps}
             icon={<MessagesSquare {...ICON.sm} />}
             label="只看问答"
@@ -1115,6 +1128,8 @@ export function Conversation({
               onToggleOpen={toggleToolOpen}
               scrollRef={scrollRef}
               folded={foldSteps}
+              jump={history.jump}
+              followNonce={history.followNonce}
             />
 
             {/* 流式中的助手内容：思考轨 + 流式文本 + 运行中工具，
@@ -1161,10 +1176,20 @@ export function Conversation({
             />
           </div>
 
+          {/* 目录 / 搜历史：贴在会话区上方的浮层（数据就在渲染层，不牵 worker） */}
+          {history.open && (
+            <HistoryPanel messages={messages} onJump={history.jumpTo} onClose={history.close} />
+          )}
+
           {awayFromBottom && (
             <button
               type="button"
-              onClick={jumpToBottom}
+              data-conv-bottom
+              onClick={() => {
+                // 浮动段里容器的「底」不是会话的底：得先让窗口交回「跟随底部」
+                history.bumpFollow();
+                jumpToBottom();
+              }}
               className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-[6px] border border-line bg-surface-overlay px-2.5 py-1 text-[11.5px] text-text-secondary shadow-lg transition hover:border-line-strong hover:text-text-primary"
             >
               <ArrowDown {...ICON.sm} />
@@ -1542,90 +1567,6 @@ export function Conversation({
           className={cn("dock-grip", dockDragging && "dragging")}
           style={{ right: dockWidth, transform: "translateX(50%)" }}
         />
-      )}
-    </div>
-  );
-}
-
-/** 轻量下拉选择器：对齐高保真 .picker 的视觉与手感 */
-function Picker({
-  title,
-  value,
-  label,
-  options,
-  icon,
-  plain,
-  disabled,
-  className,
-  onChange,
-}: {
-  title: string;
-  value: string;
-  label: string;
-  options: { value: string; label: string; hint?: string }[];
-  icon?: ReactNode;
-  plain?: boolean;
-  /** 无选项时置灰：否则点下去没任何反馈，用户会当成“点了没反应” */
-  disabled?: boolean;
-  className?: string;
-  onChange: (value: string) => void;
-}): React.JSX.Element {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (event: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={disabled}
-        title={title}
-        className={cn(
-          "cbtn flex h-7 items-center gap-1.5 rounded-[6px] border px-2 text-[12px] text-text-secondary transition",
-          plain
-            ? "border-transparent hover:border-transparent hover:bg-surface-overlay hover:text-text-primary"
-            : "border-line hover:border-line-strong hover:text-text-primary",
-          disabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-text-secondary",
-          className,
-        )}
-      >
-        {icon}
-        <span className="lbl max-w-[180px] truncate">{label}</span>
-        <ChevronDown {...ICON.xs} className="shrink-0 text-text-muted" />
-      </button>
-      {open && options.length > 0 && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[160px] rounded-[6px] border border-line bg-surface-overlay py-1 shadow-lg">
-          {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => {
-                onChange(option.value);
-                setOpen(false);
-              }}
-              className={cn(
-                "block w-full px-2.5 py-1 text-left text-[11.5px] transition hover:bg-surface-raised",
-                option.value === value ? "text-text-primary" : "text-text-secondary",
-              )}
-            >
-              <span className="block truncate">{option.label}</span>
-              {option.hint && (
-                <span className="mt-0.5 block truncate text-[10.5px] text-text-muted">
-                  {option.hint}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
       )}
     </div>
   );

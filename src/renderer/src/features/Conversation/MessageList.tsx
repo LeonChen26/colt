@@ -35,12 +35,17 @@ import { DiffView } from "../../components/DiffView";
 import { TerminalOutput } from "../../components/TerminalOutput";
 import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
 import {
+  afterLater,
+  belowCount,
   chunkSize,
   earlierStart,
   FOLLOW_BOTTOM,
+  jumpHead,
   LOAD_MORE_AT_TOP_PX,
   NEAR_BOTTOM_PX,
+  windowEnd,
   windowStart,
+  WINDOW_CHUNK,
 } from "../../lib/message-window";
 import { describeSteps, groupTurns, summarizeSteps } from "../../lib/turn-groups";
 import { cn } from "../../lib/utils";
@@ -174,7 +179,8 @@ export const MessageBubble = memo(function MessageBubble({
 
 /**
  * 消息窗口：长会话只挂最近一段，更早的按需展开（算术见 `@/lib/message-window`）；
- * 「只看问答」时再把每轮的**过程**收成一行（分组见 `@/lib/turn-groups`）。
+ * 「只看问答」时再把每轮的**过程**收成一行（分组见 `@/lib/turn-groups`）；
+ * 从目录跳到某一轮时切到**浮动段**——只挂目标那一小段，上下都能继续翻。
  *
  * 为什么需要窗口：渲染成本与**挂载条数**成正比，而真实库里最长的那个会话有近 3000 条
  * 可渲染消息（带 2600+ 个工具卡）——一次性挂上去要好几秒、界面全程不能动。
@@ -202,6 +208,8 @@ export function MessageWindow({
   onToggleOpen,
   scrollRef,
   folded,
+  jump,
+  followNonce,
 }: {
   sessionId: string;
   messages: ViewMessage[];
@@ -211,37 +219,91 @@ export function MessageWindow({
   onOpenFile?: (path: string) => void;
   openState: ReadonlyMap<string, boolean>;
   onToggleOpen: (id: string, open: boolean) => void;
-  /** 消息流的滚动容器：窗口要知道滚到哪了，展开时也要把 `scrollTop` 补回去 */
+  /** 消息流的滚动容器：窗口要知道滚到哪了，补一段/翻页时也要自己摆 `scrollTop` */
   scrollRef: React.RefObject<HTMLDivElement | null>;
   /** 「只看问答」：把每轮的过程（思考 + 工具卡）收成一行 */
   folded: boolean;
+  /** 目录里点的某一轮：`nonce` 每次点击都变，用来认出「这是一次新请求」 */
+  jump: { index: number; nonce: number } | null;
+  /** 每次自增表示「回到底部」被按了一次——窗口据此从浮动段交回「跟随底部」 */
+  followNonce: number;
 }): React.JSX.Element {
   /** 窗口起点。`FOLLOW_BOTTOM` = 还没显式展开过，窗口跟着最新内容走 */
   const [head, setHead] = useState<number>(FOLLOW_BOTTOM);
+  /** 浮动段：目录里跳到某一轮之后，窗口只挂 `[start, start + WINDOW_CHUNK)`，不再一直挂到末尾 */
+  const [floating, setFloating] = useState(false);
   const start = windowStart(messages.length, head);
+  const end = windowEnd(messages.length, head, floating);
+  const below = belowCount(messages.length, head, floating);
 
-  /** 补偿用：提交前记下 `scrollHeight`，提交后把差值补到 `scrollTop` 上 */
-  const anchor = useRef<number | null>(null);
+  /**
+   * 这次改动提交后要怎么摆滚动位置。四种意图的摆法完全不同，写成一种就会「跳一下」：
+   * - `extend`：往上补了一段，把新增的高度补回 `scrollTop`（视线**不动**）
+   * - `bottom`：往上翻页，落到新页**底部**——视线是连续的（正在读的那句还在眼前）
+   * - `top`：往下翻页，落到新页顶部，接着往下读
+   * - `row`：跳到某一条，把它对到视口顶部
+   */
+  const pending = useRef<
+    | { kind: "extend"; before: number }
+    | { kind: "bottom" }
+    | { kind: "top" }
+    | { kind: "row"; id: string }
+    | null
+  >(null);
+
+  /** 见下面 `onScroll` 的 ②：保证**一次上翻只补一段** */
+  const armed = useRef(false);
+
   const loadEarlier = useCallback((): void => {
-    anchor.current = scrollRef.current?.scrollHeight ?? null;
+    pending.current = floating
+      ? { kind: "bottom" }
+      : { kind: "extend", before: scrollRef.current?.scrollHeight ?? 0 };
     setHead((current) => earlierStart(messages.length, current));
-  }, [scrollRef, messages.length]);
+  }, [floating, messages.length, scrollRef]);
+
+  const loadLater = useCallback((): void => {
+    const next = afterLater(messages.length, head);
+    pending.current = { kind: "top" };
+    armed.current = false;
+    setHead(next.head);
+    setFloating(next.floating);
+  }, [head, messages.length]);
+
+  /** 从浮动段回到**真正的**底部（会同时交回「跟随底部」，否则新消息会落在窗口外） */
+  const gotoLatest = useCallback((): void => {
+    pending.current = { kind: "bottom" };
+    armed.current = false;
+    setHead(FOLLOW_BOTTOM);
+    setFloating(false);
+  }, []);
+
   useLayoutEffect(() => {
-    const before = anchor.current;
-    anchor.current = null;
+    const intent = pending.current;
+    pending.current = null;
     const node = scrollRef.current;
-    if (before === null || node === null) return;
-    node.scrollTop += node.scrollHeight - before;
-  }, [start, scrollRef]);
+    if (intent === null || node === null) return;
+    if (intent.kind === "extend") {
+      node.scrollTop += node.scrollHeight - intent.before;
+      return;
+    }
+    if (intent.kind === "bottom") {
+      node.scrollTop = node.scrollHeight;
+      return;
+    }
+    if (intent.kind === "top") {
+      node.scrollTop = 0;
+      return;
+    }
+    node.querySelector<HTMLElement>(`[data-msg-row="${intent.id}"]`)?.scrollIntoView({ block: "start" });
+  }, [start, end, scrollRef]);
 
   /**
    * 两件都在滚动里做的事：
    * ① **离开底部就把窗口钉住**——否则流式期间新消息一来、窗口跟着底部挪，
    *    用户正读的那几行会被卸掉（表现为「内容在眼皮底下消失」）。幂等，写回同一个值不触发渲染。
-   * ② **贴到顶就自动再展开一段**。`armed` 保证**一次上翻只展开一段**：
-   *    展开后的位置补偿会把 `scrollTop` 顶下去（不再贴顶），要再上翻一次才会再次触发。
+   * ② **贴到顶就自动再补一段**。`armed` 保证**一次上翻只补一段**：补完的位置摆法
+   *    会把 `scrollTop` 挪开顶（补偿是往下、翻页是到底），要再上翻一次才会再次触发。
    */
-  const armed = useRef(false);
   useEffect(() => {
     const node = scrollRef.current;
     if (node === null) return;
@@ -262,8 +324,36 @@ export function MessageWindow({
     return () => node.removeEventListener("scroll", onScroll);
   }, [scrollRef, loadEarlier, messages.length]);
 
+  /**
+   * 目录里点了某一轮。`nonce` 挡住「同一次请求被重放」：这个 effect 依赖 `messages`，
+   * 而流式期间它每 50ms 就换一次——不挡的话会把用户正在读的位置每秒拽回去几十次。
+   */
+  const handledJump = useRef(0);
+  useEffect(() => {
+    if (jump === null || jump.nonce === handledJump.current) return;
+    const target = messages[jump.index];
+    if (target === undefined) return;
+    handledJump.current = jump.nonce;
+    armed.current = false;
+    pending.current = { kind: "row", id: target.id };
+    setHead(jumpHead(jump.index));
+    setFloating(true);
+  }, [jump, messages]);
+
+  /**
+   * 「回到底部」被按下。只在**浮动段**里才需要它做额外的事——那时容器的「底」不是会话的底，
+   * 光滚过去只会停在一段旧内容上。不浮动时这里什么都不做，保持原有的「只是滚一下」。
+   */
+  const handledFollow = useRef(0);
+  useEffect(() => {
+    if (followNonce === handledFollow.current) return;
+    handledFollow.current = followNonce;
+    if (followNonce === 0 || !floating) return;
+    gotoLatest();
+  }, [followNonce, floating, gotoLatest]);
+
   /** 切轮。只对**挂出来的这段**切：窗口外的部分不参与渲染，切了也没用 */
-  const turns = useMemo(() => groupTurns(messages.slice(start)), [messages, start]);
+  const turns = useMemo(() => groupTurns(messages.slice(start, end)), [messages, start, end]);
 
   /** 被手动展开过过程的轮（键 = 轮键）。空集 = 全收着，这是「只看问答」的常态 */
   const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(() => new Set());
@@ -295,16 +385,40 @@ export function MessageWindow({
 
   return (
     <>
-      {start > 0 && (
-        <div className="flex justify-center">
-          <button
-            type="button"
-            data-conv-earlier
-            onClick={loadEarlier}
-            className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
-          >
-            载入更早的 {chunkSize(messages.length, head)} 条（还有 {start} 条）
-          </button>
+      {(start > 0 || below > 0 || floating) && (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {start > 0 && (
+            <button
+              type="button"
+              data-conv-earlier
+              onClick={loadEarlier}
+              className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+            >
+              载入更早的 {chunkSize(messages.length, head)} 条（还有 {start} 条）
+            </button>
+          )}
+          {below > 0 && (
+            <button
+              type="button"
+              data-conv-later
+              onClick={loadLater}
+              className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+            >
+              载入更晚的 {Math.min(WINDOW_CHUNK, below)} 条（还有 {below} 条）
+            </button>
+          )}
+          {/* 浮动段的「底」不是会话的底：得给一个回到**真正**末尾的出口，
+              否则用户只能一格一格往后翻到最新 */}
+          {floating && (
+            <button
+              type="button"
+              data-conv-latest
+              onClick={gotoLatest}
+              className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+            >
+              回到最新
+            </button>
+          )}
         </div>
       )}
       {/* 一轮一轮地挂。折叠打开时，一轮的「过程」收成一行**可展开的入口**——

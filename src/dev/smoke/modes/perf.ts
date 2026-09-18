@@ -486,6 +486,121 @@ export async function runPerf(
     restored.summaries === 0 && restored.rows.length === unfolded.rows.length,
   ]);
 
+  // ---- 六、目录与搜索：跳到某一轮 ----
+  // 「翻历史」的另一半是**找**。判据分三层：① 目录列的是提问、搜索只回命中；
+  // ② 点一行真的跳过去；③ 跳过去之后**没有**把中间几千条一起挂出来——
+  // 沿用「一直挂到末尾」就等于把窗口废掉，这是这一步最容易做错的地方。
+  log("[六] 目录 / 搜历史（跳到某一轮）");
+  const historyState = (): Promise<{ open: boolean; items: string[]; hits: string[] }> =>
+    run(`(() => {
+      const panel = document.querySelector("[data-conv-history]");
+      if (panel === null) return { open: false, items: [], hits: [] };
+      return {
+        open: true,
+        items: [...panel.querySelectorAll("[data-conv-history-item]")].map((n) => n.getAttribute("data-conv-history-item") || ""),
+        hits: [...panel.querySelectorAll("[data-conv-history-hit]")].map((n) => n.getAttribute("data-conv-history-hit") || ""),
+      };
+    })()`);
+  /** React 的受控 input：直接改 `value` 它收不到，得走原型上的 setter 再派发 input 事件 */
+  const typeInto = (selector: string, text: string): Promise<boolean> =>
+    run<boolean>(
+      `(() => {
+        const input = document.querySelector(${JSON.stringify(selector)});
+        if (input === null) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(input, ${JSON.stringify(text)});
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`,
+    );
+  const toolbar = (): Promise<{ latest: boolean; later: boolean; earlier: boolean }> =>
+    run(`(() => {
+      const area = document.querySelector("[data-conv-scroll]");
+      if (area === null) return { latest: false, later: false, earlier: false };
+      return {
+        latest: area.querySelector("[data-conv-latest]") !== null,
+        later: area.querySelector("[data-conv-later]") !== null,
+        earlier: area.querySelector("[data-conv-earlier]") !== null,
+      };
+    })()`);
+
+  await push(800);
+  await scrollToBottom();
+  await sleep(300);
+  const opened = await clickText("目录");
+  await sleep(400);
+  const panel = await historyState();
+  checks.push([
+    `「目录」拉出浮层、列出每条提问（${panel.items.length} 条：首 ${panel.items[0]} 尾 ${panel.items[panel.items.length - 1]}）`,
+    opened &&
+      panel.open &&
+      panel.items.length > 1 &&
+      panel.items[0] === "0" &&
+      panel.items[panel.items.length - 1] === "798",
+  ]);
+
+  // 搜一段**只出现在一条消息里**的文字（夹具里只有 i % 3 === 0 的助手消息带正文）
+  await typeInto("[data-conv-history-query]", "const x = 372");
+  await sleep(400);
+  const searched = await historyState();
+  checks.push([
+    `搜索只回命中项（${searched.hits.length} 条，命中下标 ${searched.hits[0]}）`,
+    searched.hits.length === 1 && searched.hits[0] === "372",
+  ]);
+
+  const hitClicked = await clickNth("[data-conv-history-hit]", 0);
+  await sleep(600);
+  const afterJump = await windowState();
+  const closed = await run<boolean>(`document.querySelector("[data-conv-history]") === null`);
+  const jumpedToolbar = await toolbar();
+  checks.push([
+    `点搜索结果跳过去：浮层收起、首行就是第 ${afterJump.firstIndex} 条（应 372）`,
+    hitClicked && closed && afterJump.firstIndex === 372,
+  ]);
+  checks.push([
+    `跳过去只挂一个窗口（挂载 ${afterJump.mounted} 条，尾=${afterJump.lastIndex}），没把 372→末尾 428 条一起挂出来`,
+    afterJump.mounted <= 100 && afterJump.lastIndex !== 799,
+  ]);
+  checks.push([
+    `跳转后切到浮动段（有「载入更晚」「回到最新」）`,
+    jumpedToolbar.latest && jumpedToolbar.later,
+  ]);
+
+  // 往下翻一页：整段前移（不是「加到末尾」）。用**实测的段长**算期望，不写死常量
+  const paged = await clickNth("[data-conv-later]", 0);
+  await sleep(500);
+  const afterPage = await windowState();
+  checks.push([
+    `「载入更晚」往下翻一页（首行 ${afterJump.firstIndex} → ${afterPage.firstIndex}，挂载 ${afterJump.mounted} → ${afterPage.mounted}）`,
+    paged &&
+      afterPage.firstIndex === (afterJump.firstIndex ?? 0) + afterJump.mounted &&
+      afterPage.mounted === afterJump.mounted,
+  ]);
+
+  // 回到最新：交回「跟随底部」，落到**真正的**末尾
+  const backClicked = await clickNth("[data-conv-latest]", 0);
+  await sleep(500);
+  const latest = await windowState();
+  const stillFloating = await run<boolean>(`document.querySelector("[data-conv-latest]") !== null`);
+  checks.push([
+    `「回到最新」落到真正的末尾（尾=${latest.lastIndex} 应 799）并交回跟随`,
+    backClicked && !stillFloating && latest.lastIndex === 799 && latest.atBottom,
+  ]);
+
+  // 从目录直接跳到**开头**：最坏的一跳（后面还有 799 条），挂载也必须还是一个窗口
+  await clickText("目录");
+  await sleep(400);
+  const firstItem = await clickNth("[data-conv-history-item]", 0);
+  await sleep(600);
+  const atStart = await windowState();
+  checks.push([
+    `从目录跳到开头：只挂一个窗口（首=${atStart.firstIndex} 尾=${atStart.lastIndex}，挂载 ${atStart.mounted} 条）`,
+    firstItem &&
+      atStart.firstIndex === 0 &&
+      atStart.mounted <= 100 &&
+      atStart.lastIndex !== 799,
+  ]);
+
   for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
   log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
 }

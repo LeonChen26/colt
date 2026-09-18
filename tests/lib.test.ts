@@ -43,11 +43,16 @@ import {
   observeCopyText,
 } from "../src/renderer/src/lib/observe-detail.ts";
 import {
+  afterLater,
+  belowCount,
   chunkSize,
   earlierStart,
   FOLLOW_BOTTOM,
   hiddenCount,
+  jumpHead,
+  laterStart,
   WINDOW_CHUNK,
+  windowEnd,
   windowStart,
 } from "../src/renderer/src/lib/message-window.ts";
 import {
@@ -55,6 +60,12 @@ import {
   groupTurns,
   summarizeSteps,
 } from "../src/renderer/src/lib/turn-groups.ts";
+import {
+  LABEL_MAX,
+  labelOf,
+  outlineOf,
+  searchHistory,
+} from "../src/renderer/src/lib/session-outline.ts";
 import type { ViewFileChange, ViewMessage } from "@shared/worker-protocol";
 import type {
   ConsoleEntry,
@@ -1287,5 +1298,113 @@ describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
     assert.equal(describeSteps({ toolCount: 0, thoughtCount: 1 }), "已思考");
     assert.equal(describeSteps({ toolCount: 4, thoughtCount: 0 }), "4 个工具调用");
     assert.equal(describeSteps({ toolCount: 4, thoughtCount: 2 }), "已思考 · 4 个工具调用");
+  });
+});
+
+describe("messageWindow 的浮动段（跳到某一轮去看）", () => {
+  const TOTAL = 2937;
+
+  test("不浮动时上沿就是末尾——「一直挂到末尾」正是另外两档的行为", () => {
+    assert.equal(windowEnd(TOTAL, FOLLOW_BOTTOM, false), TOTAL);
+    assert.equal(windowEnd(TOTAL, 100, false), TOTAL);
+    assert.equal(belowCount(TOTAL, 100, false), 0);
+  });
+
+  test("浮动时只挂一段：跳到第 500 条不会把 500→末尾两千多条一起挂出来", () => {
+    // 这是整个浮动档存在的全部理由——沿用「一直挂到末尾」就等于没做窗口
+    const head = jumpHead(500);
+    assert.equal(windowStart(TOTAL, head), 500);
+    assert.equal(windowEnd(TOTAL, head, true) - windowStart(TOTAL, head), WINDOW_CHUNK);
+    assert.equal(belowCount(TOTAL, head, true), TOTAL - 550);
+  });
+
+  test("跳到末尾附近：目标仍在窗口内，且不越界", () => {
+    const target = TOTAL - 3;
+    const head = jumpHead(target);
+    const start = windowStart(TOTAL, head);
+    const end = windowEnd(TOTAL, head, true);
+    assert.ok(start <= target && target < end);
+    assert.equal(end, TOTAL);
+  });
+
+  test("往前往后各翻一页都是一整段", () => {
+    const head = jumpHead(500);
+    assert.equal(earlierStart(TOTAL, head), 450);
+    assert.equal(laterStart(TOTAL, head), 550);
+  });
+
+  test("往下翻到底就交回「跟随底部」：否则新消息会落在窗口外、界面不再更新", () => {
+    assert.deepEqual(afterLater(TOTAL, windowStart(TOTAL, FOLLOW_BOTTOM)), {
+      head: FOLLOW_BOTTOM,
+      floating: false,
+    });
+    assert.deepEqual(afterLater(TOTAL, 500), { head: 550, floating: true });
+  });
+
+  test("jumpHead 钳住负下标：目录不会给负数，但别让越界悄悄传下去", () => {
+    assert.equal(jumpHead(-5), 0);
+    assert.equal(jumpHead(0), 0);
+  });
+});
+
+describe("sessionOutline（会话目录与历史搜索）", () => {
+  const user = (id: string, text: string): ViewMessage => ({ id, role: "user", text, toolCalls: [] });
+  const bot = (id: string, text: string): ViewMessage => ({
+    id,
+    role: "assistant",
+    text,
+    toolCalls: [],
+  });
+
+  test("labelOf：取第一行非空、压平空白、超长截断到一个整行", () => {
+    assert.equal(labelOf("\n\n  第一行\n第二行"), "第一行");
+    assert.equal(labelOf("a   b\tc"), "a b c");
+    const long = "字".repeat(LABEL_MAX + 40);
+    assert.equal(labelOf(long).length, LABEL_MAX);
+    assert.ok(labelOf(long).endsWith("…"));
+    assert.equal(labelOf("   "), "");
+  });
+
+  test("目录只列提问、一条一轮，并记住**下标**（跳转靠它）", () => {
+    const items = outlineOf([
+      user("u1", "先看 README"),
+      bot("a1", "好"),
+      user("u2", "再改配置"),
+    ]);
+    assert.deepEqual(items, [
+      { index: 0, id: "u1", label: "先看 README", turn: 1 },
+      { index: 2, id: "u2", label: "再改配置", turn: 2 },
+    ]);
+  });
+
+  test("只有图片、没有文字的提问也要占一行（否则它在目录上「不存在」）", () => {
+    const items = outlineOf([user("u1", "")]);
+    assert.equal(items.length, 1);
+    assert.match(items[0]!.label, /只有图片/);
+  });
+
+  test("搜索：提问与回复都搜，返回下标、角色与上下文", () => {
+    const hits = searchHistory([user("u1", "问"), bot("a1", "这里有 内存泄漏 的问题")], "内存");
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0]!.index, 1);
+    assert.equal(hits[0]!.role, "assistant");
+    assert.ok(hits[0]!.snippet.includes("内存泄漏"));
+  });
+
+  test("搜索：空查询什么都不返回（而不是返回全部）", () => {
+    assert.deepEqual(searchHistory([user("u1", "问")], "   "), []);
+  });
+
+  test("搜索：跨换行也能搜到（先压平空白再匹配）", () => {
+    assert.equal(searchHistory([bot("a1", "第一段\n第二段结束")], "第一段 第二段").length, 1);
+  });
+
+  test("搜索：命中在开头/结尾时不加多余的省略号", () => {
+    assert.equal(searchHistory([bot("a1", "开头就在这里")], "开头")[0]!.snippet, "开头就在这里");
+  });
+
+  test("搜索：other 不参与（它本来就不成条）", () => {
+    const other: ViewMessage = { id: "o1", role: "other", text: "命中", toolCalls: [] };
+    assert.deepEqual(searchHistory([other], "命中"), []);
   });
 });
