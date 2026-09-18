@@ -33,7 +33,7 @@ import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
 import { Markdown } from "../../components/Markdown";
-import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
+import { AssistantRow, MessageWindow, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCards } from "./QuestionCard";
 import { useBlockingCards } from "./useBlockingCards";
@@ -1087,20 +1087,20 @@ export function Conversation({
           )}
 
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            {/* 走稳定投影后的 messages：内容没变的条目引用不变，配合 `MessageBubble` 的 memo */}
-            {messages.map((message) => (
-              <MessageBubble
-                key={message.id}
-                sessionId={sessionId}
-                message={message}
-                resultMap={resultMap}
-                changes={changes}
-                onHoverFile={setHoveredFile}
-                onOpenFile={openFile}
-                openState={toolOpenState}
-                onToggleOpen={toggleToolOpen}
-              />
-            ))}
+            {/* 走稳定投影后的 messages（引用稳定 → `MessageBubble` 的 memo 才生效）。
+                `key` 取 sessionId：换会话时连窗口的展开进度一起重置，不沿用上一个会话的 */}
+            <MessageWindow
+              key={sessionId}
+              sessionId={sessionId}
+              messages={messages}
+              resultMap={resultMap}
+              changes={changes}
+              onHoverFile={setHoveredFile}
+              onOpenFile={openFile}
+              openState={toolOpenState}
+              onToggleOpen={toggleToolOpen}
+              scrollRef={scrollRef}
+            />
 
             {/* 流式中的助手内容：思考轨 + 流式文本 + 运行中工具，
                 与完成态 MessageBubble 共用 AssistantRow 骨架，保证左边缘一致 */}

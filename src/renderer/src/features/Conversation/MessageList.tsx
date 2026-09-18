@@ -5,7 +5,16 @@
  * 角色标签在右。工具卡片走语义化图标 + 路径 + 增删行数 + 耗时 + 内嵌 diff。
  * 工具卡里若副标题**就是该工具操作的文件**，则该路径可点 → onOpenFile（A3-2「点任意文件路径」）。
  */
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Brain,
   Check,
@@ -24,6 +33,14 @@ import { Markdown } from "../../components/Markdown";
 import { DiffView } from "../../components/DiffView";
 import { TerminalOutput } from "../../components/TerminalOutput";
 import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
+import {
+  chunkSize,
+  earlierStart,
+  FOLLOW_BOTTOM,
+  LOAD_MORE_AT_TOP_PX,
+  NEAR_BOTTOM_PX,
+  windowStart,
+} from "../../lib/message-window";
 import { cn } from "../../lib/utils";
 
 /**
@@ -152,6 +169,121 @@ export const MessageBubble = memo(function MessageBubble({
     </AssistantRow>
   );
 });
+
+/**
+ * 消息窗口：长会话只挂最近一段，更早的按需展开（算术见 `@/lib/message-window`）。
+ *
+ * 为什么需要它：渲染成本与**挂载条数**成正比，而真实库里最长的那个会话有近 3000 条
+ * 可渲染消息（带 2600+ 个工具卡）——一次性挂上去要好几秒、界面全程不能动。
+ * 而绝大多数会话在 31 条以内，窗口对它们是**零影响**（还没到一个窗口）。
+ *
+ * 两个容易做错的地方，这里都显式处理：
+ * - **上翻时先把窗口钉住**：否则流式期间新消息一来、窗口跟着底部挪，
+ *   用户正在读的那几行会被卸掉——表现为「内容在眼皮底下消失」。
+ * - **展开时补偿滚动位置**：更早的条目插在**上方**，会把视野整体往下推，
+ *   不补的话每展开一次就跳一次。
+ */
+export function MessageWindow({
+  sessionId,
+  messages,
+  resultMap,
+  changes,
+  onHoverFile,
+  onOpenFile,
+  openState,
+  onToggleOpen,
+  scrollRef,
+}: {
+  sessionId: string;
+  messages: ViewMessage[];
+  resultMap: Map<string, ToolResult>;
+  changes: ViewFileChange[];
+  onHoverFile?: (path: string | null) => void;
+  onOpenFile?: (path: string) => void;
+  openState: ReadonlyMap<string, boolean>;
+  onToggleOpen: (id: string, open: boolean) => void;
+  /** 消息流的滚动容器：窗口要知道滚到哪了，展开时也要把 `scrollTop` 补回去 */
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+}): React.JSX.Element {
+  /** 窗口起点。`FOLLOW_BOTTOM` = 还没显式展开过，窗口跟着最新内容走 */
+  const [head, setHead] = useState<number>(FOLLOW_BOTTOM);
+  const start = windowStart(messages.length, head);
+
+  /** 补偿用：提交前记下 `scrollHeight`，提交后把差值补到 `scrollTop` 上 */
+  const anchor = useRef<number | null>(null);
+  const loadEarlier = useCallback((): void => {
+    anchor.current = scrollRef.current?.scrollHeight ?? null;
+    setHead((current) => earlierStart(messages.length, current));
+  }, [scrollRef, messages.length]);
+  useLayoutEffect(() => {
+    const before = anchor.current;
+    anchor.current = null;
+    const node = scrollRef.current;
+    if (before === null || node === null) return;
+    node.scrollTop += node.scrollHeight - before;
+  }, [start, scrollRef]);
+
+  /**
+   * 两件都在滚动里做的事：
+   * ① **离开底部就把窗口钉住**——否则流式期间新消息一来、窗口跟着底部挪，
+   *    用户正读的那几行会被卸掉（表现为「内容在眼皮底下消失」）。幂等，写回同一个值不触发渲染。
+   * ② **贴到顶就自动再展开一段**。`armed` 保证**一次上翻只展开一段**：
+   *    展开后的位置补偿会把 `scrollTop` 顶下去（不再贴顶），要再上翻一次才会再次触发。
+   */
+  const armed = useRef(false);
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (node === null) return;
+    const onScroll = (): void => {
+      if (node.scrollHeight - node.scrollTop - node.clientHeight > NEAR_BOTTOM_PX) {
+        setHead((current) =>
+          current === FOLLOW_BOTTOM ? windowStart(messages.length, current) : current,
+        );
+      }
+      if (node.scrollTop > LOAD_MORE_AT_TOP_PX) {
+        armed.current = true;
+      } else if (armed.current) {
+        armed.current = false;
+        loadEarlier();
+      }
+    };
+    node.addEventListener("scroll", onScroll);
+    return () => node.removeEventListener("scroll", onScroll);
+  }, [scrollRef, loadEarlier, messages.length]);
+
+  return (
+    <>
+      {start > 0 && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            data-conv-earlier
+            onClick={loadEarlier}
+            className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+          >
+            载入更早的 {chunkSize(messages.length, head)} 条（还有 {start} 条）
+          </button>
+        </div>
+      )}
+      {/* 每行套一层带标记的容器：冒烟要能**按行**数「挂了多少条」、也要认得出挂的是哪几条。
+          这层是给探针用的稳定锚点（别让用例靠层级去猜，见 AGENTS.md §五 ⑫）。 */}
+      {messages.slice(start).map((message) => (
+        <div key={message.id} data-msg-row={message.id}>
+          <MessageBubble
+            sessionId={sessionId}
+            message={message}
+            resultMap={resultMap}
+            changes={changes}
+            onHoverFile={onHoverFile}
+            onOpenFile={onOpenFile}
+            openState={openState}
+            onToggleOpen={onToggleOpen}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
 
 /** 折叠的思考摘要：默认收起，展开看完整推理（氛围组，不抢主回复） */
 function ThoughtBlock({ text }: { text: string }): React.JSX.Element {

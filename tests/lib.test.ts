@@ -42,6 +42,14 @@ import {
   networkRowKey,
   observeCopyText,
 } from "../src/renderer/src/lib/observe-detail.ts";
+import {
+  chunkSize,
+  earlierStart,
+  FOLLOW_BOTTOM,
+  hiddenCount,
+  WINDOW_CHUNK,
+  windowStart,
+} from "../src/renderer/src/lib/message-window.ts";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import type {
   ConsoleEntry,
@@ -1101,5 +1109,71 @@ describe("detectLanguage（文件预览「按格式渲染」的判据）", () =>
       ignoreIllegals: true,
     });
     assert.equal(value.includes("<script>"), false);
+  });
+});
+
+describe("messageWindow（长会话只挂最近一段）", () => {
+  /** 真实库里最长那个会话的可渲染条数（143 用户 + 2794 助手，见 `modes/perf.ts` 的说明） */
+  const LONG = 2937;
+
+  test("空会话与比窗口还短的会话：一条都不藏", () => {
+    assert.equal(windowStart(0, FOLLOW_BOTTOM), 0);
+    assert.equal(windowStart(31, FOLLOW_BOTTOM), 0);
+    assert.equal(windowStart(WINDOW_CHUNK, FOLLOW_BOTTOM), 0);
+    assert.equal(hiddenCount(31, FOLLOW_BOTTOM), 0);
+  });
+
+  test("长会话「跟随底部」：首屏只挂最新一个窗口", () => {
+    assert.equal(windowStart(LONG, FOLLOW_BOTTOM), LONG - WINDOW_CHUNK);
+    assert.equal(hiddenCount(LONG, FOLLOW_BOTTOM), LONG - WINDOW_CHUNK);
+  });
+
+  test("显式展开后不再跟随：追加新消息只把切片撑长，不把用户正读的那几行挤掉", () => {
+    const head = earlierStart(LONG, FOLLOW_BOTTOM);
+    assert.equal(windowStart(LONG, head), LONG - 2 * WINDOW_CHUNK);
+    // 之后又来了 100 条新消息：起点不动 → 挂出来的内容只增不减
+    assert.equal(windowStart(LONG + 100, head), LONG - 2 * WINDOW_CHUNK);
+    // 对照：「跟随底部」时窗口会跟着最新消息挪走——这正是用户上翻时要先把窗口钉住的原因
+    assert.equal(windowStart(LONG + 100, FOLLOW_BOTTOM), LONG + 100 - WINDOW_CHUNK);
+  });
+
+  test("展开到底：起点为 0，再展开也不会变成负数", () => {
+    assert.equal(windowStart(LONG, 0), 0);
+    assert.equal(earlierStart(LONG, 0), 0);
+    assert.equal(earlierStart(20, 5), 0);
+    // 比一个窗口还短时没有「更早的」可补：起点被钳到 0，粒度也就是 0
+    assert.equal(chunkSize(20, 5), 0);
+  });
+
+  test("换会话的中间态：旧会话的起点号在新会话里必须被拉回来（不能 slice 出空列表）", () => {
+    // 少了 min(…, total − 窗口) 那道钳制时，这几行的起点都会是 2887，
+    // `slice(2887)` 一个条目都不剩——界面上就是一片空白。判据取**看得见的条数**，
+    // 因为它才是「有没有东西可看」这件事本身。
+    assert.equal(31 - windowStart(31, 2887), 31);
+    assert.equal(60 - windowStart(60, 2887), WINDOW_CHUNK);
+    assert.equal(LONG - windowStart(LONG, 2887), WINDOW_CHUNK);
+  });
+
+  test("不变式：藏起来的条数不为负、不多于「总数 − 窗口」，且留下的够填满一个窗口", () => {
+    for (const total of [0, 1, 49, 50, 51, 137, LONG]) {
+      for (const head of [FOLLOW_BOTTOM, 0, 1, 49, 50, 137, 2887, 99999]) {
+        const start = windowStart(total, head);
+        assert.ok(start >= 0, `windowStart(${total}, ${head}) = ${start} 为负`);
+        assert.ok(
+          start <= Math.max(0, total - WINDOW_CHUNK),
+          `windowStart(${total}, ${head}) = ${start} 藏得比允许的还多`,
+        );
+        assert.ok(
+          total - start >= Math.min(WINDOW_CHUNK, total),
+          `windowStart(${total}, ${head}) 之后只剩 ${total - start} 条，填不满一个窗口`,
+        );
+      }
+    }
+  });
+
+  test("展开粒度与界面上的数字同源（各算一遍必然漂）", () => {
+    assert.equal(chunkSize(LONG, FOLLOW_BOTTOM), WINDOW_CHUNK);
+    assert.equal(chunkSize(LONG, 100), WINDOW_CHUNK);
+    assert.equal(chunkSize(30, FOLLOW_BOTTOM), 0);
   });
 });
