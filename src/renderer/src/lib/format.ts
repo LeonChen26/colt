@@ -73,7 +73,7 @@ export function samePath(path: string, highlight: string | null): boolean {
 /**
  * 相对时间：刚刚 / Ns 前 / Nm 前 / Nh 前。
  *
- * ⑦-G 的「正在处理」与「改动清单」都要写「N 秒前动过」，故抽到共用的格式化模块里
+ * ⑦-G 的「任务摘要」与「改动清单」都要写「N 秒前动过」，故抽到共用的格式化模块里
  * （原先只在 `FollowPanel` 内有一份私有实现）。`now` 可注入，便于单测。
  */
 export function formatAgo(ts: number, now: number = Date.now()): string {

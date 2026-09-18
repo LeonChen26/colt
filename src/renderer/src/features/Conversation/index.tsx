@@ -7,7 +7,7 @@
  * 会话头（②）的入口：统计 / 规则（按 ⑦-H 收敛成这两个），外加两个**会话级显示**入口——
  * 「搜索」（搜历史，浮层，见 HistoryPanel）与「只看问答」（整轮折叠，见 ④-E）；
  * 按轮次跳转收在 ④ 左缘的点链（见 TurnRail），目录不再是浮层里的一半。
- * 「改动」由「正在处理」底部的总账接管（⑦-G）、「工具」的聚合与明细都并入「统计」；
+ * 「改动」由「任务摘要」底部的总账接管（⑦-G）、「工具」的聚合与明细都并入「统计」；
  * 两者仍可从 ⑦ 的「+」菜单打开（删的是入口，不是能力）。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -211,10 +211,10 @@ export function Conversation({
   const [git, setGit] = useState<GitStatus | null>(null);
   /** 右栏工作区**已打开**的视图实例（⑦-B：页签可以很多；启动时挂上既有两个） */
   const [dockInstances, setDockInstances] = useState<DockInstance[]>(defaultDockInstances);
-  /** 当前激活实例的 id（默认落在「正在处理」，规则 ⑦-E） */
+  /** 当前激活实例的 id（默认落在「任务摘要」，规则 ⑦-E） */
   const [dockActiveId, setDockActiveId] = useState<string>(DOCK_DEFAULT_KIND);
   /** 「要看某个文件」的请求（A3-2）；null = 尚未点过；seq 用于「同一文件再点一次也重读」。
-   *  ⑦-G 之后它不再切「文件」页签，而是让「正在处理」落到下钻的**内容层**。 */
+   *  ⑦-G 之后它不再切「文件」页签，而是让「任务摘要」落到下钻的**内容层**。 */
   const [dockFile, setDockFile] = useState<{ path: string; seq: number } | null>(null);
   /** 内嵌浏览器视图状态（loaded 为 false 表示尚未创建 WebContents） */
   const [browser, setBrowser] = useState<BrowserViewState | null>(null);
@@ -290,7 +290,7 @@ export function Conversation({
    * 否则右栏会指向一个已不存在的实例。
    *
    * ⑦-G 之后不再需要「关闭即清空文件目标」：那个目标已经不在页签上，
-   * 而是「正在处理」的下钻状态（随会话切换自愈，见 `WorkspaceDock`）。
+   * 而是「任务摘要」的下钻状态（随会话切换自愈，见 `WorkspaceDock`）。
    */
   const closeDockInstance = useCallback(
     (id: string) => {
@@ -317,12 +317,12 @@ export function Conversation({
   );
 
   /**
-   * 打开文件预览（A3-2）：点「正在处理」里的文件路径走这里。
+   * 打开文件预览（A3-2）：点「任务摘要」里的文件路径走这里。
    *
    * `seq` 每次自增，保证**同一路径再点一次也会重读**——agent 可能刚改过它，
    * 只比较路径的话第二次点击不会有任何反应（React 认为状态没变）。
    *
-   * ⑦-G：不再打开「文件」页签，而是切回**「正在处理」**并由容器把下钻落到内容层——
+   * ⑦-G：不再打开「文件」页签，而是切回**「任务摘要」**并由容器把下钻落到内容层——
    * 文件与「本次改动」本就是同一个东西的不同粒度，不该分成两个并列页签让用户选。
    */
   const openFile = useCallback(
@@ -1567,7 +1567,7 @@ export function Conversation({
         </div>
       </div>
 
-      {/* 右列：工作区（页签切换「正在处理」/「浏览器」），跨三行，所以输入区不会压到它下面 */}
+      {/* 右列：工作区（页签切换「任务摘要」/「浏览器」），跨三行，所以输入区不会压到它下面 */}
       <div className="col-start-2 row-span-3 row-start-1 flex min-h-0 min-w-0">
         <WorkspaceDock
           sessionId={sessionId}

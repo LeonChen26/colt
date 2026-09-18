@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 「正在处理」的下钻（规则 ⑦-G）：**清单 → diff → 内容**，一个东西的连续下钻。
+ * 「任务摘要」的下钻（规则 ⑦-G）：**清单 → diff → 内容**，一个东西的连续下钻。
  *
  * 它取代了原先并列的两个页签（「改动」`ChangesPanel` + 「文件」`FilePanel`）——
  * 用户不需要知道「该去改动页签还是文件页签」，只需要知道「想看得更细」
- * （概念稿 `prototype-follow-merged-hifi.html` 的页签行只剩 正在处理 / 浏览器 / 统计 / 规则）。
+ * （概念稿的页签行只剩 任务摘要 / 浏览器 / 统计 / 规则）。
  *
  * 层与进入方式：
  *   - `list`（清单层）：总账点进来。按目录一层分组、同文件多次编辑折成 `×N`、
@@ -242,7 +242,7 @@ export function ChangeDrilldown({
   highlightPath?: string | null;
   /** 「+」菜单开着时不接管 ESC——一次按键只该做一件事 */
   menuOpen: boolean;
-  /** 回到「正在处理」（面包屑第一段 / 清单层底部的返回） */
+  /** 回到「任务摘要」（面包屑第一段 / 清单层底部的返回） */
   onExit: () => void;
 }): React.JSX.Element {
   const list = useMemo(() => buildChangeList(changes), [changes]);
@@ -302,7 +302,7 @@ export function ChangeDrilldown({
   };
   /**
    * 上一级。**跳过没有内容的层**：④ 点进来的文件若压根没被改过，就没有它的 diff，
-   * 「返回」应该直接回「正在处理」，而不是落在一个空清单上。
+   * 「返回」应该直接回「任务摘要」，而不是落在一个空清单上。
    */
   const goUp = (): void => {
     if (layer === "content" && current !== undefined && current.history.length > 0) {
@@ -348,7 +348,7 @@ export function ChangeDrilldown({
     <div className="flex min-h-0 w-full flex-1 flex-col" data-drill={layer}>
       {/* 面包屑：只列**真实存在**的层（没被改过的文件没有「本次改动」这一层） */}
       <nav className="flex h-[30px] shrink-0 items-center gap-0.5 border-b border-line px-1.5">
-        <CrumbButton marker="follow" label="正在处理" onClick={onExit} />
+        <CrumbButton marker="follow" label="任务摘要" onClick={onExit} />
         {showChangeCrumb && (
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
@@ -647,7 +647,7 @@ export function ChangeDrilldown({
       )}
 
       <BackRow
-        label={inList ? "返回「正在处理」" : layer === "diff" ? "返回清单" : "返回上一级"}
+        label={inList ? "返回「任务摘要」" : layer === "diff" ? "返回清单" : "返回上一级"}
         onClick={goUp}
       />
     </div>

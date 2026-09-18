@@ -4,7 +4,7 @@
 /**
  * 右栏工作区容器（规则 ⑦-B）：以**页签**切换视图。
  *
- * 「正在处理」是默认视图（⑦-E，常驻不可关闭）；「浏览器」是 agent 动作对象的投影（⑦-A / ⑦-C）。
+ * 「任务摘要」是默认视图（⑦-E，常驻不可关闭）；「浏览器」是 agent 动作对象的投影（⑦-A / ⑦-C）。
  *
  * A3-5：原先挂在中栏的观测 / 管理面板（改动 / 统计（原「用量」）/ 规则）**迁入本容器**——
  * 它们本来只是「我想看的附属内容」，正是 ⑦ 的定义（「以及我想看的任何附属内容」），
@@ -12,7 +12,7 @@
  * 迁入后**只有页签这一个载体**：面板自身不再有「收起」（关闭由页签的 × 负责）。
  * ⑦-H（v1.31）又取消了一个：原「工具」视图的聚合与明细都并入「统计」。
  *
- * ⑦-G（v1.32）：原「改动」「文件」**两个页签整个取消**，成为「正在处理」的下钻
+ * ⑦-G（v1.32）：原「改动」「文件」**两个页签整个取消**，成为「任务摘要」的下钻
  * （清单 → diff → 内容，见 `ChangeDrilldown`）——用户不需要知道「该去改动页签还是文件页签」。
  * 故本容器现在只有四个 kind，且**只管「在不在下钻」，不管下钻到哪一层**：
  * 层内跳转是那个组件自己的事，绕一圈回到这里再下去只会让状态两处维护。
@@ -57,7 +57,7 @@ import { UsagePanel } from "./panels/UsagePanel";
 export type DockKind = "follow" | "browser" | "usage" | "rules";
 
 /**
- * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「正在处理」只是默认视图）。
+ * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「任务摘要」只是默认视图）。
  *
  * 当前每种 kind 只有单例，故 `id === kind`；「同 kind 多实例」的能力见
  * `docs/NEXT-PHASE.md` 的「事 B」——届时 id 改为独立生成即可，**调用方只认 id**。
@@ -93,7 +93,7 @@ const DOCK_KIND_META: Record<
   DockKind,
   { label: string; Icon: typeof Activity; closable: boolean; desc?: string }
 > = {
-  follow: { label: "正在处理", Icon: Activity, closable: false },
+  follow: { label: "任务摘要", Icon: Activity, closable: false },
   browser: { label: "浏览器", Icon: Globe, closable: true, desc: "浏览及调试网页" },
   // A3-5 迁入、⑦-H / ⑦-G 收敛后剩下的两个附属面板：「统计」「规则」。
   // 标签沿用产品既有措辞（不改成设计稿的「代码变更」），免得同一件东西在 ② 与 ⑦ 上出现两套叫法——
@@ -101,7 +101,7 @@ const DOCK_KIND_META: Record<
   // ⑦-H 第三步（v1.31）把原「工具」视图**取消了**：它的聚合（次数 / 耗时 / 失败排行）
   // 与明细**都**并进了「统计」，故本表不再有 `tools`——它不是被藏起来，而是没有这个视图了。
   // ⑦-G（v1.32）同理取消了 `changes` 与 `file`：两者都是「本次改动」的不同粒度，
-  // 合并成了「正在处理」的下钻（`ChangeDrilldown`），不再是并列页签。
+  // 合并成了「任务摘要」的下钻（`ChangeDrilldown`），不再是并列页签。
   usage: { label: "统计", Icon: ChartColumn, closable: true, desc: "本次会话的用量、工具调用与失败统计" },
   rules: { label: "规则", Icon: ShieldCheck, closable: true, desc: "本次会话记住的审批规则" },
 };
@@ -116,7 +116,8 @@ export function isDockClosable(kind: DockKind): boolean {
  * 这样「可关闭」与「有重新打开的出口」在结构上恒等，将来也漏不掉。
  *
  * 只列**产品里真的存在**的视图：高保真稿的菜单还画了终端 / 任务摘要 / 代码变更，
- * 但那三种在 ⑦ 里**并不存在**（⑦-G 之后「代码变更」是「正在处理」的下钻，不是页签），
+ * 但那三种在 ⑦ 里**都不是可开的页签**（⑦-G 之后「代码变更」是「任务摘要」的下钻；
+ * v1.48 之后「任务摘要」这个名字归了**默认视图本身**——它不可关闭，也就不该进菜单），
  * 列进来就是点了没反应的死菜单项——宁可少列（同 ⑦-F 那次「死控件」的教训）。
  */
 const DOCK_MENU_KINDS: DockKind[] = (Object.keys(DOCK_KIND_META) as DockKind[]).filter(
@@ -126,7 +127,7 @@ const DOCK_MENU_KINDS: DockKind[] = (Object.keys(DOCK_KIND_META) as DockKind[]).
 /**
  * 右栏的**统一默认宽度**（规则 ⑦-B：宽度只由用户拖拽决定，这里是没有拖拽时的默认值）。
  *
- * 原先按视图类型各给一个建议值（正在处理 300 / 浏览器 544 / 文件 560 / 改动 420 / …），
+ * 原先按视图类型各给一个建议值（任务摘要 300 / 浏览器 544 / 文件 560 / 改动 420 / …），
  * 于是**切页签就会改宽度**：中栏跟着忽宽忽窄、内容反复重排，是纯粹的视觉噪声。
  * 现统一为一个值——切页签不再改变宽度，宽度只可能因用户拖拽或窗口缩放而变。
  *
@@ -270,7 +271,7 @@ export function WorkspaceDock({
   onBrowserZoom: (fit: boolean) => void;
   /**
    * 「要看某个文件」的请求（A3-2：点消息流工具卡上的路径）——`seq` 变化即重读。
-   * ⑦-G 之后它不再切「文件」页签，而是**让「正在处理」落到下钻的内容层**。
+   * ⑦-G 之后它不再切「文件」页签，而是**让「任务摘要」落到下钻的内容层**。
    */
   fileRequest: { path: string; seq: number } | null;
   /** 已打开的视图实例（⑦-B：页签可以很多） */
@@ -749,7 +750,7 @@ export function WorkspaceDock({
       ) : activeKind === "rules" ? (
         <RulesPanel sessionId={sessionId} />
       ) : drillRequest !== null ? (
-        /* 下钻中（⑦-G）：清单 → diff → 内容。只在「正在处理」这一页签内成立 */
+        /* 下钻中（⑦-G）：清单 → diff → 内容。只在「任务摘要」这一页签内成立 */
         <ChangeDrilldown
           sessionId={sessionId}
           changes={view?.fileChanges ?? []}

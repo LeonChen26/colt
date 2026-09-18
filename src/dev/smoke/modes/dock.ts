@@ -28,9 +28,9 @@ import { sleep, uncaughtErrors } from "../context";
  *   1) 在主进程里用 executeJavaScript 驱动渲染层 DOM，并**真派发鼠标事件**模拟拖拽；
  *   2) 读主进程侧 WebContentsView 的 `getVisible()`——折叠是否真的收起视图，只有它说了算。
  *
- * ⑦-G 的「正在处理」（进行中的动作 + 底部总账）同样用**真实的事件通道**（`session.view`）推一个
+ * ⑦-G 的「任务摘要」（进行中的动作 + 底部总账）同样用**真实的事件通道**（`session.view`）推一个
  * **受控视图**来驱动：不跑模型，但走的是产品里一模一样的那条链路（事件 → DOM → 点击 → 落点）。
- * ⑦-G 第四步之后「点文件路径 → 预览」落进「正在处理」的下钻**内容层**（工具卡是唯一入口），
+ * ⑦-G 第四步之后「点文件路径 → 预览」落进「任务摘要」的下钻**内容层**（工具卡是唯一入口），
  * 而「本次改动」成了同一处的下钻**清单层**——原「改动」「文件」两个页签都已取消，
  * 故这两件事在同一段里连起来验：总账 → 清单 → diff → 内容，再逐层退回去。
  * 越界路径与「工具卡传绝对路径」也顺带钉一下。
@@ -189,7 +189,7 @@ export async function runDock(
   };
 
   /**
-   * 点「正在处理」里路径为 path 的文件行——⑦-G 之后这个函数只用来**断言该行已经不在了**：
+   * 点「任务摘要」里路径为 path 的文件行——⑦-G 之后这个函数只用来**断言该行已经不在了**：
    * 段一不再列已完成文件（硬约束一），文件行的入口改为下钻（清单 → 内容）。
    * 用 title 做**精确匹配**（旧 FollowPanel 的文件行标题是 `点击预览 <path>`），
    * 避免用文本包含匹配时被别的行或路径前缀误中。
@@ -208,7 +208,7 @@ export async function runDock(
     })()`);
 
   /**
-   * 读「正在处理」底部的**总账**（⑦-G：由「本次改动」段二降级而来的一行状态）。
+   * 读「任务摘要」底部的**总账**（⑦-G：由「本次改动」段二降级而来的一行状态）。
    * `clickable` 按标签判定：有改动时是 `button`（进入清单的出口），没有改动时是 `div`
    * ——「空」时**不给**一个点了没反应的出口（那正是死控件）。
    * `idle` 读段一的空态标记：面板必须能显示「空」（⑦-E 的安全判断），这条得能验。
@@ -232,7 +232,7 @@ export async function runDock(
       };
     })()`);
 
-  /** 点「正在处理」底部的总账（⑦-G 进入清单的出口） */
+  /** 点「任务摘要」底部的总账（⑦-G 进入清单的出口） */
   const clickLedger = (): Promise<boolean> =>
     run<boolean>(`(() => {
       const aside = [...document.querySelectorAll("aside")].find((a) =>
@@ -245,7 +245,7 @@ export async function runDock(
 
   /**
    * 读下钻**内容层**的文件预览状态：被预览的路径、是否渲染文本、正文是否含指定片段、拒绝原因。
-   * ⑦-G 之后内容层挂在「正在处理」的下钻里，故 `[data-file-view]` 只在内容层出现。
+   * ⑦-G 之后内容层挂在「任务摘要」的下钻里，故 `[data-file-view]` 只在内容层出现。
    */
   const fileProbe = (
     needle: string,
@@ -287,7 +287,7 @@ export async function runDock(
     })()`);
 
   /**
-   * 读「正在处理」的**下钻**状态（⑦-G）：当前在哪一层、面包屑上有哪几段、清单里有什么。
+   * 读「任务摘要」的**下钻**状态（⑦-G）：当前在哪一层、面包屑上有哪几段、清单里有什么。
    *
    * 层用 `data-drill` 认（`list` / `diff` / `content`），不在下钻时整个容器不存在。
    * 清单的目录与文件分别用 `data-clist-dir` / `data-clist-file` 读——**不靠文本**，
@@ -565,7 +565,7 @@ export async function runDock(
     log(`初始：工作区宽度=${initial.width}px，可用宽度=${initial.space}px`);
     // ---- A3-1：页签由「实例列表」驱动 ----
     checks.push(["页签由实例列表驱动（初始 2 个）", initial.tabCount === 2]);
-    checks.push(["初始激活默认视图「正在处理」", initial.activeLabel === "正在处理"]);
+    checks.push(["初始激活默认视图「任务摘要」", initial.activeLabel === "任务摘要"]);
     log(`初始激活页签：${initial.activeLabel}（共 ${initial.tabCount} 个）`);
 
     // agent 侧「打开」浏览器（不经模型）：创建 WebContentsView + 推 browser.state
@@ -621,8 +621,8 @@ export async function runDock(
     log(`  上限实测 ${atMax.width}（期望 ${expectedMax}）`);
 
     // ---- 宽度记忆：切页签不覆盖用户拖过的宽度 ----
-    log("[A1] 宽度记忆：切到「正在处理」再切回，宽度不应被统一默认值覆盖");
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    log("[A1] 宽度记忆：切到「任务摘要」再切回，宽度不应被统一默认值覆盖");
+    await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(300);
     const afterFollow = await probe();
     await clickInDock(`b.textContent.trim() === "浏览器"`);
@@ -635,10 +635,10 @@ export async function runDock(
     // A3-1：激活项由 id 驱动，点击即切（内容随之变化）
     checks.push([
       "按 id 切换生效（点页签即激活）",
-      afterFollow.activeLabel === "正在处理" && backToBrowser.activeLabel === "浏览器",
+      afterFollow.activeLabel === "任务摘要" && backToBrowser.activeLabel === "浏览器",
     ]);
     checks.push(["切换页签不改变页签数量", afterFollow.tabCount === 2 && backToBrowser.tabCount === 2]);
-    log(`  切页签后：正在处理=${afterFollow.width}px，浏览器=${backToBrowser.width}px（应均为 ${atMax.width}px）`);
+    log(`  切页签后：任务摘要=${afterFollow.width}px，浏览器=${backToBrowser.width}px（应均为 ${atMax.width}px）`);
 
     // ---- 双击复位 ----
     log("[A1] 双击把手 → 回到统一默认宽度");
@@ -654,7 +654,7 @@ export async function runDock(
 
     // ---- 统一宽度：未拖拽时切页签**不改变**宽度（宽度与激活页签无关） ----
     log("[A1] 统一宽度：复位后切页签，宽度不应变化");
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(300);
     const unifiedFollow = await probe();
     await clickInDock(`b.textContent.trim() === "浏览器"`);
@@ -665,7 +665,7 @@ export async function runDock(
       unifiedFollow.width === reset.width && unifiedBrowser.width === reset.width,
     ]);
     log(
-      `  切页签：正在处理=${unifiedFollow.width}px，浏览器=${unifiedBrowser.width}px（应均为 ${reset.width}px）`,
+      `  切页签：任务摘要=${unifiedFollow.width}px，浏览器=${unifiedBrowser.width}px（应均为 ${reset.width}px）`,
     );
 
     // ---- ⑦-F：折叠态下加载浏览器应自动展开 ----
@@ -687,7 +687,7 @@ export async function runDock(
     checks.push(["折叠态下加载浏览器 → 自动展开", autoExpanded.collapsed === false]);
     checks.push(["自动展开后原生视图可见", await waitVisible(true)]);
 
-    // ---- 受控会话视图：⑦-G 的「正在处理」与 A3-2 的「点文件路径 → 预览」都靠它驱动 ----
+    // ---- 受控会话视图：⑦-G 的「任务摘要」与 A3-2 的「点文件路径 → 预览」都靠它驱动 ----
     // 走**真实的事件通道**推一个受控视图（不跑模型）：`fileChanges` 三条（其中一条故意越界，
     // 用来钉住「根由主进程推导」这条安全边界）、`messages` 两张工具卡（一张根内、一张根外）。
     log("[受控视图] 推 session.view：3 条改动（含一条越界）+ 两张工具卡（根内 / 根外）");
@@ -795,11 +795,11 @@ export async function runDock(
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
 
-    // ---- ⑦-G：「正在处理」= 进行中的动作 + 底部总账 ----
+    // ---- ⑦-G：「任务摘要」= 进行中的动作 + 底部总账 ----
     // 受控视图里 runningTools 为空、fileChanges 三条（两条项目内 + 一条越界），
     // 正好钉住两件事：段一**不再**列已完成文件（于是能显示「空」），总账是**一行**双口径。
-    log("[⑦-G] 「正在处理」：段一只列进行中的动作，底部常驻一行总账");
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    log("[⑦-G] 「任务摘要」：段一只列进行中的动作，底部常驻一行总账");
+    await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(300);
     checks.push([
       "段一不再列已完成文件（旧文件行已移除，⑦-G 硬约束一）",
@@ -820,7 +820,7 @@ export async function runDock(
     await sleep(500);
     const listFromLedger = await drillProbe();
     checks.push([
-      "点总账 → 进入下钻清单层（面包屑出现「正在处理」，页签数不变）",
+      "点总账 → 进入下钻清单层（面包屑出现「任务摘要」，页签数不变）",
       listFromLedger.layer === "list" &&
         listFromLedger.crumbs.includes("follow") &&
         (await probe()).tabCount === 2,
@@ -834,8 +834,8 @@ export async function runDock(
     await sleep(700);
     const fromTool = await fileProbe(toolMarker);
     checks.push([
-      "点工具卡路径 → 落在「正在处理」的下钻内容层",
-      (await probe()).activeLabel === "正在处理" && (await drillProbe()).layer === "content",
+      "点工具卡路径 → 落在「任务摘要」的下钻内容层",
+      (await probe()).activeLabel === "任务摘要" && (await drillProbe()).layer === "content",
     ]);
     checks.push(["内容层记录了被预览的路径", fromTool.path === toolAbsPath]);
     checks.push(["根内绝对路径渲染出内容", fromTool.hasText && fromTool.hasNeedle]);
@@ -845,9 +845,9 @@ export async function runDock(
     await clickInDock(`b.textContent.trim() === "浏览器"`);
     await sleep(500);
     checks.push(["切走后下钻内容不再渲染", (await fileProbe(toolMarker)).hasText === false]);
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(700);
-    checks.push(["切回「正在处理」下钻内容仍在", (await fileProbe(toolMarker)).hasNeedle]);
+    checks.push(["切回「任务摘要」下钻内容仍在", (await fileProbe(toolMarker)).hasNeedle]);
     checks.push(["切页签不改变页签数量（仍 2 个）", (await probe()).tabCount === 2]);
 
     // 根**外**的路径：工具卡照旧可点，但主进程必须拒绝，且视图要给出可读原因。
@@ -861,8 +861,8 @@ export async function runDock(
     ]);
     log(`  越界预览：path=${denied.path}，给出原因=${denied.errorShown}`);
 
-    // 退出下钻，把「正在处理」还原成后续用例依赖的基线（段一 + 总账）。
-    // 该文件不在改动清单里，故 goUp 会**跳过空的清单层**直接回到「正在处理」（⑦-G 的层设计）。
+    // 退出下钻，把「任务摘要」还原成后续用例依赖的基线（段一 + 总账）。
+    // 该文件不在改动清单里，故 goUp 会**跳过空的清单层**直接回到「任务摘要」（⑦-G 的层设计）。
     checks.push(["点「返回」退出下钻", await clickDrillBack()]);
     await sleep(300);
     checks.push(["退出后不再有下钻容器", (await drillProbe()).layer === ""]);
@@ -918,8 +918,8 @@ export async function runDock(
     checks.push(["⑥ 复位后回到空闲", (await liveProbe()).state === "idle"]);
 
     // ---- A3-3：页签关闭 + 「+」新增视图 ----
-    // 此刻 2 个页签（正在处理 / 浏览器）——⑦-G 取消「改动」「文件」后，
-    // 「正在处理」是唯一常驻视图，「浏览器」是唯一默认可关闭的页签。
+    // 此刻 2 个页签（任务摘要 / 浏览器）——⑦-G 取消「改动」「文件」后，
+    // 「任务摘要」是唯一常驻视图，「浏览器」是唯一默认可关闭的页签。
     log("[A3-3] 页签关闭与「+」新增视图");
     const dock0 = await probe();
     checks.push(["展开态有「+」新增视图入口", dock0.addButton]);
@@ -962,8 +962,8 @@ export async function runDock(
     await sleep(400);
     const afterCloseBrowser = await probe();
     checks.push([
-      "关闭激活的「浏览器」→ 页签减 1 且激活位交还「正在处理」",
-      afterCloseBrowser.tabCount === 1 && afterCloseBrowser.activeLabel === "正在处理",
+      "关闭激活的「浏览器」→ 页签减 1 且激活位交还「任务摘要」",
+      afterCloseBrowser.tabCount === 1 && afterCloseBrowser.activeLabel === "任务摘要",
     ]);
     checks.push(["关闭「浏览器」后原生视图已收起（getVisible=false）", await waitVisible(false)]);
 
@@ -982,7 +982,7 @@ export async function runDock(
     // 故清单应为「根 + src/main」两组、两个文件、隐藏 1 条越界——树没有了，
     // 但「目录分组」与「越界排除」这两条原判据要在新载体上继续钉住。
     log("[A3-4] 清单层：目录分组 / 越界排除 / 逐层下钻与回退");
-    await clickInDock(`b.textContent.trim() === "正在处理"`);
+    await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(300);
     checks.push(["点总账进入清单层", await clickLedger()]);
     await sleep(500);
@@ -1012,7 +1012,7 @@ export async function runDock(
     await sleep(500);
     const diff0 = await drillProbe();
     checks.push([
-      "diff 层：面包屑含「正在处理」/ 可点的「本次改动」/ 当前文件三段",
+      "diff 层：面包屑含「任务摘要」/ 可点的「本次改动」/ 当前文件三段",
       diff0.layer === "diff" &&
         diff0.crumbs.includes("follow") &&
         diff0.crumbs.includes("list") &&
@@ -1030,7 +1030,7 @@ export async function runDock(
     ]);
     log(`  清单下钻预览：path=${fromList.path}，渲染文本=${fromList.hasText}`);
 
-    // 逐层回退：ESC（内容 → diff）、底部「返回」（diff → 清单）、面包屑（清单 → 正在处理）。
+    // 逐层回退：ESC（内容 → diff）、底部「返回」（diff → 清单）、面包屑（清单 → 任务摘要）。
     // 三条出口分别验一次，避免「只有一条路能回去」这种半吊子实现蒙混过关。
     await run(`(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -1041,9 +1041,9 @@ export async function runDock(
     checks.push(["点底部「返回」命中", await clickDrillBack()]);
     await sleep(400);
     checks.push(["「返回」从 diff 层回到清单层", (await drillProbe()).layer === "list"]);
-    checks.push(["点面包屑「正在处理」命中", await clickCrumb("follow")]);
+    checks.push(["点面包屑「任务摘要」命中", await clickCrumb("follow")]);
     await sleep(400);
-    checks.push(["面包屑退回「正在处理」（退出下钻）", (await drillProbe()).layer === ""]);
+    checks.push(["面包屑退回「任务摘要」（退出下钻）", (await drillProbe()).layer === ""]);
 
     // ---- 净值：多次改动之后，看的是「最终改成了什么」----
     // 逐次 patch 只说「这一次改了什么」。同一个文件改过多次、最后一次又退回原样时，
@@ -1142,7 +1142,7 @@ export async function runDock(
     // ⑦-G 再把「改动」「文件」两个 kind 整个取消（并入下钻）——故 ② 只剩「统计 / 规则」。
     log("[A3-5 / ⑦-H / ⑦-G] 面板迁入页签；② 会话头只剩「统计 / 规则」；「改动」「文件」「工具」都不再是视图");
     const beforeA35 = await probe();
-    checks.push(["（前置）此刻共 2 个页签（正在处理 / 浏览器）", beforeA35.tabCount === 2]);
+    checks.push(["（前置）此刻共 2 个页签（任务摘要 / 浏览器）", beforeA35.tabCount === 2]);
 
     // 删掉的入口**不能只是画没了**：这里断言它们在会话头里已经点不到
     checks.push([
@@ -1191,8 +1191,8 @@ export async function runDock(
     await sleep(400);
     const closedA35 = await probe();
     checks.push([
-      "关闭「规则」→ 页签减 1 且激活位交还「正在处理」",
-      closedA35.tabCount === 3 && closedA35.activeLabel === "正在处理",
+      "关闭「规则」→ 页签减 1 且激活位交还「任务摘要」",
+      closedA35.tabCount === 3 && closedA35.activeLabel === "任务摘要",
     ]);
     checks.push(["关闭后规则面板已卸载", (await dockHas("审批规则")) === false]);
 
