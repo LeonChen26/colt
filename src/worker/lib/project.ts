@@ -254,7 +254,10 @@ export function project(
     };
     const role = record.message.role;
 
-    // toolResult 消息另存一份，供工具卡片展开时按 toolCallId 查阅
+    // toolResult **只进 toolResults**，不再塞进 messages：
+    // 它从不单独成条（渲染层拿到它就 `return null`），塞进 messages 等于同一段正文
+    // 每次推送都多发一份——「推了不用」的典型。视图是全量快照、流式期间每 50ms 重推一次，
+    // 这种浪费要按推送次数乘上去。
     // 注意：toolCallId 在 message 层级，content 是扁平的文本/图片块
     if (role === "toolResult") {
       const result = record.message as unknown as {
@@ -278,12 +281,13 @@ export function project(
               : { hasImage: true }),
         });
       }
+      continue;
     }
 
     messages.push({
       id: record.id,
       role:
-        role === "user" || role === "assistant" || role === "toolResult"
+        role === "user" || role === "assistant"
           ? (role as ViewMessage["role"])
           : "other",
       text: extractText(record.message.content),

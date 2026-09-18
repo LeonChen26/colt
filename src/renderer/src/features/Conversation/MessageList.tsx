@@ -92,8 +92,8 @@ export function MessageBubble({
   /** 卡片改了展开状态 → 回传容器（唯一真源在 `Conversation`） */
   onToggleOpen: (id: string, open: boolean) => void;
 }): React.JSX.Element | null {
-  // 工具结果已合并进各自的工具卡片，不再单独成条
-  if (message.role === "toolResult") return null;
+  // 只渲染用户与助手：工具结果已合并进各自的工具卡片（它根本不在 messages 里，
+  // 见 ViewMessage.role），`other` 这类结构性消息也不单独成条
   if (message.role !== "user" && message.role !== "assistant") return null;
   // 只带图片、没有文字的消息也必须渲染
   if (!message.text && !message.image && message.toolCalls.length === 0) return null;

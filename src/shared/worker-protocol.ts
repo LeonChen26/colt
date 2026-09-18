@@ -9,7 +9,12 @@ import type { ThinkingLevel } from "./thinking-level";
 /** 对话中的一条消息（投影后） */
 export interface ViewMessage {
   id: string;
-  role: "user" | "assistant" | "toolResult" | "other";
+  /**
+   * 只可能是这三种。**工具结果不在这里**——它不单独成条，走 `ViewToolResult`
+   * （渲染层过去拿到 `role === "toolResult"` 就 `return null`，等于白传一份正文；
+   * 视图是全量快照、每 50ms 重推，这种浪费要乘以推送次数）。
+   */
+  role: "user" | "assistant" | "other";
   text: string;
   /** 助手消息里的工具调用 */
   toolCalls: { id: string; name: string; args: string; durationMs?: number }[];

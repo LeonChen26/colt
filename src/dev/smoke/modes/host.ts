@@ -142,12 +142,13 @@ export async function runHost(
 
     // 观测能力断言：这些动作的返回文本有固定前缀，只在它们跑通时才可能出现
     log("[1b] 观测能力断言");
-    const view = await run<{ messages: { role: string; text: string }[] } | null>(
+    // 工具结果正文取 `toolResults`——这是它**唯一**的来源（工具结果已不再进 `messages`，
+    // 见 `ViewMessage.role`）。别再从 messages 里按 role 筛：那样只会筛出空数组，
+    // 而下面这些断言都是「包含某段文字」，空数组会让它们集体静默变红。
+    const view = await run<{ toolResults: { output: string }[] } | null>(
       `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
     );
-    const toolTexts = (view?.messages ?? [])
-      .filter((message) => message.role === "toolResult")
-      .map((message) => message.text);
+    const toolTexts = (view?.toolResults ?? []).map((result) => result.output);
     const joined = toolTexts.join("\n");
     // viewport 内嵌化后不再改窗口尺寸，而是给 WebContentsView 临时覆盖尺寸，
     // 「恢复默认」交还给右栏面板的实测矩形——尺寸随窗口/面板变化，故只断言「形如 WxH」。
