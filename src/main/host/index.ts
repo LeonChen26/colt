@@ -13,6 +13,7 @@ import type { BrowserWindow } from "electron";
 import { BrowserHost, type BrowserNavigation } from "./browser-host";
 import { ComputerHost } from "./computer-host";
 import { MemoryHost } from "./memory-host";
+import { todoStore } from "../todo-store";
 
 export interface HostRequest {
   sessionId: string;
@@ -82,6 +83,10 @@ export class HostBridge {
         return this.#computer.handle(request.sessionId, request.action, request.params);
       case "memory":
         return this.#memory.handle(request.sessionId, request.action, request.params);
+      case "todo":
+        // 待办清单的**唯一写入方**在 `todo-store.ts`（真源是 SQLite 的 todos 表）；
+        // 这里只是一跳转发，与 browser / computer / memory 保持同一形态
+        return todoStore.handle(request.sessionId, request.action, request.params);
       default:
         throw new Error(`未知的宿主能力：${String(request.capability)}`);
     }
@@ -91,6 +96,8 @@ export class HostBridge {
     this.#browser.closeSession(sessionId);
     this.#computer.resetSession(sessionId);
     this.#memory.clearSession(sessionId);
+    // todo 无需清理：它没有会话级内存——清单的真源是库，缓存归 session-manager 管
+    // （与 `#fileChangesCache` 同一套寿命规则），在这里再存一份才是多余的
   }
 
   disposeAll(): void {

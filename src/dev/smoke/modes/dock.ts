@@ -768,6 +768,8 @@ export async function runDock(
         },
       ],
       toolResults: [],
+      // 待办清单在受控视图里由各段用例按需覆盖（⑦-G 的「计划」段）
+      todos: [],
       fileChanges: [
         fakeChange("smoke-a", previewRel, stamp),
         fakeChange("smoke-b", "../escape.txt", stamp - 1),

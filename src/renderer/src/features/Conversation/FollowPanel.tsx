@@ -2,21 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 右栏工作区的「正在处理」视图（默认视图，规则 ⑦-E）。
+ * 右栏工作区的「任务摘要」视图（默认视图，规则 ⑦-E；v1.48 由「正在处理」更名）。
  *
- * 规则 ⑦-G：本视图**只由两段构成，两个时态、互不重复**——
- *   1. 进行中的动作（此刻）：`runningTools` 逐条，**全应用唯一出处**。
+ * 规则 ⑦-G：本视图**只由三段构成，三个时态、互不重复**（顺序即阅读顺序，v1.48 定）——
+ *   1. 计划（将来）：待办清单，`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做；
+ *      **已完成折成一行**，点开才铺开。没有清单时**整段不渲染**（不占位）——
+ *      「没有清单」与「有清单但此刻空闲」是两件事，前者不该在界面上留一个空壳。
+ *   2. 进行中的动作（此刻）：`runningTools` 逐条，**全应用唯一出处**。
  *      已完成的文件改动**不在这里重复列一遍**——它们的去处是总账 → 清单。
  *      理由：面板必须能显示「空」。若把已完成内容也常驻在此，它永远有内容，
  *      ⑦-E 那句「它是活的吗」就再也答不出来，而这是自用场景判断安全性的第一依据。
- *   2. 本次改动（本次累计）：底部**一行常驻总账**「N 处 · M 文件」，点它进入清单。
+ *   3. 本次改动（过去 / 累计）：底部**一行常驻总账**「N 处 · M 文件」，点它进入清单。
  *      `+a −b` 是**净值**（基线 → 现在，与清单层同源）：改完又退回原样就是 0，
  *      故这里不给「干了多少下」的错觉——「处 / 文件」两个数说明干过活，净值说明结果。
  *      它不是可折叠区段（没有 caret / 展开态 / 空态），也不固定在右栏底部——
  *      它属于本视图，跟着出现、随切页签消失。
  *
  * 由 WorkspaceDock 提供页签与边框，本组件只负责内容，故根节点是撑满的 div 而非 aside。
- * 数据全部来自 ConversationView，无需额外 IPC。
+ * 数据全部来自 ConversationView，无需额外 IPC（清单也是——它就在 `view.todos` 里）。
  *
  * ⚠️ 落地进度（⑦-G 的五项改动见 `UI-REGIONS` 规则 ⑦-G）：①（段二降级为总账）、
  * ②（段一不再列已完成文件）、③（改动 / 文件页签合并为下钻）、④（清单层）均已落地，
@@ -30,10 +33,11 @@
  * 清单层里的文件行另有 `samePath` 高亮（见 `ChangeDrilldown`），两条联动各管各的层。
  */
 import { useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, Clock, FileDiff } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Circle, Clock, FileDiff } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { buildChangeList } from "@/lib/change-list";
 import { formatAgo, samePath } from "@/lib/format";
+import { blockedTodoIds, summarizeTodoProgress, type ViewTodo } from "@shared/todo";
 import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
 
@@ -91,9 +95,61 @@ export function FollowPanel({
   /** 点总账 → 进入下钻的**清单层**（⑦-G） */
   onOpenChanges: () => void;
 }): React.JSX.Element {
-  const [collapsed, setCollapsed] = useState(false);
+  const [stepsCollapsed, setStepsCollapsed] = useState(false);
+  const [planCollapsed, setPlanCollapsed] = useState(false);
+  /** 「已完成」默认折成一行，点开才铺开（⑦-H：给结论不给流水） */
+  const [doneOpen, setDoneOpen] = useState(false);
   const changes = view?.fileChanges ?? [];
   const runningTools = view?.runningTools ?? [];
+  const todos = view?.todos ?? [];
+  const plan = summarizeTodoProgress(todos);
+  // 依赖未满足的条目要**看得出来**：它是在等，不是被忘了（判据与注入块同源）
+  const blocked = blockedTodoIds(todos);
+  const subjectOf = (id: string): string =>
+    todos.find((item) => item.id === id)?.subject ?? id;
+  const activeTodos = todos.filter((item) => item.status !== "completed");
+  const doneTodos = todos.filter((item) => item.status === "completed");
+
+  /** 计划的一条：字形 + 文字（进行中显示 `activeForm`）+ 未满足的依赖 */
+  const renderTodo = (todo: ViewTodo): ReactNode => (
+    <div
+      key={todo.id}
+      data-todo-id={todo.id}
+      data-todo-status={todo.status}
+      className="rounded-[6px] px-2 py-1"
+    >
+      <div className="flex items-start gap-1.5">
+        <span data-todo-glyph={todo.status} className="mt-[3px] flex shrink-0 items-center">
+          {todo.status === "completed" ? (
+            <Check {...ICON.xs} className="text-success-fg" />
+          ) : todo.status === "in_progress" ? (
+            <span className="live-dot" />
+          ) : (
+            <Circle {...ICON.xs} className="text-text-muted" />
+          )}
+        </span>
+        <span
+          data-todo-subject=""
+          title={todo.subject}
+          className={cn(
+            "min-w-0 flex-1 truncate text-[12px]",
+            todo.status === "completed" ? "text-text-muted" : "text-text-secondary",
+          )}
+        >
+          {todo.status === "in_progress" && todo.activeForm !== "" ? todo.activeForm : todo.subject}
+        </span>
+      </div>
+      {blocked.has(todo.id) && (
+        <div className="truncate pl-3.5 text-[10.5px] text-text-muted">
+          等待：
+          {todo.blockedBy
+            .filter((id) => !doneTodos.some((item) => item.id === id))
+            .map(subjectOf)
+            .join("、")}
+        </div>
+      )}
+    </div>
+  );
 
   // 总账的两个口径（⑦-G）：**「处」是改动条数、「文件」是按路径去重后的文件数**。
   // 此前两处都叫「N 文件」却给出两个不同的数（段二写去重文件数、改动面板写条数），
@@ -107,15 +163,51 @@ export function FollowPanel({
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
-      {/* 段一：进行中的动作（此刻）——只放「此刻在跑」的，已完成的下沉到总账 → 清单 */}
+      {/* 段一：计划（将来）——v1.48 新增。**没有清单时整段不渲染**（不占位）：
+          那是「模型还没拆解」，不是「有清单但空着」，留个空壳只会让人以为坏了。 */}
+      {todos.length > 0 && (
+        <section
+          data-todo-section=""
+          className="flex shrink-0 flex-col border-b border-line"
+        >
+          <SectionHead
+            title="计划"
+            meta={<span data-todo-progress="">{`${plan.done}/${plan.total}`}</span>}
+            collapsed={planCollapsed}
+            onToggle={() => setPlanCollapsed((value) => !value)}
+          />
+          {!planCollapsed && (
+            <div className="max-h-[45%] overflow-y-auto px-2 pb-1.5">
+              {activeTodos.map(renderTodo)}
+              {doneTodos.length > 0 && (
+                <button
+                  type="button"
+                  data-todo-done-toggle=""
+                  onClick={() => setDoneOpen((value) => !value)}
+                  className="flex w-full items-center gap-1.5 rounded-[6px] px-2 py-1 text-left text-[11px] text-text-muted transition hover:text-text-secondary"
+                >
+                  <ChevronRight
+                    {...ICON.xs}
+                    className={cn("shrink-0 transition-transform", doneOpen && "rotate-90")}
+                  />
+                  {doneOpen ? "收起已完成" : `已完成 ${plan.done} 项`}
+                </button>
+              )}
+              {doneOpen && doneTodos.map(renderTodo)}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* 段二：进行中的动作（此刻）——只放「此刻在跑」的，已完成的下沉到总账 → 清单 */}
       <section className="flex min-h-0 flex-1 flex-col">
         <SectionHead
-          title="Agent 正在处理"
+          title="进行中的动作"
           meta={runningTools.length > 0 ? `${runningTools.length} 个动作进行中` : "空闲"}
-          collapsed={collapsed}
-          onToggle={() => setCollapsed((value) => !value)}
+          collapsed={stepsCollapsed}
+          onToggle={() => setStepsCollapsed((value) => !value)}
         />
-        {!collapsed &&
+        {!stepsCollapsed &&
           (runningTools.length === 0 ? (
             /* 空态是⑦-E 的安全判断依据（「它是活的吗」），故它比内容更值得画清楚 */
             <div

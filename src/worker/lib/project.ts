@@ -20,6 +20,7 @@ import type {
 } from "@shared/worker-protocol";
 import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 import type { ThinkingLevel } from "@shared/thinking-level";
+import type { ViewTodo } from "@shared/todo";
 import { toolImageFileName } from "@shared/tool-output";
 import { serializeArgs } from "./telemetry";
 
@@ -237,6 +238,11 @@ export function project(
      */
     skills: string[];
     fileChanges: ViewFileChange[];
+    /**
+     * 待办清单。与 `fileChanges` 同一个道理：**投影时恒为空数组**，
+     * 主进程会用数据库里那份完整清单覆盖它（真源在主进程，不在 worker 内存）。
+     */
+    todos: ViewTodo[];
     /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
     contextUsed: number;
   },
@@ -349,6 +355,7 @@ export function project(
     messages,
     toolResults,
     fileChanges: meta.fileChanges,
+    todos: meta.todos,
     streamingText: streamingText && streamingText.length > 0 ? streamingText : null,
     thought: streamingThought.length > 0 ? streamingThought : null,
     runningTools,

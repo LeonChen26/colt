@@ -8,6 +8,13 @@
 
 import type { ProviderBuildConfig } from "./provider-factory";
 import type { ThinkingLevel } from "./thinking-level";
+import type { ViewTodo } from "./todo";
+
+/**
+ * 待办清单的类型定义在 `@shared/todo`（纯契约 + 渲染，main / worker / 渲染层三方共用），
+ * 这里只是转出去——读契约的人不必跳到另一个文件才知道 `todos` 里装的是什么。
+ */
+export type { ViewTodo };
 
 /** 对话中的一条消息（投影后） */
 export interface ViewMessage {
@@ -155,6 +162,14 @@ export interface ConversationView {
   toolResults: ViewToolResult[];
   /** 本会话累计的文件改动 */
   fileChanges: ViewFileChange[];
+  /**
+   * 本会话的待办清单（`todo` 工具维护）。
+   *
+   * **真源在主进程的库**（`todos` 表），这里这一份是主进程经本视图推给渲染层的那份；
+   * worker 自己另有一份**镜像**，只用于每请求注入（见 `todoSnapshot` 命令）。
+   * 空清单是 `[]`，不是「一列全是 pending 的幽灵清单」。
+   */
+  todos: ViewTodo[];
   /** 正在流式输出的助手文本，null 表示当前没有流 */
   streamingText: string | null;
   /** 正在流式输出的思考文本（思考轨），null 表示当前没有在思考 */
@@ -190,7 +205,7 @@ export interface ConversationView {
  * 宿主能力标识：由主进程（Electron GUI 侧）实现，worker 通过 toolRpc 远程调用。
  * 浏览器/桌面这类能力必须由宿主进程持有（窗口与 OS 权限），故 worker 只能发命令。
  */
-export type HostCapability = "browser" | "computer" | "memory";
+export type HostCapability = "browser" | "computer" | "memory" | "todo";
 
 /** 一次宿主能力的调用返回：文本 + 可选图片（截图等） */
 export interface HostResult {
@@ -274,6 +289,18 @@ export type WorkerCommand =
    * 因此不落进 transcript（对话与分支树不会凭空多出一轮）。
    */
   | { type: "browserNotice"; text: string }
+  /**
+   * 待办清单镜像（主进程 → worker）。
+   *
+   * 为什么要有这条：worker 侧 `transform_context` 是**同步**的，要在每请求前把清单拼进
+   * 系统提示词就必须手里有一份现成的——若改成在模型请求的热路径上现拉一次 RPC，
+   * 延迟与失败模式都更差（`DESIGN-todo.md` §3 决策四）。故主进程每次写入后整份推一遍，
+   * worker 只做覆盖。**它只是缓存，真源是主进程的库**。
+   *
+   * worker（重）启动时由主进程在 `ready` 之后补发一次——否则模型看不到已有清单，
+   * 而清单还好好地在界面上，用户完全看不出模型已经忘了它。
+   */
+  | { type: "todoSnapshot"; todos: ViewTodo[] }
   /** 主进程对一条审批的答复，worker 据此决定放行还是阻断 */
   | { type: "approvalResult"; toolCallId: string; approved: boolean; reason?: string }
   /**

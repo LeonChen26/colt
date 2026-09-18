@@ -9,14 +9,15 @@ import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "el
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import type { ConversationView, ViewFileChange, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
+import type { ConversationView, ViewFileChange, ViewTodo, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
 import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
-import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, latestContextUsed } from "./db/repo";
+import { todoStore } from "./todo-store";
+import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed } from "./db/repo";
 import { normalizeRootKey } from "./db/index";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
@@ -145,6 +146,12 @@ export class SessionManager {
    * 会造成读放大；主进程是 file_changes 的唯一写入方，故写入点失效即安全。
    */
   readonly #fileChangesCache = new Map<string, ViewFileChange[]>();
+  /**
+   * 待办清单缓存（key 为 sessionId）。与 `#fileChangesCache` 同一套理由与寿命：
+   * 视图投影出口每次 flush 都要这份列表，而流式期间约 50ms 一次，逐次查库就是读放大；
+   * 主进程是 `todos` 表的唯一写入方（`TodoStore`），故写入点失效即安全。
+   */
+  readonly #todosCache = new Map<string, ViewTodo[]>();
   #window: BrowserWindow | undefined;
   #reaper?: NodeJS.Timeout;
   /**
@@ -176,6 +183,26 @@ export class SessionManager {
     emit: (sessionId, requests) => this.#emit("userquestion.pending", { sessionId, requests }),
     attention: (sessionId) => this.#syncAttention(sessionId),
   });
+
+  /**
+   * 把待办清单的宿主接线接上：写入点失效缓存并重推视图、并把整份清单推给 worker 做镜像。
+   *
+   * 状态机本身在 `TodoStore` 里（它没有会话级内存——真源是 `todos` 表），
+   * 所以清理只发生在下面与 `#fileChangesCache` 并列的那几处，这里只负责接线。
+   */
+  constructor() {
+    todoStore.setHost({
+      changed: (sessionId) => {
+        this.#todosCache.delete(sessionId);
+        const entry = this.#workers.get(sessionId);
+        if (entry) this.#emitView(entry);
+      },
+      push: (sessionId, todos) => {
+        // worker 已被回收时静默丢弃：清单真源在库，下次起 worker 时由 `ready` 补发
+        if (this.#workers.has(sessionId)) this.#post(sessionId, { type: "todoSnapshot", todos });
+      },
+    });
+  }
 
   attachWindow(window: BrowserWindow): void {
     this.#window = window;
@@ -525,8 +552,22 @@ export class SessionManager {
     return {
       ...view,
       fileChanges: this.#fileChanges(view.sessionId),
+      todos: this.#todos(view.sessionId),
       stats: { ...view.stats, contextUsed },
     };
+  }
+
+  /**
+   * 会话待办清单（DB 为真源），按会话缓存。
+   * 与 `#fileChanges` 同一条路：唯一写入方是主进程（`TodoStore`），故写入点失效即可；
+   * 清单为空时返回 `[]`——那是「没有清单」，不是「一列 ghost 待办」。
+   */
+  #todos(sessionId: string): ViewTodo[] {
+    const cached = this.#todosCache.get(sessionId);
+    if (cached) return cached;
+    const list = listSessionTodos(sessionId);
+    this.#todosCache.set(sessionId, list);
+    return list;
   }
 
   /**
@@ -664,6 +705,14 @@ export class SessionManager {
           // 此处 worker 已把 state 建好（它在 init 末尾才发 ready），补发是安全的。
           const queued = entry.pendingCommands ?? [];
           entry.pendingCommands = undefined;
+          // 待办清单镜像必须**排在补发命令之前**：补发里若有 prompt，它会立刻发起模型请求，
+          // 而注入读的正是这份镜像（否则模型看不到已有清单，而清单还好好地在界面上，
+          // 用户完全看不出模型已经忘了它）。清单真源在库，这里读的是最新一份；
+          // 排队里可能已有一条同源的 todoSnapshot，重发一次无害。
+          entry.child.postMessage({
+            type: "todoSnapshot",
+            todos: listSessionTodos(options.sessionId),
+          } satisfies WorkerCommand);
           for (const command of queued) entry.child.postMessage(command);
           readyDeferred.resolve();
           // 通知界面：worker 已就绪（侧栏据此把“休眠/中断”退回正常态）
@@ -834,8 +883,9 @@ export class SessionManager {
       // - "closed"（切走 / 启动超时 / 应用退出）→ 静默，属预期行为
       const reason = entry.disposeReason;
       this.#workers.delete(options.sessionId);
-      // 与 #disposeWorker 对齐：worker 没了，改动列表缓存也一并丢弃
+      // 与 #disposeWorker 对齐：worker 没了，改动列表与待办清单的缓存也一并丢弃
       this.#fileChangesCache.delete(options.sessionId);
+      this.#todosCache.delete(options.sessionId);
       // 进程异常退出（未走 dispose 命令）时也要收掉浏览器窗口，避免孤儿窗口；
       // 正常 dispose 已先关过，这里是幂等空操作
       hostBridge.disposeSession(options.sessionId);
@@ -1158,6 +1208,7 @@ export class SessionManager {
     this.#workers.delete(entry.sessionId);
     // 缓存与 worker 同寿命：进程没了就丢弃，避免为打开过的历史会话常驻内存
     this.#fileChangesCache.delete(entry.sessionId);
+    this.#todosCache.delete(entry.sessionId);
     // 该会话的浏览器窗口随 worker 一起关闭，避免遗留孤儿窗口
     hostBridge.disposeSession(entry.sessionId);
     // worker 没了就无人能响应审批，待审条目必须清掉，否则界面残留幽灵卡片
@@ -1226,6 +1277,7 @@ export class SessionManager {
     }
     this.#workers.clear();
     this.#fileChangesCache.clear();
+    this.#todosCache.clear();
     hostBridge.disposeAll();
   }
 }

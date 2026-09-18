@@ -83,6 +83,7 @@ function bigView(sessionId: string, count: number, plain = false): ConversationV
     messages,
     toolResults,
     fileChanges: [],
+    todos: [],
     streamingText: null,
     thought: null,
     runningTools: [],

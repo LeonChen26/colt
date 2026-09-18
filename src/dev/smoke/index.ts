@@ -27,6 +27,11 @@
  * memory-e2e：记忆行为的真实调用验证（**打模型、计费**）——注入可见性（不读文件答密语）、
  *        沉淀落盘+索引同步、/memory-tidy 整理（合并/删过时/归档/通知/改动记录）、
  *        冷层检索（现行文件已删的条目仍能被 memory_search 答出）
+ * todo：待办清单（第 ④ 项目能力）的跨进程链路与界面，**不打模型**——走产品自己的写入路径
+ *        `hostBridge.handle({capability:"todo"})`：真实往返（工具 → 库 → 主进程视图 → DOM）、
+ *        单条 in_progress 约束、已完成折一行 + 命中测试、依赖未满足的「等待：」与拒绝开工、
+ *        空态两层（无清单不渲染 / 有清单空闲）、页签更名（v1.48「任务摘要」）、
+ *        worker 回收重启后从库重建、下钻面包屑与「返回」文案同名
  * perf：长会话的**渲染**开销（不调模型、不计费）——用 rAF 采样最长帧：条数扫描量「打开长会话」
  *        的挂载成本；再量流式期间「每 50ms 整份重推」的每帧成本，且分三组对照——「只动最后一条」
  *        （真实流式）、「内容一个字节都不变」（稳定投影的纯度检验）、「空历史」
@@ -71,6 +76,7 @@ import {
   runSessionDraft,
 } from "./modes/model";
 import { runReenter } from "./modes/reenter";
+import { runTodo } from "./modes/todo";
 
 export async function runSmoke(window: BrowserWindow, outputPath: string): Promise<void> {
   // outputPath 由 launcher 归一化到 out/ 下（见 main/index.ts 的 smokeArtifactPath）
@@ -176,6 +182,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runDock(window, project.id, sessionsDir, log, run);
     } else if (mode === "perf") {
       await runPerf(window, project.id, sessionsDir, log, run);
+    } else if (mode === "todo") {
+      await runTodo(window, project.id, sessionsDir, log, run);
     } else if (mode === "model") {
       await runModelSelect(window, sessionsDir, project.id, log, run);
       await runModelFallback(window, sessionsDir, project.id, log, run);

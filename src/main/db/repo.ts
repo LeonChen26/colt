@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { Project, ProjectFileChange, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
+import type { ViewTodo } from "@shared/todo";
 import { toStoredThinkingLevel } from "@shared/thinking-level";
 import { getDatabase, normalizeRootKey } from "./index";
 
@@ -352,6 +353,86 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
     netAddedLines: row.net_added_lines,
     netRemovedLines: row.net_removed_lines,
   }));
+}
+
+/**
+ * 会话级待办清单，按 `ord` 升序（= 模型自己排的顺序）。
+ *
+ * 与 `file_changes` 同一条路：**真源是库**，worker 被回收重启后仍能完整重建。
+ * `blocked_by_json` 解析失败当作空依赖——脏数据不该让整份清单读不出来
+ * （它只是约束信息，缺了最坏是少一次校验，而不是界面空白）。
+ */
+export function listSessionTodos(sessionId: string): ViewTodo[] {
+  const rows = getDatabase()
+    .prepare(
+      `SELECT id, subject, active_form, status, blocked_by_json, updated_at
+       FROM todos WHERE session_id = ? ORDER BY ord ASC, id ASC`,
+    )
+    .all(sessionId) as unknown as {
+    id: string;
+    subject: string;
+    active_form: string;
+    status: string;
+    blocked_by_json: string;
+    updated_at: number;
+  }[];
+
+  return rows.map((row) => ({
+    id: row.id,
+    subject: row.subject,
+    activeForm: row.active_form,
+    status: row.status === "in_progress" || row.status === "completed" ? row.status : "pending",
+    blockedBy: parseBlockedBy(row.blocked_by_json),
+    updatedAt: row.updated_at,
+  }));
+}
+
+function parseBlockedBy(json: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 整份覆盖某会话的清单（删光再按序写入，**一个事务**）。
+ *
+ * 为什么是「整份覆盖」而不是逐条 upsert/delete：写入方是 `TodoStore` 的同步状态机，
+ * 它的每个动作**都**产出完整快照（见 `DESIGN-todo.md` §5）。整份覆盖把「要么全成、
+ * 要么全不动」从句内约定升级成**库层保证**——依赖校验失败时我们一行都还没写，
+ * 而写入过程若崩在中途，事务保证不会留下写了一半的清单（那会让之后的校验莫名失败）。
+ * 顺序由 `ord` 承担，读回来即模型看到的顺序。
+ */
+export function replaceSessionTodos(sessionId: string, todos: readonly ViewTodo[]): void {
+  const db = getDatabase();
+  const remove = db.prepare("DELETE FROM todos WHERE session_id = ?");
+  const insert = db.prepare(
+    `INSERT INTO todos (session_id, id, ord, subject, active_form, status, blocked_by_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  db.exec("BEGIN");
+  try {
+    remove.run(sessionId);
+    todos.forEach((todo, index) => {
+      insert.run(
+        sessionId,
+        todo.id,
+        index,
+        todo.subject,
+        todo.activeForm,
+        todo.status,
+        JSON.stringify(todo.blockedBy),
+        todo.updatedAt,
+      );
+    });
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 /**

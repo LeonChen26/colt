@@ -11,7 +11,7 @@ import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 9;
+const LATEST = 10;
 
 let root: string;
 
@@ -253,6 +253,18 @@ describe("openDatabase 迁移", () => {
     // NULL = 从未选过：老会话在核心里存的是 off（当年的默认值），那是被「显式关闭思考」
     // 翻译出来的 400 源头，所以这里必须是 NULL 而不是 off
     assert.equal(row.thinking_level, null, "存量会话不应被写成 off");
+  });
+
+  test("v10 为旧库补建 todos 表（旧库没有清单，建表即完成）", () => {
+    seedLegacy(root, LEGACY_SCHEMA, 0);
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    const table = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='todos'")
+      .get();
+    assert.ok(table, "todos 表应已建立");
+    const row = db.prepare("SELECT COUNT(*) AS c FROM todos").get() as { c: number };
+    assert.equal(row.c, 0, "旧库没有任何清单行");
   });
 
   test("新库 projects 含 root_key 且唯一索引生效", () => {

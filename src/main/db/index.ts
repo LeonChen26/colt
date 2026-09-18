@@ -119,6 +119,28 @@ CREATE TABLE IF NOT EXISTS file_baselines (
   PRIMARY KEY (session_id, file_path)
 );
 
+/**
+ * 待办清单（todo 工具）。**主进程是唯一写入方**，真源就在这张表里——
+ * 不学参考实现「不落盘、靠工具结果的 details 从会话分支重放」：worker 会被空闲回收重启，
+ * 重启后进程内存归零，而压缩之后分支里那条 toolResult 还在不在我们没验证过。
+ * 落库把这个前提整个去掉（见 DESIGN-todo.md §3 决策一）。
+ */
+CREATE TABLE IF NOT EXISTS todos (
+  session_id TEXT NOT NULL,
+  /** 主进程生成的稳定 id（模型回传它定位，重启后不变） */
+  id TEXT NOT NULL,
+  /** 清单内的位置（读回来按它排序，模型看到的顺序 = 它自己排的顺序） */
+  ord INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  active_form TEXT NOT NULL,
+  status TEXT NOT NULL,
+  /** 依赖的其它条目 id，JSON 数组字符串（空数组写 '[]'，不留 NULL） */
+  blocked_by_json TEXT NOT NULL DEFAULT '[]',
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, ord);
+
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -141,7 +163,7 @@ CREATE TABLE IF NOT EXISTS settings (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 /** 判断某表是否存在：迁移要兼容「早期形态」的旧库，某些表可能还没建 */
 function hasTable(instance: DatabaseSync, table: string): boolean {
@@ -232,6 +254,26 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
     // （压缩、审批分析器都因此失效），故不能再沿用内核对老会话的持久值。
     version: 9,
     up: (instance) => addColumnIfMissing(instance, "sessions", "thinking_level", "TEXT"),
+  },
+  {
+    // v10：待办清单表。旧库此刻的清单是空的（功能此前不存在），故没有任何回填——
+    // 建表即完成；`IF NOT EXISTS` 与 v6 同款，重复跑无副作用。
+    version: 10,
+    up: (instance) =>
+      instance.exec(
+        `CREATE TABLE IF NOT EXISTS todos (
+           session_id TEXT NOT NULL,
+           id TEXT NOT NULL,
+           ord INTEGER NOT NULL,
+           subject TEXT NOT NULL,
+           active_form TEXT NOT NULL,
+           status TEXT NOT NULL,
+           blocked_by_json TEXT NOT NULL DEFAULT '[]',
+           updated_at INTEGER NOT NULL,
+           PRIMARY KEY (session_id, id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, ord);`,
+      ),
   },
 ];
 

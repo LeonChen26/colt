@@ -34,6 +34,7 @@ import { buildProvider } from "@shared/provider-factory";
 import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
+import { type ViewTodo, renderTodoBlock } from "@shared/todo";
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -51,6 +52,7 @@ import { createAskUserGateway, createAskUserTools, isQuestionTool } from "./lib/
 import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
 import { createMemoryTools } from "./lib/memory-tool";
+import { createTodoTools } from "./lib/todo-tool";
 import { ToolCallTracker, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
 import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
 import {
@@ -242,6 +244,8 @@ interface WorkerState {
      */
     skills: string[];
     fileChanges: ViewFileChange[];
+    /** 待办清单：投影时恒为空，主进程会用库里的完整清单覆盖它（真源在主进程） */
+    todos: ViewTodo[];
     contextUsed: number;
   };
   unsubscribe: () => void;
@@ -256,6 +260,14 @@ async function projectBranches(current: WorkerState): Promise<WorkerBranchNode[]
 }
 
 let state: WorkerState | undefined;
+/**
+ * 待办清单的**镜像**：主进程是唯一写入方，每次写入后整份推来一份（`todoSnapshot`）。
+ *
+ * 为什么 worker 手里要有这一份：`transform_context` 是**同步**的，要在每次模型请求前把
+ * 清单拼进系统提示词，就不能在热路径上现拉一次 RPC（延迟与失败模式都更差）。
+ * ⚠️ 它只是缓存，**真源是主进程的库**；worker 重启后由主进程在 `ready` 时补发。
+ */
+let todoMirror: ViewTodo[] = [];
 /** 流式期间合并推送，避免每个 token 一次 IPC */
 let flushTimer: NodeJS.Timeout | undefined;
 /** 已落盘的工具图片记账（每个 worker 生命周期一份，见 lib/tool-image-spill） */
@@ -373,6 +385,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createBrowserTools(hostBridge),
         ...createComputerTools(hostBridge),
         ...createMemoryTools(hostBridge),
+        ...createTodoTools(hostBridge),
         ...createAskUserTools(questions),
       ],
       toolContext: { env: executionEnv },
@@ -451,6 +464,12 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     let withContext = await agentsMdInjector.systemPromptFor(event.systemPrompt);
     withContext = await userMemoryInjector.systemPromptFor(withContext);
     withContext = await memoryInjector.systemPromptFor(withContext);
+    // 待办清单（每请求）：与记忆块同一处注入、同样走 systemPrompt。
+    // 清单**必须每请求重拼**——内核只接受 create-time 的 systemPrompt，它不会帮我们重算
+    // （`AGENTS.md` §四「把库提供了函数当成库会调用它」的同族坑）。内容不变时拼出的串
+    // 逐字相同，提示词缓存照常命中；空清单不产出任何东西（`renderTodoBlock` 的口径）。
+    const todoBlock = renderTodoBlock(todoMirror);
+    if (todoBlock !== "") withContext = `${withContext}\n\n${todoBlock}`;
     return { systemPrompt: withContext };
   });
 
@@ -574,6 +593,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     thinkingLevel,
     skills: skills.skills.map((item) => item.name),
     fileChanges: [] as ViewFileChange[],
+    // 与 fileChanges 同理：投影时恒为空，主进程会用数据库里那份完整清单覆盖它
+    todos: [] as ViewTodo[],
     // 进程内初值为 0；首个 usage 事件到达后修正，切会话/重启时由主进程用 DB 覆盖
     contextUsed: 0,
   };
@@ -702,6 +723,12 @@ async function handle(command: WorkerCommand): Promise<void> {
     // 宿主能力答复：唤醒阻塞在 callHost 的工具，同样不能依赖会话状态
     case "toolRpcResult":
       hostBridge.settle(command.requestId, command.ok, command.ok ? command.result : command.error);
+      return;
+
+    // 待办清单镜像：主进程每次写入后整份推来，这里**整份覆盖**。
+    // 不依赖会话状态（`state` 还没建好时也要收下）——`ready` 之前主进程也可能推。
+    case "todoSnapshot":
+      todoMirror = command.todos;
       return;
 
     case "prompt": {
