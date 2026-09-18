@@ -13,3 +13,9 @@ release/
 # 目录已由 .colt/ 改名为 .workbuddy/（规则没跟着改，曾静默失效）
 .workbuddy/
 .colt/
+
+# Logo 的设计工具源文件与导出素材（本地设计产物，不进版本库）
+# 按**具体路径**忽略，不用 *.miora / *_assets 这类通配——
+# 以后真有个需要提交的同名目录时，通配会静默把它挡在门外。
+colt-logo.miora
+colt-logo_assets/
