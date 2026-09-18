@@ -57,10 +57,15 @@
 ⑦ 渲染层重渲染
 ```
 
-两个容易记错的点：
+三个容易记错的点：
 
 - **DB 是 main 写的**，不是 worker。worker 只**上报**（`usage` / `toolCall` / `fileChange`），main 收到后落库，再把加工过的视图推回渲染层（`session-manager.ts` 的 `#withDbChanges`）。
 - **净值在主进程算**：**基线**由 worker 在改动前抓（`worker/lib/baseline.ts`，挂在 `before_tool`），**当前内容与 diff** 由 main 算（`main/net-change.ts` + 纯函数 `shared/line-diff.ts`）。
+- **`ConversationView` 是「全量快照 + 全量重推」**，不是增量：流式期间 `scheduleFlush` 每 50ms 把**整份**视图重新投影、重新序列化、重新发一遍（`worker/entry.ts`）。
+  所以**任何大 payload 放进视图，代价都要乘上「被推了几次」**——一轮几十分钟的运行里，同一张截图会被搬几十上百次。
+  带图的工具结果因此在视图里只留 `hasImage`：图片由 worker 落盘一次（`worker/lib/tool-image-spill.ts`），
+  卡片展开时才用 `session.toolOutput` 从主进程读回（命名与校验见 `shared/tool-output.ts`、读取见 `main/tool-output.ts`）。
+  往视图里加新字段前先问一句：**它会不会很大、以及会不会每 50ms 重发一次？**
 
 ---
 
@@ -212,6 +217,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 | 下载 | 单文件 **100MB**（超限取消并如实提示）；观测列表保留最近 **5** 条 | 落盘要有界。⚠️ 那个 5 是**观测列表**的条数上限（`MAX_DOWNLOADS_PER_SESSION` 只做缓冲截断），**并不阻止第 6 个下载**——要真正限制下载数量需另加每会话计数与 `item.cancel()` |
 | 截图 TTL | **2 分钟** | 电脑控制的截图不能无限留 |
 | 文件预览 | 文本 **1MB** / 图片 **8MB** | 超出**直接报「过大」，不截断**——半截文件比看不到更容易误导 |
+| 工具截图 | 落盘一次、按需读回（视图里只留 `hasImage`），单张上限 **8MB** | 视图是全量快照、流式期间每 50ms 重推（见 §二），base64 放进视图等于被反复搬运。落盘在 `<userData>/tool-output/<sessionId>/`（名 = `<toolCallId>.<ext>`），会话删除时整目录清掉；读不回来要分档如实说（`missing` / `too-large` / `unreadable`），不能一律说「没有」 |
 | 基线快照 | 文本 **1MB** | 净值基线的体积上限 |
 | 「页面够不到的内容宽度」重测 | 去抖 **300ms**；装载未完成时重试 **3 次 × 500ms** | 拖动分隔条时宽度逐像素变化，逐次去查页面布局太贵；而 `did-finish-load` 触发时子资源仍在飞（`isLoading()` 仍为 true），**只量一次会静默漏掉**——页面真装不下却永远不提示（v1.39 实测踩过） |
 | 「适应宽度」的最小缩放 | **0.6**（`MIN_FIT_ZOOM`） | 最窄栏（219）里装下 700px 的页面要缩到约 31%，那已经认不出字了——缩到看不见等于把「看不到右边」换成「什么都看不到」。到下限仍装不下就**如实说**并撤掉按钮，不再往下缩 |

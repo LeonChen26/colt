@@ -41,6 +41,7 @@ import {
   toRelative,
   type BranchEntry,
 } from "./lib/project";
+import { spillToolImages } from "./lib/tool-image-spill";
 import { HostBridge } from "./lib/host-bridge";
 import { captureBaseline } from "./lib/baseline";
 import { createAskUserGateway, createAskUserTools, isQuestionTool } from "./lib/ask-user-tool";
@@ -211,6 +212,8 @@ interface WorkerState {
   session: Session<JsonlSessionMetadata>;
   models: ReturnType<typeof createModels>;
   providerId: string;
+  /** 工具图片落盘目录（主进程下发；见 @shared/tool-output） */
+  toolOutputDir: string;
   snapshot: LaneSnapshot;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
@@ -252,12 +255,27 @@ async function projectBranches(current: WorkerState): Promise<WorkerBranchNode[]
 let state: WorkerState | undefined;
 /** 流式期间合并推送，避免每个 token 一次 IPC */
 let flushTimer: NodeJS.Timeout | undefined;
+/** 已落盘的工具图片记账（每个 worker 生命周期一份，见 lib/tool-image-spill） */
+const spilledImages = new Set<string>();
+
+/**
+ * 推一次完整视图——**所有 `session.view` 的唯一出口**。
+ *
+ * 为什么要有这个漏斗：图片不进视图（见 `@shared/tool-output`），而落盘必须发生在
+ * 「视图被推出去之前」——否则渲染层会先拿到一个 `hasImage`、却读不到对应文件的窗口。
+ * 这段逻辑若散在 8 处各写一遍，迟早漏掉一处，故收敛到一个函数。
+ */
+function pushView(): void {
+  if (!state) return;
+  spillToolImages(state.snapshot.transcript, state.toolOutputDir, spilledImages);
+  send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+}
 
 function scheduleFlush(): void {
   if (flushTimer || !state) return;
   flushTimer = setTimeout(() => {
     flushTimer = undefined;
-    if (state) send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+    pushView();
   }, 50);
 }
 
@@ -564,6 +582,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     session,
     models,
     providerId: providerConfig.id,
+    toolOutputDir: command.toolOutputDir,
     snapshot: watch.snapshot,
     resnapshot: () => watch.resnapshot(context),
     reportMemoryIndex,
@@ -585,7 +604,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     cwd,
     model: meta.model,
   });
-  send({ type: "view", view: project(state.snapshot, meta, toolDurations) });
+  pushView();
 
   // 恢复上次退出时未完成的运行
   for (const operation of open) {
@@ -686,7 +705,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       if (!state) throw new Error("会话尚未初始化");
       await state.lane.prompt(command.text, toImageContent(command.images), context);
       // 运行结束后补推一次终态
-      if (state) send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+      pushView();
       return;
     }
 
@@ -733,7 +752,7 @@ async function handle(command: WorkerCommand): Promise<void> {
         providerId: targetProviderId,
         modelId: command.modelId,
       });
-      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+      pushView();
       return;
     }
 
@@ -741,7 +760,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       if (!state) throw new Error("会话尚未初始化");
       await state.lane.setThinkingLevel(command.level, context);
       state.meta.thinkingLevel = command.level;
-      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+      pushView();
       return;
     }
 
@@ -762,7 +781,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       }
       // 压缩重写了 transcript，增量事件不足以重建，必须重新取快照
       state.snapshot = await state.resnapshot();
-      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+      pushView();
       send({ type: "notice", message: compactDoneMessage(state.snapshot) });
       // 压缩是会话记忆的数据丢失时刻（摘要保 prose 不保事实）：
       // 提醒助手把本轮值得留的事实沉淀进记忆文件。一次性提醒，随下一次请求注入；
@@ -836,7 +855,7 @@ async function handle(command: WorkerCommand): Promise<void> {
         return;
       }
       // 运行结束后补推一次终态（同 prompt）
-      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+      pushView();
       return;
     }
 
@@ -852,7 +871,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       await state.lane.navigateTree(command.targetId, { summarize: false }, context);
       // 跳转换了整条分支，transcript 需要整体重建
       state.snapshot = await state.resnapshot();
-      send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+      pushView();
       send({ type: "branches", nodes: await projectBranches(state) });
       return;
     }

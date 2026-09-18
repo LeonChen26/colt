@@ -29,6 +29,7 @@ import {
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
 import { dropSessionPin, listPinnedSessions, setSessionPinned } from "../session-pins";
+import { readToolImage, removeToolOutput } from "../tool-output";
 import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
@@ -325,6 +326,8 @@ export function registerIpcHandlers(): void {
     // 会话已永久删除：清掉审批状态，否则会话级模式/记忆规则会滞留在内存
     sessionManager.approvals.unregister(request.sessionId);
     dropSessionPin(request.sessionId);
+    // 工具图片与 JSONL 同寿命：会话删了，落盘的截图也一并清掉
+    removeToolOutput(request.sessionId);
     return { ok: true } as const;
   });
 
@@ -336,6 +339,11 @@ export function registerIpcHandlers(): void {
   });
 
   handle("session.listPinned", () => listPinnedSessions());
+
+  // 按需读回工具图片：图片不进视图（见 @shared/tool-output），展开卡片时才来这里取
+  handle("session.toolOutput", (request) =>
+    readToolImage(request.sessionId, request.toolCallId),
+  );
 
   handle("secrets.set", (request) => {
     setSecret(request.key, request.value.trim());

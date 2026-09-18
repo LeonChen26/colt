@@ -17,6 +17,7 @@ import type {
 } from "@shared/worker-protocol";
 import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 import type { ThinkingLevel } from "@shared/thinking-level";
+import { toolImageFileName } from "@shared/tool-output";
 import { serializeArgs } from "./telemetry";
 
 /**
@@ -262,12 +263,19 @@ export function project(
         isError?: boolean;
       };
       if (typeof result.toolCallId === "string") {
+        const image = extractImage(result.content);
         toolResults.push({
           id: result.toolCallId,
           output: extractText(result.content),
           isError: Boolean(result.isError),
-          // 截图等图片结果另存一份，供工具卡片直接展示
-          image: extractImage(result.content),
+          // 截图等图片：能落盘的只报「有图」——base64 不进视图（视图每 50ms 全量重推一次，
+          // 一张几 MB 的截图会被反复搬运），展开卡片时用 session.toolOutput 读回。
+          // 落不了盘的类型（mime 认不出）才内联，宁可这一条大点也别让用户看不到图。
+          ...(image === undefined
+            ? {}
+            : toolImageFileName(result.toolCallId, image.mimeType) === undefined
+              ? { image }
+              : { hasImage: true }),
         });
       }
     }

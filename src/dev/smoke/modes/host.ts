@@ -212,17 +212,27 @@ export async function runHost(
     return { matched: hits.length, total: buttons.length };
   })()`);
   log(`展开工具卡片：${expanded.matched} 张（页面按钮总数 ${expanded.total}）`);
-  await sleep(1500);
 
   // 比肉眼更硬的判据：断言图片元素真的在 DOM 里并完成解码
-  // naturalWidth > 0 表示浏览器已成功加载并解码该图，否则说明渲染失败
-  const images = await run<{ count: number; sizes: string[] }>(`(() => {
+  // （naturalWidth > 0 表示浏览器已成功加载并解码，否则说明渲染失败）
+  //
+  // 图现在是**按需读回**的（视图里只留 hasImage，展开才走 session.toolOutput 取，见
+  // @shared/tool-output），所以不能 sleep 一下就断言——必须轮询到「都解码完成」或超时，
+  // 否则会把「还在取」打成假红。
+  const readImages = `(() => {
     const imgs = [...document.querySelectorAll('img[alt="工具截图"]')];
     return {
       count: imgs.length,
+      ready: imgs.length > 0 && imgs.every((img) => img.complete && img.naturalWidth > 0),
       sizes: imgs.map((img) => img.naturalWidth + "x" + img.naturalHeight + "(complete=" + img.complete + ")"),
     };
-  })()`);
+  })()`;
+  const imageDeadline = Date.now() + 10_000;
+  let images = await run<{ count: number; ready: boolean; sizes: string[] }>(readImages);
+  while (!images.ready && Date.now() < imageDeadline) {
+    await sleep(500);
+    images = await run<{ count: number; ready: boolean; sizes: string[] }>(readImages);
+  }
   log(`页面内工具截图 <img>：${images.count} 张，尺寸：${images.sizes.join(", ") || "无"}`);
 
   // 用户消息里的图片也必须真的渲染出来（只带图、不带文字时同样要显示）

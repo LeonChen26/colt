@@ -33,7 +33,7 @@ import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
 import { Markdown } from "../../components/Markdown";
-import { AssistantRow, MessageBubble, ThinkingRail, ToolCard } from "./MessageList";
+import { AssistantRow, MessageBubble, ThinkingRail, ToolCard, type ToolResult } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCards } from "./QuestionCard";
 import { useBlockingCards } from "./useBlockingCards";
@@ -846,7 +846,9 @@ export function Conversation({
 
   // toolCallId → 工具输出，供工具卡片展开时查阅
   const resultMap = useMemo(() => {
-    const map = new Map<string, { output: string; isError: boolean }>();
+    // 值直接用契约里的 ViewToolResult（含 hasImage）——别在这里收窄成 {output,isError}，
+    // 否则「图在视图外」这个字段会被静默丢掉，卡片就永远读不回截图
+    const map = new Map<string, ToolResult>();
     for (const item of view?.toolResults ?? []) map.set(item.id, item);
     return map;
   }, [view?.toolResults]);
@@ -1089,6 +1091,7 @@ export function Conversation({
             {view?.messages.map((message) => (
               <MessageBubble
                 key={message.id}
+                sessionId={sessionId}
                 message={message}
                 resultMap={resultMap}
                 changes={changes}
@@ -1113,6 +1116,7 @@ export function Conversation({
                 {view?.runningTools.map((tool) => (
                   <ToolCard
                     key={tool.id}
+                    sessionId={sessionId}
                     openId={tool.id}
                     openState={toolOpenState}
                     onToggleOpen={toggleToolOpen}

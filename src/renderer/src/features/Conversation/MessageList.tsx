@@ -26,7 +26,33 @@ import { TerminalOutput } from "../../components/TerminalOutput";
 import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
 import { cn } from "../../lib/utils";
 
-type ToolResult = { output: string; isError: boolean; image?: { data: string; mimeType: string } };
+/**
+ * 工具结果在渲染层的取值形态。`hasImage` 表示**图不在视图里**（已由 worker 落盘），
+ * 展开卡片时用 `session.toolOutput` 读回；`image` 只用于落不了盘的图片类型。
+ */
+export type ToolResult = {
+  output: string;
+  isError: boolean;
+  hasImage?: boolean;
+  image?: { data: string; mimeType: string };
+};
+
+/** 按需读回的截图：三态分开，失败的原因要如实说（见 describeMissingImage） */
+type FetchedImage =
+  | { status: "loading" }
+  | { status: "ok"; data: string; mimeType: string }
+  | { status: "failed"; message: string };
+
+/**
+ * 读不回来的原因 → 界面上该说的话。
+ * **不能一律说「没有」**：那会把「文件太大没保留」和「读盘失败」都说成「本来就没图」，
+ * 用户据此得出的是错的结论（`docs/ERRORS.md` 的不许静默）。
+ */
+function describeMissingImage(status: "missing" | "too-large" | "unreadable"): string {
+  if (status === "too-large") return "截图过大，未随会话保留";
+  if (status === "unreadable") return "截图读取失败";
+  return "截图已不可用";
+}
 
 /**
  * 助手行级骨架：左侧固定角色列 + 右侧正文列。
@@ -44,6 +70,7 @@ export function AssistantRow({ children }: { children: ReactNode }): React.JSX.E
 
 /** 一条消息：正文 + 其发起的工具调用卡片 */
 export function MessageBubble({
+  sessionId,
   message,
   resultMap,
   changes,
@@ -52,6 +79,8 @@ export function MessageBubble({
   openState,
   onToggleOpen,
 }: {
+  /** 会话 id：工具卡按需读回落盘截图时要带上它（见 ToolCard） */
+  sessionId: string;
   message: ViewMessage;
   resultMap: Map<string, ToolResult>;
   changes: ViewFileChange[];
@@ -94,6 +123,7 @@ export function MessageBubble({
       {message.toolCalls.map((call) => (
         <ToolCard
           key={call.id}
+          sessionId={sessionId}
           openId={call.id}
           openState={openState}
           onToggleOpen={onToggleOpen}
@@ -205,6 +235,7 @@ function formatDuration(ms: number): string {
 
 /** 可展开的工具调用卡片：折叠时显示名称 + 参数摘要 + 增删/耗时 */
 export function ToolCard({
+  sessionId,
   name,
   args,
   result,
@@ -217,6 +248,8 @@ export function ToolCard({
   onHoverFile,
   onOpenFile,
 }: {
+  /** 会话 id（按需读回落盘截图用） */
+  sessionId: string;
   name: string;
   args: string;
   result?: ToolResult;
@@ -245,6 +278,44 @@ export function ToolCard({
   const setOpen = (value: boolean): void => {
     onToggleOpen(openId, value);
   };
+  /**
+   * 截图按需取：视图里只留了 `hasImage` 标记（图片本身由 worker 落盘，见 `@shared/tool-output`），
+   * **展开时才读回来**，且只进本组件的 state、不回填视图——它是展示数据，不该再被反复搬运。
+   */
+  const inlineImage = result?.image;
+  const needsFetch = inlineImage === undefined && result?.hasImage === true;
+  const [fetchedImage, setFetchedImage] = useState<FetchedImage | null>(null);
+  useEffect(() => {
+    if (!open || !needsFetch) return;
+    let stale = false;
+    setFetchedImage({ status: "loading" });
+    void window.colt
+      .invoke("session.toolOutput", { sessionId, toolCallId: openId })
+      .then((res) => {
+        if (stale) return;
+        setFetchedImage(
+          res.status === "ok"
+            ? { status: "ok", data: res.image.data, mimeType: res.image.mimeType }
+            : { status: "failed", message: describeMissingImage(res.status) },
+        );
+      })
+      .catch((error: unknown) => {
+        if (stale) return;
+        setFetchedImage({
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    return () => {
+      stale = true;
+    };
+  }, [open, needsFetch, sessionId, openId]);
+  const imageSrc =
+    inlineImage !== undefined
+      ? `data:${inlineImage.mimeType};base64,${inlineImage.data}`
+      : fetchedImage?.status === "ok"
+        ? `data:${fetchedImage.mimeType};base64,${fetchedImage.data}`
+        : undefined;
   const parsed = useMemo(() => parseArgsJson(args), [args]);
   const { icon, subtitle } = describeTool(name, parsed);
   const isError = result?.isError ?? false;
@@ -369,13 +440,17 @@ export function ToolCard({
               <div className="mb-1 text-[11px] text-text-muted">输出</div>
               {result ? (
                 <>
-                  {result.image && (
+                  {imageSrc !== undefined ? (
                     <img
                       alt="工具截图"
                       className="mb-2 max-h-80 rounded-[6px] border border-line"
-                      src={`data:${result.image.mimeType};base64,${result.image.data}`}
+                      src={imageSrc}
                     />
-                  )}
+                  ) : needsFetch ? (
+                    <p className="mb-2 px-1 text-[11px] text-text-muted">
+                      {fetchedImage?.status === "failed" ? fetchedImage.message : "正在读取截图…"}
+                    </p>
+                  ) : null}
                   {result.output ? (
                     name === "bash" ? (
                       <TerminalOutput text={result.output} className="max-h-80" />
@@ -384,7 +459,7 @@ export function ToolCard({
                         {result.output}
                       </pre>
                     )
-                  ) : result.image ? null : (
+                  ) : imageSrc !== undefined || needsFetch ? null : (
                     <p className="px-1 text-[11px] text-text-muted">（无输出）</p>
                   )}
                 </>

@@ -26,7 +26,19 @@ export interface ViewToolResult {
   id: string;
   output: string;
   isError: boolean;
-  /** 工具产生的图片（如浏览器截图），base64 不含 data URI 前缀 */
+  /**
+   * 该结果带图，但**图片不在视图里**：已由 worker 落盘，展开卡片时用
+   * `session.toolOutput` 读回（命名与校验见 `@shared/tool-output`）。
+   *
+   * 为什么不留 base64：视图是**全量快照**，流式期间每 50ms 重推一次（`scheduleFlush`），
+   * 一张几 MB 的截图会被反复序列化 + 跨进程搬运。落盘一次、按需读回，
+   * 省的不只是首屏，而是**整个运行期间的重复搬运**。
+   */
+  hasImage?: boolean;
+  /**
+   * 内联图片，**只用于落不了盘的图片类型**（mime 认不出，见 `toolImageFileName`）——
+   * 宁可这一条大一点，也不要让用户看不到图。能落盘的一律走 `hasImage`。
+   */
   image?: { data: string; mimeType: string };
 }
 
@@ -217,6 +229,14 @@ export type WorkerCommand =
       model: string;
       /** 思考等级；主进程已按「会话存值 → 默认值」收敛过，worker 原样下发 */
       thinkingLevel: ThinkingLevel;
+      /**
+       * 工具图片的落盘目录（绝对路径，由主进程按会话算好下发）。
+       *
+       * 为什么由主进程给：路径一旦由渲染层指定就等于把任意读盘交出去，
+       * 而 worker 也无从知道 userData 在哪。目录里放的是 `<toolCallId>.<ext>`，
+       * 主进程据此读回、会话删除时整目录清掉。
+       */
+      toolOutputDir: string;
     }
   | { type: "prompt"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "steer"; text: string; images?: { data: string; mimeType: string }[] }

@@ -4,10 +4,11 @@
  * 由 scripts/split-smoke.mjs 从 src/dev/smoke/index.ts 逐字切出，内容与拆分前一致。
  */
 import { BrowserWindow, clipboard, WebContentsView } from "electron";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createSession, getProject, recordFileBaseline } from "../../../main/db/repo";
 import { hostBridge } from "../../../main/host";
 import { sessionManager } from "../../../main/session-manager";
+import { toolOutputDir } from "../../../main/tool-output";
 import { join, resolve } from "node:path";
 import type { ConversationView, ViewFileChange } from "@shared/worker-protocol";
 import type { ApprovalRequest } from "@shared/protocol";
@@ -45,6 +46,9 @@ import { sleep, uncaughtErrors } from "../context";
  * 最硬的一条是 **`aside` 数不变**——迁入前每开一个面板就会多一个中栏浮层 `aside`，
  * 迁入后多开面板 `aside` 数仍与开局一致。
  * ⑦-H / ⑦-G 之后 ② 只剩「统计 / 规则」两个入口，⑦ 的「+」菜单也只剩三项。
+ *
+ * 工具截图的「按需读回」链路（落盘 → 读回 → 不越界 → 随会话删除清理）也在这一段里验：
+ * 它横跨 worker（写）/ 主进程（读）/ 删除清理三处，只有真 userData + 真 IPC 才覆盖得到。
  *
  * 不调用模型、不产生计费；浏览器靶子复用夹具站（port 0，跑完即关）。
  *
@@ -2267,6 +2271,58 @@ export async function runDock(
       "图片照常进附件，同时点名被跳过的非图片",
       mixed.alts.includes("shot.png") && (mixed.notice ?? "").includes("契约.pdf"),
     ]);
+
+    // ---- 工具截图落盘：读回 / 不越界 / 随会话删除清理（见 @shared/tool-output）----
+    // 为什么单独立一段：截图**不进** ConversationView（视图是全量快照、流式期间每 50ms 重推，
+    // 见 ARCHITECTURE §二），改为 worker 落盘一次、卡片展开时按需读回。主进程这一侧
+    // （读回 / 边界 / 删除会话时清目录）**纯逻辑单测碰不到**——它要真的 userData 与真的 IPC；
+    // 而 host 冒烟只验了「图能显示」，没验删除后会不会留下孤儿截图。
+    //
+    // 前提**显式建立**：这里自己写一张假图，不指望「worker 恰好落过盘」——
+    // 依赖别人留下的状态，正是这类用例最容易空转的地方（见 AGENTS §五 ⑬）。
+    log("[工具截图] 按需读回 / 不越界 / 随会话删除清理");
+    const spillSession = createSession(projectId, sessionsDir);
+    const spillDir = toolOutputDir(spillSession.id);
+    const pngBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 9, 8, 7, 6]);
+    mkdirSync(spillDir, { recursive: true });
+    writeFileSync(join(spillDir, "call_smoke.png"), pngBytes);
+
+    const readToolImage = (
+      sessionId: string,
+      toolCallId: string,
+    ): Promise<{ status: string; image?: { data: string; mimeType: string } }> =>
+      run(
+        `window.colt.invoke("session.toolOutput", ${JSON.stringify({ sessionId, toolCallId })})`,
+      );
+
+    const readBack = await readToolImage(spillSession.id, "call_smoke");
+    checks.push([
+      "按需读回落盘的截图：ok + mime 正确 + 字节与写下去的一致",
+      readBack.status === "ok" &&
+        readBack.image?.mimeType === "image/png" &&
+        readBack.image?.data === pngBytes.toString("base64"),
+    ]);
+
+    const absent = await readToolImage(spillSession.id, "call_not_there");
+    checks.push(["没有这张图时如实回 missing（不当 ok、也不抛）", absent.status === "missing"]);
+
+    // 越界：**真的放一个能被越界读到的文件**在上一级，再拿 `../名字` 去要。
+    // 只断言「返回 missing」是不够的——实现里若压根不拼路径，那种断言照样会过。
+    // 这里要证的是它**没有**把上一级那张图读出来（即没真的越出去），
+    // 将来若有人把读取改成朴素的 `join(dir, id)`，这条会立刻变红。
+    const escapePath = join(spillDir, "..", "escape_probe.png");
+    writeFileSync(escapePath, pngBytes);
+    const escaped = await readToolImage(spillSession.id, "../escape_probe");
+    checks.push(["越界 toolCallId 读不到上一级的同名文件（没真的越出去）", escaped.status !== "ok"]);
+    rmSync(escapePath, { force: true });
+
+    await run(
+      `window.colt.invoke("session.delete", ${JSON.stringify({ sessionId: spillSession.id })})`,
+    );
+    await sleep(300);
+    checks.push(["删除会话后落盘目录被清掉（不留孤儿截图）", !existsSync(spillDir)]);
+    const afterDelete = await readToolImage(spillSession.id, "call_smoke");
+    checks.push(["删除后读回不抛异常，仍旧回 missing", afterDelete.status === "missing"]);
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   } finally {

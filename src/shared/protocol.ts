@@ -5,6 +5,7 @@
 
 import type { AskUserQuestion, ConversationView } from "./worker-protocol";
 import type { ThinkingLevel } from "./thinking-level";
+import type { ToolImageResult } from "./tool-output";
 
 /** 环境体检结果 */
 export interface EnvReport {
@@ -240,6 +241,8 @@ export const IPC_CHANNELS = [
   "session.view",
   "session.setPinned",
   "session.listPinned",
+  /** 按需读回一张工具图片（图片已由 worker 落盘，不进视图；见 @shared/tool-output） */
+  "session.toolOutput",
   "secrets.set",
   "changes.list",
   "usage.list",
@@ -405,6 +408,18 @@ export interface IpcInvokeMap {
   "session.listPinned": {
     request: void;
     response: string[];
+  };
+  /**
+   * 按需读回一张工具图片。
+   *
+   * 图片（截图）不进 `ConversationView`：视图是**全量快照**、流式期间每 50ms 重推一次
+   * （`worker/entry.ts` 的 `scheduleFlush`），一张几 MB 的 base64 会被反复序列化 + 跨进程搬运。
+   * 改为 worker 落盘一次、卡片展开时再读回。**路径由主进程按 sessionId 推导**，
+   * 渲染层只给 id —— 让渲染层传路径等于把任意读盘交出去（见 `src/main/tool-output.ts`）。
+   */
+  "session.toolOutput": {
+    request: { sessionId: string; toolCallId: string };
+    response: ToolImageResult;
   };
   "secrets.set": {
     request: { key: "deepseek"; value: string };

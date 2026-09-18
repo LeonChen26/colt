@@ -25,6 +25,7 @@ import { createDeferred } from "./lib/deferred";
 import { isDev } from "./lib/app-mode";
 import { isSessionPinned } from "./session-pins";
 import { evictionVictim, reapTargets } from "./worker-pool";
+import { toolOutputDir } from "./tool-output";
 import { hostBridge } from "./host";
 
 /** 进程池上限，超出时回收最久未活动的空闲会话 */
@@ -883,6 +884,8 @@ export class SessionManager {
       // 会话存值 → 默认值。**不能**让内核的默认（off）兜底：off 会被兼容层翻译成
       // 「显式关闭思考」，对「始终思考」的模型必然 400（详见 shared/thinking-level.ts）
       thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
+      // 工具图片落盘目录：worker 写、主进程读，路径一律由这里算（渲染层无从指定）
+      toolOutputDir: toolOutputDir(options.sessionId),
     } satisfies WorkerCommand);
 
     await readyDeferred.promise;
