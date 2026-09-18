@@ -1,7 +1,15 @@
 // Copyright (c) 2026 Colt
 // SPDX-License-Identifier: MIT
 
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   Check,
   ChevronDown,
@@ -28,7 +36,7 @@ import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
 import { ProjectChanges } from "./features/ProjectChanges";
 import { Settings } from "./features/Settings";
-import { isDraftSession, mergeSessionList } from "./lib/session";
+import { isDraftSession, shouldOfferDraft } from "./lib/session";
 import { cn } from "./lib/utils";
 
 /** 主区视图 */
@@ -149,6 +157,49 @@ export default function App(): React.JSX.Element {
     })();
   }, [mainView]);
 
+  /**
+   * 拉取某项目的会话列表并写入缓存。
+   *
+   * 这里**直接以库为准**（整份替换）：`session.list` 只读库，而**草稿**（首次发消息才落库）
+   * 不在库中——这正是我们要的。草稿只当「当前会话」用，不进侧栏；转正后由 `session.status`
+   * 监听重新拉一次，它才以真实会话的身份出现。
+   *
+   * 这也把「点了新建就退出」留下的空会话挡在门外：那类会话从不落库，列表里自然没有它。
+   */
+  const loadProjectSessions = useCallback(async (projectId: string) => {
+    const list = await window.colt.invoke("session.list", { projectId });
+    setSessionsByProject((map) => new Map(map).set(projectId, list));
+    return list;
+  }, []);
+
+  /**
+   * 手里那条**还没用起来**的草稿（id + 所属项目）。
+   *
+   * 用 ref 而不是 state：它只在事件与 effect 里读写，渲染看的是 `activeSession`，
+   * 放 state 只会多出无谓的重渲染。
+   */
+  const draftRef = useRef<{ id: string; projectId: string } | null>(null);
+
+  /**
+   * 丢掉当前草稿——「还没用起来就离开」的落点。
+   *
+   * 走 `session.discardDraft` 而不是 `session.delete`：前者在主进程里**只在它仍是草稿时**
+   * 生效。渲染层判断「有没有用起来」有一瞬间的不确定（首次发消息落库、与之相伴的进程状态
+   * 推送之间），用 `delete` 一旦错判就是删掉用户刚发出去的会话。
+   */
+  const discardDraft = useCallback(() => {
+    const pending = draftRef.current;
+    if (!pending) return;
+    draftRef.current = null;
+    void window.colt.invoke("session.discardDraft", { sessionId: pending.id }).catch(() => {});
+  }, []);
+
+  // 当前会话不再是那条草稿了 → 丢掉它。切项目、点了别的会话、又新建了一条，都算「离开」；
+  // 草稿没落库也没内容，丢掉不会有任何损失。
+  useEffect(() => {
+    if (draftRef.current && activeSession?.id !== draftRef.current.id) discardDraft();
+  }, [activeSession, discardDraft]);
+
   // 全局监听会话视图：后台会话也能刷新标题、消息数与运行状态
   // （若只靠当前会话的回调，未选中的会话永远停在「新会话」）
   useEffect(() => {
@@ -191,6 +242,22 @@ export default function App(): React.JSX.Element {
   // 全局监听会话进程状态：worker 停止/崩溃后侧栏要能看出来，否则界面看上去“会话还在”
   useEffect(() => {
     return window.colt.on("session.status", ({ sessionId, state }) => {
+      // 草稿「转正」：草稿本身**不会**有进程（`session.open` 对它直接返回，不 fork worker），
+      // 所以一旦它有了进程，就说明它刚落过库（首次 prompt / compact / skill 时先落库、再拉起）。
+      // 此刻把它拉进侧栏——草稿在侧栏里本来是不显示的。
+      // 判断权在主进程的落库时机上，不依赖模型是否回话，因此不会「发了消息却一直不在侧栏」。
+      const pending = draftRef.current;
+      if (pending?.id === sessionId) {
+        draftRef.current = null;
+        void loadProjectSessions(pending.projectId).then((list) => {
+          const persisted = list.find((item) => item.id === sessionId);
+          // 用落库后的那一份替换手里的草稿副本：jsonlPath 不再是空串，
+          // 「它还是不是草稿」的判断从此与本项目列表一致
+          if (persisted) {
+            setActiveSession((current) => (current?.id === persisted.id ? persisted : current));
+          }
+        });
+      }
       setOfflineSessions((map) => {
         const next = new Map(map);
         if (state === "dormant" || state === "crashed") {
@@ -202,7 +269,7 @@ export default function App(): React.JSX.Element {
         return next;
       });
     });
-  }, []);
+  }, [loadProjectSessions]);
 
   // 全局监听两张等人回话的队列：侧栏据此标出「在等你」。
   // 主进程已在窗口不在前台时额外闪任务栏并发系统通知，这里只负责让状态在界面上可见。
@@ -252,21 +319,6 @@ export default function App(): React.JSX.Element {
     },
     [pinnedSessions],
   );
-  /**
-   * 拉取某项目的会话列表并写入缓存。
-   *
-   * 不能直接拿 `session.list` 的结果整份替换：它只读库，**草稿**（首次发消息才落库）
-   * 不在其中，整份替换会让侧栏里那条草稿凭空消失、用户再也点不回来（切项目来回、
-   * 删同项目其它会话都会触发）。合并规则见 `lib/session.ts` 的 `mergeSessionList`。
-   */
-  const loadProjectSessions = useCallback(async (projectId: string) => {
-    const list = await window.colt.invoke("session.list", { projectId });
-    setSessionsByProject((map) =>
-      new Map(map).set(projectId, mergeSessionList(map.get(projectId) ?? [], list)),
-    );
-    return list;
-  }, []);
-
   /**
    * 把某个会话的字段就地写回本地缓存（会话列表 + 当前会话）。
    *
@@ -362,18 +414,31 @@ export default function App(): React.JSX.Element {
     if (!targetId) return;
     try {
       const session = await window.colt.invoke("session.create", { projectId: targetId });
-      // 新会话是**草稿**：首次发消息才落库，所以 session.list 里还没有它。
-      // 必须本地插进列表，否则侧栏看不到这一条，用户也就无从点回来。
-      setSessionsByProject((map) => {
-        const next = new Map(map);
-        next.set(targetId, [session, ...(next.get(targetId) ?? [])]);
-        return next;
-      });
+      // 新会话是**草稿**：只分配 id，不落库、不 fork worker、不建 JSONL。
+      // 因此它**不进侧栏**（列表以库为准，见 loadProjectSessions）——「点了新建就退出」
+      // 不该在侧栏留下一串空会话。这里只把它置为当前会话，好让中间区立刻出现输入框；
+      // 首次发消息落库后由 session.status 监听把它拉进侧栏。
+      discardDraft();
+      draftRef.current = { id: session.id, projectId: targetId };
       setActiveSession(session);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [activeProject]);
+  }, [activeProject, discardDraft]);
+
+  /**
+   * 项目在跟前、却一个会话都没有时，直接给一条草稿：中间区立刻是「欢迎语 + 输入框」，
+   * 用户不必先跑到侧栏去点「+」。
+   *
+   * 放在 `newSession` 之后：effect 的依赖数组在**渲染期**求值，引用还没初始化的 `const`
+   * 会直接 TDZ 报错（切项目那个 effect 因此引用不到它）。
+   */
+  useEffect(() => {
+    if (mainView !== "chat" || !activeProject) return;
+    if (!shouldOfferDraft(activeProject.id, sessionsByProject.get(activeProject.id), activeSession))
+      return;
+    void newSession(activeProject.id);
+  }, [mainView, activeProject, sessionsByProject, activeSession, newSession]);
 
   /** 删除会话：确认 → 调后端 → 刷新列表并适时清空选中 */
   const deleteSession = useCallback(
@@ -625,8 +690,11 @@ export default function App(): React.JSX.Element {
               />
             ) : (
               <div className="flex h-full items-center justify-center">
+                {/* 走到这里只有两种情形：还没选中项目（让用户先去打开一个），
+                    或项目在跟前但会话列表还在路上——后者马上会由自动草稿补上输入框，
+                    所以不再说「新建一个会话开始对话」（那会把用户支使去点侧栏的「+」）。 */}
                 <p className="text-[12.5px] text-text-muted">
-                  {activeProject ? "新建一个会话开始对话" : "打开一个项目目录开始"}
+                  {activeProject ? "正在准备会话…" : "打开一个项目目录开始"}
                 </p>
               </div>
             )}
@@ -710,6 +778,7 @@ function ProjectRow({
 }): React.JSX.Element {
   return (
     <div
+      data-project-row={project.id}
       className={cn(
         "group flex items-center gap-1 rounded-[7px] border-l-2 py-1.5 pl-1.5 pr-1.5 transition",
         active

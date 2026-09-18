@@ -1212,9 +1212,14 @@ export function Conversation({
 
       <div className="conv-center col-start-1 row-start-3 min-w-0 shrink-0">
         <div className="mx-auto max-w-[796px] px-[18px] pb-3.5">
-          {/* 输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行） */}
+          {/*
+            输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行）。
+            `data-conv-session` 标出「输入框此刻属于哪条会话」——草稿会话不进侧栏，
+            界面之外没有别的锚点可用；冒烟靠它取当前会话 id，不靠 DOM 层级去猜（见 AGENTS.md §五⑫）。
+          */}
           <div
             data-conv-card
+            data-conv-session={sessionId}
             className="rounded-[12px] border border-line bg-surface-raised px-3 pb-2 pt-2.5 transition focus-within:border-line-strong"
             onDragOver={(e) => {
               if (e.dataTransfer.types.includes("Files")) e.preventDefault();

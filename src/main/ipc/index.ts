@@ -154,6 +154,7 @@ function jsonlPathFor(projectId: string): string {
  * 而用户从没往里发过一个字。
  *
  * 只存在于内存：重启即消失，这正是「还没用过的会话」应有的语义。
+ * 此外渲染层「还没用就离开」时会走 `session.discardDraft` 主动丢掉（见该 handler）。
  */
 const drafts = new Map<
   string,
@@ -333,6 +334,20 @@ export function registerIpcHandlers(): void {
     removeToolOutput(request.sessionId);
     return { ok: true } as const;
   });
+
+  /**
+   * 丢弃草稿会话：**只有它仍是草稿时**才生效。
+   *
+   * 渲染层不能改用 `session.delete`：那个会真的删库，而它判断「这条有没有用起来」有一瞬间
+   * 的不确定（首次发消息落库、与进程状态推送之间）——错判一次就是删掉用户刚发出去的会话。
+   * 这里只碰 `drafts` 表，落过库的会话一律不动，判断权归**主进程**，不存在错判窗口。
+   *
+   * 返回值如实回答「丢没丢掉」，不静默成功：渲染层若发现它已经转正，就知道该去刷新列表了。
+   */
+  handle("session.discardDraft", (request) => ({
+    ok: true as const,
+    discarded: drafts.delete(request.sessionId),
+  }));
 
   handle("session.view", (request) => sessionManager.getView(request.sessionId) ?? null);
 

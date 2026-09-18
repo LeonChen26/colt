@@ -1,22 +1,25 @@
 /**
- * 会话列表合并的行为测试（`src/renderer/src/lib/session.ts`）。
+ * 会话列表相关纯函数的行为测试（`src/renderer/src/lib/session.ts`）。
  *
- * 回归背景：`session.list` 只读库，而**草稿**（`session.create` 返回、首次发消息才落库）
- * 不在库里。`loadProjectSessions` 原先拿它的结果**整份替换**本地缓存，于是草稿会在
- * 一次刷新后从侧栏消失、用户再也点不回来 —— 切项目来回、或删同项目其它会话都会触发。
+ * 回归背景（两件事，都是「没用过的会话」这一件事的两面）：
+ * ① 项目一个会话都没有时，中间区只有一句「新建一个会话开始对话」，输入框要跑到侧栏点「+」
+ *    才出现。现在渲染层会自动建一条**草稿**，打开就见输入框——判据是 `shouldOfferDraft`。
+ * ② `session.create` 过去立刻 INSERT 一行、渲染层又把它插进侧栏，于是「点了新建就退出」
+ *    会在侧栏留下一串 `message_count=0`、点开还没反应的空会话（用户一个字都没发过）。
+ *    现在草稿不进侧栏（列表以库为准），只有落库（首次发消息）后才出现。
  *
- * 这里测的是**行为**（喂进去、看拼出来什么），不是源码长什么样。
+ * 这里测的是**行为**（喂进去、看返回什么），不是源码长什么样。
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { isDraftSession, mergeSessionList } from "../src/renderer/src/lib/session.ts";
+import { isDraftSession, shouldOfferDraft } from "../src/renderer/src/lib/session.ts";
 import type { SessionInfo } from "../src/shared/protocol.ts";
 
 /** 造一个会话；`draft` 时按主进程约定把 jsonlPath 置空串 */
-function session(id: string, draft = false): SessionInfo {
+function session(id: string, projectId = "p1", draft = false): SessionInfo {
   return {
     id,
-    projectId: "p1",
+    projectId,
     title: draft ? "新会话" : `会话 ${id}`,
     jsonlPath: draft ? "" : `/tmp/${id}.jsonl`,
     kernelSessionId: null,
@@ -29,8 +32,6 @@ function session(id: string, draft = false): SessionInfo {
   };
 }
 
-const ids = (list: readonly SessionInfo[]): string[] => list.map((item) => item.id);
-
 describe("isDraftSession：按 jsonlPath 空串判别草稿", () => {
   test("空串 → 草稿", () => {
     assert.equal(isDraftSession({ jsonlPath: "" }), true);
@@ -41,49 +42,33 @@ describe("isDraftSession：按 jsonlPath 空串判别草稿", () => {
   });
 });
 
-describe("mergeSessionList：刷新列表时不丢草稿", () => {
-  test("草稿保留在头部——它就是本条回归的核心", () => {
-    const merged = mergeSessionList([session("draft", true)], [session("a"), session("b")]);
-    assert.deepEqual(ids(merged), ["draft", "a", "b"]);
+describe("shouldOfferDraft：无会话时该不该就地给一条草稿", () => {
+  test("列表已到、确实为空、当前也没会话 → 给（「打开就见输入框」的那条路）", () => {
+    assert.equal(shouldOfferDraft("p1", [], null), true);
   });
 
-  test("已落库的会话不被重复保留（不会出现两条）", () => {
-    const merged = mergeSessionList([session("a"), session("b")], [session("a"), session("b")]);
-    assert.deepEqual(ids(merged), ["a", "b"]);
+  test("项目下已有落库会话 → 不给（它们自己就能显示）", () => {
+    assert.equal(shouldOfferDraft("p1", [session("a")], null), false);
   });
 
-  test("草稿落库后就以库为准，不重复、不错位", () => {
-    // 「draft」这一条既在本地（旧副本、jsonlPath 还是空串）也已在库里
-    const merged = mergeSessionList([session("draft", true)], [session("draft"), session("x")]);
-    assert.deepEqual(ids(merged), ["draft", "x"]);
+  test("列表还没拉到（undefined）→ 先等，别急着建", () => {
+    // 分不清「空」和「还没到」就会每次启动都白建一条，而且是在错误的前提下建
+    assert.equal(shouldOfferDraft("p1", undefined, null), false);
   });
 
-  test("库里已删除的真实会话会被剔除（非草稿一律以库为准）", () => {
-    const merged = mergeSessionList([session("gone"), session("keep", true)], [session("other")]);
-    assert.deepEqual(ids(merged), ["keep", "other"]);
+  test("当前会话已经是本项目的草稿 → 不给（否则会无限建下去）", () => {
+    assert.equal(shouldOfferDraft("p1", [], session("draft", "p1", true)), false);
   });
 
-  test("本地为空 → 即库列表", () => {
-    assert.deepEqual(ids(mergeSessionList([], [session("a")])), ["a"]);
+  test("当前会话是本项目**已落库**的会话 → 也不给（本项目已经有人在显示）", () => {
+    assert.equal(shouldOfferDraft("p1", [], session("a", "p1")), false);
   });
 
-  test("库为空 → 只剩草稿（清空重来后仍保留未落库的那条）", () => {
-    assert.deepEqual(ids(mergeSessionList([session("draft", true)], [])), ["draft"]);
+  test("当前会话属于另一个项目 → 给（本项目这边是空的）", () => {
+    assert.equal(shouldOfferDraft("p1", [], session("b", "p2", true)), true);
   });
 
-  test("多个草稿保持原有相对顺序", () => {
-    const merged = mergeSessionList(
-      [session("d1", true), session("d2", true)],
-      [session("a")],
-    );
-    assert.deepEqual(ids(merged), ["d1", "d2", "a"]);
-  });
-
-  test("不修改入参（纯函数）", () => {
-    const previous = [session("draft", true)];
-    const fromDb = [session("a")];
-    mergeSessionList(previous, fromDb);
-    assert.deepEqual(ids(previous), ["draft"]);
-    assert.deepEqual(ids(fromDb), ["a"]);
+  test("没有项目 → 不给（该先让用户打开一个目录）", () => {
+    assert.equal(shouldOfferDraft(undefined, [], null), false);
   });
 });

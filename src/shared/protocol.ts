@@ -241,6 +241,7 @@ export const IPC_CHANNELS = [
   "session.abort",
   "session.close",
   "session.delete",
+  "session.discardDraft",
   "session.view",
   "session.setPinned",
   "session.listPinned",
@@ -354,6 +355,9 @@ export interface IpcInvokeMap {
    *
    * 返回的 `SessionInfo` 与真实会话同形，界面无需特殊分支；`jsonlPath` 为空串
    * （文件尚不存在），`kernelSessionId` 为 null。
+   *
+   * 渲染层配套：**草稿不进侧栏**，它只当「当前会话」用（好让中间区立刻出现输入框），
+   * 转正（落库）后再出现（见 `session.discardDraft`）。
    */
   "session.create": {
     request: { projectId: string };
@@ -394,6 +398,17 @@ export interface IpcInvokeMap {
   "session.delete": {
     request: { sessionId: string };
     response: { ok: true };
+  };
+  /**
+   * 丢弃一条**还没用起来**的草稿会话——「离开就丢掉」的落点。
+   *
+   * 只有它**仍是草稿**时才生效（`discarded` 即是否真的丢了）；已经落库的会话一律不动。
+   * 不复用 `session.delete`：那个会真的删库，而渲染层判断「这条有没有用起来」有一瞬间的
+   * 不确定（首次发消息落库、与进程状态推送之间），一旦错判就是删掉用户刚发出去的会话。
+   */
+  "session.discardDraft": {
+    request: { sessionId: string };
+    response: { ok: true; discarded: boolean };
   };
   "session.view": {
     request: { sessionId: string };

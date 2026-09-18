@@ -7,7 +7,16 @@
  * 由 scripts/split-smoke.mjs 从 src/dev/smoke/index.ts 逐字切出，内容与拆分前一致。
  */
 import { app, BrowserWindow } from "electron";
-import { createSession, deleteSession, getSession, listSessions, setSessionModel } from "../../../main/db/repo";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import {
+  createSession,
+  deleteSession,
+  getSession,
+  listSessions,
+  setSessionModel,
+  upsertProject,
+} from "../../../main/db/repo";
 import { sessionManager } from "../../../main/session-manager";
 import { listProviders, removeProvider, saveProvider } from "../../../main/providers";
 import { deleteSecret, getSecret, setSecret } from "../../../main/secrets";
@@ -569,12 +578,19 @@ export async function runModelNoUsable(
 }
 
 /**
- * 新建会话是**草稿**：只分配 id，不写库、不 fork worker、不建 JSONL，首次发消息才落库。
+ * 「还没用起来的会话」在界面上的行为——一条链，三件事：
  *
- * 回归背景：`session.create` 过去立刻 INSERT 一行，于是「点了新建就退出」会在侧栏留下
- * 一串 message_count=0、点开还没反应的空会话（而用户一个字都没发过）。
+ * ① **空项目直接给输入框**：一个会话都没有的项目，中间区不再只显示一句「新建一个会话开始
+ *    对话」，而是自动建一条**草稿**（只分配 id：不落库、不 fork worker、不建 JSONL），
+ *    于是「打开就见输入框」，不必先跑到侧栏去点「+」。
+ * ② **草稿不进侧栏**：`session.create` 过去立刻 INSERT 一行、渲染层又把它插进侧栏，于是
+ *    「点了新建就退出」会在侧栏留下一串 `message_count=0`、点开还没反应的空会话（而用户
+ *    一个字都没发过）。现在侧栏以库为准，草稿要等**首次发消息落库**后才出现。
+ * ③ **转正靠落库时机**：首次发消息时主进程先落库、再拉起 worker，所以「草稿有了进程」
+ *    就等价于「它已经落库」——渲染层据此把它拉进侧栏（判据是进程状态，不依赖模型回话）。
  *
- * 断言全部落在「可观察的事实」上：主进程的会话表、有没有 worker、侧栏有没有那一行。
+ * 断言全部落在「可观察的事实」上：主进程的会话表、有没有 worker、DOM 里有没有输入框与哪一行。
+ * 全程不打模型：provider 指到 example.invalid，只用来让会话「有个模型可用」。
  */
 export async function runSessionDraft(
   window: BrowserWindow,
@@ -587,7 +603,35 @@ export async function runSessionDraft(
   const checks: [string, boolean][] = [];
   const cwd = process.env.COLT_SMOKE_CWD ?? process.cwd();
   const savedDeepseekKey = getSecret("deepseek");
+  // 另起一个**空**项目：只有它一个会话都没有，才谈得上「打开就见输入框」。
+  // 路径固定（不随机），免得每跑一次就往库里多塞一行项目记录。
+  const emptyDir = join(process.cwd(), "out", "smoke-draft-empty-fixture");
+  mkdirSync(emptyDir, { recursive: true });
+  const emptyProject = upsertProject(emptyDir);
+  // 最后 upsert 的那个项目即 `project.list[0]`（ORDER BY last_opened_at DESC），
+  // 也就是渲染层挂载/重载时会自动打开的那个——这正是本用例要的入口。
   let draftId: string | null = null;
+
+  /** 中间区此刻的输入卡片。草稿不进侧栏，它的 id 只能从这里认（见 data-conv-session） */
+  const probeCard = `(() => {
+    const card = document.querySelector("[data-conv-card]");
+    return {
+      session: card ? card.getAttribute("data-conv-session") : null,
+      hasInput: Boolean(card && card.querySelector("textarea")),
+      rows: document.querySelectorAll("[data-session-row]").length,
+    };
+  })()`;
+
+  /** 该项目行里的「+」。按 data-project-row 认项目，不按 DOM 顺序猜（多项目时顺序会变） */
+  const newButton = (projectRowId: string): string =>
+    `document.querySelector('[data-project-row="${projectRowId}"]')?.querySelector('button[title="新建会话"]')`;
+
+  // 环境前提显式建立（AGENTS.md §五⑬）：这个项目必须真的空。上一轮跑崩了（没走到 finally）
+  // 会留下残余会话，那时前提不成立、用例只会以一条**假红**收场——先清干净。
+  for (const stale of listSessions(emptyProject.id)) {
+    sessionManager.close(stale.id);
+    deleteSession(stale.id);
+  }
 
   // 前置：把还在跑的会话收掉（它们会持续 touch updated_at），并让模型解析落到一个
   // 不存在的 endpoint 上——只为本用例避免真的打外部 API，与草稿本身无关。
@@ -604,23 +648,24 @@ export async function runSessionDraft(
     requiresKey: false,
   });
 
-  const before = listSessions(projectId).length;
-  log(`新建前会话数：${before}`);
-
-  /** 侧栏里「新建会话」按钮（项目行上的 +） */
-  const findNewButton = `[...document.querySelectorAll("button")].find(
-    (b) => b.getAttribute("title") === "新建会话",
-  )`;
-
   try {
     writeOnboardedFlag(app.getPath("userData"));
     window.reload();
     await sleep(4000);
 
+    const opened = await run<{ session: string | null; hasInput: boolean; rows: number }>(probeCard);
+    log(
+      `打开空项目后：输入框=${opened.hasInput}，当前会话=${opened.session ?? "（无）"}，侧栏行数=${opened.rows}`,
+    );
+    checks.push(["一个按钮都没点，输入框就已经在（空项目自动给草稿）", opened.hasInput]);
+    checks.push(["侧栏没有会话行（草稿不进侧栏）", opened.rows === 0]);
+    checks.push(["自动建的那条草稿没有落库", listSessions(emptyProject.id).length === 0]);
+    draftId = opened.session;
+
     // 那个 + 平时是 opacity-0、靠 hover 显形，所以必须做命中测试：只查「在 DOM 里」
     // 发现不了「被顶出可视区 / 上面盖着别的元素」（小目标入口的老坑）。
     const hit = await run<{ found: boolean; top: boolean }>(`(() => {
-      const btn = ${findNewButton};
+      const btn = ${newButton(emptyProject.id)};
       if (!btn) return { found: false, top: false };
       const r = btn.getBoundingClientRect();
       const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
@@ -628,54 +673,63 @@ export async function runSessionDraft(
     })()`);
     checks.push(["侧栏「新建会话」按钮真的在可视区且可点", hit.found && hit.top]);
 
-    await run(`(() => { ${findNewButton}?.click(); return null; })()`);
+    await run(`(() => { ${newButton(emptyProject.id)}?.click(); return null; })()`);
     await sleep(800);
 
-    // 侧栏是「新会话插在最前」，因此第一条就是它；行上有 data-session-row 便于取 id
-    const rows = await run<(string | null)[]>(
-      `[...document.querySelectorAll("[data-session-row]")].map((el) => el.getAttribute("data-session-row"))`,
+    const clicked = await run<{ session: string | null; hasInput: boolean; rows: number }>(probeCard);
+    log(
+      `点「+」后：输入框=${clicked.hasInput}，当前会话=${clicked.session ?? "（无）"}，侧栏行数=${clicked.rows}`,
     );
-    draftId = rows[0] ?? null;
-    log(`侧栏首条：${draftId ?? "（无）"}（共 ${rows.length} 行，期望 ${before + 1}）`);
-    checks.push(["侧栏出现新建的那条会话", draftId !== null && rows.length === before + 1]);
-
-    // 本用例的核心：此刻它还**没有**落库
+    checks.push(["点「+」后侧栏依然没有多出会话", clicked.rows === 0]);
     checks.push([
-      "草稿尚未写入 sessions 表",
-      draftId !== null && getSession(draftId) === undefined,
+      "点「+」后当前会话换成了新的一条草稿",
+      clicked.session !== null && clicked.session !== draftId,
     ]);
-    checks.push(["草稿没有 worker（没 fork 进程）", draftId !== null && sessionManager.getView(draftId) === undefined]);
-
-    const afterCreate = listSessions(projectId).length;
-    log(`新建后会话数：${afterCreate}`);
-    checks.push(["session.list 里看不到草稿", afterCreate === before]);
+    checks.push(["点「+」后库里仍然没有它", listSessions(emptyProject.id).length === 0]);
 
     // 首次发消息：到这一步才落库（走的就是生产的 session.prompt 通道）
+    draftId = clicked.session;
     const outcome = await run<string>(
-      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: draftId, text: "hi", cwd })})
+      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: draftId, text: "hi", cwd: emptyDir })})
         .then(() => "OK").catch((e) => String((e && e.message) || e))`,
     );
     log(`首次发消息结果：${outcome}`);
     checks.push(["首次发消息未被挡下", outcome === "OK"]);
     checks.push(["发消息后草稿已落库", draftId !== null && getSession(draftId) !== undefined]);
 
-    let opened = false;
-    for (let i = 0; i < 20 && !opened; i += 1) {
-      opened = draftId !== null && sessionManager.getView(draftId) !== undefined;
-      if (!opened) await sleep(500);
+    let workerReady = false;
+    for (let i = 0; i < 20 && !workerReady; i += 1) {
+      workerReady = draftId !== null && sessionManager.getView(draftId) !== undefined;
+      if (!workerReady) await sleep(500);
     }
-    checks.push(["发消息后会话已打开（worker 就绪）", opened]);
+    checks.push(["发消息后会话已打开（worker 就绪）", workerReady]);
+
+    // 转正：落库后它就该出现在侧栏里（此前草稿是不显示的）。这是本用例的落点——
+    // 「侧栏该显示什么」由**落库时机**决定，不由「点没点过新建」决定。
+    let appeared = false;
+    for (let i = 0; i < 20 && !appeared; i += 1) {
+      appeared = await run<boolean>(
+        `Boolean(document.querySelector('[data-session-row="${draftId}"]'))`,
+      );
+      if (!appeared) await sleep(500);
+    }
+    checks.push(["落库后侧栏出现了这条会话（转正）", appeared]);
   } finally {
     log("[session/draft] 端到端断言");
     for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
     log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
-    if (draftId) {
-      sessionManager.close(draftId);
-      deleteSession(draftId);
+    // 把这个项目还给「空」：否则下次跑到这里，「打开就见输入框」的前提就不成立了
+    for (const leftover of listSessions(emptyProject.id)) {
+      sessionManager.close(leftover.id);
+      deleteSession(leftover.id);
     }
+    if (draftId) sessionManager.close(draftId);
     removeProvider(PROVIDER_ID);
     deleteSecret(PROVIDER_ID);
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+    // 把仓库项目顶回 project.list[0]：渲染层挂在空夹具项目上没有意义，
+    // 后面的用例（以及下次运行）该看到的是真实项目。
+    upsertProject(cwd);
   }
 }
 
