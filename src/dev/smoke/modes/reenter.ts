@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 冒烟模式：reenter
  *

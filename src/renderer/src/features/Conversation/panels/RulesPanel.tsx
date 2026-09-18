@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 审批规则面板：查看并管理会话内记忆的放行 / 拒绝规则。
  *

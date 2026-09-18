@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 阻塞态队列：审批（`approval`）与提问（`ask_user`）的订阅与处置。
  *

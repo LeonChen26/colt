@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 右栏工作区容器（规则 ⑦-B）：以**页签**切换视图。
  *

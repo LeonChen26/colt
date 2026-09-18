@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 工具图片的读取与清理（写方是 worker，见 `src/worker/lib/tool-image-spill.ts`）。
  *

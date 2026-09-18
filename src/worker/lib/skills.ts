@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 技能（Agent Skills）的发现与装载——格式与目录都走开放标准 agentskills.io，
  * 这样社区技能包可以**直接丢进来**用。

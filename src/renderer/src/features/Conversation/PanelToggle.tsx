@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 会话头（②）上的「打开某个面板」按钮：图标 + 文字 + 选中态。
  *

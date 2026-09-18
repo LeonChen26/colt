@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 视图的「稳定投影」：**内容没变就复用上一份的对象**。
  *

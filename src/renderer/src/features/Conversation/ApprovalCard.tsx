@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 工具审批卡片：阻塞态的显式呈现，对齐 ACP 权限模型。
  *

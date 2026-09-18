@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 把内核 `lane.compact()` 的失败原因翻译成给用户看的一句话。
  *

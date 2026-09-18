@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 浏览器观测抽屉（B2）：控制台 / 网络 / 下载。
  *

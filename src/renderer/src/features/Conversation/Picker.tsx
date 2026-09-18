@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 轻量下拉选择器：对齐高保真 `.picker` 的视觉与手感。
  *

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 改动前的内容快照——**净值**（基线 → 现在）的基线那一半。
  *

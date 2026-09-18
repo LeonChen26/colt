@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 设置：provider 与密钥管理
  * 密钥只上行不下行——界面永远拿不到明文，只能看到是否已配置

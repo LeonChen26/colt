@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 主题管理：亮 / 暗 / 跟随系统 三态。
  *

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 会话导航（目录 / 搜索浮层）的状态：面板开合、跳到某一轮、「回到底部」的重放信号。
  *

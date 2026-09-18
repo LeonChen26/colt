@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 浏览器观测的纯逻辑：控制台/网络消息的采集缓冲与格式化，以及「等待页面就绪」脚本的生成。
  *

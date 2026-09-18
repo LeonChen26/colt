@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * ANSI SGR 转义序列解析：把带颜色标记的终端输出切成可渲染的样式片段。
  * pi 的 bash 工具是「执行并流式返回合并输出」，不是交互式 PTY，

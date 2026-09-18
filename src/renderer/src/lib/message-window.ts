@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 长会话的「消息窗口」算术：**只挂最近一段**，更早的按需展开。
  *

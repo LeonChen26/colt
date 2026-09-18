@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 消息渲染：消息气泡、思考轨、可展开的工具卡片（内嵌 diff）、流式光标。
  *

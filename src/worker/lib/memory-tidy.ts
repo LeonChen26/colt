@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * /memory-tidy：显式的记忆整理命令（L3b 后台整固）。
  *

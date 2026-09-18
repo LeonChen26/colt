@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 冒烟装置的共享件：各模式（`modes/`）都要用的类型与小工具。
  *

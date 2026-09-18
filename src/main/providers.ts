@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * Provider 配置：内置 DeepSeek + 用户自定义的 OpenAI 兼容 endpoint
  * 密钥不存这里，统一走 secrets.ts（safeStorage 加密）

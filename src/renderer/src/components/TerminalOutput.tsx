@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 终端输出视图：渲染带颜色的日志。
  * ANSI 解析逻辑见 lib/ansi.ts（纯函数，可单测）。

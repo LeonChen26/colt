@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * AGENTS.md（agents.md 开放标准）的发现与注入——pi 生态里的「资源文件」层
  * （resource-loader 自动发现并注入，pi-coding-agent 内核自带）。

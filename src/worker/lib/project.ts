@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * worker 侧的纯投影辅助：从内核数据结构中抽取渲染层需要的字段。
  * 无副作用、不依赖 Electron，便于单元测试——下面那个内核类型导入是**类型专用**的

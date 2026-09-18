@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * `ConversationView` → 渲染层直接消费的「稳定投影」（比对规则见 `@/lib/stable-view`）。
  *

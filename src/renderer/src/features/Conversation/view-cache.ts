@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 会话视图缓存（仅渲染层、仅本次运行）。
  *

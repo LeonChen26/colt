@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 「统计」视图的聚合（规则 ⑦-H：附属视图给**结论**，不给流水）。
  *

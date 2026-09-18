@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * Windows 环境体检：复刻内核 harness/env/nodejs.ts 的 bash 查找顺序
  * 顺序：自定义路径 → %ProgramFiles%\Git\bin\bash.exe → %ProgramFiles(x86)% → PATH

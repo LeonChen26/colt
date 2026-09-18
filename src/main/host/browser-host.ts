@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 内置浏览器宿主：主进程持有真实的 WebContentsView（内嵌在应用主窗口右栏），
  * worker 通过 toolRpc 驱动。

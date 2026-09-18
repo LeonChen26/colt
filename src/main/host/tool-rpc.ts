@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 宿主能力调用（浏览器 / 桌面）的执行与回发。
  *

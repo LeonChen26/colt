@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 分支树：自绘 SVG，展示会话的全部分支与当前活跃路径
  * 点击任一节点可 navigateTree 跳回该处，之后的对话会形成新分支

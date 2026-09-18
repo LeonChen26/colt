@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 轮次点链（④ 会话流的左缘）——把「会话目录」从浮层收成常驻的快速导航。
  *

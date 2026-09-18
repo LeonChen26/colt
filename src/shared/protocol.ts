@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * Colt IPC 契约（单一真源）
  * 主进程、预加载、渲染进程共享此定义。

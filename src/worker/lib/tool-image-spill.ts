@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 把工具结果里的图片落盘：`<dir>/<toolCallId>.<ext>`。
  *

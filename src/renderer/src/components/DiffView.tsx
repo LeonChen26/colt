@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * Unified patch 渲染：按行着色。
  * 分类逻辑见 lib/diff.ts（纯函数，可单测）。

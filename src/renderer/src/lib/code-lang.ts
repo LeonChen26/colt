@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 文件预览的「按格式渲染」判据：由路径推出 highlight.js 的语言名。
  *

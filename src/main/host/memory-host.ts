@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 记忆检索宿主：把 worker 的 memory_search 调用路由到索引库。
  *

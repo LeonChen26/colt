@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 端到端冒烟
  * basic：建项目 → 建会话 → 真实对话 → 截图

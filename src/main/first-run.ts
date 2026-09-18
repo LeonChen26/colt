@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 首启检测：判断本机是否留有历史安装残留（%APPDATA%\Colt）。
  *

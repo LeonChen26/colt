@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 键盘输入到 Windows SendKeys 序列的纯转换。
  *

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 电脑控制工具：worker 侧的薄封装，实际截屏与键鼠注入由主进程 ComputerHost 完成。
  *

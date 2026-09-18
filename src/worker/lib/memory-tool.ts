@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 记忆检索工具：worker 侧的薄封装（与 browser-tool 同款形态）。
  *

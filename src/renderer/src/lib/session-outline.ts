@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 会话目录（提问列表）与历史搜索——都只在**已经拿到的视图**上做算术。
  *

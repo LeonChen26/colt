@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 按文件格式渲染的**代码 / 文本**视图（文件内容层里非 Markdown 的那一半）。
  *

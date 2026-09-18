@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 「改动清单」下钻的**内容层**：文件本身（原「文件」视图的预览，A3-2）。
  *

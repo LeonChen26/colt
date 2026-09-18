@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 待答提问队列：主进程侧的 `ask_user` 状态中枢。
  *

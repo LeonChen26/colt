@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 提问卡片（ask_user）：模型在等人给信息时的阻塞态呈现。
  *

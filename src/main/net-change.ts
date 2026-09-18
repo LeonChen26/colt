@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * **净变化**：一个文件「本次会话首次改动它之前」与「现在」的差异。
  *

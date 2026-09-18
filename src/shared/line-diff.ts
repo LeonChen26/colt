@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 行级 diff：把「改动前 → 改动后」两份文本算成 unified patch + 增删行数。
  *

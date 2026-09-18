@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * main ↔ session worker 的进程间消息契约
  * worker 侧持有 harness/lane，向 main 投影稳定 DTO（渲染层零 pi 依赖）

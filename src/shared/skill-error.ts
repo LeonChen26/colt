@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 技能相关失败原因的文案（worker 与渲染层**共用**）。
  *

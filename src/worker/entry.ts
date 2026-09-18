@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * Session Worker：每会话一个 utilityProcess
  * 持有 harness / lane / 会话存储，向 main 投影 ConversationView

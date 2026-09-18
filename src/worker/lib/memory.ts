@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 项目记忆 + 用户级记忆：由助手自己维护的 Markdown 文件，跨会话沉淀事实。
  *

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 记忆检索索引：把记忆文件拆条入库，供 memory_search 跨会话检索（L3a）。
  *

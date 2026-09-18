@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 「模型在等人」的桌面通知：审批与提问共用一条通道。
  *

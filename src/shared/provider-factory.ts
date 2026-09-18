@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * Provider 装配：由会话选定的 provider 配置构造 pi-ai 的 Provider 实例。
  *

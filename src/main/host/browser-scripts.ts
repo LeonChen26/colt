@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 注入页面的脚本：snapshot 清单、内容宽度测量、点击 / 输入。
  *

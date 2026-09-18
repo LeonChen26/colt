@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 工具输出的落盘约定：**worker 写、主进程读、渲染层按 (sessionId, toolCallId) 要**。
  *

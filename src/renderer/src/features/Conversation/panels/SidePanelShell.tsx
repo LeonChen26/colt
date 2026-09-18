@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 面板的公共外壳：头部标题 + 刷新，以及加载/空态的统一呈现。
  * 各具体面板（改动 / 统计 / 规则）只需提供内容与状态。

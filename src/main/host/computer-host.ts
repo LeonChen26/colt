@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 电脑控制宿主（Computer Use）：主进程负责截屏与向操作系统注入鼠标/键盘。
  *

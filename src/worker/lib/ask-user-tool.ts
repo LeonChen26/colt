@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * `ask_user` 工具：模型在「需求不清」时先问再做，而不是硬猜。
  *

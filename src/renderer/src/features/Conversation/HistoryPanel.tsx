@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 历史搜索浮层——从 ② 会话头唤起，贴在会话区上方。
  *

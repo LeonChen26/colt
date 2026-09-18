@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 冒烟模式：perf —— 长会话的**渲染**开销（不调模型、不计费）
  *

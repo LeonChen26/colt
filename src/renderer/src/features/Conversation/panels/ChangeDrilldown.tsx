@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 「正在处理」的下钻（规则 ⑦-G）：**清单 → diff → 内容**，一个东西的连续下钻。
  *

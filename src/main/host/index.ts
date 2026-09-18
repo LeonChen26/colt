@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 宿主能力路由：把 worker 发来的 toolRpc 分发到对应的宿主实现。
  *

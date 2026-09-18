@@ -11,6 +11,8 @@ directories:
 files:
   - out/**/*
   - package.json
+  # MIT 要求「所有副本或实质部分中保留版权与许可声明」，故随包分发（进 app.asar 根）
+  - LICENSE
 
 # pi 内核被 externalize，必须随包分发
 asar: true
@@ -33,6 +35,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Colt
+  # 安装向导展示 MIT 许可全文（路径先按 build/ 找、再退回项目根，见 app-builder-lib 的 util/license.js）
+  license: LICENSE
   # 自定义 NSIS 脚本：安装前检测历史安装（见 build/installer.nsh）
   include: build/installer.nsh
   installerLanguages:

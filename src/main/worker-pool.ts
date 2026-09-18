@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * worker 池的两条**纯**决策：该空闲回收谁、池满时淘汰谁。
  *

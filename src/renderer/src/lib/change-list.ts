@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 「改动清单」的纯逻辑（规则 ⑦-G：清单是「正在处理」的**下钻**，不另立视图）。
  *

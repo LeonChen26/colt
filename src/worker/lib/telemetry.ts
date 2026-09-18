@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 遥测投影：把内核的 usage / tool 事件转成上报给主进程的消息。
  * 这层逻辑字段语义易错（时间戳取开始还是结束、哪些消耗该记），

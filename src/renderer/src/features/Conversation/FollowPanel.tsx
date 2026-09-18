@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 右栏工作区的「正在处理」视图（默认视图，规则 ⑦-E）。
  *

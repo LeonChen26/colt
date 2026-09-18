@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 内嵌浏览器的「每会话视图记录」与调参常量——从 `browser-host.ts` 整体搬出。
  *

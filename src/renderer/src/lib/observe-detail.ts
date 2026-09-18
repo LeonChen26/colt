@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * 观测抽屉的「条目详情」：把一条 console / network / download 记录摊成**字段表**。
  *

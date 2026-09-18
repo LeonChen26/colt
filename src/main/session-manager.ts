@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
 /**
  * SessionManager：每会话一个 worker 进程（utilityProcess）
  * 负责启动、路由命令、转发视图、进程池上限与回收
