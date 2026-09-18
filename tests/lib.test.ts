@@ -47,6 +47,7 @@ import {
   belowCount,
   chunkSize,
   earlierStart,
+  FOLD_CHUNK,
   FOLLOW_BOTTOM,
   hiddenCount,
   jumpHead,
@@ -59,6 +60,7 @@ import {
   describeSteps,
   groupTurns,
   summarizeSteps,
+  turnOfMessage,
 } from "../src/renderer/src/lib/turn-groups.ts";
 import {
   LABEL_MAX,
@@ -1195,6 +1197,49 @@ describe("messageWindow（长会话只挂最近一段）", () => {
   });
 });
 
+describe("messageWindow 的单位（折叠时按「轮」计）", () => {
+  /** 冒烟夹具的节奏：每 14 条消息一轮。短的这档正好用来看清「50 条」和「50 轮」差多少 */
+  const TURNS = 58;
+  const LONG_TURNS = 2937;
+
+  test("换单位就是换 chunk：同一套算术，按轮数时一个窗口宽 50 轮而不是 50 条", () => {
+    // 按条：长会话首屏 50 条 ≈ 3.5 轮——这正是「折叠后只看到三四轮」的来源
+    assert.equal(windowStart(14 * TURNS, FOLLOW_BOTTOM, WINDOW_CHUNK), 14 * TURNS - WINDOW_CHUNK);
+    // 按轮：起点落在倒数第 50 轮上，一共挂 50 轮
+    assert.equal(windowStart(TURNS, FOLLOW_BOTTOM, FOLD_CHUNK), TURNS - FOLD_CHUNK);
+    assert.equal(windowStart(LONG_TURNS, FOLLOW_BOTTOM, FOLD_CHUNK), LONG_TURNS - FOLD_CHUNK);
+  });
+
+  test("按轮展开：够一段就补满一段，不够一段就按剩下的补", () => {
+    assert.equal(chunkSize(LONG_TURNS, FOLLOW_BOTTOM, FOLD_CHUNK), FOLD_CHUNK);
+    // 58 轮的会话只藏了 8 轮：一次就补完，「还有」和粒度都是 8
+    assert.equal(chunkSize(TURNS, FOLLOW_BOTTOM, FOLD_CHUNK), TURNS - FOLD_CHUNK);
+    assert.equal(earlierStart(TURNS, FOLLOW_BOTTOM, FOLD_CHUNK), 0);
+    assert.equal(earlierStart(TURNS, 0, FOLD_CHUNK), 0);
+  });
+
+  test("按轮的浮动段：跳到最前一轮只挂 50 轮，下面还剩 8 轮", () => {
+    const head = jumpHead(0);
+    assert.equal(windowStart(TURNS, head, FOLD_CHUNK), 0);
+    assert.equal(windowEnd(TURNS, head, true, FOLD_CHUNK), FOLD_CHUNK);
+    assert.equal(belowCount(TURNS, head, true, FOLD_CHUNK), TURNS - FOLD_CHUNK);
+  });
+
+  test("按轮翻到底同样交回「跟随底部」（否则新消息会落在窗口外）", () => {
+    assert.deepEqual(
+      afterLater(LONG_TURNS, windowStart(LONG_TURNS, FOLLOW_BOTTOM, FOLD_CHUNK), FOLD_CHUNK),
+      { head: FOLLOW_BOTTOM, floating: false },
+    );
+    assert.deepEqual(afterLater(LONG_TURNS, 0, FOLD_CHUNK), { head: FOLD_CHUNK, floating: true });
+  });
+
+  test("轮数不到一个窗口时一条都不藏（短会话照旧零影响）", () => {
+    assert.equal(windowStart(3, FOLLOW_BOTTOM, FOLD_CHUNK), 0);
+    assert.equal(hiddenCount(3, FOLLOW_BOTTOM, FOLD_CHUNK), 0);
+    assert.equal(windowEnd(3, FOLLOW_BOTTOM, true, FOLD_CHUNK), 3);
+  });
+});
+
 describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
   const user = (id: string, text = "问"): ViewMessage => ({
     id,
@@ -1271,6 +1316,29 @@ describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
     assert.equal(turns.length, 1);
     assert.deepEqual(turns[0]?.steps, []);
     assert.equal(turns[0]?.final?.id, "a1");
+  });
+
+  test("turnOfMessage：与 groupTurns 的轮序逐条对齐（换窗口单位全靠它）", () => {
+    const messages = [reply("a0"), user("u1"), step("a1", 1), reply("a2"), user("u2"), reply("a3")];
+    // 先把「按 groupTurns 算出来是几轮」定下来，再看换算有没有跟它一致
+    assert.equal(groupTurns(messages).length, 3);
+    assert.deepEqual(
+      messages.map((_, index) => turnOfMessage(messages, index)),
+      [0, 1, 1, 1, 2, 2],
+    );
+  });
+
+  test("turnOfMessage 的边界：`other` 归它所在的那一轮，越界钳到最近的轮", () => {
+    const other: ViewMessage = { id: "o1", role: "other", text: "结构节点", toolCalls: [] };
+    const messages = [user("u1"), other, reply("a1"), user("u2")];
+    // `other` 不成轮，但换算要落在它**所在**的那一轮上——否则切模式时位置会偏一轮
+    assert.deepEqual(
+      messages.map((_, index) => turnOfMessage(messages, index)),
+      [0, 0, 0, 1],
+    );
+    assert.equal(turnOfMessage(messages, -5), 0);
+    assert.equal(turnOfMessage(messages, 99), 1);
+    assert.equal(turnOfMessage([], 0), 0);
   });
 
   test("不变式：每条 user/assistant 都落在某一轮里，且顺序不变", () => {

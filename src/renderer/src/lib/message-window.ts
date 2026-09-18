@@ -25,10 +25,28 @@
  *
  * 外加一档**浮动段**（`windowEnd` 起）：跳到某一轮去看时，窗口既不能「跟到末尾」
  * （两千多条一起挂，等于没做窗口），也不该把用户钉在那儿——只挂目标那一小段，上下翻页。
+ *
+ * 还有一件容易漏的：**单位**。默认按「条消息」数，折叠（「只看问答」）时改按「轮」数——
+ * 折叠后一轮只占两三行，继续按条数就只挂出三四轮（理由见 `FOLD_CHUNK`）。
+ * 算术对两种单位是同一套，收一个 `chunk` 参数就够；**换算位置**那件事不在这里、也不该在这里：
+ * 它要同时知道「两种单位下的总量」，那是组件手里的东西（见 `MessageList.tsx` 的 `MessageWindow`）。
  */
 
-/** 首屏挂多少条消息；之后的「载入更早」也按这个粒度加 */
+/**
+ * 首屏挂多少**条消息**（「载入更早」也按这个粒度加）。
+ * 本文件所有算术都收一个可选的 `chunk` 参数：默认就是它；折叠时换成 `FOLD_CHUNK`（单位改「轮」）。
+ */
 export const WINDOW_CHUNK = 50;
+
+/**
+ * 折叠（「只看问答」）时一个窗口装多少**轮**——同一套算术、换一个单位。
+ *
+ * 为什么单位要跟着折叠换：窗口的意义是「挂载量不随历史增长」，而两种模式下**一行的成本**差一个量级。
+ * 不折叠时一行就是一条消息（还可能带工具卡）；折叠后一轮只占两三行（提问 + 摘要行 + 最终回复）。
+ * 继续按「50 条」数，一轮十几条的工具链会把整个窗口吃光——实测夹具（每 14 条一轮）下只挂出 **3 轮**，
+ * 而点「只看问答」的人要的正是**多读几轮问答**，那就等于没做这件事。换成按轮计，同样的预算能读 50 轮。
+ */
+export const FOLD_CHUNK = 50;
 
 /**
  * 「跟随底部」——没有任何显式展开时窗口起点的哨兵值。
@@ -47,55 +65,68 @@ export const NEAR_BOTTOM_PX = 80;
  * 窗口起点（含）：`[0, start)` 这段留在外面不挂。
  *
  * 两条钳制各自防一件事：
- * - `min(head, total - WINDOW_CHUNK)`：**任何情况下都不隐藏到少于一个窗口**。
+ * - `min(head, total - chunk)`：**任何情况下都不隐藏到少于一个窗口**。
  *   它同时兜住了「换会话但视图还是上一份」的中间态——那时 `head` 是按旧会话算的，
  *   只有这条钳制能在新会话比它短时把窗口拉回来（否则会 `slice` 出空列表）。
  * - `max(0, …)`：展开到底时起点就是 0。
  */
-export function windowStart(total: number, head: number): number {
-  const newest = Math.max(0, total - WINDOW_CHUNK);
+export function windowStart(total: number, head: number, chunk = WINDOW_CHUNK): number {
+  const newest = Math.max(0, total - chunk);
   if (head === FOLLOW_BOTTOM) return newest;
   return Math.max(0, Math.min(head, newest));
 }
 
 /** 再往前展开一段（供「载入更早」与滚到顶时调用） */
-export function earlierStart(total: number, head: number): number {
-  return Math.max(0, windowStart(total, head) - WINDOW_CHUNK);
+export function earlierStart(total: number, head: number, chunk = WINDOW_CHUNK): number {
+  return Math.max(0, windowStart(total, head, chunk) - chunk);
 }
 
-/** 还没挂出来的条数（= 窗口起点）；界面据此决定要不要给「载入更早」这个出口 */
-export function hiddenCount(total: number, head: number): number {
-  return windowStart(total, head);
+/** 还没挂出来的条数/轮数（= 窗口起点）；界面据此决定要不要给「载入更早」这个出口 */
+export function hiddenCount(total: number, head: number, chunk = WINDOW_CHUNK): number {
+  return windowStart(total, head, chunk);
 }
 
 /**
- * 这一次展开会补上多少条（= 当前起点 − 展开后的起点）。
+ * 这一次展开会补上多少条/轮（= 当前起点 − 展开后的起点）。
  * 界面上的那个数字与它同源——各算一遍必然会漂（本仓有过这类翻车）。
  */
-export function chunkSize(total: number, head: number): number {
-  return windowStart(total, head) - earlierStart(total, head);
+export function chunkSize(total: number, head: number, chunk = WINDOW_CHUNK): number {
+  return windowStart(total, head, chunk) - earlierStart(total, head, chunk);
 }
 
 // ---- 浮动段：跳到某一轮去看 ----
 
 /** 浮动段的上沿（不含）。不浮动时就是末尾——「一直挂到末尾」正是另外两档的行为 */
-export function windowEnd(total: number, head: number, floating: boolean): number {
+export function windowEnd(
+  total: number,
+  head: number,
+  floating: boolean,
+  chunk = WINDOW_CHUNK,
+): number {
   if (!floating) return total;
-  return Math.min(total, windowStart(total, head) + WINDOW_CHUNK);
+  return Math.min(total, windowStart(total, head, chunk) + chunk);
 }
 
-/** 浮动段**下方**还有多少条。不浮动时恒为 0：下面就是末尾 */
-export function belowCount(total: number, head: number, floating: boolean): number {
-  return total - windowEnd(total, head, floating);
+/** 浮动段**下方**还有多少条/轮。不浮动时恒为 0：下面就是末尾 */
+export function belowCount(
+  total: number,
+  head: number,
+  floating: boolean,
+  chunk = WINDOW_CHUNK,
+): number {
+  return total - windowEnd(total, head, floating, chunk);
 }
 
 /** 浮动段往下翻一页 */
-export function laterStart(total: number, head: number): number {
-  const newest = Math.max(0, total - WINDOW_CHUNK);
-  return Math.min(newest, windowStart(total, head) + WINDOW_CHUNK);
+export function laterStart(total: number, head: number, chunk = WINDOW_CHUNK): number {
+  const newest = Math.max(0, total - chunk);
+  return Math.min(newest, windowStart(total, head, chunk) + chunk);
 }
 
-/** 跳到第 `index` 条所在的那一段。上界交给 `windowStart` 兜（它会钳到「不许少于一个窗口」） */
+/**
+ * 跳到第 `index` 条/轮所在的那一段。
+ * 上界交给 `windowStart` 兜（它会钳到「不许少于一个窗口」），所以这里只管别给负数。
+ */
 export function jumpHead(index: number): number {
   return Math.max(0, index);
 }
@@ -106,8 +137,12 @@ export function jumpHead(index: number): number {
  * 这条不是优化而是必需：浮动段的下沿是定死的，翻到底若还保持浮动，
  * 之后流式追加的新消息会全部落在窗口外——表现为「明明已经在最新处，界面却不再更新」。
  */
-export function afterLater(total: number, head: number): { head: number; floating: boolean } {
-  const next = laterStart(total, head);
-  if (belowCount(total, next, true) <= 0) return { head: FOLLOW_BOTTOM, floating: false };
+export function afterLater(
+  total: number,
+  head: number,
+  chunk = WINDOW_CHUNK,
+): { head: number; floating: boolean } {
+  const next = laterStart(total, head, chunk);
+  if (belowCount(total, next, true, chunk) <= 0) return { head: FOLLOW_BOTTOM, floating: false };
   return { head: next, floating: true };
 }

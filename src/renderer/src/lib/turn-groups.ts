@@ -60,6 +60,28 @@ export function groupTurns(messages: ViewMessage[]): TurnGroup[] {
   return turns;
 }
 
+/**
+ * 消息下标 → 轮下标。
+ *
+ * **只服务一件事**：折叠开关切换的是「窗口按什么数」（`message-window.ts` 的 `FOLD_CHUNK`），
+ * 换单位时用户当前的位置必须换算过去——不换算就等于「切一下人就换了地方」。
+ *
+ * 归轮规则必须与 `groupTurns` **逐条对齐**（`user` 开新轮、`assistant` 归当前轮、`other` 不参与成轮），
+ * 否则两个函数口中的「第几轮」会不一样，换算出来的位置就是错的。下标落在不成轮的结构性消息上时，
+ * 按它**所在**的那一轮算；越界（负数、超过末尾）时钳到最近的轮——目录与搜索都给不出越界下标，
+ * 这里只是不让越界悄悄传下去。
+ */
+export function turnOfMessage(messages: ViewMessage[], index: number): number {
+  let turn = -1;
+  const last = Math.min(index, messages.length - 1);
+  for (let i = 0; i <= last; i += 1) {
+    const role = messages[i]!.role;
+    if (role === "user") turn += 1;
+    else if (role === "assistant" && turn < 0) turn = 0;
+  }
+  return Math.max(0, turn);
+}
+
 /** 折叠那一行藏起来了什么 */
 export type StepSummary = {
   /** 藏起来的工具调用次数（**按调用数**算，不是按消息数：一轮里一张卡可能带好几个调用） */

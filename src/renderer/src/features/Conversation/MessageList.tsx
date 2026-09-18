@@ -42,7 +42,9 @@ import {
   belowCount,
   chunkSize,
   earlierStart,
+  FOLD_CHUNK,
   FOLLOW_BOTTOM,
+  hiddenCount,
   jumpHead,
   LOAD_MORE_AT_TOP_PX,
   NEAR_BOTTOM_PX,
@@ -50,7 +52,7 @@ import {
   windowStart,
   WINDOW_CHUNK,
 } from "../../lib/message-window";
-import { describeSteps, groupTurns, summarizeSteps } from "../../lib/turn-groups";
+import { describeSteps, groupTurns, summarizeSteps, turnOfMessage } from "../../lib/turn-groups";
 import { cn } from "../../lib/utils";
 
 /**
@@ -180,6 +182,9 @@ export const MessageBubble = memo(function MessageBubble({
   );
 });
 
+/** 窗口的两档单位。折叠与否决定用哪一档——见 `MessageWindow` 里 `unit` 那一段 */
+type WindowUnit = "message" | "turn";
+
 /**
  * 消息窗口：长会话只挂最近一段，更早的按需展开（算术见 `@/lib/message-window`）；
  * 「只看问答」时再把每轮的**过程**收成一行（分组见 `@/lib/turn-groups`）；
@@ -199,6 +204,10 @@ export const MessageBubble = memo(function MessageBubble({
  *   不补的话每展开一次就跳一次。
  * - **「过程」展开过的轮要记住**：展开态按**轮键**存，而不是按消息下标——
  *   流式追加会让下标整体漂移，按下标记等于「展开的轮自己换了一个」。
+ *
+ * 外加一条：「只看问答」换的是窗口的**单位**（条 ↔ 轮，见 `message-window.ts` 的 `FOLD_CHUNK`），
+ * 而两种单位下窗口能装的范围差一个量级，所以**每种单位各记一份起点**、切回来原样还回去——
+ * 见下面 `heads` 那一段。
  */
 export function MessageWindow({
   sessionId,
@@ -231,13 +240,64 @@ export function MessageWindow({
   /** 每次自增表示「回到底部」被按了一次——窗口据此从浮动段交回「跟随底部」 */
   followNonce: number;
 }): React.JSX.Element {
-  /** 窗口起点。`FOLLOW_BOTTOM` = 还没显式展开过，窗口跟着最新内容走 */
-  const [head, setHead] = useState<number>(FOLLOW_BOTTOM);
-  /** 浮动段：目录里跳到某一轮之后，窗口只挂 `[start, start + WINDOW_CHUNK)`，不再一直挂到末尾 */
+  /**
+   * 窗口起点，**每种单位各记一份**。
+   *
+   * 为什么不是一个数：折叠改的是「窗口按什么数」，同一个数字在两种单位下含义完全不同——
+   * 只留一份的话，切模式时它要么被按新单位误读（位置乱跑），要么被换算到别处，来回切两下就回不到原处。
+   * 这正是 `AGENTS.md` 点过名的「按字段名猜语义」，所以这里干脆按单位各存一个。
+   *
+   * 为什么「轮 → 条」不是换算而是**还回去**：折叠窗口一轮一轮地铺开，起点通常落在两三百条之前，
+   * 而条的预算只有 50——换算不回去。反过来，「条」的那一份**从没被折叠动过**，
+   * 所以展开时把它原样还回去，结果就等于「这个开关从没被碰过」——那正是开关该有的样子：
+   * 关掉它，看到的就是打开它之前的那一屏（`perf` 冒烟有一条断言专核这件事）。
+   * 折叠期间在轮世界里翻过的地方，回到条世界不作数——条的预算本来就装不下它。
+   */
+  const [heads, setHeads] = useState<Record<WindowUnit, number>>({
+    message: FOLLOW_BOTTOM,
+    turn: FOLLOW_BOTTOM,
+  });
+  /** 浮动段：跳到某一段之后只挂 `[起点, 起点 + 一个窗口)`，不再一直挂到末尾 */
   const [floating, setFloating] = useState(false);
-  const start = windowStart(messages.length, head);
-  const end = windowEnd(messages.length, head, floating);
-  const below = belowCount(messages.length, head, floating);
+
+  /** 整份消息的轮分组：折叠态要按轮切窗口，换算起点也要靠它 */
+  const turns = useMemo(() => groupTurns(messages), [messages]);
+  /** 当前单位。**由折叠开关决定**，不另存一份，免得又多一处可能不一致的状态 */
+  const unit: WindowUnit = folded ? "turn" : "message";
+  /** 当前单位下的总量：折叠时是**轮数**，否则是条数 */
+  const total = unit === "turn" ? turns.length : messages.length;
+  const chunk = unit === "turn" ? FOLD_CHUNK : WINDOW_CHUNK;
+  /** 界面上「还有 N ___」那个量词：单位是给人看的，必须跟着换 */
+  const unitWord = unit === "turn" ? "轮" : "条";
+  const head = heads[unit];
+
+  /**
+   * 切模式的那一次渲染：把「轮」的起点按**当前这一屏**重算一遍（「条」那一份不动，理由见上）。
+   *
+   * 哨兵要保住——「跟随底部」时若换算成一个具体轮号，窗口就不再跟着最新消息走了。
+   * 写在**渲染期**（不放进 effect）：effect 会先按旧单位提交一帧，那一帧的窗口范围是错的。
+   */
+  const prevUnit = useRef<WindowUnit>(unit);
+  if (prevUnit.current !== unit) {
+    prevUnit.current = unit;
+    if (unit === "turn") {
+      setHeads((current) => ({
+        ...current,
+        turn:
+          current.message === FOLLOW_BOTTOM
+            ? FOLLOW_BOTTOM
+            : turnOfMessage(messages, windowStart(messages.length, current.message)),
+      }));
+    }
+  }
+
+  /**
+   * 窗口起点（= 还没挂出来的条数/轮数）。**只算一次**：切片边界与界面上「还有 N」必须是同一个数——
+   * 各算一遍必然会漂（本仓有过这类翻车）。
+   */
+  const start = hiddenCount(total, head, chunk);
+  const end = windowEnd(total, head, floating, chunk);
+  const below = belowCount(total, head, floating, chunk);
 
   /**
    * 这次改动提交后要怎么摆滚动位置。四种意图的摆法完全不同，写成一种就会「跳一下」：
@@ -261,24 +321,24 @@ export function MessageWindow({
     pending.current = floating
       ? { kind: "bottom" }
       : { kind: "extend", before: scrollRef.current?.scrollHeight ?? 0 };
-    setHead((current) => earlierStart(messages.length, current));
-  }, [floating, messages.length, scrollRef]);
+    setHeads((current) => ({ ...current, [unit]: earlierStart(total, current[unit], chunk) }));
+  }, [chunk, floating, scrollRef, total, unit]);
 
   const loadLater = useCallback((): void => {
-    const next = afterLater(messages.length, head);
+    const next = afterLater(total, head, chunk);
     pending.current = { kind: "top" };
     armed.current = false;
-    setHead(next.head);
+    setHeads((current) => ({ ...current, [unit]: next.head }));
     setFloating(next.floating);
-  }, [head, messages.length]);
+  }, [chunk, head, total, unit]);
 
   /** 从浮动段回到**真正的**底部（会同时交回「跟随底部」，否则新消息会落在窗口外） */
   const gotoLatest = useCallback((): void => {
     pending.current = { kind: "bottom" };
     armed.current = false;
-    setHead(FOLLOW_BOTTOM);
+    setHeads((current) => ({ ...current, [unit]: FOLLOW_BOTTOM }));
     setFloating(false);
-  }, []);
+  }, [unit]);
 
   useLayoutEffect(() => {
     const intent = pending.current;
@@ -312,8 +372,10 @@ export function MessageWindow({
     if (node === null) return;
     const onScroll = (): void => {
       if (node.scrollHeight - node.scrollTop - node.clientHeight > NEAR_BOTTOM_PX) {
-        setHead((current) =>
-          current === FOLLOW_BOTTOM ? windowStart(messages.length, current) : current,
+        setHeads((current) =>
+          current[unit] === FOLLOW_BOTTOM
+            ? { ...current, [unit]: windowStart(total, current[unit], chunk) }
+            : current,
         );
       }
       if (node.scrollTop > LOAD_MORE_AT_TOP_PX) {
@@ -325,7 +387,7 @@ export function MessageWindow({
     };
     node.addEventListener("scroll", onScroll);
     return () => node.removeEventListener("scroll", onScroll);
-  }, [scrollRef, loadEarlier, messages.length]);
+  }, [chunk, loadEarlier, scrollRef, total, unit]);
 
   /**
    * 目录里点了某一轮。`nonce` 挡住「同一次请求被重放」：这个 effect 依赖 `messages`，
@@ -339,9 +401,13 @@ export function MessageWindow({
     handledJump.current = jump.nonce;
     armed.current = false;
     pending.current = { kind: "row", id: target.id };
-    setHead(jumpHead(jump.index));
+    // 目录与搜索给的是**消息**下标；折叠时窗口按轮记，先换成轮下标再交给窗口
+    setHeads((current) => ({
+      ...current,
+      [unit]: unit === "turn" ? turnOfMessage(messages, jump.index) : jumpHead(jump.index),
+    }));
     setFloating(true);
-  }, [jump, messages]);
+  }, [jump, messages, unit]);
 
   /**
    * 「回到底部」被按下。只在**浮动段**里才需要它做额外的事——那时容器的「底」不是会话的底，
@@ -355,8 +421,15 @@ export function MessageWindow({
     gotoLatest();
   }, [followNonce, floating, gotoLatest]);
 
-  /** 切轮。只对**挂出来的这段**切：窗口外的部分不参与渲染，切了也没用 */
-  const turns = useMemo(() => groupTurns(messages.slice(start, end)), [messages, start, end]);
+  /**
+   * 挂出来的那些轮（渲染就照着它铺）。
+   * 折叠时窗口本来就按轮切，边界自然落在整轮上；不折叠时按条切，边界可能落在轮中间，
+   * 切出来的第一轮就是半截——那是「按条计数」的固有代价，维持原样。
+   */
+  const visibleTurns = useMemo(
+    () => (unit === "turn" ? turns.slice(start, end) : groupTurns(messages.slice(start, end))),
+    [unit, turns, messages, start, end],
+  );
 
   /** 被手动展开过过程的轮（键 = 轮键）。空集 = 全收着，这是「只看问答」的常态 */
   const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(() => new Set());
@@ -397,7 +470,7 @@ export function MessageWindow({
               onClick={loadEarlier}
               className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
-              载入更早的 {chunkSize(messages.length, head)} 条（还有 {start} 条）
+              载入更早的 {chunkSize(total, head, chunk)} {unitWord}（还有 {start} {unitWord}）
             </button>
           )}
           {below > 0 && (
@@ -407,7 +480,7 @@ export function MessageWindow({
               onClick={loadLater}
               className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
-              载入更晚的 {Math.min(WINDOW_CHUNK, below)} 条（还有 {below} 条）
+              载入更晚的 {Math.min(chunk, below)} {unitWord}（还有 {below} {unitWord}）
             </button>
           )}
           {/* 浮动段的「底」不是会话的底：得给一个回到**真正**末尾的出口，
@@ -426,7 +499,7 @@ export function MessageWindow({
       )}
       {/* 一轮一轮地挂。折叠打开时，一轮的「过程」收成一行**可展开的入口**——
           规则 ④-C 要求工具卡不可省略、不可简化成一行纯文本，收起来也不能是把它删掉。 */}
-      {turns.map((turn) => (
+      {visibleTurns.map((turn) => (
         <Fragment key={turn.key}>
           {turn.user !== null && row(turn.user)}
           {folded && turn.steps.length > 0 && !expandedTurns.has(turn.key) ? (

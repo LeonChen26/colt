@@ -15,8 +15,10 @@
  * 顺便量第二件事：**同一份视图被反复重推**的代价（流式期间主进程每 50ms 推一次全量快照，
  * 见 `worker/entry.ts` 的 `scheduleFlush`）——这条是"运行中会不会卡"的直接来源。
  *
- * 第四节是**断言**（不是量数）：长会话的「消息窗口」到底只挂了最近一段、追加时跟不跟着走、
- * 「载入更早」展开对不对——判据取每行的 `data-msg-row` 与界面上的「还有 N 条」。
+ * 第四节起是**断言**（不是量数）：长会话的「消息窗口」到底只挂了最近一段、追加时跟不跟着走、
+ * 「载入更早」展开对不对——判据取每行的 `data-msg-row` 与界面上的「还有 N 条/轮」；
+ * 第五节量「只看问答」的**单位**（折叠时窗口按轮计，见 `lib/message-window.ts` 的 `FOLD_CHUNK`）；
+ * 第六节量点链与搜索的跳转。
  */
 import { BrowserWindow } from "electron";
 import { createSession } from "../../../main/db/repo";
@@ -289,6 +291,12 @@ export async function runPerf(
   // 「还有 N 条」那句界面文字，那正是要拿它和实际挂载数对一遍的地方。
   log("[四] 消息窗口（长会话只挂最近一段 + 按需展开）");
   const checks: [string, boolean][] = [];
+  /**
+   * 夹具的节奏：每 14 条一个用户轮，**i=0 也是一轮**——m0、m14、…、m798，共 58 轮。
+   * 期望值一律从夹具节奏现算，不写死（上一版写死 57，漏数了 i=0 那轮，红断言查出来才纠正）。
+   * 四、五、六三节都要用它。
+   */
+  const EXPECT_TURNS = Math.ceil(800 / 14);
   const push = async (count: number): Promise<void> => {
     window.webContents.send("session.view", bigView(sessionId, count));
     await sleep(900);
@@ -429,13 +437,18 @@ export async function runPerf(
   /** 夹具里 m<下标>：每 14 条一个用户轮，轮末是这 14 条里的最后一条助手消息 */
   const isUserRow = (id: string): boolean => Number(id.slice(1)) % 14 === 0;
   const isTurnEndRow = (id: string): boolean => Number(id.slice(1)) % 14 === 13;
+  /** 「载入更早」按钮上的文案：窗口**按什么单位数**是给人看的，这句就是物证 */
+  const earlierLabel = (): Promise<string> =>
+    run<string>(
+      `(() => { const b = document.querySelector("[data-conv-earlier]"); return b === null ? "" : (b.textContent || "").trim(); })()`,
+    );
 
   // 先离开顶端：贴着顶时补一次高度或滚动都可能触发「滚到顶自动加载」，行数会被搅动
   await scrollToBottom();
   await sleep(300);
   const unfolded = await foldState();
-  const userBefore = unfolded.rows.filter(isUserRow).length;
-  const turnEndBefore = unfolded.rows.filter(isTurnEndRow).length;
+  const unfoldedUsers = unfolded.rows.filter(isUserRow);
+  const unfoldedEnds = unfolded.rows.filter(isTurnEndRow);
   checks.push([
     `默认「完整」：一条过程都没收起来（摘要行 ${unfolded.summaries} 个）`,
     unfolded.summaries === 0 && unfolded.rows.length > 0,
@@ -444,17 +457,27 @@ export async function runPerf(
   const foldClicked = await clickText("只看问答");
   await sleep(500);
   const folded = await foldState();
+  const foldedUsers = folded.rows.filter(isUserRow);
   checks.push([
-    `点开「只看问答」后每轮收成一行（摘要行 ${folded.summaries} 个，行数 ${unfolded.rows.length} → ${folded.rows.length}）`,
-    foldClicked && folded.summaries > 0 && folded.rows.length < unfolded.rows.length,
+    `点开「只看问答」后每轮收成一行（摘要行 ${folded.summaries} 个）`,
+    foldClicked && folded.summaries > 0,
   ]);
+  // 折叠换的是窗口的**单位**：一个窗口是 50 **轮**，不是 50 条。不换单位的话这里只挂出三四轮
+  // （夹具里一轮 14 条），而点这个开关的人要的正是**多读几轮**——那就是这个开关的全部意义。
+  const earlierText = await earlierLabel();
   checks.push([
-    `提问一条不少（用户行 ${userBefore} → ${folded.rows.filter(isUserRow).length}）`,
-    userBefore > 0 && folded.rows.filter(isUserRow).length === userBefore,
+    `折叠后窗口按**轮**计：「${earlierText}」，挂出 ${foldedUsers.length} 轮（展开态只有 ${unfoldedUsers.length} 轮）`,
+    earlierText.includes("轮") &&
+      foldedUsers.length > unfoldedUsers.length &&
+      foldedUsers.length < EXPECT_TURNS,
   ]);
+  // 折叠最容易犯的错不是没收，是把提问或最终回复一起收掉了（那就不是阅读视图，是丢内容）。
+  // 判据取**包含关系**：折叠的窗口比展开的更靠前，展开态看到的那些行必须一条不少地还在。
   checks.push([
-    `最终回复没被一起收掉（轮末回复行 ${turnEndBefore} → ${folded.rows.filter(isTurnEndRow).length}）`,
-    turnEndBefore > 0 && folded.rows.filter(isTurnEndRow).length === turnEndBefore,
+    `折叠没丢内容：展开态那 ${unfoldedUsers.length} 个提问与 ${unfoldedEnds.length} 个轮末回复都还在`,
+    unfoldedUsers.length > 0 &&
+      unfoldedEnds.length > 0 &&
+      [...unfoldedUsers, ...unfoldedEnds].every((id) => folded.rows.includes(id)),
   ]);
 
   // 收起来的那一行必须是**可展开的入口**（规则 ④-C：卡片不可省略、不可简化成一行纯文本）
@@ -562,9 +585,7 @@ export async function runPerf(
   await push(800);
   await scrollToBottom();
   await sleep(300);
-  // 夹具每 14 条一个用户轮，**i=0 也是一轮**：m0、m14、…、m798，共 58 轮（58 > 11，点链必须自己滚）。
-  // 期望值从夹具节奏现算，不写死——上一版写死 57（漏数了 i=0 那轮），红断言查出来才纠正
-  const EXPECT_TURNS = Math.ceil(800 / 14);
+  // 夹具共 EXPECT_TURNS 轮（见本节开头），远多于点链默认可见的 11 个——所以点链必须自己滚。
   const railBottom = await railState();
   checks.push([
     `滚离顶部后点链浮现（${EXPECT_TURNS} 轮全部在列，视口内可见 ${railBottom.visible} 个点，当前点在第 ${railBottom.current} 轮）`,
