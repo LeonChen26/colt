@@ -30,7 +30,7 @@
  */
 import { app, BrowserWindow } from "electron";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { createSession, upsertProject } from "../../../main/db/repo";
 import { sessionManager } from "../../../main/session-manager";
 import { sleep, uncaughtErrors } from "../context";
@@ -42,9 +42,14 @@ export async function runMcpReload(
 ): Promise<void> {
   const fixtureDir = join(process.cwd(), "out", "smoke-mcp-reload-fixture");
   const otherDir = join(process.cwd(), "out", "smoke-mcp-reload-other");
+  const alphaServer = join(process.cwd(), "tests", "helpers", "mcp-fixture-server.mjs");
   const alpha = {
     command: process.execPath,
-    args: [join(process.cwd(), "tests", "helpers", "mcp-fixture-server.mjs")],
+    // ⚠️ 这里**故意用相对路径**（相对夹具项目根）：它同时钉住「stdio server 的工作目录 = 项目根」。
+    // 用户写 `args: ["."]` / `["src"]` 这类相对路径时指望的正是这个（`.colt/mcp.json` 就在项目里）。
+    // 若工作目录退回成应用自己的 cwd（= 仓库根），这条相对路径会指到仓库外面、alpha 直接连不上，
+    // ① 组当场红——这就是它的可证伪点（2026-09-19 审计 ⑧）。
+    args: [relative(fixtureDir, alphaServer)],
     env: { ELECTRON_RUN_AS_NODE: "1" },
   };
   const beta = {

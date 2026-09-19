@@ -19,7 +19,8 @@
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { createServer as createTcpServer, connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,7 @@ const SSE_FIXTURE = fileURLToPath(new URL("./helpers/mcp-sse-fixture-server.mjs"
 const CAPS_FIXTURE = fileURLToPath(
   new URL("./helpers/mcp-capabilities-fixture-server.mjs", import.meta.url),
 );
+const CWD_FIXTURE = fileURLToPath(new URL("./helpers/mcp-cwd-fixture-server.mjs", import.meta.url));
 
 type Tool = AgentHarnessTool<ExecutionToolContext>;
 
@@ -100,6 +102,17 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error("等待条件成立超时");
     await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/** 数夹具进程启动了几次：`COLT_MCP_START_LOG` 每启一次追加一行，文件不存在即 0 次 */
+function countStarts(logPath: string): number {
+  try {
+    return readFileSync(logPath, "utf8")
+      .split("\n")
+      .filter((line) => line !== "").length;
+  } catch {
+    return 0;
   }
 }
 
@@ -159,6 +172,26 @@ describe("装载与包装（真实 stdio 子进程往返）", () => {
       assert.deepEqual(result.content, [{ type: "text", text: "echo:你好 MCP" }]);
     } finally {
       await closeMcpTools();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("stdio server 的工作目录是**项目根**（不是应用进程的 cwd）", async () => {
+    const dir = await fixtureProject({
+      mcpServers: { cwd: { command: process.execPath, args: [CWD_FIXTURE] } },
+    });
+    const runtime = await createMcpRuntime(dir, () => undefined);
+    try {
+      const where = runtime.tools.find((tool) => tool.name === "mcp__cwd__where")!;
+      const result = await callTool(where, {});
+      // 判据：子进程自报的 cwd **逐字等于**夹具项目目录。
+      // worker 是 `utilityProcess.fork(workerPath, [], {…})` 起的、**没带 cwd**，所以不显式传的话
+      // 子进程继承的是**应用进程的** cwd（本测试里就是仓库根）——用户的 `args: ["."]` / `["src"]`
+      // 随之指到别处（实测：相对参数被解析成 `E:\code\tests\…`，server 直接 Cannot find module）。
+      // 先 realpath 归一化再比，免得临时目录的短名 / 符号链接造成假红。
+      assert.equal((result.content[0] as { text: string }).text, await realpath(dir));
+    } finally {
+      await runtime.close();
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -613,6 +646,42 @@ describe("热重载与状态", () => {
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("两个 reload 并发：同一台 server 只连一次（命令入口不排队，共享状态得自己互斥）", async () => {
+    const dir = await fixtureProject(fixtureServerConfig());
+    const startLog = join(dir, "starts.log");
+    const runtime = await createMcpRuntime(dir, () => undefined);
+    try {
+      // 改配置（加一个无害的 env）：下一次重载**必须重连**，这才有「连两遍」的机会。
+      // 启动日志只在改了配置之后才挂上，于是它数的正好是**这次重载起了几个进程**。
+      await writeFile(
+        join(dir, ".colt", "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            fixture: {
+              command: process.execPath,
+              args: [FIXTURE],
+              env: { COLT_MCP_START_LOG: startLog },
+            },
+          },
+        }),
+        "utf8",
+      );
+      const [a, b] = await Promise.all([runtime.reload(), runtime.reload()]);
+      assert.equal(a.statuses[0]?.status, "connected");
+      assert.equal(b.statuses[0]?.status, "connected");
+      assert.deepEqual(a.tools.map((tool) => tool.name), b.tools.map((tool) => tool.name));
+      // 判据：并发重载只**起了一个** server 进程。没有互斥时两个 reload 都会判定「配置变了」，
+      // 各自 close 一次、各自 connect 一次——多出来的那个 client 只留在 liveClients 里（连着
+      // 一个子进程），从工具清单和 status 上都看不出来，只有「起了几个进程」看得见。
+      assert.equal(countStarts(startLog), 1, "并发重载把同一台 server 连了两遍（泄漏一个子进程）");
+    } finally {
+      await runtime.close();
+      // maxRetries：Windows 上刚退出的子进程会短暂占着它的 cwd（正是本项目目录），
+      // 目录可能当场删不掉（EBUSY）——那是**清理**的时序问题，不该变成假红
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

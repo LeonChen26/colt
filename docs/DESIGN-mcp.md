@@ -2,7 +2,9 @@
 
 > **状态**：**已实施**（2026-09-19；当日晚些时候补齐了原型边界，见 §5；同日再补上
 > resources / prompts 两个能力面，见决策 13，以及 `instructions` 注入，见决策 14；
-> 收盘审计后又修了「等 MCP 回话的预算」与「配置诊断通道」两条假信号，见决策 15 / 16）。
+> 收盘审计后又修了「等 MCP 回话的预算」「配置诊断通道」「掉线作声」「stdio 子进程的 cwd」
+> 与「答不回来的查询当场失败」五条假信号 / 缺口，见决策 15–18；再给重载补上**并发互斥**，
+> 见决策 19）。
 > **落地落点**：
 > - `shared/mcp-config.ts`——配置的**纯解析层**（不 import SDK）。抽出来是为了**两侧共用**：
 >   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
@@ -16,7 +18,7 @@
 > - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性，含诊断块）。
 > 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
 > `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
-> **验收**：单测 `tests/mcp-tools.test.ts`（**31 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
+> **验收**：单测 `tests/mcp-tools.test.ts`（**33 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
 > 夹具都与生产方同构（低层 `Server` 类 + 裸 JSON Schema）：
 > `mcp-fixture-server.mjs`（stdio，3 工具）/ `mcp-paged-fixture-server.mjs`（stdio，分页）/
 > `mcp-http-fixture-server.mjs`（Streamable HTTP，含 headers 回显）/
@@ -24,7 +26,9 @@
 > （stdio，可自杀——专门验「连上**之后**掉线」）/
 > `mcp-capabilities-fixture-server.mjs`（stdio，**三面都声明**：tools + resources + prompts，
 > 含文本/二进制资源、资源模板、带参与无参提示词，并**自报 `instructions`**——验「声明了才包成
-> 工具」、能力面的真实往返，以及 server 用法说明确实被拼进提示词）。
+> 工具」、能力面的真实往返，以及 server 用法说明确实被拼进提示词）/
+> `mcp-cwd-fixture-server.mjs`（stdio，1 工具：回报**自己的工作目录**——钉「stdio server 的 cwd
+> = 会话的项目根」，见决策 17）。
 > **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端由冒烟
 > `COLT_SMOKE_MODE=mcp-e2e` 覆盖并**实测通过**（2026-09-19，本地 Ollama qwen3:0.6b，
 > 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；另有
@@ -71,7 +75,8 @@
 | SDK 无状态模式的 Streamable HTTP server **必须每个请求新建一套 transport + server** | 实测：共用一套会让第二个请求（`notifications/initialized`）回 500 |
 | v2 的 `listTools()` **不传 cursor 时自己翻完所有页并聚合**（一次调用拿回 5 条、`nextCursor` 为 undefined）；只有**显式传 cursor** 才回单页。自动翻页的页数上限是 `ClientOptions.listMaxPages`（默认 64，触顶**抛错**、不缓存半份聚合），重复 cursor 会停止翻页 | `@modelcontextprotocol/client`（实测，见决策 6）。同款自动聚合对 `listPrompts` / `listResources` / `listResourceTemplates` 一视同仁 |
 | SDK 的 `RequestOptions` 有 `signal` / `timeout`；`RequestOptions.timeout` 缺省用 `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`。超时由 SDK 自己取消请求并抛 `SdkError code=REQUEST_TIMEOUT` | `@modelcontextprotocol/client`（实测：给 `connect` 传 `{ timeout: 1500 }`，1531ms 后以 `SdkError code=REQUEST_TIMEOUT / Request timed out` 拒绝）。所以 `callTool` **不是没有超时**，是走 SDK 默认 60s |
-| `mcpReload` 的**最慢正当耗时** = 等就绪（≤ `READY_TIMEOUT_MS` 120s，命令在 `#post` 里暂存到 `ready`）+ 每台要重连的 server ≤ 2 × 15s（连接 + 列工具，串行）；而主进程那边原先只等 **10s** | 实测（免费冒烟第 ⑤ 组）：夹具里一个**不说话的 server** 让重载耗时 **15035ms** —— 旧预算下这里会假报「查询 MCP 状态超时」。修法与物证见决策 15 |
+| `StdioServerParameters.cwd` 缺省「继承当前进程的 cwd」；而 worker 是 `utilityProcess.fork(workerPath, [], {…})` 起的、**没带 `cwd`**（`ForkOptions.cwd` 存在但没传） | 结论：worker 的 cwd = **应用进程**的 cwd（dev 下 = 仓库根）。实测：夹具 server 用**相对参数**时被解析成 `E:\code\tests\helpers\…`（从仓库根退两级）→ `Cannot find module`；显式传 `cwd` 后逐字等于项目目录（决策 17） |
+| `Protocol.onclose` 是**公开可赋值**的钩子，由 `transport.close()` 触发（SDK 源码里 `transport.onclose` → `_onclose()` → `this.onclose?.()`）；HTTP 传输会 **re-fire** | 掉线检测这一支是通的（不必另接 `onerror`——SDK 明说那里的错误「不一定是致命的」）；「只报一次」要靠自己幂等（决策 11） |
 | `client.getServerCapabilities()` 是公开方法，connect 之后就能读到 server 声明的 `tools` / `resources` / `prompts` 等能力面；`listResources` / `listPrompts` / `listResourceTemplates` 与 `listTools` 同款自动翻页；`readResource` / `getPrompt` 是单次请求 | `@modelcontextprotocol/client`（能力工具只在声明了对应面时才加，见决策 13） |
 | `client.getInstructions()` 是 server 握手时自报 `InitializeResult.instructions` 的**取值口**，但 SDK **自己一处都不调用**它；另有一个 `ClientOptions.listChanged`（`{ tools / prompts / resources: { onChanged } }`），SDK 会自己刷新并把新值回调给你 | 前者不自己拼进提示词就是**静默丢掉**（与技能清单同坑，见决策 14）；后者我们**尚未接**（见 §5 边界） |
 
@@ -217,6 +222,51 @@
     - **物证**：免费冒烟 `mcp-reload` 的 `other` 项目里故意放一条坏声明（`broken` 既没 command
       也没 url），断言响应带出 `server "broken" 缺少 command 或 url`，且**有活会话那条路字段
       同样存在**。跑的是真实 IPC，不是单测里的替身。
+
+17. **stdio server 的工作目录 = 会话的项目根**（`lib/mcp-tools.ts` 的 `buildTransport(config, cwd)`）。
+    - **症状**（收盘审计 ⑧，2026-09-19）：`buildTransport` 造 `StdioClientTransport` 时**不传 `cwd`**，
+      按 SDK 的语义就是「继承当前进程的 cwd」——而 worker 是
+      `utilityProcess.fork(workerPath, [], {…})` 起的、**没带 `cwd`**，于是它继承的是**应用进程**的
+      cwd（dev 下是仓库根，打包后是应用目录），跟用户的项目毫无关系。而
+      `args: ["."]` / `["src"]` / `["dist"]` 这类相对路径**恰恰是最主流的写法**（官方
+      `server-filesystem` 的例子就写着 `.`），用户把 `.colt/mcp.json` 放在项目里、当然指望它
+      相对项目根解析。症状还是**静默指错**或一句 `Cannot find module`，设置页只说「连接失败」。
+    - **物证**（对照实验，都在免费路径上）：把夹具的 `args` 改成**相对夹具项目根**的路径后，
+      修前 ① 组当场红、worker 打出 `Cannot find module 'E:\code\tests\helpers\…'`——正是从
+      仓库根退两级的结果（`..\..\tests\…`）；修后 12/12 全绿。单测另有一条**逐字相等**的断言
+      （`cwd === 项目目录`），把 `cwd` 摘掉该条立刻红（实得 `E:\code\opensource\colt`）。
+    - 与另一条同源：`.colt/mcp.json` 的定位、harness 的工具 cwd、记忆的项目隔离，认的都是
+      **会话的项目根**；stdio 子进程没有理由例外。
+
+18. **「答不回来的 MCP 查询」必须当场失败，不许靠超时收敛**（`main/session-manager.ts` 的
+    `PendingMcpQuery` + `#drainPendingMcp`）。
+    - **症状**（收盘审计 ⑦，2026-09-19）：待决队列原先只有一个兑现口子（`settle`），worker 崩掉 /
+      被回收 / init 失败时两条异步路径都只写 `pendingMcp.length = 0`——把等待方**丢掉**，指望
+      「各自的超时会收敛」。这在预算 10s 时只是慢，抬到 `MCP_QUERY_TIMEOUT_MS`（150s，见决策 15）
+      之后就变成设置页挂一条**假的**「重载中…」两分半。三个触发点：
+      ① worker 异常退出；② 用户切走 / 空闲回收（`#disposeWorker`）；③ init 失败（`fatal`，
+      此时 worker 收到 mcpStatus 只会回一条 `error`，而按 FIFO 配对那条 error 落不到等待方头上）。
+    - **改法**：队列元素带**两条**收场口子（`settle` / `fail`），三处都改调 `#drainPendingMcp`
+      （`splice(0)` 摘空 + 逐个 `fail`，各自掐掉自己的定时器）。于是 150s 那道超时退化成纯兜底
+      （只对付「worker 活着但卡死」），正常与异常路径都**当场**有结论。
+    - **已知未覆盖，如实记下**：这条**没有行为断言**（只有代码与类型）。要覆盖得造出「有活 worker
+      且在飞着一份 MCP 查询时它死掉」的场面，而现有注入器 `scripts/crash-worker.cjs` 在 t=0 就
+      `process.exit(0)`，那个窗口（几毫秒）落不进去。将来若要补，需要「延迟退出」的注入器
+      （或将 `PendingMcpQuery` 的队列抽成可单测的纯模块）。
+
+19. **重载必须互斥：并发调用复用同一次**（`lib/mcp-tools.ts` 的 `reloadInFlight` + `doReload`）。
+    - **症状**（收盘审计 ⑤，2026-09-19）：worker 的命令入口是 `void handle(command)`、**不排队**
+      （`entry.ts`），两条 `mcpReload` 能交错执行；而重载会跨 `await` 改共享的 `states`。两个
+      重叠时，同一台「配置变了」的 server 会被连**两遍**：后写进 `states` 的那个赢，先那个
+      `client` 只剩 `liveClients` 还引用着（连带一个子进程），要等 worker 退出才被收掉——
+      工具清单与 status 上都**看不出来**，只有「起了几个进程」看得见。
+    - **改法**：`reload` 不再直接干活，改成「有在飞的就**返回它**、否则起一次」，真身挪进
+      `doReload`。选「复用」而不是「排队」：重载是幂等的「把现状对齐到配置」，第二次跑拿不到
+      新信息，复用的结果对两个调用方都成立，还省掉一轮白连。
+    - **可达性**：当前设置页在重载期间禁用按钮、从界面点不出来；但 IPC 面本身没设防（渲染层
+      任何代码都能连调两次），所以把约束写进**结构**、不靠界面拦。
+    - **判据**（无模型，`tests/mcp-tools.test.ts`）：夹具挂 `COLT_MCP_START_LOG`（每启一次追加
+      一行），`Promise.all([reload(), reload()])` 后断言**只起了一个**进程——摘掉互斥即变 2。
 
 ## 4. 配置形态
 

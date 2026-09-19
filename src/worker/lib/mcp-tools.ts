@@ -147,13 +147,23 @@ function describeError(error: unknown): string {
 type AnyTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
 
 /** 按**解析后**的配置造传输：stdio 走子进程，远程走 Streamable HTTP / SSE（headers 透传）。
- *  入参必须是 `interpolateConfig` 的产物——`${VAR}` 在这里才被换成真实值，且**只**在这里。 */
-function buildTransport(config: McpServerConfig): AnyTransport {
+ *  入参必须是 `interpolateConfig` 的产物——`${VAR}` 在这里才被换成真实值，且**只**在这里。
+ *
+ *  `cwd` 是**会话的项目根**，作为 stdio 子进程的工作目录（`StdioServerParameters.cwd`；
+ *  不传则「继承当前进程的 cwd」）。这一步不能省：worker 是
+ *  `utilityProcess.fork(workerPath, [], {…})` 起的、**没带 `cwd`**，于是它自己的 cwd 是
+ *  **应用进程的**（dev 下就是仓库根，打包后是应用目录），跟用户的项目毫无关系。而
+ *  `args: ["."]` / `["src"]` / `["dist"]` 这类**相对路径正是最主流的写法**（官方
+ *  `server-filesystem` 的例子就写着 `.`），用户把它写在项目里的 `.colt/mcp.json`，当然指望
+ *  相对项目根解析。实测（2026-09-19 审计 ⑧）：相对参数被解析成 `E:\code\tests\…`（从仓库根
+ *  退了两级），server 直接 `Cannot find module`、连不上——而设置页只会说「连接失败」。 */
+function buildTransport(config: McpServerConfig, cwd: string): AnyTransport {
   if (config.command !== undefined) {
     return new StdioClientTransport({
       command: config.command,
       args: config.args ?? [],
       env: { ...getDefaultEnvironment(), ...config.env },
+      cwd,
     });
   }
   const url = new URL(config.url ?? "");
@@ -388,13 +398,14 @@ async function connectServer(
   name: string,
   declared: McpServerConfig,
   resolved: McpServerConfig,
+  cwd: string,
   notify: (message: string) => void,
 ): Promise<ServerState> {
   const client = new Client({ name: "colt", version: "0.0.1" }, { listMaxPages: MAX_TOOL_PAGES });
   // config 存声明值（见 ServerState.config）：resolved 只用于造传输
   const state: ServerState = { name, config: declared, client, tools: [] };
   try {
-    await client.connect(buildTransport(resolved), { timeout: MCP_STEP_TIMEOUT_MS });
+    await client.connect(buildTransport(resolved, cwd), { timeout: MCP_STEP_TIMEOUT_MS });
     const listed = await listAllTools(client);
     // 工具面 + 该 server **声明了**的 resources / prompts 能力面（没声明就不加，见 capabilityTools）
     state.tools = [
@@ -518,7 +529,11 @@ export async function createMcpRuntime(
       ...(state.error === undefined ? {} : { error: state.error }),
     }));
 
-  const reload = async (): Promise<McpReloadResult> => {
+  /** 正在进行中的那一次重载（互斥用，见下面 `reload` 的注释） */
+  let reloadInFlight: Promise<McpReloadResult> | undefined;
+
+  /** 真身：把配置重读一遍、对齐 `states`。别直接调它——外部一律走 `reload`（要互斥）。 */
+  const doReload = async (): Promise<McpReloadResult> => {
     const config = await loadMcpConfig(cwd);
     diagnostics.length = 0;
     diagnostics.push(...config.diagnostics);
@@ -547,7 +562,7 @@ export async function createMcpRuntime(
         continue;
       }
       try {
-        states.set(name, await connectServer(name, declared, resolved, notify));
+        states.set(name, await connectServer(name, declared, resolved, cwd, notify));
       } catch (error) {
         const message = `server "${name}" 连接失败：${describeError(error)}`;
         diagnostics.push(message);
@@ -572,6 +587,28 @@ export async function createMcpRuntime(
     const summary = parts.join("；");
     if (summary !== "") notify(summary);
     return { tools, statuses: status(), summary };
+  };
+
+  /**
+   * 重载（**互斥**）：并发调用**复用同一次**，不排队等第二次。
+   *
+   * 为什么必须互斥：worker 的命令入口是 `void handle(command)`、**不排队**（`entry.ts`），
+   * 两条 `mcpReload` 能交错执行；而重载会跨 `await` 改共享的 `states`——两个重叠时，同一台
+   * 「配置变了」的 server 会被连**两遍**：后写进 `states` 的那个赢，先那个 client 只剩
+   * `liveClients` 还引用着（连带一个子进程），要等 worker 退出才被收掉。
+   *
+   * 为什么是「复用」而不是「排队」：重载是幂等的「把现状对齐到配置」，第二次跑拿不到新信息，
+   * 只会多连一轮；复用的结果对两个调用方都成立。
+   *
+   * 可达性说明（2026-09-19 审计 ⑤）：当前设置页在重载期间禁用按钮，所以从界面点不出来；
+   * 但 IPC 面本身没设防（渲染层任何代码都能连调两次），这里把约束写进结构而不是靠界面拦。
+   */
+  const reload = (): Promise<McpReloadResult> => {
+    if (reloadInFlight !== undefined) return reloadInFlight;
+    reloadInFlight = doReload().finally(() => {
+      reloadInFlight = undefined;
+    });
+    return reloadInFlight;
   };
 
   await reload();

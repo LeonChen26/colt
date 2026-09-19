@@ -86,6 +86,18 @@ const DISPOSE_GRACE_MS = 3 * 1000;
  */
 const KEYLESS_PLACEHOLDER = "colt-local-no-key";
 
+/**
+ * MCP 现状查询的一个等待方。
+ *
+ * 带**两条**收场口子（兑现 / 失败）而不是只有一个 `settle`，是因为 worker 崩掉或被回收时
+ * 没人再能回复：这时必须**立刻**失败。只把队列清空的话，等待方要等满 `MCP_QUERY_TIMEOUT_MS`
+ * 才收敛，界面上就是一条**假的**「重载中…」——比直接报错更糟（2026-09-19 审计 ⑦）。
+ */
+export interface PendingMcpQuery {
+  settle: (servers: McpServerView[]) => void;
+  fail: (error: Error) => void;
+}
+
 export interface WorkerEntry {
   sessionId: string;
   child: UtilityProcess;
@@ -135,9 +147,9 @@ export interface WorkerEntry {
   }>;
   /**
    * MCP 现状查询的待决队列（同 `pendingBranches` 的范式，FIFO）。
-   * 设置页问一次、热重载回复一次，都落在它上面。
+   * 设置页问一次、热重载回复一次，都落在它上面。收场口子见 `PendingMcpQuery`。
    */
-  pendingMcp: Array<(servers: McpServerView[]) => void>;
+  pendingMcp: PendingMcpQuery[];
   /**
    * 中断代数：每次用户中断自增。审批分析在飞行中跨越了中断时据此丢弃结果——
    * 否则会在已中断的会话上留下无法解释的幽灵待审卡片，并让 worker 悬空等待。
@@ -824,6 +836,11 @@ export class SessionManager {
             // 自己报错（与本次修改前行为一致）。
             entry.pendingCommands = undefined;
             readyDeferred.reject(new Error(message.message));
+            // 还挂在队列里的 MCP 查询也**答不回来了**：init 失败意味着 worker 的 `state`
+            // 永远建不起来，它收到 mcpStatus 只会回一条 `error`——而按 FIFO 配对，那条
+            // error 落不到等待方头上（它只按 `mcpStatus` 兑现）。不在这里兑现，等待方要等满
+            // `MCP_QUERY_TIMEOUT_MS` 才收敛（2026-09-19 审计 ⑦-b）。
+            this.#drainPendingMcp(entry, `会话初始化失败：${message.message}`);
           }
           break;
         }
@@ -979,8 +996,8 @@ export class SessionManager {
 
         case "mcpStatus": {
           // 与 branches 同款：FIFO 兑现 mcpStatus / mcpReload 的等待方
-          const settle = entry.pendingMcp.shift();
-          settle?.(message.servers);
+          const pending = entry.pendingMcp.shift();
+          pending?.settle(message.servers);
           break;
         }
 
@@ -1035,7 +1052,9 @@ export class SessionManager {
         entry.pendingBranches.length = 0;
         // 完整流同理：没人能再回复，等待方各自的超时会收敛
         entry.pendingTranscripts.length = 0;
-        entry.pendingMcp.length = 0;
+        // MCP 查询**不能**只清空：它的超时预算是 150s（要盖住 worker 侧的连接上限），
+        // 拖着不报等于让设置页显示一条假的「重载中…」，所以当场兑现成失败
+        this.#drainPendingMcp(entry, "会话进程已退出，MCP 状态查询已取消。");
         this.#emit("session.error", {
           sessionId: options.sessionId,
           message: `会话进程异常退出（code=${code ?? "unknown"}），历史已保留。再发一条消息会自动重连恢复。`,
@@ -1310,24 +1329,44 @@ export class SessionManager {
     return undefined;
   }
 
+  /**
+   * worker 没了（崩溃 / 被回收 / 用户切走）：没人能再回这份查询，**当场**把等待方失败掉。
+   *
+   * 别只写 `pendingMcp.length = 0`：等待方会被拖到 `MCP_QUERY_TIMEOUT_MS`（150s）才收敛，
+   * 界面上是一条**假的**「重载中…」，比直接报错更糟。`splice(0)` 先摘空队列，再由每个
+   * 等待方自己掐掉定时器（`fail` 里做的），不会留下空转的 timer。
+   */
+  #drainPendingMcp(entry: WorkerEntry, message: string): void {
+    for (const pending of entry.pendingMcp.splice(0)) pending.fail(new Error(message));
+  }
+
   /** `mcpStatus` / `mcpReload` 的共用往返（同 `branches` 的范式：排队兑现 + 超时） */
   #queryMcp(sessionId: string, command: WorkerCommand): Promise<McpServerView[]> {
     const entry = this.#workers.get(sessionId);
     if (!entry) return Promise.resolve([]);
     const queue = entry.pendingMcp;
     return new Promise<McpServerView[]>((resolve, reject) => {
-      const settle = (servers: McpServerView[]): void => {
-        clearTimeout(timer);
-        const index = queue.indexOf(settle);
-        if (index !== -1) queue.splice(index, 1);
-        resolve(servers);
+      // 两种收场都自带「摘自己 + 清表 + 掐定时器」，于是三个触发点（兑现 / 超时 / worker 没了）
+      // 都只调一次，不会互相留尾巴
+      const pending: PendingMcpQuery = {
+        settle: (servers: McpServerView[]): void => {
+          clearTimeout(timer);
+          const index = queue.indexOf(pending);
+          if (index !== -1) queue.splice(index, 1);
+          resolve(servers);
+        },
+        fail: (error: Error): void => {
+          clearTimeout(timer);
+          const index = queue.indexOf(pending);
+          if (index !== -1) queue.splice(index, 1);
+          reject(error);
+        },
       };
-      const timer = setTimeout(() => {
-        const index = queue.indexOf(settle);
-        if (index !== -1) queue.splice(index, 1);
-        reject(new Error("查询 MCP 状态超时"));
-      }, MCP_QUERY_TIMEOUT_MS);
-      queue.push(settle);
+      const timer = setTimeout(
+        () => pending.fail(new Error("查询 MCP 状态超时")),
+        MCP_QUERY_TIMEOUT_MS,
+      );
+      queue.push(pending);
       this.#post(sessionId, command);
     });
   }
@@ -1425,7 +1464,8 @@ export class SessionManager {
     // 无人再能响应分支查询；清空队列，等待方各自的超时会收敛
     entry.pendingBranches.length = 0;
     entry.pendingTranscripts.length = 0;
-    entry.pendingMcp.length = 0;
+    // MCP 查询当场失败（理由见崩溃那条分支：它的超时预算 150s，拖着就是假「重载中…」）
+    this.#drainPendingMcp(entry, "会话已回收，MCP 状态查询已取消。");
     try {
       entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
     } catch {

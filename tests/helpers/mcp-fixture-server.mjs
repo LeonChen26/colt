@@ -1,5 +1,13 @@
+import { appendFileSync } from "node:fs";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { Server } from "@modelcontextprotocol/server";
+
+// 可选：每次**进程启动**往这个文件追加一行。测试靠它数「同一台 server 起了几个进程」——
+// 并发重载若没做互斥，会把同一台连两遍，而那次多出来的 client（连带子进程）只留在
+// `liveClients` 里，从工具清单/状态上看不出来，只有「起了几个进程」看得见。
+if (process.env.COLT_MCP_START_LOG) {
+  appendFileSync(process.env.COLT_MCP_START_LOG, "start\n");
+}
 
 const ECHO_SCHEMA = {
   type: "object",
