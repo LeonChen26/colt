@@ -4,10 +4,16 @@
 > resources / prompts 两个能力面，见决策 13，以及 `instructions` 注入，见决策 14；
 > 收盘审计后又修了「等 MCP 回话的预算」「配置诊断通道」「掉线作声」「stdio 子进程的 cwd」
 > 与「答不回来的查询当场失败」五条假信号 / 缺口，见决策 15–18；再给重载补上**并发互斥**，
-> 见决策 19）。
+> 见决策 19；产品评审后又做四件事——配置**两级**（用户级 + 项目级，项目级覆盖）、
+> **让 agent 自己安装**、工具**展示名**去黑话、通知**按 kind 分流**，见决策 20–23）。
 > **落地落点**：
 > - `shared/mcp-config.ts`——配置的**纯解析层**（不 import SDK）。抽出来是为了**两侧共用**：
 >   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
+>   配置**两级**：用户级 `~/.colt/mcp.json` + 项目级 `<cwd>/.colt/mcp.json`，项目级同名覆盖（决策 20）。
+> - `shared/mcp-label.ts`——MCP 注册名 → 展示名 `MCP <server>: <tool>`（**纯字符串**，
+>   渲染层也要 import，故不能带 node 依赖；决策 22）。
+> - `worker/lib/system-prompt.ts`——把「怎么接 MCP」写进基础提示词，于是用户可以让 **agent
+>   自己安装**（决策 21）。
 > - `worker/lib/mcp-tools.ts`——连接、包装、runtime（`createMcpRuntime` / `reload` / `status` / `close`），
 >   以及 `capabilityTools`（把 server **声明了的** resources / prompts 也包成内核工具，决策 13）。
 > - `worker/lib/mcp-reload.ts`——MCP 与 harness / 系统提示词 / 设置页的**接线**（三件事一处）：
@@ -268,9 +274,51 @@
     - **判据**（无模型，`tests/mcp-tools.test.ts`）：夹具挂 `COLT_MCP_START_LOG`（每启一次追加
       一行），`Promise.all([reload(), reload()])` 后断言**只起了一个**进程——摘掉互斥即变 2。
 
+20. **配置两级：用户级 + 项目级，项目级同名覆盖**（`shared/mcp-config.ts` 的 `loadMcpConfig(cwd, home?)`）。
+    - **动机**（产品决定，2026-09-19）：MCP 原先**只有项目级**，常见的 server（filesystem、
+      fetch 之类）得**每个项目抄一遍**——而技能 / 记忆早已是「用户目录 + 项目」两级，这个
+      不对称很扎眼。对齐它。
+    - **形态**：用户级 `~/.colt/mcp.json`（与 `.colt/memory.md` 同目录惯例）、项目级
+      `<cwd>/.colt/mcp.json`；合并时**项目级同名覆盖用户级**（那是「这个项目换版本 / 关掉某台」
+      的出口）。诊断**点名是哪个文件**，两层都报。
+    - **`home` 省略则不读用户级**：单测据此保持**项目级**的确定性——结论只取决于自己造的夹具
+      目录，不随开发者的 `~/.colt/mcp.json` 漂移。生产调用方（worker `entry.ts`、`main/ipc`）
+      传 `mcpUserHome()`（`os.homedir()`，可被 `COLT_MCP_HOME` 覆盖——**冒烟专用**的测试缝，
+      用来把「本机没有全局配置」这条前提显式固定，见 `isolateUserMcpConfig`）。
+    - **判据**：`tests/mcp-tools.test.ts` 三条——合并 / 覆盖 / 不传 home 只读项目级；诊断带文件
+      名；把 home 交给 runtime 时用户级 server **真的连上并出工具**。
+
+21. **安装方式 = 让 agent 自己写配置**（`worker/lib/system-prompt.ts` 的「【接入 MCP】」两行）。
+    - **产品决定**：**不做**应用内配置编辑器 / 「添加 server」表单。用户直接让 agent 装
+      （「帮我接一个 X 的 MCP server」）——它本来就有 write / edit 工具。
+    - **缺的不是能力、是知识**：把格式与两个位置写进基础系统提示词，并带上两条纪律——① 密钥
+      一律 `${VAR}`、不写明文；② 写好后让用户在设置页点「重新加载」、并说明装上了什么。
+    - **顺带正确**：写项目外的 `~/.colt/` 在审批里是 **dangerous**（`assessToolRisk` 的
+      `isWithinRootReal` 判定「写入项目目录之外」），会**逐次弹卡**且不给「本会话始终允许」——
+      正好是「装到全局」该有的确认强度。
+
+22. **展示名：注册名 → `MCP <server>: <tool>`**（`shared/mcp-label.ts`）。
+    - **症状**（产品评审，2026-09-19）：审批卡的 `summary` 走 `buildSummary` 的兜底，**逐字**
+      画出注册名 `mcp__alpha__echo`；工具卡、「记住」按钮 tooltip、自动分析行同样。全是开发者黑话。
+    - **改法**：纯字符串 helper（**不能带 node 依赖**——渲染层要直接 import），主进程
+      （`policy.buildSummary`）与渲染层（`ApprovalCard` / `MessageList` / `Conversation`）共用；
+      工具自身的 `label` 也改由它生成，于是**注册名 / label / 界面展示同源**（不再有第二套格式）。
+    - **已知取舍**：展示名里的 server / 工具名取自注册名，而注册名把非 `[A-Za-z0-9_-]` 清洗成了
+      `_`——`my server` 会显示成 `my_server`。为「同一工具不给两个说法」接受它（`mcp-label.ts` 有注）。
+
+23. **通知按 `kind` 分流**（`features/Conversation/index.tsx`）。
+    - **症状**（产品评审）：`session.notice` 的处理器**不看 `kind`**，一律塞进绿色的「压缩完成」
+      提示条、**5 秒消失**——于是「MCP server 掉线了」这种安全事件被画成**绿色成功提示**、几秒
+      蒸发。落库那份是对的（可在「事件」页签回查），**界面语义是反的**。
+    - **改法**：提示状态带上 `kind`；`security` 用**警示色 + 停留 12s**（其余仍是绿色 5s）。两个
+      数据属性分开：`data-conv-compact-notice`（成功 / 信息）与 `data-conv-security-notice`。
+
 ## 4. 配置形态
 
-`<cwd>/.colt/mcp.json`（项目级，随项目走；与 `.colt/memory.md` 同一目录惯例）：
+**两级**，与技能 / 记忆同一条「用户目录 + 项目」的心智（决策 20）：
+
+- 用户级 `~/.colt/mcp.json`——对**全部项目**生效（常见 server 只配一次）；
+- 项目级 `<cwd>/.colt/mcp.json`——随项目走、**同名覆盖**用户级（与 `.colt/memory.md` 同一目录惯例）。
 
 ```json
 {
@@ -295,14 +343,19 @@
   `https://${HOST}/mcp` 变成看似合法却指向错处的 URL，这里成诊断并跳过该 server。
   只支持 `${NAME}` 这一种写法，不做 shell 式的 `$NAME` / 默认值语法。
 - 文件不存在 → 安静跳过（没配就是没配）；JSON 解析失败 / 单个 server 声明不合法 → 诊断进通知，
-  可用 server 照常装载。
+  可用 server 照常装载。**诊断点名是哪个文件**（`.colt/mcp.json：…` / `~/.colt/mcp.json：…`），
+  两层都报。
 - 改完在**设置页点「重新加载」**即可生效，会话不必重启（§3 决策 7）。
+- **不想手写**：直接让 agent 装（决策 21）。
 
 ## 5. 边界（有意不做的）
 
 - **只接 tools 能力**——**已改判**（2026-09-19）：原型阶段认为 resources / prompts「没有
   『包成内核工具』这条自然落点」，实践下来 resources 的「列出 / 读取」本来就是读操作，
   包成工具**有**自然落点；prompts 也顺带包了（参数交给服务端渲染，见决策 13）。
+- **不做应用内配置编辑器 / 「添加 server」表单**：产品决定让 **agent 安装**（决策 21）——设置页
+  保持「只读展示 + 重新加载」，不引入写配置的表单。理由是写用户项目文件属于「应用主动动用户
+  磁盘」，边界要想清楚才做；而 agent 写文件本来就过审批闸门（项目外更是 dangerous）。
 - **prompts 没有用户侧入口**：模型能按名取（`get_prompt`），但输入框 `/` 候选里按名选、
   填参数那套没做——那要动渲染层 + IPC，等真需求（决策 13 末条）。
 - **`list_changed` 通知未接**：v2 有 `ClientOptions.listChanged`（`{ tools / prompts /

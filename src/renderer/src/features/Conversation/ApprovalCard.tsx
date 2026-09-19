@@ -13,6 +13,7 @@ import { ICON } from "@/lib/icon";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import type { ApprovalRequest, ApprovalRisk } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
+import { mcpToolLabel } from "@shared/mcp-label";
 import { DiffView } from "../../components/DiffView";
 import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
 import { cn } from "../../lib/utils";
@@ -141,7 +142,7 @@ export function ApprovalCard({
               disabled={busy}
               onClick={() => resolve(true, { remember: "tool" })}
               className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:opacity-50"
-              title={`本次会话内不再询问 ${request.toolName} 的同级风险调用`}
+              title={`本次会话内不再询问 ${mcpToolLabel(request.toolName) ?? request.toolName} 的同级风险调用`}
             >
               本会话内始终允许
             </button>
@@ -161,7 +162,7 @@ export function ApprovalCard({
             disabled={busy}
             onClick={() => resolve(false, { deny: "tool" })}
             className="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger transition hover:bg-danger-soft disabled:opacity-50"
-            title={`本次会话内自动拒绝 ${request.toolName}`}
+            title={`本次会话内自动拒绝 ${mcpToolLabel(request.toolName) ?? request.toolName}`}
           >
             始终拒绝
           </button>

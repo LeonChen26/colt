@@ -47,6 +47,7 @@ import { isQuestionTool } from "../src/worker/lib/ask-user-tool.ts";
 import { composeMcpInstructions } from "../src/worker/lib/mcp-reload.ts";
 import { isSubagentTool } from "../src/worker/lib/subagent.ts";
 import { READONLY_TOOLS } from "../src/shared/readonly-tools.ts";
+import { mcpToolLabel } from "../src/shared/mcp-label.ts";
 import { buildSignature, evaluateTool, type PolicyConfig } from "../src/main/approval/policy.ts";
 
 const FIXTURE = fileURLToPath(new URL("./helpers/mcp-fixture-server.mjs", import.meta.url));
@@ -921,5 +922,88 @@ describe("server 自报的 instructions（SDK 不会替你注入）", () => {
       await rm(capsDir, { recursive: true, force: true });
       await rm(plainDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("两级配置：用户级（~/.colt/mcp.json）+ 项目级", () => {
+  /** 造一个「用户目录」（可含 .colt/mcp.json），与 fixtureProject 对称 */
+  async function homeDir(config?: unknown): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "colt-home-"));
+    await mkdir(join(dir, ".colt"), { recursive: true });
+    if (config !== undefined) {
+      await writeFile(join(dir, ".colt", "mcp.json"), JSON.stringify(config), "utf8");
+    }
+    return dir;
+  }
+
+  test("合并两层，项目级同名**覆盖**用户级；不传 home 只读项目级", async () => {
+    const project = await fixtureProject({
+      mcpServers: { shared: { command: "project-cmd" }, onlyProject: { command: "p" } },
+    });
+    const home = await homeDir({
+      mcpServers: { shared: { command: "user-cmd" }, onlyUser: { command: "u" } },
+    });
+    try {
+      const merged = await loadMcpConfig(project, home);
+      assert.deepEqual(Object.keys(merged.servers).sort(), ["onlyProject", "onlyUser", "shared"]);
+      // 覆盖：同名以项目级那条为准；用户级独有的照常带出
+      assert.equal(merged.servers.shared?.command, "project-cmd");
+      assert.equal(merged.servers.onlyUser?.command, "u");
+      // 不传 home ⇒ 只读项目级：单测的结论不随开发者的 `~/.colt/mcp.json` 漂移
+      const projectOnly = await loadMcpConfig(project);
+      assert.deepEqual(Object.keys(projectOnly.servers).sort(), ["onlyProject", "shared"]);
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("诊断点名是哪个文件出的问题（项目级在前、用户级在后）", async () => {
+    const project = await fixtureProject({ mcpServers: { badProject: {} } });
+    const home = await homeDir();
+    await writeFile(join(home, ".colt", "mcp.json"), "{ 这不是 JSON", "utf8");
+    try {
+      const { diagnostics } = await loadMcpConfig(project, home);
+      assert.equal(diagnostics.length, 2);
+      assert.match(diagnostics[0]!, /^\.colt\/mcp\.json/);
+      assert.match(diagnostics[0]!, /"badProject"/);
+      assert.match(diagnostics[1]!, /^~\/\.colt\/mcp\.json/);
+      assert.match(diagnostics[1]!, /不是合法 JSON/);
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("把 home 交给 runtime，用户级声明的 server 真的连上并出工具", async () => {
+    const project = await fixtureProject({ mcpServers: {} });
+    const home = await homeDir({
+      mcpServers: { global: { command: process.execPath, args: [FIXTURE] } },
+    });
+    const runtime = await createMcpRuntime(project, () => undefined, home);
+    try {
+      assert.deepEqual(runtime.tools.map((tool) => tool.name).sort(), [
+        "mcp__global__add",
+        "mcp__global__echo",
+        "mcp__global__fail",
+      ]);
+    } finally {
+      await runtime.close();
+      await rm(project, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("展示名：注册名 → 人话", () => {
+  test("mcpToolLabel：MCP 工具翻成 `MCP server: tool`；非 MCP 名回落 undefined", () => {
+    assert.equal(mcpToolLabel("mcp__alpha__echo"), "MCP alpha: echo");
+    // 清洗过的名字照实显示（注册名与展示名同源——不给同一工具两个说法）
+    assert.equal(mcpToolLabel("mcp__my_server__read_file"), "MCP my_server: read_file");
+    assert.equal(mcpToolLabel("read"), undefined);
+    assert.equal(mcpToolLabel("bash"), undefined);
+    // 形状不完整（缺 server / 缺 tool）不硬翻
+    assert.equal(mcpToolLabel("mcp__onlyserver"), undefined);
+    assert.equal(mcpToolLabel("mcp__s__"), undefined);
   });
 });

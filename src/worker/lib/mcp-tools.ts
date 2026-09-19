@@ -7,6 +7,7 @@ import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { McpServerView } from "@shared/worker-protocol";
 import { MCP_STEP_TIMEOUT_MS } from "@shared/limits";
+import { MCP_TOOL_PREFIX, mcpToolLabel } from "@shared/mcp-label";
 import {
   configKey,
   interpolateConfig,
@@ -23,14 +24,16 @@ export {
   interpolateConfig,
   loadMcpConfig,
   mcpConfigPath,
+  mcpUserHome,
   parseServerConfig,
   targetOf,
   transportOf,
+  userMcpConfigPath,
   type McpServerConfig,
 } from "@shared/mcp-config";
 
-/** 工具名前缀：注册名、审批签名、界面展示同源 */
-export const MCP_TOOL_PREFIX = "mcp__";
+/** 工具名前缀：注册名、审批签名、界面展示**同源**（定义在 `@shared/mcp-label`，渲染层也要用） */
+export { MCP_TOOL_PREFIX };
 
 /** LLM API 对工具名普遍有 64 字符上限（含前缀），超长的截断并记诊断 */
 export const MAX_TOOL_NAME_CHARS = 64;
@@ -195,7 +198,7 @@ function wrapTool(
 ): AgentHarnessTool<ExecutionToolContext, TSchema, undefined> {
   return {
     name: mcpToolName(serverName, tool.name),
-    label: `MCP ${serverName}: ${tool.name}`,
+    label: mcpToolLabel(mcpToolName(serverName, tool.name)) ?? `MCP ${serverName}: ${tool.name}`,
     description: tool.description ?? `MCP server "${serverName}" 的 ${tool.name} 工具`,
     // 裸 JSON Schema 原样透传：pi-ai 的 validateToolArguments 对非 typebox
     // schema 有专门的 coercion + 编译路径（见文件头注释）
@@ -290,7 +293,8 @@ function capabilityTools(
   capabilities: { resources?: unknown; prompts?: unknown } | undefined,
 ): AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] {
   const tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] = [];
-  const label = (suffix: string): string => `MCP ${serverName}: ${suffix}`;
+  const label = (suffix: string): string =>
+    mcpToolLabel(mcpToolName(serverName, suffix)) ?? `MCP ${serverName}: ${suffix}`;
   if (capabilities?.resources !== undefined) {
     tools.push({
       name: mcpToolName(serverName, "list_resources"),
@@ -483,10 +487,14 @@ export interface McpRuntime {
  *
  * 与技能同一条隐式信任通道：MCP server 是**会话启动时即执行的本地代码**，
  * 装了什么、坏在哪里必须如实告知（摘要由调用方按 security 类发 notice）。
+ *
+ * `home` 传用户主目录即启用**用户级配置**（`~/.colt/mcp.json`，见 `loadMcpConfig`）；
+ * 省略则只读项目级——单测默认走这条，结论不随开发者的机器漂移。
  */
 export async function createMcpRuntime(
   cwd: string,
   notify: (message: string) => void,
+  home?: string,
 ): Promise<McpRuntime> {
   const states = new Map<string, ServerState>();
   const diagnostics: string[] = [];
@@ -534,7 +542,7 @@ export async function createMcpRuntime(
 
   /** 真身：把配置重读一遍、对齐 `states`。别直接调它——外部一律走 `reload`（要互斥）。 */
   const doReload = async (): Promise<McpReloadResult> => {
-    const config = await loadMcpConfig(cwd);
+    const config = await loadMcpConfig(cwd, home);
     diagnostics.length = 0;
     diagnostics.push(...config.diagnostics);
 

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
-import { loadMcpConfig, targetOf, transportOf } from "@shared/mcp-config";
+import { loadMcpConfig, mcpUserHome, targetOf, transportOf } from "@shared/mcp-config";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
@@ -96,7 +96,7 @@ async function declaredMcpServers(
 ): Promise<{ servers: McpServerView[]; diagnostics: string[] }> {
   const project = getProject(projectId);
   if (project === undefined) return { servers: [], diagnostics: [] };
-  const { servers, diagnostics } = await loadMcpConfig(project.rootPath);
+  const { servers, diagnostics } = await loadMcpConfig(project.rootPath, mcpUserHome());
   return {
     servers: Object.entries(servers).map(([name, config]) => ({
       name,

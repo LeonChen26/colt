@@ -30,6 +30,7 @@ import {
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
 import type { ApprovalMode, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
+import { mcpToolLabel } from "@shared/mcp-label";
 import { displayModelRef, resolveSessionModel, splitModelRef } from "@shared/model-ref";
 import {
   DEFAULT_THINKING_LEVEL,
@@ -183,10 +184,14 @@ export function Conversation({
    */
   const [notice, setNotice] = useState<string | null>(null);
   /**
-   * 压缩完成的瞬时提示（绿色，几秒后自动消失）。
-   * 与黄条语义不同：黄条是「还差一步」的待办，会一直挂着；成功提示挂久了反而像没消失的异常。
+   * 瞬时提示条（`session.notice`）。带 `kind` 是因为它其实承载**两类**语义：
+   * - 缺省（压缩完成这类成功 / 信息反馈）：绿色、5 秒消失；
+   * - `security`（技能装载告警、MCP 掉线等「如实告知」类）：**不是成功**——用警示色、
+   *   停留更久，别让它在用户没看着的那几秒里溜走（落库那份在「事件」页签可回查）。
    */
-  const [compactNotice, setCompactNotice] = useState<string | null>(null);
+  const [compactNotice, setCompactNotice] = useState<{ message: string; kind?: "security" } | null>(
+    null,
+  );
   /**
    * 附件被拒/被跳过的说明，**贴在输入卡片里**而不是顶部的消息区。
    *
@@ -502,9 +507,14 @@ export function Conversation({
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     const offNotice = window.colt.on("session.notice", (payload) => {
       if (disposed || payload.sessionId !== sessionId) return;
-      setCompactNotice(payload.message);
+      setCompactNotice({ message: payload.message, kind: payload.kind });
       clearTimeout(noticeTimer);
-      noticeTimer = setTimeout(() => setCompactNotice(null), 5000);
+      // security 类（技能/MCP 装载告警、掉线等）**不是成功提示**：给更长的停留时间，
+      // 别让「服务器掉线了」这种话在 5 秒里溜走。
+      noticeTimer = setTimeout(
+        () => setCompactNotice(null),
+        payload.kind === "security" ? 12_000 : 5_000,
+      );
     });
 
     void (async () => {
@@ -1059,10 +1069,17 @@ export function Conversation({
 
           {compactNotice && (
             <div
-              data-conv-compact-notice
-              className="mb-3 rounded-[8px] border border-success/50 bg-success-soft px-3 py-2 text-[12.5px] text-success-fg"
+              {...(compactNotice.kind === "security"
+                ? { "data-conv-security-notice": "" }
+                : { "data-conv-compact-notice": "" })}
+              className={cn(
+                "mb-3 rounded-[8px] border px-3 py-2 text-[12.5px]",
+                compactNotice.kind === "security"
+                  ? "border-warning/50 bg-warning-soft text-warning"
+                  : "border-success/50 bg-success-soft text-success-fg",
+              )}
             >
-              {compactNotice}
+              {compactNotice.message}
             </div>
           )}
 
@@ -1142,7 +1159,7 @@ export function Conversation({
               >
                 <span className="pulse-dot inline-block h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px] border-warning bg-warning" />
                 <span className="min-w-0 truncate">
-                  正在自动分析<span className="font-mono"> {item.toolName} </span>：
+                  正在自动分析<span className="font-mono"> {mcpToolLabel(item.toolName) ?? item.toolName} </span>：
                   模型复核中，通常几秒内放行或转人工确认
                 </span>
               </div>

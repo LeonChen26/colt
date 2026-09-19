@@ -103,7 +103,7 @@ import {
   readMemoryFile,
   userMemoryFilePath,
 } from "./lib/memory";
-import { createMcpRuntime, type McpRuntime } from "./lib/mcp-tools";
+import { createMcpRuntime, mcpUserHome, type McpRuntime } from "./lib/mcp-tools";
 import { composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
 import { systemPrompt } from "./lib/system-prompt";
 import { toImageContent } from "./lib/attachments";
@@ -371,7 +371,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     onUpdate: () => scheduleFlush(),
   });
 
-  const mcp = await createMcpRuntime(cwd, (message) => send({ type: "notice", message, kind: "security" }));
+  const mcp = await createMcpRuntime(cwd, (message) => send({ type: "notice", message, kind: "security" }), mcpUserHome());
 
   const { harness, open } = await AgentHarness.create(
     {

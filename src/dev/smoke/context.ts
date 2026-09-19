@@ -8,6 +8,8 @@
  * `runSmoke` 负责建 `log` / `run` 这两个闭包——模式若从 `index.ts` 反向取用就会成环。
  * 把「双方都要用的东西」下沉到第三处，依赖方向才是单向的。
  */
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { nativeImage } from "electron";
 
 /** 落盘 + 控制台双写的一行日志（由 runSmoke 建立，透传给各模式） */
@@ -15,6 +17,22 @@ export type Log = (message: string) => void;
 
 /** 带兜底超时的 executeJavaScript（同上，由 runSmoke 建立） */
 export type Run = <T>(expression: string) => Promise<T>;
+
+/**
+ * 把「用户级（全局）MCP 配置」这条环境前提**显式固定**成一个空目录（设 `COLT_MCP_HOME`）。
+ *
+ * 用户级 `~/.colt/mcp.json` 对全部项目生效——本机若配过一台，冒烟里那些「只有 N 台
+ * server」的精确断言就会随机器而变（假红）。每个真实跑 MCP 的冒烟都先调它，前提才是
+ * **自己建立**的，而不是「碰巧这台机器上没配」（`AGENTS.md` §五⑬）。
+ */
+export function isolateUserMcpConfig(name: string, log?: Log): string {
+  const home = join(process.cwd(), "out", `smoke-${name}-home`);
+  mkdirSync(home, { recursive: true });
+  rmSync(join(home, ".colt"), { recursive: true, force: true });
+  process.env.COLT_MCP_HOME = home;
+  log?.(`用户级 MCP 配置目录（显式置空，避免被本机全局配置污染）：${home}`);
+  return home;
+}
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

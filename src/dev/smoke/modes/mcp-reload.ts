@@ -33,7 +33,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createSession, upsertProject } from "../../../main/db/repo";
 import { sessionManager } from "../../../main/session-manager";
-import { sleep, uncaughtErrors } from "../context";
+import { isolateUserMcpConfig, sleep, uncaughtErrors } from "../context";
 
 export async function runMcpReload(
   window: BrowserWindow,
@@ -42,6 +42,9 @@ export async function runMcpReload(
 ): Promise<void> {
   const fixtureDir = join(process.cwd(), "out", "smoke-mcp-reload-fixture");
   const otherDir = join(process.cwd(), "out", "smoke-mcp-reload-other");
+  // 用户级（全局）MCP 配置也会一并生效——本模式断言「只有 alpha / 只有 beta」这类精确
+  // 条数，所以先把「这台机器上用户的 `~/.colt/mcp.json`」这条前提显式固定成空目录。
+  isolateUserMcpConfig("mcp-reload", log);
   const alphaServer = join(process.cwd(), "tests", "helpers", "mcp-fixture-server.mjs");
   const alpha = {
     command: process.execPath,

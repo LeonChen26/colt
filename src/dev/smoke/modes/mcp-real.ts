@@ -36,7 +36,7 @@ import { sessionManager } from "../../../main/session-manager";
 import { listProviders } from "../../../main/providers";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { ConversationView } from "@shared/worker-protocol";
-import { activeOutputPath, sleep, uncaughtErrors } from "../context";
+import { activeOutputPath, isolateUserMcpConfig, sleep, uncaughtErrors } from "../context";
 
 interface PromptCtx {
   nonce: string;
@@ -109,6 +109,8 @@ export async function runMcpReal(
     return;
   }
   const { serverName, tool: MCP_TOOL } = scenario;
+  // 用户级（全局）MCP 配置会一并生效——先置空，免得本机的全局 server 混进这次真实往返。
+  isolateUserMcpConfig(`mcp-real-${serverName}`, log);
 
   const repoRoot = process.cwd();
   const serverRoot = join(repoRoot, "out", scenario.installDir);

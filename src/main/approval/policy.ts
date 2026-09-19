@@ -19,6 +19,7 @@
  */
 
 import { READONLY_TOOLS } from "@shared/readonly-tools";
+import { mcpToolLabel } from "@shared/mcp-label";
 import { isWithinRoot, isWithinRootReal } from "../lib/path-guard";
 
 /** 风险档位 */
@@ -332,6 +333,10 @@ export function buildSignature(invocation: ToolInvocation): string {
 /** 一行可读摘要 */
 function buildSummary(invocation: ToolInvocation): string {
   const { toolName, args } = invocation;
+  // MCP 工具：注册名 `mcp__<server>__<tool>` 是给 LLM API 看的标识符，审批卡上画它
+  // 就是开发者黑话。翻成「MCP <server>: <tool>」——与工具自身的 label、工具卡同源。
+  const mcp = mcpToolLabel(toolName);
+  if (mcp !== undefined) return mcp;
   if (toolName === "bash" && typeof args.command === "string") {
     const command = args.command.trim().replace(/\s+/g, " ");
     return `bash: ${command.length > 120 ? `${command.slice(0, 120)}…` : command}`;

@@ -252,16 +252,16 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
         </button>
       </div>
       <p className="mb-3 text-xs text-text-muted">
-        在项目根目录的 <span className="font-mono">.colt/mcp.json</span> 里声明 MCP server
-        （本地进程用 command，远程用 url）。改完点「重新加载」即可生效、会话不必重启；
-        MCP 工具的每次调用照常走审批闸门。
+        在项目根的 <span className="font-mono">.colt/mcp.json</span> 或用户级的{" "}
+        <span className="font-mono">~/.colt/mcp.json</span>（对全部项目生效）里声明 MCP server：
+        本地进程用 command，远程用 url，项目级同名覆盖用户级。改完点「重新加载」即可生效、
+        会话不必重启；MCP 工具的每次调用照常走审批闸门。
       </p>
 
       {diagnostics.length > 0 && (
         <div className="mb-3 flex flex-col gap-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
           <span>
-            <span className="font-mono">.colt/mcp.json</span> 有 {diagnostics.length}{" "}
-            处问题——坏掉的条目不会出现在下面：
+            MCP 配置有 {diagnostics.length} 处问题——坏掉的条目不会出现在下面：
           </span>
           {diagnostics.map((item) => (
             <span key={item} className="font-mono">

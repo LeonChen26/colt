@@ -9,14 +9,19 @@
  * 「声明了哪些 server」（设置页可见性）。若把它留在 worker 那个文件里，
  * 主进程为了读一个 JSON 就得把整个官方 SDK 拖进主进程。
  *
- * 配置形态：`<cwd>/.colt/mcp.json` 的 `mcpServers`，每个条目二选一：
+ * 配置形态：JSON 的 `mcpServers`，每个条目二选一：
  * - stdio：`command`（+ `args` / `env`）——本地子进程
  * - 远程：`url`（+ `headers` / `transport`，缺省 Streamable HTTP）——HTTP / SSE
+ *
+ * **两级**，与技能 / 记忆同一条「用户目录 + 项目」的心智（见 `loadMcpConfig`）：
+ * - 用户级 `<home>/.colt/mcp.json`——对**全部项目**生效（常见 server 只配一次）；
+ * - 项目级 `<cwd>/.colt/mcp.json`——**同名覆盖**用户级（换版本 / 关掉某台）。
  *
  * 值里的 `${VAR}` 按进程环境变量展开（见 `interpolateConfig`）；只支持
  * `${NAME}` 这一种写法，不做 shell 式的 `$NAME` / 默认值语法——MCP 配置不是 shell。
  */
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** 传输类型：stdio 子进程 / Streamable HTTP / 旧式 SSE */
@@ -42,6 +47,23 @@ interface McpConfigFile {
 /** `<cwd>/.colt/mcp.json` 的路径（读取与诊断消息共用同一处口径） */
 export function mcpConfigPath(cwd: string): string {
   return join(cwd, ".colt", "mcp.json");
+}
+
+/** 用户级配置 `<home>/.colt/mcp.json` 的路径——与技能 / 记忆共用同一个用户目录 */
+export function userMcpConfigPath(home: string): string {
+  return join(home, ".colt", "mcp.json");
+}
+
+/**
+ * 用户级配置所在的「家目录」。默认 `os.homedir()`；`COLT_MCP_HOME` 可覆盖它。
+ *
+ * 为什么要这个覆盖口：用户级配置一旦生效，**这台机器上用户自己的 `~/.colt/mcp.json`
+ * 就成了一条环境前提**——单测与冒烟若不去固定它，结果会随开发者的机器而变
+ * （`AGENTS.md` §五⑬ 那次 `glm` 抢走默认解析的同族）。冒烟把它指到一个空目录，
+ * 于是「没有用户级配置」这条前提是**显式建立**的，而不是「碰巧这台机器上没配」。
+ */
+export function mcpUserHome(): string {
+  return process.env.COLT_MCP_HOME ?? homedir();
 }
 
 /** 一份合法配置的传输方式；未声明 command / url 时返回 undefined */
@@ -135,16 +157,16 @@ export function parseServerConfig(name: string, raw: unknown): McpServerConfig |
   return config;
 }
 
-/** 读 `<cwd>/.colt/mcp.json`；文件不存在 → 空配置（不吵），解析失败 → 诊断 */
-export async function loadMcpConfig(
-  cwd: string,
+/** 读**单个**配置文件；`label` 是给用户看的路径（诊断里点名是哪个文件出的问题） */
+async function readConfigFile(
+  path: string,
+  label: string,
 ): Promise<{ servers: Record<string, McpServerConfig>; diagnostics: string[] }> {
-  const diagnostics: string[] = [];
   let raw: string;
   try {
-    raw = await readFile(mcpConfigPath(cwd), "utf8");
+    raw = await readFile(path, "utf8");
   } catch {
-    return { servers: {}, diagnostics }; // 没配就是没配，不是错误
+    return { servers: {}, diagnostics: [] }; // 没配就是没配，不是错误
   }
   let parsed: McpConfigFile;
   try {
@@ -153,17 +175,43 @@ export async function loadMcpConfig(
     return {
       servers: {},
       diagnostics: [
-        `.colt/mcp.json 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+        `${label}：不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
       ],
     };
   }
   const servers: Record<string, McpServerConfig> = {};
+  const diagnostics: string[] = [];
   for (const [name, value] of Object.entries(parsed.mcpServers ?? {})) {
     const config = parseServerConfig(name, value);
-    if (typeof config === "string") diagnostics.push(config);
+    if (typeof config === "string") diagnostics.push(`${label}：${config}`);
     else servers[name] = config;
   }
   return { servers, diagnostics };
+}
+
+/**
+ * 读 MCP 配置：**用户级 + 项目级**两份合并，项目级**同名覆盖**用户级。
+ *
+ * - 用户级 `<home>/.colt/mcp.json`：对全部项目生效——常见的 server（filesystem、
+ *   fetch 之类）配一次即可，不必每个项目抄一遍（技能 / 记忆早已是这条心智）。
+ * - 项目级 `<cwd>/.colt/mcp.json`：同名覆盖用户级——「这个项目要换一个版本 /
+ *   临时关掉某台」的出口就是它。
+ *
+ * `home` 省略时**不读用户级**：单测默认走这条，于是它们的结论只取决于自己造的
+ * 夹具目录，不随开发者的 `~/.colt/mcp.json` 漂移（生产调用方一律传 `mcpUserHome()`）。
+ * 诊断带文件名，两份都能说清「是哪个文件、哪一条」。
+ */
+export async function loadMcpConfig(
+  cwd: string,
+  home?: string,
+): Promise<{ servers: Record<string, McpServerConfig>; diagnostics: string[] }> {
+  const project = await readConfigFile(mcpConfigPath(cwd), ".colt/mcp.json");
+  if (home === undefined) return project;
+  const user = await readConfigFile(userMcpConfigPath(home), "~/.colt/mcp.json");
+  return {
+    servers: { ...user.servers, ...project.servers },
+    diagnostics: [...project.diagnostics, ...user.diagnostics],
+  };
 }
 
 const VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;

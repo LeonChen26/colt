@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ViewFileChange, ViewMessage, ViewSubagent } from "@shared/worker-protocol";
+import { mcpToolLabel } from "@shared/mcp-label";
 import { Markdown } from "../../components/Markdown";
 import { DiffView } from "../../components/DiffView";
 import { SubagentPreview } from "./SubagentPreview";
@@ -825,7 +826,7 @@ export function ToolCard({
           />
           <span className="shrink-0 text-text-muted">{icon}</span>
           <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
-            {card === undefined ? name : `子代理 · ${card.name}`}
+            {card === undefined ? mcpToolLabel(name) ?? name : `子代理 · ${card.name}`}
           </span>
         </button>
         <span
