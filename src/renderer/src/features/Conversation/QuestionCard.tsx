@@ -13,9 +13,10 @@
  *
  * 落定后卡片消失，结果由随后的 `ask_user` 工具结果承载（用户与模型看到的是同一句话）。
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Bot, Clock, MessageCircleQuestion, Send, SkipForward } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import type { AskUserQuestion } from "@shared/worker-protocol";
 import type { UserQuestionRequest } from "@shared/protocol";
 import { cn } from "../../lib/utils";
@@ -61,11 +62,8 @@ export function QuestionCard({
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
-  // 可见超时：与主进程/worker 同一时间基准，逐秒回退
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // 可见超时：与主进程/worker 同一时间基准，逐秒回退（窗口不可见时暂停，F11）
+  useVisibleInterval(() => setNow(Date.now()), 1000);
   const remainSec = Math.max(
     0,
     Math.ceil((request.requestedAt + request.timeoutMs - now) / 1000),

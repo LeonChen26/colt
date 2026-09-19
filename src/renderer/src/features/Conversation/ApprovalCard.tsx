@@ -7,9 +7,10 @@
  * lane 在等待期间是挂起的，所以必须让用户一眼看出「在等我」，
  * 并给出四档语义 + 可见超时，而不是以为程序卡死。
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Bot, Check, ChevronDown, ChevronRight, Clock, ShieldAlert, ShieldQuestion, X } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import type { ApprovalRequest, ApprovalRisk } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import { DiffView } from "../../components/DiffView";
@@ -42,11 +43,8 @@ export function ApprovalCard({
   const dangerous = request.risk === "dangerous";
   const change = matchChangeByPath(changes, parseArgsJson(request.argsJson).path);
 
-  // 可见超时：与主进程/worker 同一时间基准，逐秒回退
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // 可见超时：与主进程/worker 同一时间基准，逐秒回退（窗口不可见时暂停，F11）
+  useVisibleInterval(() => setNow(Date.now()), 1000);
   const remainSec = Math.max(
     0,
     Math.ceil((request.requestedAt + request.timeoutMs - now) / 1000),

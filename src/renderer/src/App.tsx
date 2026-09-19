@@ -27,6 +27,7 @@ import {
 import { formatSessionStamp } from "@/lib/format";
 import { ICON } from "@/lib/icon";
 import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } from "@shared/protocol";
 import type { ThinkingLevel } from "@shared/thinking-level";
@@ -125,12 +126,8 @@ export default function App(): React.JSX.Element {
     saveTheme(theme);
   }, [theme]);
 
-  // 有会话在运行时每秒重渲染，驱动侧栏心跳计时
-  useEffect(() => {
-    if (runningSessions.size === 0) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [runningSessions.size]);
+  // 有会话在运行时每秒重渲染，驱动侧栏心跳计时（窗口不可见时暂停，F11）
+  useVisibleInterval(() => setNow(Date.now()), 1000, runningSessions.size > 0);
 
   useEffect(() => {
     void (async () => {

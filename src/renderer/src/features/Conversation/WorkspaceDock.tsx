@@ -45,6 +45,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import type { BrowserNavAction, BrowserViewState } from "@shared/protocol";
 import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
@@ -435,6 +436,35 @@ export function WorkspaceDock({
     };
   }, [sessionId]);
 
+  /**
+   * 量页面区域并上报主进程。ResizeObserver 管尺寸变化，window resize 管位置变化
+   * （右栏宽度 / 窗口移动）。但这两个都是**边沿触发**，而原生视图要的是
+   * 「**一直**等于页面区域」这个电平状态：漏一次边沿，它就会永久错位——实测过：
+   * 抽屉再展开时页面区域矮了 132px，原生视图却停在收起时的高度，于是压住观测抽屉。
+   * 所以下面再周期性重申一次（useVisibleInterval）：代价是浏览器页签可见时
+   * 每 400ms 一次小载荷 IPC，换来的是「任何原因导致的错位最多存在 400ms」；
+   * 页签切走 effect 即卸载、窗口不可见时暂停（F11），心跳随之停止。
+   */
+  const report = useCallback((): void => {
+    const node = areaRef.current;
+    if (node === null) return;
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+    // 同时也记一份宽度：装了装不下要看它，而 getBoundingClientRect 只在 report 里量
+    setAreaWidth(Math.round(rect.width));
+    void window.colt
+      .invoke("browser.bounds", {
+        sessionId,
+        rect: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+      })
+      .catch(() => undefined);
+  }, [sessionId]);
+
   // 上报页面区域：只在「浏览器页签 + 未折叠 + 视图已加载 + 元素已挂载」时给矩形，其余一律 null
   useEffect(() => {
     const node = areaRef.current;
@@ -442,40 +472,18 @@ export function WorkspaceDock({
       void window.colt.invoke("browser.bounds", { sessionId, rect: null }).catch(() => undefined);
       return;
     }
-    const report = (): void => {
-      const rect = node.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) return;
-      // 同时也记一份宽度：装了装不下要看它，而 getBoundingClientRect 只在 report 里量
-      setAreaWidth(Math.round(rect.width));
-      void window.colt
-        .invoke("browser.bounds", {
-          sessionId,
-          rect: {
-            x: Math.round(rect.left),
-            y: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-          },
-        })
-        .catch(() => undefined);
-    };
     report();
-    // ResizeObserver 管尺寸变化，window resize 管位置变化（右栏宽度 / 窗口移动）。
-    // 但这两个都是**边沿触发**，而原生视图要的是「**一直**等于页面区域」这个电平状态：
-    // 漏一次边沿，它就会永久错位——实测过：抽屉再展开时页面区域矮了 132px，
-    // 原生视图却停在收起时的高度，于是压住观测抽屉。
-    // 所以再周期性重申一次。代价是浏览器页签可见时每 400ms 一次小载荷 IPC，
-    // 换来的是「任何原因导致的错位最多存在 400ms」；页签切走 effect 即卸载，心跳随之停止。
     const observer = new ResizeObserver(report);
     observer.observe(node);
     window.addEventListener("resize", report);
-    const heartbeat = window.setInterval(report, 400);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", report);
-      clearInterval(heartbeat);
     };
-  }, [sessionId, showArea, loaded]);
+  }, [sessionId, showArea, loaded, report]);
+
+  // 电平重申（边沿触发会漏，见上）：窗口不可见时暂停，重新可见时立即重申一次
+  useVisibleInterval(report, 400, showArea && loaded);
 
   // 折叠态（⑦-E）：只留 44px 图标条，不渲染任何视图内容。
   // 内容一旦不渲染，页面区域 ref 即为 null，上面的 effect 会主动上报 null 收起原生视图。

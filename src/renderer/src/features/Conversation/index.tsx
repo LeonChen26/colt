@@ -62,6 +62,7 @@ import {
   type DockKind,
 } from "./WorkspaceDock";
 import { useDockWidth } from "./useDockWidth";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { getCachedView } from "./view-cache";
 
 /** 「长时间无事件」判定阈值：超过该秒数视为可能卡住 */
@@ -397,13 +398,9 @@ export function Conversation({
     dockCollapsed,
   );
 
-  // 心跳：运行期间每秒重渲染，驱动「已耗时 / 最后活动」显示
+  // 心跳：运行期间每秒重渲染，驱动「已耗时 / 最后活动」显示（窗口不可见时暂停，F11）
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!view?.running) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [view?.running]);
+  useVisibleInterval(() => setNow(Date.now()), 1000, view?.running === true);
 
   // 「本次运行开始时刻」的真源在 App（它已为侧栏计时持有 runningSessions），此处只消费
   // 由 props 传入的 runStartedAt。原先这里自持一个 ref、在 running 变 true 时锁 Date.now()，

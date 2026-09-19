@@ -151,6 +151,26 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
     console.log(`[RENDERER] 进程退出：${details.reason}`);
   });
 
+  // 环境前提显式化（AGENTS.md §五⑬）：交互桌面上跑冒烟，窗口随时可能被别的窗遮住
+  // （Windows 遮挡检测 → document.hidden=true）。F11（visible-interval）之后「窗口不可见
+  // 就停表」是**产品行为**——断言依赖的 400ms 电平重申 / 1s 观测轮询会在遮挡期间停摆，
+  // 红的是环境不是产品（2026-09-19 实测：dock 3 红，全是遮挡期间重申滞后、读数冻结）。
+  // 所以这里钉死「始终可见」并关掉后台节流，与 browser-host 对浏览器视图的做法同因
+  // （`browser-host.ts` #applyBounds：hidden 的页面不重排，读数全冻结）。
+  // 「不可见时暂停」这一行为本身由 tests/visible-interval.test.ts 逐拍单测覆盖，
+  // 冒烟不需要、也不应该在遮挡态下再验一遍。
+  const pinVisibility = (): void => {
+    void window.webContents
+      .executeJavaScript(`(() => {
+        Object.defineProperty(document, "hidden", { get: () => false, configurable: true });
+        Object.defineProperty(document, "visibilityState", { get: () => "visible", configurable: true });
+      })()`)
+      .catch(() => undefined);
+  };
+  window.webContents.setBackgroundThrottling(false);
+  window.webContents.on("did-finish-load", pinVisibility);
+  pinVisibility();
+
   try {
     const projectRoot = process.env.COLT_SMOKE_CWD ?? process.cwd();
     const project = upsertProject(projectRoot);

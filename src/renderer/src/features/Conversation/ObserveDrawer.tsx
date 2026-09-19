@@ -28,9 +28,10 @@
  * `ConsoleEntry` / `NetworkEntry` 里压根没有，要扩主进程的 `CaptureBuffer` 与协议类型，
  * 还会牵动 `browser_read` 给模型的文本（`formatConsole` / `formatNetwork`，被压缩过是刻意的）。
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Globe, Package, Terminal } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import type { BrowserObservation, ConsoleEntry, DownloadEntry, NetworkEntry } from "@shared/protocol";
 import { formatBytes } from "../../lib/format";
 import {
@@ -89,29 +90,30 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
    */
   const lastSignature = useRef("");
 
-  // 只在浏览器页签挂载时轮询：切走页签即卸载，轮询随之停止
+  // 只在浏览器页签挂载时轮询：切走页签即卸载，轮询随之停止（窗口不可见时暂停，F11）
+  const aliveRef = useRef(false);
   useEffect(() => {
-    let disposed = false;
-    const tick = (): void => {
+    aliveRef.current = true;
+    lastSignature.current = "";
+    return () => {
+      aliveRef.current = false;
+    };
+  }, [sessionId]);
+  useVisibleInterval(
+    useCallback((): void => {
       void window.colt
         .invoke("browser.observe", { sessionId })
         .then((next) => {
-          if (disposed) return;
+          if (!aliveRef.current) return;
           const signature = JSON.stringify(next);
           if (signature === lastSignature.current) return;
           lastSignature.current = signature;
           setData(next);
         })
         .catch(() => undefined);
-    };
-    lastSignature.current = "";
-    tick();
-    const timer = setInterval(tick, POLL_MS);
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-    };
-  }, [sessionId]);
+    }, [sessionId]),
+    POLL_MS,
+  );
 
   const consoleEntries = data?.console ?? [];
   const networkEntries = data?.network ?? [];
