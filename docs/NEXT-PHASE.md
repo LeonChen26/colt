@@ -188,7 +188,7 @@
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）；冒烟 `COLT_SMOKE_MODE=ask-user`（23 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
-  | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）：装载告知 → 模型真的调用 `mcp__fixture__echo` → 未知工具弹审批卡（risk=moderate）→ 点「允许一次」→ `echo:<nonce>` 真实 stdio 往返回到模型。**仅剩**：worker 被强杀时 MCP 子进程成孤儿（正常 dispose 有 `process.on("exit")` 兜底） |
+  | ③ | MCP | **已实施**（2026-09-19） | 设计 `docs/DESIGN-mcp.md`；配置的**纯解析层** `shared/mcp-config.ts`（worker 与主进程共用）；worker 侧 `lib/mcp-tools.ts`（官方 SDK **v2** 直连）+ `lib/mcp-reload.ts`（热重载写回）；配置 `<cwd>/.colt/mcp.json`。**原型边界已补齐**：传输 stdio + 远程（Streamable HTTP / SSE）、`listTools` 分页、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重（内核见重名会 `TypeError`，必须在包装层挡）、设置页可见性（`McpSettings`）。单测 `tests/mcp-tools.test.ts`（**26 条**，真实 stdio / 真实 HTTP / 真实 SSE 往返，夹具 `helpers/mcp-fixture-server.mjs` / `mcp-paged-fixture-server.mjs` / `mcp-http-fixture-server.mjs` / `mcp-sse-fixture-server.mjs` / `mcp-crash-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）；**连接生命周期**另有 3 条钉住「连失败的 server 热重载会重试」「连上后掉线 `status` 如实转 error 且可重载救回」「`transport: sse` 的成功路径」（此前 SSE 只验过失败分支——`reload` 原先**永不重试**失败态，等于设置页那个「重新加载」按钮对失败是死的）。**SDK 已迁 v2**（`@modelcontextprotocol/*@2.0.0`，官方 codemod 迁移，2026-09-19）：v2 **没有砍**旧式 SSE——`SSEClientTransport` 只是从 `client/sse.js` 子路径挪到了**包根导出**，服务端 `SSEServerTransport` 走 `@modelcontextprotocol/server-legacy/sse`（v1 冻结副本，仅夹具用），所以 `transport: "sse"` 能力**原样保留**（上条那条 SSE 用例在 v2 上仍绿）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）；`mcp-real` 用**真实第三方 server**（官方 filesystem / pi-lens）跑同一条链路；热重载 + 设置页可见性的**接线**由**免费**冒烟 `COLT_SMOKE_MODE=mcp-reload`（9 条）覆盖（见 §5 3-g）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（正常 dispose 走 `runtime.close()`） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属、`fresh` 隔离真实效果、清单真进提示词）由 `subagent-e2e`（打模型）覆盖，**15/15 全绿**（2026-09-19，qwen3:0.6b 实测，见 §5 3-f）。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e（abort 链路只走了单测与呈现层）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
@@ -304,7 +304,7 @@
 | 数字缩写 / 心跳点 / 窄栏降级 | `formatTokens`（**`Conversation/index.tsx` 里的局部函数，不是共享 lib**）/ `.live-dot`（含 `.stale-dot` / `.idle-dot` / `.danger-dot`）/ `styles.css` 的容器查询（**六档：900 / 760 / 620 / 560 / 520 / 400**） |
 | ⑥ 状态判定 | `lib/format.ts` 的 `runStateOf`（纯函数 + 单测）——复用它，别在组件里再写一遍分支 |
 | 周期定时器「不可见即停」（v1.51，F11） | `renderer/src/lib/visible-interval.ts`（纯逻辑，环境注入可单测）+ `use-visible-interval.ts`（React 包装，回调走 ref 不重启定时器）。语义：启动即跳一次、重新可见立即补跳再续周期。「不可见时暂停」本身由 `tests/visible-interval.test.ts` 逐拍覆盖 |
-| MCP 工具装载（验证性原型） | `worker/lib/mcp-tools.ts`：`loadMcpConfig` / `loadMcpTools` / `mcpToolName` / `mapMcpContent` / `closeMcpTools` 都是纯函数或可注入的纯逻辑，有单测 |
+| MCP 工具装载 | `worker/lib/mcp-tools.ts`：`createMcpRuntime`（连接 / 包装 / `reload` / `status` / `close`）、`mcpToolName`、`mapMcpContent`、`closeMcpTools`；配置解析在 `shared/mcp-config.ts`（`loadMcpConfig` / `parseServerConfig` / `transportOf` / `targetOf` / `configKey` / `interpolateConfig`，都是纯函数，有单测）；热重载写回在 `worker/lib/mcp-reload.ts` |
 | 复制到剪贴板 | `navigator.clipboard.writeText`（`App.tsx` 复制会话 ID、`Markdown.tsx` 复制代码已用）——**不需要新 IPC** |
 | 冒烟里推「受控视图」 | `src/dev/smoke/` 的 `smokeView(over)`——不跑模型就能把任意 `ConversationView` 经 `session.view` 推入渲染层（A3-2 / C1 都这么测） |
 
@@ -399,7 +399,7 @@
    而断言依赖的 400ms 电平重申 / 1s 观测轮询在遮挡（Windows occlusion → `document.hidden`）
    期间会停摆，红的是环境不是产品（2026-09-19 实测交互桌面上 3 红，全因遮挡）。
    「不可见时暂停」行为本身由 `tests/visible-interval.test.ts` 单测覆盖，冒烟不再重复验。
-   ⚠️ **计费**：`dock`、`fixture`、`memory`、`perf`、`ask-user` 与 `subagent` 是**不调用模型**的模式（其余模式、含不给
+   ⚠️ **计费**：`dock`、`fixture`、`memory`、`perf`、`ask-user`、`mcp-reload` 与 `subagent` 是**不调用模型**的模式（其余模式、含不给
    `COLT_SMOKE_MODE` 时的 `basic`，都会真实打模型并计费）。`dock` 曾经也会：它的 `/compact`
    段把打桩转给了真实现，会真发 `/compact 帮我看看` 与 `/usr/local/bin/node` 两句 prompt、
    计一次费，并把它们写进用户真实项目里的真实会话历史——v1.41 起该段改为**只记账、不转发**。
@@ -465,7 +465,8 @@
    三者都由 `subagent-e2e`（打模型）覆盖，见 §5 **3-f**；
    分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖。
 
-> **3-e. MCP 工具真实模型端到端：改 `worker/lib/mcp-tools.ts` 的装载/包装、
+> **3-e. MCP 工具真实模型端到端：改 `shared/mcp-config.ts` 的配置解析、
+>   `worker/lib/mcp-tools.ts` / `mcp-reload.ts` 的装载/包装/热重载、
 >   或 `worker/entry.ts` 里 MCP 接线、或 MCP 与审批闸门的边界时必跑**
 >   （2026-09-19 加，**打模型、计费**，2 次调用左右）：
 >
@@ -475,7 +476,9 @@
 >   npm run dev
 >   ```
 >
->   看 `out/.smoke-mcp-e2e.png.log` 末行。免费的 14 条单测只验「装载函数本身」，
+>   看 `out/.smoke-mcp-e2e.png.log` 末行。免费的 26 条单测覆盖装载 / 包装 / 分页 / 远程（真实 HTTP / SSE）
+>   / 失败重试 / 掉线上报 / 重名去重 / 配置纯函数，但都停在「工具包装与往返」这一层
+>   （**热重载与设置页可见性的接线**——renderer → main → worker 那条 IPC 链——由**免费**的 3-g 覆盖），
 >   本模式验**只有真模型才走得到的三段**：① 模型在提示词里真的看得见 `mcp__` 工具
 >   （看不见就不会调用，待审队列不会出现它——快速失败并报出本轮终态）；
 >   ② 未知 MCP 工具走 `before_tool` 弹审批卡（approval 档，risk=moderate，
@@ -515,6 +518,38 @@
 >   **已实测**（2026-09-19，本地 Ollama qwen3:0.6b，15/15 全绿）：密语进主对话 →
 >   模型按名调 demo → 内部 write 带归属进闸（risk 有值）→ 点「允许一次」→ 文件真实落盘 →
 >   子代理 completed、结论回主模型 → 密语缺席子代理 transcript → 全程无未捕获异常。
+
+> **3-g. MCP 配置热重载 + 设置页可见性端到端：改 `shared/mcp-config.ts`、
+>   `worker/lib/mcp-tools.ts` / `mcp-reload.ts` / `lane-heal.ts`、`worker/entry.ts` 的
+>   `mcpStatus` / `mcpReload`、`main/session-manager.ts` / `main/ipc` 的
+>   `mcp.status` / `mcp.reload`、或 `Settings.tsx` 的 `McpSettings` 时必跑**
+>   （2026-09-19 加，**不调模型、不计费**）：
+>
+>   ```powershell
+>   $env:COLT_SMOKE=".smoke-mcp-reload.png"
+>   $env:COLT_SMOKE_MODE="mcp-reload"
+>   npm run dev
+>   ```
+>
+>   看 `out/.smoke-mcp-reload.png.log` 末行是否 `通过 9/9`。免费的 26 条单测覆盖 runtime 的
+>   装载 / 分页 / 远程（HTTP + SSE）/ **失败重试** / **掉线上报** / reload 与配置纯函数，但都停在 worker **之内**；本模式补的是
+>   **renderer → main → worker → 绕回** 这一段**「名字对不上就静默失效」的接线**——
+>   `mcp.status` / `mcp.reload` 两个 IPC → `SessionManager` 的 FIFO 兑现 → worker 的
+>   `mcpReload` 命令 → 工具清单写回 harness 与主 lane。四组断言：
+>   ① **冷启动装载**：`alpha`（3 工具的 stdio 夹具）已连接、工具名逐字正确；
+>   ② **热加 server**：`beta`（分页夹具）的 5 个工具一个不少，且**会话没重启**（同一个 worker）；
+>   ③ **热删 server**：`alpha` 连工具一起消失——验 `lane-heal.ts` 那支「删掉 server 的老会话
+>   不会 brick」（`generation.js` 见清单里有内核不认识的工具名会 `configured_tools_unavailable`
+>   硬失败，所以清单必须与 harness **同时**对齐）；
+>   ④ **两个 IPC 的形状**（设置页看到的就是它们），含**没有活 worker** 的项目回
+>   `live:false` + `status:idle` 的退路（「没打开会话」≠「没连上」）。
+>   夹具 `out/smoke-mcp-reload-fixture/`（含分页 server）与 `out/smoke-mcp-reload-other/`
+>   （**刻意全程不开会话**，专验退路），都 gitignored；server 用 `ELECTRON_RUN_AS_NODE`
+>   让 electron 按 Node 跑（不依赖 PATH 里有 node，同 mcp-e2e）。worker 的生死交给渲染层
+>   （同 mcp-e2e：`window.reload()` 等它自动打开夹具会话）。
+>   **不含设置页 DOM 断言**：设置页跟着渲染层的 `activeProject` 走（渲染层是**并发参与者**），
+>   界面层的判据落在这两个 IPC 上——组件只是把它们画出来，DOM 那一半靠人工看一眼截图。
+>   **已实测**（2026-09-19，9/9 全绿）。
 
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell
@@ -591,7 +626,7 @@
    从输入框走的是「当前会话」，夹具会话必须是渲染层自动打开的那个（无竞争者，StrictMode
    杀一次就绪前的 worker 后会自行收敛）。
    首跑（2026-09-17）：12/12 全绿；冷层条目的回答连归档状态与日期都如实引用了。
-7. **应用内实测**：除 `fixture` / `dock` / `memory` / `perf` / `ask-user` 外，各模式（含不给
+7. **应用内实测**：除 `fixture` / `dock` / `memory` / `perf` / `ask-user` / `mcp-reload` 外，各模式（含不给
    `COLT_SMOKE_MODE` 时的 `basic`）都会真实调用模型并**产生计费**，`host` 只是其中最费的一个；
    只想看界面时直接启动应用 + **系统级截图**即可
 
@@ -602,6 +637,7 @@
 - 一次一件事（仓库既有习惯：一个提交只做一件事）。**每件跑 §5 的 1**；
   改到 ⑦ / ⑥ / 浏览器就**同时跑 §5 的 2 或 3**（§5 每步都写了「什么时候必跑」）；
   改到会话流里的**阻塞态卡片**（授权卡 / 提问卡）或 `useBlockingCards.ts`，跑 §5 的 3-b。
+  改到 MCP（配置 / 装载 / 热重载 / 设置页）先跑**免费**的 §5 3-g，动到审批闸门再跑 §5 3-e（打模型）。
   ⚠️ `npm test` 里含**体量闸**：给已知大户加功能必须同时搬走等量旧代码，动手前先算
   净增行数（`AGENTS.md` §1.4）。
   ⚠️ 往 `dock` 加断言时**按批次分段、保留段头注释**（沿用现有写法）——它已有 200+ 条、

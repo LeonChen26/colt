@@ -8,11 +8,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Brain, Check, Image as ImageIcon, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { ICON } from "@/lib/icon";
-import type { ModelOption, ProviderConfig } from "@shared/protocol";
+import type { McpServerView, ModelOption, Project, ProviderConfig } from "@shared/protocol";
 import { DEFAULT_CONTEXT_WINDOW, LEGACY_MAX_TOKENS } from "@shared/model-option";
 import { cn } from "../lib/utils";
 
-export function Settings(): React.JSX.Element {
+export function Settings({ project }: { project: Project | null }): React.JSX.Element {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +99,7 @@ export function Settings(): React.JSX.Element {
         </div>
 
         <ApprovalPolicySettings onSaved={notify} onError={fail} />
+        <McpSettings project={project} />
       </div>
     </div>
   );
@@ -174,6 +175,170 @@ function ApprovalPolicySettings({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * MCP server 可见性：本项目声明了哪些 server、它们现在怎么样、模型能用哪些工具。
+ *
+ * 配置是**项目级**的（`<rootPath>/.colt/mcp.json`），所以这一段跟着当前项目走，
+ * 与全局的模型服务设置不同。`live` 是关键区分：会话开着时展示的是 worker 报的
+ * **真实运行态**（连上了没、有哪些工具）；会话没开着就只有配置里的声明（status 全 idle）。
+ * 把两者混为一谈会让人以为「没连上」，其实只是「没打开会话」。
+ */
+function McpSettings({ project }: { project: Project | null }): React.JSX.Element {
+  const [servers, setServers] = useState<McpServerView[]>([]);
+  const [live, setLive] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const projectId = project?.id;
+
+  const load = useCallback(async () => {
+    if (projectId === undefined) {
+      setServers([]);
+      setLive(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await window.colt.invoke("mcp.status", { projectId });
+      setServers(result.servers);
+      setLive(result.live);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const reload = async (): Promise<void> => {
+    if (projectId === undefined) return;
+    setReloading(true);
+    try {
+      const result = await window.colt.invoke("mcp.reload", { projectId });
+      setServers(result.servers);
+      setLive(result.live);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReloading(false);
+    }
+  };
+
+  return (
+    <div className="mt-6">
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-sm">MCP 服务</h3>
+        <button
+          type="button"
+          onClick={() => void reload()}
+          disabled={projectId === undefined || reloading}
+          className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {reloading ? "重载中…" : "重新加载"}
+        </button>
+      </div>
+      <p className="mb-3 text-xs text-text-muted">
+        在项目根目录的 <span className="font-mono">.colt/mcp.json</span> 里声明 MCP server
+        （本地进程用 command，远程用 url）。改完点「重新加载」即可生效、会话不必重启；
+        MCP 工具的每次调用照常走审批闸门。
+      </p>
+
+      {project === null ? (
+        <McpNotice>先打开一个项目，才能看到它声明的 MCP server。</McpNotice>
+      ) : error !== null ? (
+        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {error}
+        </div>
+      ) : loading ? (
+        <McpNotice>读取中…</McpNotice>
+      ) : servers.length === 0 ? (
+        <McpNotice>本项目未声明 MCP server。</McpNotice>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {!live && (
+            <McpNotice>
+              会话未打开，以下是配置文件里的声明；打开会话后这里会显示真实连接状态。
+            </McpNotice>
+          )}
+          {servers.map((server) => (
+            <McpServerCard key={server.name} server={server} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function McpNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
+      {children}
+    </div>
+  );
+}
+
+const MCP_STATUS_LABEL: Record<McpServerView["status"], string> = {
+  connected: "已连接",
+  error: "连接失败",
+  idle: "未启动",
+};
+const MCP_STATUS_CLASS: Record<McpServerView["status"], string> = {
+  connected: "text-success-fg",
+  error: "text-danger",
+  idle: "text-text-muted",
+};
+const MCP_STATUS_DOT: Record<McpServerView["status"], string> = {
+  connected: "bg-success",
+  error: "bg-danger",
+  idle: "bg-text-muted",
+};
+
+function McpServerCard({ server }: { server: McpServerView }): React.JSX.Element {
+  return (
+    <div data-mcp-server={server.name} className="rounded-lg border border-line bg-surface-raised p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          <span className="truncate">{server.name}</span>
+          <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 font-mono text-xs text-text-muted">
+            {server.transport}
+          </span>
+        </div>
+        <span
+          className={cn(
+            "flex shrink-0 items-center gap-1 text-xs",
+            MCP_STATUS_CLASS[server.status],
+          )}
+        >
+          <span className={cn("h-[7px] w-[7px] rounded-full", MCP_STATUS_DOT[server.status])} />
+          {MCP_STATUS_LABEL[server.status]}
+        </span>
+      </div>
+      <div className="mt-0.5 truncate font-mono text-xs text-text-muted" title={server.target}>
+        {server.target}
+      </div>
+      {server.error !== undefined && <div className="mt-1.5 text-xs text-danger">{server.error}</div>}
+      {server.tools.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {server.tools.map((tool) => (
+            <span
+              key={tool}
+              className="rounded bg-surface-overlay px-2 py-0.5 font-mono text-xs text-text-secondary"
+            >
+              {tool}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

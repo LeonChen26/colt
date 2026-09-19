@@ -1,19 +1,35 @@
-# MCP 设计草案
+# MCP 设计
 
-> **状态**：**已实施**（验证性原型，2026-09-19）。无界面改动——装载结果经既有
-> `session.notice`（kind: "security"）通道告知，回查走 F3 已落地的「事件」页签。
-> **落地落点**：`worker/lib/mcp-tools.ts`（全部逻辑都在这一个文件，worker 入口只加一行接线
-> `...mcpTools`）/ 依赖 `@modelcontextprotocol/sdk@1.30.0`（官方 SDK，唯一新增依赖）。
-> **验收**：单测 `tests/mcp-tools.test.ts`（14 条，含真实 stdio 子进程往返，
-> 夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用低层 `Server` 类、给**裸 JSON Schema**，
-> 与生产方同构）。
-> **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端已由冒烟
+> **状态**：**已实施**（2026-09-19；当日晚些时候补齐了原型边界，见 §5）。
+> **落地落点**：
+> - `shared/mcp-config.ts`——配置的**纯解析层**（不 import SDK）。抽出来是为了**两侧共用**：
+>   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
+> - `worker/lib/mcp-tools.ts`——连接、包装、runtime（`createMcpRuntime` / `reload` / `status` / `close`）。
+> - `worker/lib/mcp-reload.ts`——热重载的**写回**一步（harness + 主 lane）。
+> - `worker/entry.ts`——接线（`...mcp.tools` 进 tools 数组；`mcpStatus` / `mcpReload` 两条命令）。
+> - `main/session-manager.ts` + `main/ipc`——`mcp.status` / `mcp.reload` 两个 IPC。
+> - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性）。
+> 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
+> `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
+> **验收**：单测 `tests/mcp-tools.test.ts`（**26 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
+> 夹具都与生产方同构（低层 `Server` 类 + 裸 JSON Schema）：
+> `mcp-fixture-server.mjs`（stdio，3 工具）/ `mcp-paged-fixture-server.mjs`（stdio，分页）/
+> `mcp-http-fixture-server.mjs`（Streamable HTTP，含 headers 回显）/
+> `mcp-sse-fixture-server.mjs`（旧式 SSE，有状态那套）/ `mcp-crash-fixture-server.mjs`
+> （stdio，可自杀——专门验「连上**之后**掉线」）。
+> **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端由冒烟
 > `COLT_SMOKE_MODE=mcp-e2e` 覆盖并**实测通过**（2026-09-19，本地 Ollama qwen3:0.6b，
-> 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；仅剩 worker
-> 被主进程**强杀**（dispose 超时 / 崩溃）时 MCP 子进程成孤儿的那一支，正常 dispose 有
-> `process.on("exit")` 兜底。
-> **一句话**：`<cwd>/.colt/mcp.json` 里声明的 stdio MCP server，其工具被包成普通内核工具
-> （`mcp__<server>__<tool>` 命名）塞进 `AgentHarness.create({ tools })`——
+> 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；另有
+> `COLT_SMOKE_MODE=mcp-real` 用**真实第三方 server**（官方 filesystem / pi-lens）跑同一条链路。
+> **热重载 + 设置页可见性**那条「渲染层 → 主进程 → worker → 绕回」的接线由**免费**冒烟
+> `COLT_SMOKE_MODE=mcp-reload` 覆盖并**实测通过**（2026-09-19，9/9，不调模型、不计费）：
+> 冷启动装载 → 热加 server（分页收全）→ 热删 server（工具清单与 harness **同时**对齐，
+> 见 `lane-heal.ts`）→ `mcp.status` / `mcp.reload` 两个 IPC 的返回形状（含「没打开会话」的
+> `live:false` + `status:idle` 退路）。
+> 仅剩 worker 被主进程**强杀**（dispose 超时 / 崩溃）时 MCP 子进程成孤儿的那一支，
+> 正常 dispose 走 `runtime.close()`。
+> **一句话**：`<cwd>/.colt/mcp.json` 里声明的 MCP server（stdio 或 HTTP/SSE），其工具被包成
+> 普通内核工具（`mcp__<server>__<tool>` 命名）塞进 `AgentHarness.create({ tools })`——
 > **安全模型零例外**（天然过 `before_tool` 审批闸门），不自建扩展宿主，
 > 复用 Pi 生态的姿势是「用官方 SDK 直接接协议」，不是「装它的扩展包」。
 > **配套**：动手前读 `docs/ARCHITECTURE.md` §四（为什么不用 pi 扩展宿主）、
@@ -29,7 +45,7 @@
 | `NEXT-PHASE.md` §3.2 能力补齐 ③ | 「MCP 工具调用天然过 `before_tool`；审批层抄 `pi-mcp-adapter` 的 `session-approvals.ts`」——实际更简单：不在任何豁免名单即天然过闸，一行审批代码都不用改 |
 | `NEXT-PHASE.md` §3.2 扩展宿主否决三条 | ① UI 挂载点对不上 ② 扩展代码绕过审批闸门 ③ 验收手段失效——MCP server 是**外部进程**，工具调用走标准 `before_tool`，三条都不触碰 |
 | `SECURITY.md` | MCP server 是**会话启动即执行的本地代码**，与技能同一条隐式信任通道：装了什么、坏在哪里必须如实告知（notice 按 security 类发，落 session_events 可回查） |
-| `AGENTS.md` §四 | 判「接没接」要 grep 调用点、判据落在**行为**上；本功能的行为判据是「包装后的工具出现在 harness 工具数组且能真实往返」——单测用真实 stdio 子进程钉住 |
+| `AGENTS.md` §四 | 判「接没接」要 grep 调用点、判据落在**行为**上；本功能的行为判据是「包装后的工具出现在 harness 工具数组且能真实往返」——单测用真实子进程 / 真实 HTTP 钉住 |
 
 ## 2. 现状（代码实测，不是推测）
 
@@ -38,24 +54,67 @@
 | pi-ai 的 `validateToolArguments` 显式区分 typebox / 非 typebox schema（`TYPEBOX_KIND` 符号），对后者走纯 JSON Schema 的 coercion + 编译校验 | `@earendil-works/pi-ai`（测试里有一条专门钉这个契约：裸 JSON Schema 的 `add` 工具，字符串入参被 coerced 成 number 后调用成功） |
 | 内核工具签名 `AgentHarnessTool`：`name/label/description/parameters/execute`；失败要 **throw**（内核转错误工具结果） | `worker/lib/host-bridge.ts` 同款约定 |
 | 审批豁免名单（`READONLY_TOOLS` / 提问守卫 / 子代理免闸）里没有任何 `mcp__` 前缀 | `shared/readonly-tools.ts`、`worker/entry.ts` |
-| 会话启动通知已承载「技能装载」告知，MCP 装载结果复用同一通道（`send({type:"notice", kind:"security"}`） | `worker/entry.ts` init |
+| 会话启动通知已承载「技能装载」告知，MCP 装载结果复用同一通道（`send({type:"notice", kind:"security"})`） | `worker/entry.ts` init |
 | LLM API 工具名普遍 64 字符上限 | `mcpToolName` 截断到 64 并清洗非法字符 |
+| 内核 `validateToolNames` 见到**重名会直接 `TypeError`**（在 `setTools` 与 `create` 两处都会跑） | `@earendil-works/pi-agent-core` `harness/config.js`——所以重名必须由我们**在包装层挡掉**，否则一个撞名配置能把整个会话启动搞崩 |
+| 内核 `lane.readConfig().tools` 是**活取的**（harness 的 `configStore`），`lane.configuration.activeToolNames` 是 lane 自己持久化的 | `harness/runtime/harness.js` 构造 + `lane.js`——热重载要同时写这两处，见 §3 决策 7 |
+| SDK 自带三种 client transport：`StdioClientTransport`（子路径 `client/stdio`）/ `StreamableHTTPClientTransport` / `SSEClientTransport`（后两者**从包根导出**，用 `requestInit.headers` 传自定义头） | `@modelcontextprotocol/client`（远程与 stdio 在包装层无差别） |
+| SDK 无状态模式的 Streamable HTTP server **必须每个请求新建一套 transport + server** | 实测：共用一套会让第二个请求（`notifications/initialized`）回 500 |
 
 ## 3. 决策
 
-1. **传输**：只接 **stdio**（本地子进程）。远程（HTTP/SSE）未接——配置面（`url` 字段）都不留，
-   免得画了开不出来的入口（死配置比没有更糟）。`env` 只支持字面量，不做 `${VAR}` 插值。
+1. **传输**：stdio（本地子进程）+ 远程（Streamable HTTP，`transport: "sse"` 走旧式 SSE）。
+   配置面用 `command` / `url` **二选一**表达，解析层不给 `command` 缺失的配置留活路
+   （「缺少 command 或 url」是诊断，不是静默跳过）。三种传输在包装层无差别——都是
+   「连上、列工具、逐个包装」，差异只在 `buildTransport` 一个分支。
 2. **schema 透传**：MCP 的 `inputSchema` 是裸 JSON Schema，**原样**交给内核（强转 `TSchema`），
    不在中间加转换层。校验安全网在内核（pi-ai 的 coercion + 编译），不在包装层重复实现。
 3. **命名**：`mcp__<server>__<tool>`，非法字符清洗成 `_`，64 字符截断。注册名 / 审批签名 /
    界面展示同源（`label` 给界面：`MCP <server>: <tool>`）。
-4. **故障隔离**：单个 server 连不上（15s 连接 / 列工具超时）只收诊断，**不拦会话启动**；
-   「已连接 N 个 server：…；MCP 告警 M 条：…」如实告知。会话启动不被一个挂死的 server 拖死。
-5. **回收**：正常 dispose 走 `process.on("exit")` 兜底 `client.close()`；`closeMcpTools()` 供测试
-   与将来的 dispose 路径显式调用。已知边界：worker 被**强杀**时子进程成孤儿（记入文件头注释，
-   不当 bug 修）。
-6. **不装 `pi-mcp-adapter`**：它的 ~29% 代码是 TUI 同意面板与宿主生命周期（`ctx.ui`），
-   本仓没有那层 API（React + IPC 双进程），装进来逻辑能跑、画不出东西（死重）。
+4. **重名去重**：全量工具按**注册名**去重，保留先到的，后到的记进通知。
+   这不是洁癖——内核 `validateToolNames` 见重名直接 `TypeError`，撞名配置会让整个
+   `AgentHarness.create` 崩掉，那比「少一个工具」严重得多。冲突留给用户改配置。
+5. **故障隔离**：单个 server 连不上（15s 连接 / 列工具超时，或 `${VAR}` 缺变量）只收诊断，
+   **不拦会话启动**；该 server 在现状里显示为 `error` 并带原因。「已连接 N 个 server：…；
+   MCP 告警 M 条：…」如实告知。会话启动不被一个挂死的 server 拖死。
+   **失败不是终局**：`reload()` 会重试上一轮没连上的 server（配置没变也试）——
+   否则「重新加载」对失败态就是个死按钮，直接推翻设置页那句「改完点「重新加载」即可生效」。
+6. **分页**：`listTools` 跟随 `nextCursor` 翻页（页数上限 100，只兜「游标不推进」的坏实现）。
+7. **热重载**：`createMcpRuntime` 持有各 server 的连接，`reload()` 重读配置——关掉
+   **不再声明 / 配置变了 / 上一轮没连上**的（配置等价键键序无关，只调书写顺序不算变更），
+   再连上**新声明的**与**上一轮没连上的**。后一类是刻意的：server 起晚了、网络刚恢复、
+   进程崩了重启，这些都不改配置，但「重新加载」必须能把它们救回来。
+   写回必须**两处都写**（`worker/lib/mcp-reload.ts`）：`harness.setTools`（换工具定义）
+   **和** `lane.setActiveTools`（换清单）。只写前者，清单里的名字在 `toolsByName` 里查不到，
+   生成会以 `configured_tools_unavailable` 直接失败；只写后者，模型看不到新工具。
+   **删掉的工具必须连清单一起删**——否则下一次生成就炸。
+8. **回收**：正常 dispose 走 `runtime.close()`（优雅：`stdin.end` → 等 → `SIGTERM`）；
+   worker 被**强杀**时退到 `process.on("exit")` 的同步兜底。已知边界：强杀那一刻正在启动的
+   子进程仍可能成孤儿（记在文件头注释，不当 bug 修）。
+9. **设置页可见性**：配置是**项目级**的，所以这一段跟着当前项目走。`mcp.status` 带 `live`：
+   true = 找该项目下任一活 worker 要**真实运行态**；false = 只有配置文件里的声明
+   （status 一律 `idle`）。两者语义不同，界面分开说——混为一谈会让人以为「没连上」。
+10. **不装 `pi-mcp-adapter`**：它的 ~29% 代码是 TUI 同意面板与宿主生命周期（`ctx.ui`），
+    本仓没有那层 API（React + IPC 双进程），装进来逻辑能跑、画不出东西（死重）。
+11. **掉线如实上报**：连上**之后** server 死掉，`status()` 立刻转 `error`（订阅 SDK 的
+    `onclose`）——否则设置页会永远显示「已连接」而工具调用早已失败，**持续撒谎比没有信号更糟**。
+    两个边界：① SDK 的 `onclose` 在**我们主动 `close()` 时同样触发**，所以先看 `closing`
+    标记，别把 reload / dispose 自己的关闭误报成「断开」；② 刻意**不**接 `onerror`——
+    SDK 明说那里的错误「不一定是致命的」，拿它翻状态会把健康 server 误标成红点。
+    掉线**不自动重连**（那是另一套策略），靠「重新加载」救回（见决策 5 / 7）；
+    工具仍留在清单里，调用会照常失败——由 SDK 报「未连接」，不去伪造一个成功结果。
+12. **用 v2（`@modelcontextprotocol/*@2.0.0`）**：v2 把 v1 的单体包拆成 `client` / `server` /
+    `core`（+ `node` / `express` / `hono` / `fastify` 中间件包）。迁移走官方 codemod
+    （`npx @modelcontextprotocol/codemod@latest v1-to-v2 .`，**在包根跑**，它连 `package.json` 一起改）。
+    **关键更正（差点写错进决策）**：v2 **没有砍掉旧式 SSE**——`SSEClientTransport` 仍在，
+    只是从 `client/sse.js` 子路径挪到了**包根导出**（`@modelcontextprotocol/client`）；
+    服务端 `SSEServerTransport` 挪到 `@modelcontextprotocol/server-legacy/sse`（v1 SSE 的
+    冻结副本，只为迁移）。所以 `transport: "sse"` 这条能力**原样保留**，SSE 用例在 v2 上仍绿。
+    ⚠️ **教训**：只查 `@modelcontextprotocol/sdk` 的 `dist-tags` 会得出「没有 v2」的**错结论**
+    （旧包 `latest` 永远是 1.30.0）——判「有没有新版」要按**包名**查，大版本换包名就该按新包名查。
+    codemod 管不了、必须手工收的两条：① `ctx.http.req` 是 Web 标准 `Request`，其 `headers` 是
+    **`Headers` 对象**，只能 `.get()`（方括号取键恒 `undefined`，会得到「headers 没透传」的**假阴性**）；
+    ② 它把 `import` 提到文件顶部时会把版权头复制成两份。
 
 ## 4. 配置形态
 
@@ -68,18 +127,44 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "env": { "FOO": "bar" }
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MY_TOKEN}" },
+      "transport": "http"
     }
   }
 }
 ```
 
-文件不存在 → 安静跳过（没配就是没配）；JSON 解析失败 / 单个 server 声明不合法 → 诊断进通知，
-可用 server 照常装载。
+- `command`（+ `args` / `env`）与 `url`（+ `headers` / `transport`）**二选一**；
+  `transport` 缺省 `http`（Streamable HTTP），`"sse"` 走旧式 SSE。
+- 所有字符串值支持 `${VAR}` 展开成进程环境变量。**缺变量不静默留空**——留空会把
+  `https://${HOST}/mcp` 变成看似合法却指向错处的 URL，这里成诊断并跳过该 server。
+  只支持 `${NAME}` 这一种写法，不做 shell 式的 `$NAME` / 默认值语法。
+- 文件不存在 → 安静跳过（没配就是没配）；JSON 解析失败 / 单个 server 声明不合法 → 诊断进通知，
+  可用 server 照常装载。
+- 改完在**设置页点「重新加载」**即可生效，会话不必重启（§3 决策 7）。
 
-## 5. 验证性原型的边界（有意不做的）
+## 5. 边界（有意不做的）
 
-- 远程 server（HTTP/SSE）与 `url` 配置面。
-- `listTools` 分页（绝大多数 server 一次返回全量）。
-- 配置热重载（改 `mcp.json` 要重启会话/worker——会话启动时装载是一次性的）。
-- 工具名的同义去重（两个 server 给出同名工具时后者覆盖前者——装载通知里如实报数，
-  冲突留给用户改配置）。
+- **只接 tools 能力**：MCP 的 `resources` / `prompts` 未接——它们没有「包成内核工具」这条
+  自然落点，需要另外的界面与注入路径，等真需求。
+- **远程鉴权只支持静态头**：没接 `authProvider`（OAuth 流程需要回调页与凭据存储，
+  与 `secrets` 那套的关系要先想清楚）。
+- **不做 server 的启停开关**：注释掉配置项即等效（`reload` 会关掉它）。
+- **不做工具白名单 / 逐工具审批粒度**：MCP 工具一律走「未知工具 → 按需确认」；
+  要给某个 server 免审批，应走审批规则那套，而不是在 MCP 层开口子。
+- **强杀孤儿**：worker 被强杀那一刻正在启动的 MCP 子进程可能成为孤儿（§3 决策 8）。
+- **旧式 SSE 是 v2 的 legacy 面（退场提醒）**：`transport: "sse"` 现在仍照常支持（能力没变，
+  见决策 12），但 v2 已把这条列为 legacy——服务端 `SSEServerTransport` 在 v2 里**只存在于**
+  `@modelcontextprotocol/server-legacy`（v1 冻结副本，官方明说不再有新特性），规范
+  2026-07-28 版给了**一年**退场期。**触发条件**：哪天要甩掉 `server-legacy` 这个依赖，
+  就得先决定 `transport: "sse"` 是否随之下线——那是**产品决定**（判据是「还有没有人在用
+  SSE server」），不是技术决定。⚠️ 别在没做过这个决定前就把 `server-legacy` 删掉：
+  SSE 夹具与那条用例会一起消失，等于**把「这一支还能不能用」的证据也删了**，
+  而客户端 `SSEClientTransport` 是**包根导出**、删依赖并不会让它消失——于是变成
+  「代码里留着一条没人验过的 SSE 分支」。
+
+已从边界转正的（原型阶段曾列在「有意不做」，现已实现且有单测）：远程 server（HTTP/SSE）、
+`listTools` 分页、`${VAR}` 插值、配置热重载、工具重名去重、设置页可见性。

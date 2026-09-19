@@ -9,6 +9,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
+import type { McpServerView } from "@shared/worker-protocol";
+import { loadMcpConfig, targetOf, transportOf } from "@shared/mcp-config";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { runEnvCheck } from "../env-check";
@@ -75,6 +77,26 @@ function resolveSessionRoot(sessionId: string): string {
   const project = getProject(session.projectId);
   if (project === undefined) throw new Error("项目不存在");
   return project.rootPath;
+}
+
+/**
+ * 没有活 worker 时的退路：只把配置文件里的**声明**列出来（status 一律 `idle`）。
+ *
+ * 配置由主进程按 projectId 反查 rootPath 读取，**不经渲染层**——「读哪个项目」若由
+ * 渲染层指定，就等于让它决定我们读谁的文件（与 `resolveSessionRoot` 同一套信任假设）。
+ * 项目不存在时回空：设置页按「没配」呈现，不是错误。
+ */
+async function declaredMcpServers(projectId: string): Promise<McpServerView[]> {
+  const project = getProject(projectId);
+  if (project === undefined) return [];
+  const { servers } = await loadMcpConfig(project.rootPath);
+  return Object.entries(servers).map(([name, config]) => ({
+    name,
+    transport: transportOf(config) ?? "stdio",
+    target: targetOf(config),
+    status: "idle" as const,
+    tools: [],
+  }));
 }
 
 /**
@@ -493,6 +515,22 @@ export function registerIpcHandlers(): void {
     removeProvider(request.id);
     deleteSecret(request.id);
     return { ok: true } as const;
+  });
+
+  handle("mcp.status", async (request) => {
+    const sessionId = sessionManager.workerSessionForProject(request.projectId);
+    if (sessionId === undefined) {
+      return { servers: await declaredMcpServers(request.projectId), live: false } as const;
+    }
+    return { servers: await sessionManager.mcpStatus(sessionId), live: true } as const;
+  });
+
+  handle("mcp.reload", async (request) => {
+    const sessionId = sessionManager.workerSessionForProject(request.projectId);
+    if (sessionId === undefined) {
+      return { servers: await declaredMcpServers(request.projectId), live: false } as const;
+    }
+    return { servers: await sessionManager.mcpReload(sessionId), live: true } as const;
   });
 
   handle("session.setModel", async (request) => {

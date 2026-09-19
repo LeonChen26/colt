@@ -703,7 +703,7 @@ export default function App(): React.JSX.Element {
           */}
           <div className="min-h-0 flex-1">
             {mainView === "settings" ? (
-              <Settings />
+              <Settings project={activeProject} />
             ) : mainView === "changes" && activeProject ? (
               <ProjectChanges key={activeProject.id} projectId={activeProject.id} />
             ) : activeSession && conversationProject ? (

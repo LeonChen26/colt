@@ -12,6 +12,7 @@ import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
   ConversationView,
+  McpServerView,
   ViewFileChange,
   ViewMessage,
   ViewTodo,
@@ -26,7 +27,7 @@ import { getSecret } from "./secrets";
 import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
 import { todoStore } from "./todo-store";
-import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed, recordSessionEvent, recordApprovalAudit } from "./db/repo";
+import { getSession, listSessions, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed, recordSessionEvent, recordApprovalAudit } from "./db/repo";
 import { normalizeRootKey } from "./db/index";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
@@ -116,6 +117,11 @@ export interface WorkerEntry {
     id: string;
     settle: (result: { messages: ViewMessage[]; toolResults: ViewToolResult[] }) => void;
   }>;
+  /**
+   * MCP 现状查询的待决队列（同 `pendingBranches` 的范式，FIFO）。
+   * 设置页问一次、热重载回复一次，都落在它上面。
+   */
+  pendingMcp: Array<(servers: McpServerView[]) => void>;
   /**
    * 中断代数：每次用户中断自增。审批分析在飞行中跨越了中断时据此丢弃结果——
    * 否则会在已中断的会话上留下无法解释的幽灵待审卡片，并让 worker 悬空等待。
@@ -750,6 +756,7 @@ export class SessionManager {
       pendingCommands: [],
       pendingBranches: [],
       pendingTranscripts: [],
+      pendingMcp: [],
       abortEpoch: 0,
       modeEpoch: 0,
     };
@@ -954,6 +961,13 @@ export class SessionManager {
           break;
         }
 
+        case "mcpStatus": {
+          // 与 branches 同款：FIFO 兑现 mcpStatus / mcpReload 的等待方
+          const settle = entry.pendingMcp.shift();
+          settle?.(message.servers);
+          break;
+        }
+
         case "subagentTranscript": {
           // 按 id 配对（同一会话可能有多个下钻请求在飞）；没配上的丢弃——等待方各自的超时会收敛
           const index = entry.pendingTranscripts.findIndex((item) => item.id === message.id);
@@ -1005,6 +1019,7 @@ export class SessionManager {
         entry.pendingBranches.length = 0;
         // 完整流同理：没人能再回复，等待方各自的超时会收敛
         entry.pendingTranscripts.length = 0;
+        entry.pendingMcp.length = 0;
         this.#emit("session.error", {
           sessionId: options.sessionId,
           message: `会话进程异常退出（code=${code ?? "unknown"}），历史已保留。再发一条消息会自动重连恢复。`,
@@ -1253,6 +1268,55 @@ export class SessionManager {
   }
 
   /**
+   * 查某会话的 MCP server 现状（设置页可见性）。
+   * worker 不在池中时回**空数组**——「会话没开着」不是错误，调用方用配置文件补位。
+   */
+  mcpStatus(sessionId: string): Promise<McpServerView[]> {
+    return this.#queryMcp(sessionId, { type: "mcpStatus" });
+  }
+
+  /**
+   * 热重载某会话的 MCP 配置：worker 重读 `mcp.json`、只重连变更的 server，并把新工具
+   * 清单写回 harness 与主 lane。与 `mcpStatus` 共用一条往返，差别只在 worker 侧多做一步。
+   */
+  mcpReload(sessionId: string): Promise<McpServerView[]> {
+    return this.#queryMcp(sessionId, { type: "mcpReload" });
+  }
+
+  /**
+   * 某项目下**任一**活 worker 的会话 id（设置页据此问活状态）。
+   * 反查链路与 `session.compact` 的重建一致：项目 → 会话列表 → 池里有没有它。
+   */
+  workerSessionForProject(projectId: string): string | undefined {
+    for (const session of listSessions(projectId)) {
+      if (this.#workers.has(session.id)) return session.id;
+    }
+    return undefined;
+  }
+
+  /** `mcpStatus` / `mcpReload` 的共用往返（同 `branches` 的范式：排队兑现 + 超时） */
+  #queryMcp(sessionId: string, command: WorkerCommand): Promise<McpServerView[]> {
+    const entry = this.#workers.get(sessionId);
+    if (!entry) return Promise.resolve([]);
+    const queue = entry.pendingMcp;
+    return new Promise<McpServerView[]>((resolve, reject) => {
+      const settle = (servers: McpServerView[]): void => {
+        clearTimeout(timer);
+        const index = queue.indexOf(settle);
+        if (index !== -1) queue.splice(index, 1);
+        resolve(servers);
+      };
+      const timer = setTimeout(() => {
+        const index = queue.indexOf(settle);
+        if (index !== -1) queue.splice(index, 1);
+        reject(new Error("查询 MCP 状态超时"));
+      }, 10_000);
+      queue.push(settle);
+      this.#post(sessionId, command);
+    });
+  }
+
+  /**
    * 中止**单个**子代理（界面上那一行 / ④ 卡上的「中止」）。
    * worker 已回收时是空操作——子代理随 worker 同寿命，没有可中止的对象，
    * 那也不是错误（用户只是在一个已经过去的运行上点了中止）。
@@ -1345,6 +1409,7 @@ export class SessionManager {
     // 无人再能响应分支查询；清空队列，等待方各自的超时会收敛
     entry.pendingBranches.length = 0;
     entry.pendingTranscripts.length = 0;
+    entry.pendingMcp.length = 0;
     try {
       entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
     } catch {

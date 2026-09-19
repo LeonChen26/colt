@@ -15,6 +15,13 @@
  *       点「允许一次」→ 夹具 stdio server 真实往返 → 结果作为工具结果回到模型。
  *       夹具 `out/smoke-mcp-e2e-fixture/.colt/mcp.json` 声明 server `fixture`，
  *       server 进程用 ELECTRON_RUN_AS_NODE 让 electron 按 Node 跑（不依赖 PATH 有 node）
+ * mcp-real：真实**第三方** server 版（打模型；本地 Ollama 免费，云端计费）——场景由
+ *       COLT_SMOKE_MCP_SCENARIO 选（filesystem / pi-lens），验「真 server 的工具名逐字落到
+ *       审批卡」与「真 stdio 往返」；pi-lens 场景另印证「自带 MCP server 的第三方扩展可直连」
+ * mcp-reload：MCP 的**配置热重载 + 设置页可见性**链路（**不打模型、不计费**）——两版配置
+ *       现写现 reload：冷启动装载 → 加 server（分页那支在真 worker 里也收全）→ 删 server
+ *       （连工具一起消失，同一 worker 不重启）；再验 `mcp.status` / `mcp.reload` 两个 IPC 的
+ *       返回形状，含「没有活会话」时的退路（live=false + 声明 + idle）
  * subagent-e2e：子代理链路的**真实模型**端到端（打模型；云端计费，本地 Ollama 免费）——
  *       模型按名调用 demo 子代理（＝<available_subagents> 清单真进了提示词）→
  *       subagent 调用免闸、子 lane 的内部 write 照常弹审批卡（带「来自 demo」归属）→
@@ -83,6 +90,8 @@ import { runFixture } from "./modes/fixture";
 import { runHost } from "./modes/host";
 import { runMemory, runMemoryE2e } from "./modes/memory";
 import { runMcpE2e } from "./modes/mcp-e2e";
+import { runMcpReal } from "./modes/mcp-real";
+import { runMcpReload } from "./modes/mcp-reload";
 import { runSubagentE2e } from "./modes/subagent-e2e";
 import { runPerf } from "./modes/perf";
 import {
@@ -211,6 +220,10 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runAskUserE2e(window, log, run);
     } else if (mode === "mcp-e2e") {
       await runMcpE2e(window, log, run);
+    } else if (mode === "mcp-real") {
+      await runMcpReal(window, log, run);
+    } else if (mode === "mcp-reload") {
+      await runMcpReload(window, log, run);
     } else if (mode === "subagent-e2e") {
       await runSubagentE2e(window, log, run);
     } else if (mode === "reenter") {

@@ -9,12 +9,31 @@
 import type { ProviderBuildConfig } from "./provider-factory";
 import type { ThinkingLevel } from "./thinking-level";
 import type { ViewTodo } from "./todo";
+import type { McpTransport } from "./mcp-config";
 
 /**
  * 待办清单的类型定义在 `@shared/todo`（纯契约 + 渲染，main / worker / 渲染层三方共用），
  * 这里只是转出去——读契约的人不必跳到另一个文件才知道 `todos` 里装的是什么。
  */
 export type { ViewTodo };
+
+/**
+ * 一个 MCP server 的**对外现状**（设置页可见性用）。
+ *
+ * 三个字段讲清一件事：`transport` + `target` 是「它是什么」，`status` + `tools` / `error`
+ * 是「它现在怎么样」。`idle` 是主进程独有的状态——它只在**没有活 worker** 时出现，
+ * 表示「配置里声明了、但本会话还没把它连起来」，与 `error`（连过、失败了）不是一回事。
+ */
+export interface McpServerView {
+  name: string;
+  transport: McpTransport;
+  /** stdio 是命令 + 参数；远程是 URL */
+  target: string;
+  status: "connected" | "error" | "idle";
+  /** 注册给模型的工具名（`mcp__<server>__<tool>`） */
+  tools: string[];
+  error?: string;
+}
 
 /** 对话中的一条消息（投影后） */
 export interface ViewMessage {
@@ -341,6 +360,17 @@ export type WorkerCommand =
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
   /**
+   * 查 MCP server 现状（设置页可见性）。与 `branches` 同形：worker 以 `mcpStatus` 消息回复。
+   * 只用当前进程里那份运行态，**不重读配置**——要看配置改动请发 `mcpReload`。
+   */
+  | { type: "mcpStatus" }
+  /**
+   * 重读 `.colt/mcp.json` 并热重载：关掉不再声明 / 配置变了的 server，连上新声明的，
+   * 然后把新工具清单写回 harness（并愈合主 lane 的清单）——**不必重启会话**。
+   * 同样以 `mcpStatus` 消息回复，让调用方一步拿到重载后的现状。
+   */
+  | { type: "mcpReload" }
+  /**
    * 用户手动操作了浏览器（B1：后退 / 前进 / 刷新），把这件事告知 agent。
    *
    * 与 `steer` 的区别是**它不是用户说的话、也不该触发新一轮运行**：
@@ -428,6 +458,8 @@ export type WorkerMessage =
       timestamp: number;
     }
   | { type: "branches"; nodes: WorkerBranchNode[] }
+  /** `mcpStatus` / `mcpReload` 的回复：重载后（或当前）的 MCP server 现状 */
+  | { type: "mcpStatus"; servers: McpServerView[] }
   /**
    * 一个子代理的完整流（`subagentTranscript` 命令的回复）。
    * `id` 原样带回，主进程据此配对等待方（FIFO）。

@@ -1,43 +1,32 @@
 // Copyright (c) 2026 Colt
 // SPDX-License-Identifier: MIT
-
-/**
- * MCP（Model Context Protocol）工具接入——验证性原型。
- *
- * 定位：把 `<cwd>/.colt/mcp.json` 里声明的 stdio MCP server 的工具包成内核
- * `AgentHarnessTool`，塞进 `AgentHarness.create({ tools })`。名字带 `mcp__` 前缀，
- * 不在 READONLY_TOOLS / 提问 / 子代理任何一份豁免名单里——所以它们**天然过
- * `before_tool` 审批闸门**，落到 policy 的「未知工具，按需确认」（moderate → ask），
- * 一行审批代码都不用改。这正是「不自建扩展宿主」路线的兑现方式：生态工具以
- * 普通工具的身份进入，安全模型零例外。
- *
- * 与 pi 生态的关系：刻意**不**适配 `pi-mcp-adapter` 之类的扩展包——它们 29% 的
- * 代码是 TUI 同意面板与宿主生命周期，对本仓是死重；直接用官方
- * `@modelcontextprotocol/sdk` 的 Client，反而更薄。
- *
- * schema 处理：MCP 工具的 `inputSchema` 是**裸 JSON Schema**，原样交给内核。
- * 这不靠运气——pi-ai 的 `validateToolArguments` 显式区分 typebox / 非 typebox
- * schema（查 `TYPEBOX_KIND` 符号），对后者走纯 JSON Schema 的 coercion + 编译校验；
- * 模型侧拿到的也是这份原样 schema。测试里有专门一条钉住这个契约。
- *
- * 已知限制（原型边界，别当bug修）：
- * - 只支持 stdio 传输；远程（HTTP/SSE）server 未接。
- * - `listTools` 不分页（绝大多数 server 一次返回全量）。
- * - worker 被主进程**强杀**（dispose 3s 宽限超时 / 崩溃）时 MCP 子进程会成为孤儿；
- *   正常 dispose 路径走 `process.on("exit")` 兜底回收。
- * - 配置里不做环境变量插值（`${VAR}`），env 只支持字面量。
- */
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import {
-  StdioClientTransport,
-  getDefaultEnvironment,
-} from "@modelcontextprotocol/sdk/client/stdio.js";
-import { CompatibilityCallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
+import { Client, StreamableHTTPClientTransport, SSEClientTransport } from "@modelcontextprotocol/client";
 import type { TSchema } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { McpServerView } from "@shared/worker-protocol";
+import {
+  configKey,
+  interpolateConfig,
+  loadMcpConfig,
+  targetOf,
+  transportOf,
+  type McpServerConfig,
+} from "@shared/mcp-config";
+
+// 配置层与纯函数从 shared 透传：`worker/lib/mcp-tools` 是既有的引用入口
+// （单测从它 import），不为搬文件去改一票调用点。
+export {
+  configKey,
+  interpolateConfig,
+  loadMcpConfig,
+  mcpConfigPath,
+  parseServerConfig,
+  targetOf,
+  transportOf,
+  type McpServerConfig,
+} from "@shared/mcp-config";
 
 /** 工具名前缀：注册名、审批签名、界面展示同源 */
 export const MCP_TOOL_PREFIX = "mcp__";
@@ -45,19 +34,14 @@ export const MCP_TOOL_PREFIX = "mcp__";
 /** LLM API 对工具名普遍有 64 字符上限（含前缀），超长的截断并记诊断 */
 export const MAX_TOOL_NAME_CHARS = 64;
 
-/** 单个 server 的连接 + 列工具超时：挂死的 server 不许拖住会话启动 */
+/** 单个 server 的**连接 / 列工具**超时：挂死的 server 不许拖住会话启动 */
 const CONNECT_TIMEOUT_MS = 15_000;
 
-/** `.colt/mcp.json` 里单个 server 的声明（stdio） */
-export interface McpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
-
-interface McpConfigFile {
-  mcpServers?: Record<string, unknown>;
-}
+/**
+ * `listTools` 分页上限。绝大多数 server 一页给全；留一个有限页数只为兜住
+ * 「server 永远回同一个 cursor」这种坏实现——否则我们会在这里转圈。
+ */
+const MAX_TOOL_PAGES = 100;
 
 /** callTool 返回里本模块关心的最小形状（SDK 的 zod 联合类型用起来反而绕） */
 interface McpCallResult {
@@ -74,7 +58,14 @@ interface McpContentBlock {
   resource?: { text?: string; blob?: string; mimeType?: string };
 }
 
-/** 活着的客户端：worker 退出时统一回收（正常 dispose 会走 process exit） */
+/** listTools 返回的单条工具（只取本模块用到的字段） */
+interface ListedTool {
+  name: string;
+  description?: string;
+  inputSchema: unknown;
+}
+
+/** 活着的客户端：worker 退出时统一回收（正常 dispose 会走 runtime.close） */
 const liveClients = new Set<Client>();
 let exitHookArmed = false;
 
@@ -87,7 +78,7 @@ function armExitHook(): void {
   });
 }
 
-/** 关掉全部 MCP 连接（测试与将来的 dispose 路径用） */
+/** 关掉全部 MCP 连接（测试与强杀前的兜底用） */
 export async function closeMcpTools(): Promise<void> {
   const clients = [...liveClients];
   liveClients.clear();
@@ -134,62 +125,6 @@ function resultText(result: McpCallResult): string {
     .join("\n");
 }
 
-/** 校验并归一一个 server 声明；不合法返回诊断字符串 */
-export function parseServerConfig(name: string, raw: unknown): McpServerConfig | string {
-  if (typeof raw !== "object" || raw === null) return `server "${name}" 的配置不是对象`;
-  const candidate = raw as Record<string, unknown>;
-  if (typeof candidate.command !== "string" || candidate.command.trim() === "") {
-    return `server "${name}" 缺少 command`;
-  }
-  const config: McpServerConfig = { command: candidate.command };
-  if (candidate.args !== undefined) {
-    if (!Array.isArray(candidate.args) || candidate.args.some((a) => typeof a !== "string")) {
-      return `server "${name}" 的 args 必须是字符串数组`;
-    }
-    config.args = candidate.args as string[];
-  }
-  if (candidate.env !== undefined) {
-    if (
-      typeof candidate.env !== "object" ||
-      candidate.env === null ||
-      Object.values(candidate.env).some((v) => typeof v !== "string")
-    ) {
-      return `server "${name}" 的 env 必须是字符串字典`;
-    }
-    config.env = candidate.env as Record<string, string>;
-  }
-  return config;
-}
-
-/** 读 `<cwd>/.colt/mcp.json`；文件不存在 → 空配置（不吵），解析失败 → 诊断 */
-export async function loadMcpConfig(
-  cwd: string,
-): Promise<{ servers: Record<string, McpServerConfig>; diagnostics: string[] }> {
-  const diagnostics: string[] = [];
-  let raw: string;
-  try {
-    raw = await readFile(join(cwd, ".colt", "mcp.json"), "utf8");
-  } catch {
-    return { servers: {}, diagnostics }; // 没配就是没配，不是错误
-  }
-  let parsed: McpConfigFile;
-  try {
-    parsed = JSON.parse(raw) as McpConfigFile;
-  } catch (error) {
-    return {
-      servers: {},
-      diagnostics: [`.colt/mcp.json 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`],
-    };
-  }
-  const servers: Record<string, McpServerConfig> = {};
-  for (const [name, value] of Object.entries(parsed.mcpServers ?? {})) {
-    const config = parseServerConfig(name, value);
-    if (typeof config === "string") diagnostics.push(config);
-    else servers[name] = config;
-  }
-  return { servers, diagnostics };
-}
-
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -199,78 +134,264 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-/**
- * 连接一个 server 并把它的工具包成内核工具。
- * 失败（连不上 / 超时 / listTools 报错）抛错，由调用方收成诊断——一个坏 server 不拦会话。
- */
-async function connectServer(
-  name: string,
-  config: McpServerConfig,
-): Promise<AgentHarnessTool<ExecutionToolContext>[]> {
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: config.args ?? [],
-    env: { ...getDefaultEnvironment(), ...config.env },
-  });
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+type AnyTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
+
+/** 按配置造传输：stdio 走子进程，远程走 Streamable HTTP / SSE（headers 透传） */
+function buildTransport(config: McpServerConfig): AnyTransport {
+  if (config.command !== undefined) {
+    return new StdioClientTransport({
+      command: config.command,
+      args: config.args ?? [],
+      env: { ...getDefaultEnvironment(), ...config.env },
+    });
+  }
+  const url = new URL(config.url ?? "");
+  const requestInit = config.headers === undefined ? undefined : { headers: config.headers };
+  return config.transport === "sse"
+    ? new SSEClientTransport(url, { requestInit })
+    : new StreamableHTTPClientTransport(url, { requestInit });
+}
+
+/** 拉全量工具：跟随 `nextCursor` 翻页（页数有上限，见 MAX_TOOL_PAGES） */
+async function listAllTools(client: Client, serverName: string): Promise<ListedTool[]> {
+  const all: ListedTool[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_TOOL_PAGES; page += 1) {
+    const listed = await withTimeout(
+      client.listTools(cursor === undefined ? undefined : { cursor }),
+      CONNECT_TIMEOUT_MS,
+      `列出 "${serverName}" 的工具`,
+    );
+    all.push(...(listed.tools as unknown as ListedTool[]));
+    cursor = listed.nextCursor;
+    if (cursor === undefined) return all;
+  }
+  throw new Error(`列出 "${serverName}" 的工具超过 ${MAX_TOOL_PAGES} 页，疑似分页游标未推进`);
+}
+
+/** 把一个 MCP 工具包成内核工具（名字前缀、裸 schema 透传、失败要 throw） */
+function wrapTool(
+  serverName: string,
+  tool: ListedTool,
+  client: Client,
+): AgentHarnessTool<ExecutionToolContext, TSchema, undefined> {
+  return {
+    name: mcpToolName(serverName, tool.name),
+    label: `MCP ${serverName}: ${tool.name}`,
+    description: tool.description ?? `MCP server "${serverName}" 的 ${tool.name} 工具`,
+    // 裸 JSON Schema 原样透传：pi-ai 的 validateToolArguments 对非 typebox
+    // schema 有专门的 coercion + 编译路径（见文件头注释）
+    parameters: tool.inputSchema as unknown as TSchema,
+    async execute(_toolCallId, params) {
+      const result = (await client.callTool(
+        { name: tool.name, arguments: params as Record<string, unknown> }
+      )) as unknown as McpCallResult;
+      // 内核约定：失败要 throw，由内核转成错误工具结果（与 host-bridge 同款）
+      if (result.isError === true) throw new Error(resultText(result));
+      return { content: mapMcpContent(result), details: undefined };
+    },
+  };
+}
+
+/** 一个 server 的运行态：连上了就有 client + tools；失败（或连上后掉线）则带 error */
+interface ServerState {
+  name: string;
+  config: McpServerConfig;
+  client?: Client;
+  tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[];
+  error?: string;
+  /** 我们主动关的（reload / dispose）：此时 SDK 的 onclose 不算「掉线」 */
+  closing?: boolean;
+}
+
+async function connectServer(name: string, config: McpServerConfig): Promise<ServerState> {
   const client = new Client({ name: "colt", version: "0.0.1" });
+  const state: ServerState = { name, config, client, tools: [] };
   try {
-    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `连接 MCP server "${name}"`);
-    const listed = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `列出 "${name}" 的工具`);
+    await withTimeout(client.connect(buildTransport(config)), CONNECT_TIMEOUT_MS, `连接 MCP server "${name}"`);
+    const listed = await listAllTools(client, name);
+    state.tools = listed.map((tool) => wrapTool(name, tool, client));
+    // 连上**之后**掉线要如实反映：否则设置页会一直显示「已连接」、而工具调用早已失败——
+    // 持续撒谎比没有信号更糟（AGENTS.md §四）。两个约束：
+    // ① SDK 的 `onclose` 在**我们主动 close() 时同样触发**，所以先看 closing 标记，
+    //    别把 reload / dispose 自己的关闭误报成「断开」；
+    // ② 刻意**不**接 `onerror`：SDK 明说那里的 error「不一定是致命的」，拿它翻状态
+    //    会把健康 server 误标成红点，那种假信号比没有信号更贵。掉线一律以 onclose 为准。
+    client.onclose = () => {
+      if (state.closing === true) return;
+      state.error = "连接已断开（server 进程退出或网络中断）";
+    };
     liveClients.add(client);
     armExitHook();
-    return listed.tools.map((tool) => {
-      const wrapped: AgentHarnessTool<ExecutionToolContext, TSchema, undefined> = {
-        name: mcpToolName(name, tool.name),
-        label: `MCP ${name}: ${tool.name}`,
-        description: tool.description ?? `MCP server "${name}" 的 ${tool.name} 工具`,
-        // 裸 JSON Schema 原样透传：pi-ai 的 validateToolArguments 对非 typebox
-        // schema 有专门的 coercion + 编译路径（见文件头注释）
-        parameters: tool.inputSchema as unknown as TSchema,
-        async execute(_toolCallId, params) {
-          const result = (await client.callTool(
-            { name: tool.name, arguments: params as Record<string, unknown> },
-            CompatibilityCallToolResultSchema,
-          )) as unknown as McpCallResult;
-          // 内核约定：失败要 throw，由内核转成错误工具结果（与 host-bridge 同款）
-          if (result.isError === true) throw new Error(resultText(result));
-          return { content: mapMcpContent(result), details: undefined };
-        },
-      };
-      return wrapped;
-    });
+    return state;
   } catch (error) {
+    state.closing = true;
     await client.close().catch(() => undefined);
     throw error;
   }
 }
 
+async function closeState(state: ServerState): Promise<void> {
+  const client = state.client;
+  if (client === undefined) return;
+  state.closing = true;
+  state.client = undefined;
+  liveClients.delete(client);
+  await client.close().catch(() => undefined);
+}
+
+/** 热重载 / 首次装载的产物：新工具清单 + 各 server 现状 + 一行摘要 */
+export interface McpReloadResult {
+  tools: AgentHarnessTool<ExecutionToolContext>[];
+  statuses: McpServerView[];
+  /** 空串 = 无事可报（没配、也没告警）；非空则调用方原样发 notice */
+  summary: string;
+}
+
+/** 一个会话（= 一个 worker 进程）持有的 MCP 运行态 */
+export interface McpRuntime {
+  readonly tools: AgentHarnessTool<ExecutionToolContext>[];
+  reload(): Promise<McpReloadResult>;
+  status(): McpServerView[];
+  close(): Promise<void>;
+}
+
 /**
- * 装载 `<cwd>/.colt/mcp.json` 声明的全部 MCP 工具。
+ * 建一个 MCP runtime 并就地装载。
  *
  * 与技能同一条隐式信任通道：MCP server 是**会话启动时即执行的本地代码**，
- * 装了什么、坏在哪里必须如实告知（notice 由调用方按 security 类发出）。
+ * 装了什么、坏在哪里必须如实告知（摘要由调用方按 security 类发 notice）。
+ */
+export async function createMcpRuntime(
+  cwd: string,
+  notify: (message: string) => void,
+): Promise<McpRuntime> {
+  const states = new Map<string, ServerState>();
+  const diagnostics: string[] = [];
+
+  /**
+   * 汇总全量工具，并按**注册名**去重。
+   *
+   * 去重不是可选项：内核 `validateToolNames` 见到重名会直接 `TypeError`——
+   * 两个 server 撞名（或同一 server 的两个工具清洗后撞名）会让整个
+   * `AgentHarness.create` 崩掉，那比"少一个工具"严重得多。这里保留先到的、
+   * 把后到的记进通知，让人去改配置。
+   */
+  const buildTools = (): { tools: AgentHarnessTool<ExecutionToolContext>[]; collisions: string[] } => {
+    const owner = new Map<string, string>();
+    const tools: AgentHarnessTool<ExecutionToolContext>[] = [];
+    const collisions: string[] = [];
+    for (const state of states.values()) {
+      for (const tool of state.tools) {
+        const existing = owner.get(tool.name);
+        if (existing !== undefined) {
+          collisions.push(
+            `「${existing}」与「${state.name}」都声明了工具 ${tool.name}，保留「${existing}」的那份`,
+          );
+          continue;
+        }
+        owner.set(tool.name, state.name);
+        tools.push(tool);
+      }
+    }
+    return { tools, collisions };
+  };
+
+  const status = (): McpServerView[] =>
+    [...states.values()].map((state) => ({
+      name: state.name,
+      transport: transportOf(state.config) ?? "stdio",
+      target: targetOf(state.config),
+      status: state.error === undefined ? ("connected" as const) : ("error" as const),
+      tools: state.tools.map((tool) => tool.name),
+      ...(state.error === undefined ? {} : { error: state.error }),
+    }));
+
+  const reload = async (): Promise<McpReloadResult> => {
+    const config = await loadMcpConfig(cwd);
+    diagnostics.length = 0;
+    diagnostics.push(...config.diagnostics);
+
+    // 关掉：不再声明的、或配置变了的（含"上次连失败、这次配置仍不同"的必然重试）
+    for (const [name, state] of [...states]) {
+      const next = config.servers[name];
+      if (next === undefined || configKey(next) !== configKey(state.config)) {
+        await closeState(state);
+        states.delete(name);
+      }
+    }
+    // 连接：新声明的，以及**上一轮连失败 / 连上后掉线**的——配置没变也重试。
+    // 不重试的话「重新加载」对失败态就是个死按钮：server 只是起晚了（后端刚发布）、
+    // 网络刚恢复、或进程崩了重启，用户点多少次都救不回来——直接推翻设置页那句
+    // 「改完点「重新加载」即可生效」。已连好的不重连（那是浪费，见上面的配置等价键）。
+    for (const [name, declared] of Object.entries(config.servers)) {
+      const existing = states.get(name);
+      if (existing !== undefined && existing.error === undefined) continue;
+      if (existing !== undefined) await closeState(existing);
+      const resolved = interpolateConfig(declared, process.env);
+      if (typeof resolved === "string") {
+        const message = `server "${name}" ${resolved}`;
+        diagnostics.push(message);
+        states.set(name, { name, config: declared, tools: [], error: message });
+        continue;
+      }
+      try {
+        states.set(name, await connectServer(name, resolved));
+      } catch (error) {
+        const message = `server "${name}" 连接失败：${describeError(error)}`;
+        diagnostics.push(message);
+        states.set(name, { name, config: declared, tools: [], error: message });
+      }
+    }
+
+    const { tools, collisions } = buildTools();
+    const connected = [...states.values()]
+      .filter((state) => state.error === undefined)
+      .map((state) => `${state.name}（${state.tools.length} 个工具）`);
+    const parts: string[] = [];
+    if (connected.length > 0) {
+      parts.push(`已连接 ${connected.length} 个 MCP server：${connected.join("、")}`);
+    }
+    if (diagnostics.length > 0) {
+      parts.push(`MCP 告警 ${diagnostics.length} 条：${diagnostics.join("；")}`);
+    }
+    if (collisions.length > 0) {
+      parts.push(`MCP 工具重名 ${collisions.length} 条：${collisions.join("；")}`);
+    }
+    const summary = parts.join("；");
+    if (summary !== "") notify(summary);
+    return { tools, statuses: status(), summary };
+  };
+
+  await reload();
+  return {
+    get tools() {
+      return buildTools().tools;
+    },
+    reload,
+    status,
+    close: async () => {
+      const closing = [...states.values()];
+      states.clear();
+      await Promise.all(closing.map((state) => closeState(state)));
+    },
+  };
+}
+
+/**
+ * 一次性装载（首次接入的简写形态，单测与外部工具用）。
+ *
+ * 连接登记在模块级 `liveClients` 上，`closeMcpTools()` 统一回收；要热重载 / 查状态
+ * 的调用方改用 `createMcpRuntime`。
  */
 export async function loadMcpTools(
   cwd: string,
   notify: (message: string) => void,
 ): Promise<AgentHarnessTool<ExecutionToolContext>[]> {
-  const { servers, diagnostics } = await loadMcpConfig(cwd);
-  const tools: AgentHarnessTool<ExecutionToolContext>[] = [];
-  const loaded: string[] = [];
-  for (const [name, config] of Object.entries(servers)) {
-    try {
-      const wrapped = await connectServer(name, config);
-      tools.push(...wrapped);
-      loaded.push(`${name}（${wrapped.length} 个工具）`);
-    } catch (error) {
-      diagnostics.push(
-        `server "${name}" 连接失败：${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  const parts: string[] = [];
-  if (loaded.length > 0) parts.push(`已连接 ${loaded.length} 个 MCP server：${loaded.join("、")}`);
-  if (diagnostics.length > 0) parts.push(`MCP 告警 ${diagnostics.length} 条：${diagnostics.join("；")}`);
-  if (parts.length > 0) notify(parts.join("；"));
-  return tools;
+  const runtime = await createMcpRuntime(cwd, notify);
+  return runtime.tools;
 }

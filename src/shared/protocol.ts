@@ -9,11 +9,15 @@
 import type {
   AskUserQuestion,
   ConversationView,
+  McpServerView,
   ViewMessage,
   ViewToolResult,
 } from "./worker-protocol";
 import type { ThinkingLevel } from "./thinking-level";
 import type { ToolImageResult } from "./tool-output";
+
+/** MCP server 现状的契约定义在 `@shared/worker-protocol`，这里转出去方便界面一处 import */
+export type { McpServerView } from "./worker-protocol";
 
 /** 环境体检结果 */
 export interface EnvReport {
@@ -261,6 +265,8 @@ export const IPC_CHANNELS = [
   "providers.list",
   "providers.save",
   "providers.remove",
+  "mcp.status",
+  "mcp.reload",
   "session.setModel",
   "session.setThinkingLevel",
   "session.compact",
@@ -580,6 +586,25 @@ export interface IpcInvokeMap {
   "providers.remove": {
     request: { id: string };
     response: { ok: true };
+  };
+  /**
+   * 某项目声明的 MCP server 现状（设置页可见性）。
+   *
+   * `live` 说清这份数据从哪来：true = 该项目的活 worker 报的**真实运行态**（连上了没、
+   * 有哪些工具）；false = 只有配置文件里的**声明**（会话没开着），此时每个 server 的
+   * status 一律是 `idle`。两者语义不同，界面要分开呈现（见 `McpServerView`）。
+   */
+  "mcp.status": {
+    request: { projectId: string };
+    response: { servers: McpServerView[]; live: boolean };
+  };
+  /**
+   * 热重载某项目的 MCP 配置：重读 `.colt/mcp.json`、只重连变更的 server，把新工具清单
+   * 写回该会话（**不必重启会话**）。没有活 worker 时退化成「重读一遍配置」，`live: false`。
+   */
+  "mcp.reload": {
+    request: { projectId: string };
+    response: { servers: McpServerView[]; live: boolean };
   };
   /** 切换会话使用的模型 */
   "session.setModel": {

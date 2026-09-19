@@ -22,7 +22,7 @@ import {
   type Session,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { createModels, type ImageContent } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai";
 import type {
   FileBaseline,
   ViewFileChange,
@@ -103,7 +103,10 @@ import {
   readMemoryFile,
   userMemoryFilePath,
 } from "./lib/memory";
-import { loadMcpTools } from "./lib/mcp-tools";
+import { createMcpRuntime, type McpRuntime } from "./lib/mcp-tools";
+import { reloadMcpIntoHarness } from "./lib/mcp-reload";
+import { systemPrompt } from "./lib/system-prompt";
+import { toImageContent } from "./lib/attachments";
 import {
   createAgentsMdInjector,
   describeAgentsMd,
@@ -141,27 +144,6 @@ function send(message: WorkerMessage): void {
 /** 宿主能力客户端：浏览器/桌面的实际执行在主进程，这里只发命令等结果 */
 const hostBridge = new HostBridge(send);
 
-function systemPrompt(cwd: string): string {
-  return [
-    "你是 Colt 桌面工作台中的编码助手，运行在用户的本地项目里。",
-    `当前工作目录：${cwd}`,
-    "可以使用 read / write / edit / bash 工具查看和修改文件。",
-    "可以使用浏览器工具：browser_read 读取页面（snapshot 返回带 ref 的可交互元素），browser_act 打开/点击/输入/滚动，browser_screenshot 截图。操作网页前先用 snapshot 获取 ref。",
-    "可以使用电脑控制工具操作桌面应用：computer_screenshot 截取整个屏幕，computer_action 点击/输入/按键/滚动。每次操作前必须先 computer_screenshot，并基于画面坐标操作；操作后再次截图确认。",
-    "动手前先用一句话说明你要做什么，保持简洁、技术化。",
-    "【输出语言】始终用中文回复。即使用户消息、文件内容或命令输出含有英文，你的叙述部分也必须是中文；",
-    "代码、路径、命令、报错原文保持原样不要翻译。",
-  ].join("\n");
-}
-
-/** 渲染层传来的附件是不带 type 的精简结构，这里补成内核要求的 ImageContent */
-function toImageContent(
-  images?: { data: string; mimeType: string }[],
-): ImageContent[] | undefined {
-  if (!images || images.length === 0) return undefined;
-  return images.map((image) => ({ type: "image", ...image }));
-}
-
 async function openSession(
   repo: JsonlSessionRepo,
   kernelSessionId: string | undefined,
@@ -189,6 +171,8 @@ interface WorkerState {
    * （视图里的 `subagents` 正是从这里投影的），而 pushView 在模块级。
    */
   subagents: Subagents;
+  /** MCP 运行态（各 server 的连接 + 工具）；dispose 收尸与 mcpStatus/mcpReload 命令都用它 */
+  mcp: McpRuntime;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
   /**
@@ -387,7 +371,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     onUpdate: () => scheduleFlush(),
   });
 
-  const mcpTools = await loadMcpTools(cwd, (message) => send({ type: "notice", message, kind: "security" }));
+  const mcp = await createMcpRuntime(cwd, (message) => send({ type: "notice", message, kind: "security" }));
 
   const { harness, open } = await AgentHarness.create(
     {
@@ -405,7 +389,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createMemoryTools(hostBridge),
         ...createTodoTools(hostBridge),
         ...createAskUserTools(questions),
-        ...subagents.tools(), ...mcpTools,
+        ...subagents.tools(), ...mcp.tools,
       ],
       toolContext: { env: executionEnv },
       // create-time 静态部分只有：基础提示词 + 技能清单。
@@ -667,6 +651,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     resnapshot: () => watch.resnapshot(context),
     reportMemoryIndex,
     subagents,
+    mcp,
     meta,
     unsubscribe: () => watch.unsubscribe(),
   };
@@ -1001,11 +986,25 @@ async function handle(command: WorkerCommand): Promise<void> {
       return;
     }
 
+    // 查 MCP 现状（设置页可见性）。state 未就绪时不报错、回空——设置页可能来得比 init 早
+    case "mcpStatus":
+      send({ type: "mcpStatus", servers: state?.mcp.status() ?? [] });
+      return;
+
+    // 热重载 MCP 配置：重连变更的 server，新工具清单写回 harness 与主 lane（不必重启会话）
+    case "mcpReload": {
+      if (!state) throw new Error("会话尚未初始化");
+      const servers = await reloadMcpIntoHarness(state.mcp, state.harness, state.lane, context);
+      send({ type: "mcpStatus", servers });
+      return;
+    }
+
     case "dispose": {
       if (state) {
         state.unsubscribe();
         // 子代理的 watch 也要退订：否则事件会继续往已作废的快照上写，白烧 CPU
         state.subagents.dispose();
+        await state.mcp.close().catch(() => undefined);
         await state.harness.close(context).catch(() => undefined);
         await state.repo.close(context).catch(() => undefined);
         state = undefined;
