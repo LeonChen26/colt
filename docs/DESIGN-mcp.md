@@ -7,20 +7,22 @@
 >   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
 > - `worker/lib/mcp-tools.ts`——连接、包装、runtime（`createMcpRuntime` / `reload` / `status` / `close`），
 >   以及 `capabilityTools`（把 server **声明了的** resources / prompts 也包成内核工具，决策 13）。
-> - `worker/lib/mcp-reload.ts`——热重载的**写回**一步（harness + 主 lane）。
-> - `worker/entry.ts`——接线（`...mcp.tools` 进 tools 数组；`mcpStatus` / `mcpReload` 两条命令）。
+> - `worker/lib/mcp-reload.ts`——MCP 与 harness / 系统提示词 / 设置页的**接线**（三件事一处）：
+>   热重载写回（`reloadMcpIntoHarness`）、`instructions` 注入与设置页命令（决策 14）。
+> - `worker/entry.ts`——接线（`...mcp.tools` 进 tools 数组；两条 MCP 命令已收进上面那个文件）。
 > - `main/session-manager.ts` + `main/ipc`——`mcp.status` / `mcp.reload` 两个 IPC。
 > - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性）。
 > 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
 > `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
-> **验收**：单测 `tests/mcp-tools.test.ts`（**30 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
+> **验收**：单测 `tests/mcp-tools.test.ts`（**31 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
 > 夹具都与生产方同构（低层 `Server` 类 + 裸 JSON Schema）：
 > `mcp-fixture-server.mjs`（stdio，3 工具）/ `mcp-paged-fixture-server.mjs`（stdio，分页）/
 > `mcp-http-fixture-server.mjs`（Streamable HTTP，含 headers 回显）/
 > `mcp-sse-fixture-server.mjs`（旧式 SSE，有状态那套）/ `mcp-crash-fixture-server.mjs`
 > （stdio，可自杀——专门验「连上**之后**掉线」）/
 > `mcp-capabilities-fixture-server.mjs`（stdio，**三面都声明**：tools + resources + prompts，
-> 含文本/二进制资源、资源模板、带参与无参提示词——验「声明了才包成工具」与能力面的真实往返）。
+> 含文本/二进制资源、资源模板、带参与无参提示词，并**自报 `instructions`**——验「声明了才包成
+> 工具」、能力面的真实往返，以及 server 用法说明确实被拼进提示词）。
 > **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端由冒烟
 > `COLT_SMOKE_MODE=mcp-e2e` 覆盖并**实测通过**（2026-09-19，本地 Ollama qwen3:0.6b，
 > 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；另有
@@ -67,6 +69,7 @@
 | v2 的 `listTools()` **不传 cursor 时自己翻完所有页并聚合**（一次调用拿回 5 条、`nextCursor` 为 undefined）；只有**显式传 cursor** 才回单页。自动翻页的页数上限是 `ClientOptions.listMaxPages`（默认 64，触顶**抛错**、不缓存半份聚合），重复 cursor 会停止翻页 | `@modelcontextprotocol/client`（实测，见决策 6）。同款自动聚合对 `listPrompts` / `listResources` / `listResourceTemplates` 一视同仁 |
 | SDK 的 `RequestOptions` 有 `signal` / `timeout`；`RequestOptions.timeout` 缺省用 `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`。超时由 SDK 自己取消请求并抛 `SdkError code=REQUEST_TIMEOUT` | `@modelcontextprotocol/client`（实测：给 `connect` 传 `{ timeout: 1500 }`，1531ms 后以 `SdkError code=REQUEST_TIMEOUT / Request timed out` 拒绝）。所以 `callTool` **不是没有超时**，是走 SDK 默认 60s |
 | `client.getServerCapabilities()` 是公开方法，connect 之后就能读到 server 声明的 `tools` / `resources` / `prompts` 等能力面；`listResources` / `listPrompts` / `listResourceTemplates` 与 `listTools` 同款自动翻页；`readResource` / `getPrompt` 是单次请求 | `@modelcontextprotocol/client`（能力工具只在声明了对应面时才加，见决策 13） |
+| `client.getInstructions()` 是 server 握手时自报 `InitializeResult.instructions` 的**取值口**，但 SDK **自己一处都不调用**它；另有一个 `ClientOptions.listChanged`（`{ tools / prompts / resources: { onChanged } }`），SDK 会自己刷新并把新值回调给你 | 前者不自己拼进提示词就是**静默丢掉**（与技能清单同坑，见决策 14）；后者我们**尚未接**（见 §5 边界） |
 
 ## 3. 决策
 
@@ -151,6 +154,23 @@
     - **边界（未做）**：prompts 的**用户侧**入口（输入框 `/` 候选里按名选、填参数）没做——那要动
       渲染层 + IPC；现在模型能自己按名取，用户则要手工拼一次工具调用。
 
+14. **server 自报的 `instructions` 拼进系统提示词**（`lib/mcp-reload.ts` 的 `composeMcpInstructions`，
+    `entry.ts` 的 `transform_context` 链尾一行调用）。
+    - `instructions` 是 server 握手时自报的「怎么用我」（如「调 A 之前先调 B」）。SDK 只给
+      `client.getInstructions()` 这个取值口、**一处都不替你调**——应用不拼就是静默丢掉，而
+      装载 / 告警 / 计数 / typecheck / 单测全绿。这与技能清单是**同一个坑**
+      （`formatSkillsForSystemPrompt` 也从不被内核调用），见 `AGENTS.md` §四。
+    - **每请求重拼**（挂在注入链尾），于是 `reload()` 换过 server 之后下一次请求立即可见；
+      无 instructions 时**原样返回 base**、不产出多余空行（多一个换行都会让拼出的串每次都变、
+      提示词缓存失效）。与 `renderTodoBlock` / `renderAgentCatalog` 同一条纪律。
+    - ⚠️ **信任面**：这是 server 自报的文本进系统提示词，与工具描述同一条隐式信任通道（都用
+      `security` 类 notice 如实告知），原样引用、不当本机指令。
+    - **已知未覆盖**：`composeMcpInstructions` 在**最终产物**（拼出的串）上有单测，但 `entry.ts`
+      里那**一行调用**没有结构断言——本仓库对这类注入器的惯例正是如此（`renderTodoBlock` /
+      `renderAgentCatalog` 也一样：渲染函数验串 + 接线靠行为观察）。给 MCP instructions 做行为
+      观察要模型「照 server 自报的话做」，前提在模型侧、易假红（§四「前提由外部决定时要么显式
+      建立、要么明说没建立」），故不做，在此**如实记下**。
+
 ## 4. 配置形态
 
 `<cwd>/.colt/mcp.json`（项目级，随项目走；与 `.colt/memory.md` 同一目录惯例）：
@@ -188,6 +208,12 @@
   包成工具**有**自然落点；prompts 也顺带包了（参数交给服务端渲染，见决策 13）。
 - **prompts 没有用户侧入口**：模型能按名取（`get_prompt`），但输入框 `/` 候选里按名选、
   填参数那套没做——那要动渲染层 + IPC，等真需求（决策 13 末条）。
+- **`list_changed` 通知未接**：v2 有 `ClientOptions.listChanged`（`{ tools / prompts /
+  resources: { onChanged } }`，SDK 会自己重新拉取并把新值回调给你），我们**没挂**。后果：
+  server **中途**增删工具 / 资源时，要等用户点「重新加载」，或下次连上才变。
+  不是不能做（写回那套 `reloadMcpIntoHarness` 现成），但要把新清单在**会话中途**写回
+  harness 与所有 lane，而 server 频繁发通知会在**生成途中**扰动工具面（正是
+  `configured_tools_unavailable` 那类事故的现场）——得先想清「什么时候才允许应用」。
 - **远程鉴权只支持静态头**：没接 `authProvider`（OAuth 流程需要回调页与凭据存储，
   与 `secrets` 那套的关系要先想清楚）。
 - **不做 server 的启停开关**：注释掉配置项即等效（`reload` 会关掉它）。

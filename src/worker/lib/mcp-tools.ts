@@ -363,6 +363,8 @@ interface ServerState {
   config: McpServerConfig;
   client?: Client;
   tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[];
+  /** server 自报的用法说明（握手时的 `InitializeResult.instructions`）；没报就没有这项 */
+  instructions?: string;
   error?: string;
   /** 我们主动关的（reload / dispose）：此时 SDK 的 onclose 不算「掉线」 */
   closing?: boolean;
@@ -384,6 +386,10 @@ async function connectServer(
       ...listed.map((tool) => wrapTool(name, tool, client)),
       ...capabilityTools(name, client, client.getServerCapabilities()),
     ];
+    // server 自报的「怎么用我」。这里只**保留**；拼进系统提示词是另一处的事
+    // （见 `lib/mcp-reload.ts` 的 composeMcpInstructions）——SDK 只给取值口，不会替你塞。
+    const instructions = client.getInstructions()?.trim();
+    if (instructions !== undefined && instructions !== "") state.instructions = instructions;
     // 连上**之后**掉线要如实反映：否则设置页会一直显示「已连接」、而工具调用早已失败——
     // 持续撒谎比没有信号更糟（AGENTS.md §四）。两个约束：
     // ① SDK 的 `onclose` 在**我们主动 close() 时同样触发**，所以先看 closing 标记，
@@ -426,6 +432,12 @@ export interface McpRuntime {
   readonly tools: AgentHarnessTool<ExecutionToolContext>[];
   reload(): Promise<McpReloadResult>;
   status(): McpServerView[];
+  /**
+   * 各 server 在握手里自报的用法说明（`InitializeResult.instructions`），按 server 名排序。
+   * 拼进系统提示词**由应用自己做**（`lib/mcp-reload.ts` 的 `composeMcpInstructions`）——
+   * SDK 只提供 `client.getInstructions()` 这个取值口，一处都不会替你调（见该函数注释）。
+   */
+  instructions(): { server: string; text: string }[];
   close(): Promise<void>;
 }
 
@@ -543,6 +555,14 @@ export async function createMcpRuntime(
     },
     reload,
     status,
+    instructions: () =>
+      [...states.values()]
+        .flatMap((state) =>
+          state.instructions === undefined
+            ? []
+            : [{ server: state.name, text: state.instructions }],
+        )
+        .sort((a, b) => a.server.localeCompare(b.server)),
     close: async () => {
       const closing = [...states.values()];
       states.clear();

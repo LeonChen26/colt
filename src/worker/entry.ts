@@ -104,7 +104,7 @@ import {
   userMemoryFilePath,
 } from "./lib/memory";
 import { createMcpRuntime, type McpRuntime } from "./lib/mcp-tools";
-import { reloadMcpIntoHarness } from "./lib/mcp-reload";
+import { composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
 import { systemPrompt } from "./lib/system-prompt";
 import { toImageContent } from "./lib/attachments";
 import {
@@ -504,6 +504,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     // 只在主 lane 注入：注进子 lane 会暗示递归（而递归是明令禁止的）。
     const catalog = renderAgentCatalog(agents.agents);
     if (catalog !== "") withContext = `${withContext}\n\n${catalog}`;
+    // MCP server 自报的用法说明。**必须应用自己拼**——SDK 只给 client.getInstructions() 这个
+    // 取值口、一处都不替你调，不拼就是静默丢掉（§四「把库提供了函数当成库会调用它」，技能同坑）
+    withContext = composeMcpInstructions(withContext, mcp);
     return { systemPrompt: withContext };
   });
 
@@ -986,15 +989,10 @@ async function handle(command: WorkerCommand): Promise<void> {
       return;
     }
 
-    // 查 MCP 现状（设置页可见性）。state 未就绪时不报错、回空——设置页可能来得比 init 早
+    // 查 MCP 现状 / 热重载配置（设置页可见性）。两件事都落在 lib/mcp-reload.ts
     case "mcpStatus":
-      send({ type: "mcpStatus", servers: state?.mcp.status() ?? [] });
-      return;
-
-    // 热重载 MCP 配置：重连变更的 server，新工具清单写回 harness 与主 lane（不必重启会话）
     case "mcpReload": {
-      if (!state) throw new Error("会话尚未初始化");
-      const servers = await reloadMcpIntoHarness(state.mcp, state.harness, state.lane, context);
+      const servers = await handleMcpCommand(command.type, state, context);
       send({ type: "mcpStatus", servers });
       return;
     }

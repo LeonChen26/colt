@@ -11,7 +11,12 @@ const ECHO_SCHEMA = {
 // 所以这个夹具是「能力面被包成内核工具」那条链路的唯一物证。
 const server = new Server(
   { name: "caps", version: "0.0.1" },
-  { capabilities: { tools: {}, resources: {}, prompts: {} } },
+  {
+    capabilities: { tools: {}, resources: {}, prompts: {} },
+    // server 自报的「怎么用我」（InitializeResult.instructions）。客户端**必须自己**把它
+    // 拼进系统提示词——SDK 只给 getInstructions() 取值口，一处都不替你调。
+    instructions: "caps 用法：先 list_resources 看有什么，再 read_resource 取正文。",
+  },
 );
 
 server.setRequestHandler("tools/list", async () => ({

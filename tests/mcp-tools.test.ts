@@ -3,13 +3,18 @@
  *
  *   「MCP 工具以普通内核工具的身份进入，自动过审批闸门，安全模型零例外。」
  *
- * 因此覆盖分四层：
+ * 因此覆盖分六层：
  * 1. 装载与包装：真实 stdio 往返（夹具 server 是独立子进程）、名字前缀、通知如实；
  * 2. 内核契约：裸 JSON Schema 原样透传，且 pi-ai 的 validateToolArguments 真会拿它校验
  *    （缺 required 要抛）——这条钉的是「生产方产出什么、内核接受什么」的接口事实；
  * 3. 闸门链路：包装后的名字不在任何豁免名单（提问 / 子代理 / 只读），
  *    policy 落到「未知工具，按需确认」→ approval 模式必须 ask；
- * 4. 配置健壮性：缺文件不吵、坏 JSON 成诊断、坏 server 不拖死好 server。
+ * 4. 配置健壮性：缺文件不吵、坏 JSON 成诊断、坏 server 不拖死好 server；
+ * 5. 能力面（resources / prompts）：**声明了才**包成内核工具，且真实往返到服务端；
+ * 6. 声明值与解析值分离、`instructions` 拼进提示词——都在**最终产物**上断言
+ *    （与 `renderAgentCatalog` / `renderTodoBlock` 同款：渲染函数验拼出的串）。
+ *    注意：`entry.ts` 那**一行调用**本身没有结构断言覆盖（本仓库惯例如此）——
+ *    见 `docs/DESIGN-mcp.md` 决策 14 末条的「已知未覆盖」。
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
@@ -38,6 +43,7 @@ import {
   type McpServerConfig,
 } from "../src/worker/lib/mcp-tools.ts";
 import { isQuestionTool } from "../src/worker/lib/ask-user-tool.ts";
+import { composeMcpInstructions } from "../src/worker/lib/mcp-reload.ts";
 import { isSubagentTool } from "../src/worker/lib/subagent.ts";
 import { READONLY_TOOLS } from "../src/shared/readonly-tools.ts";
 import { buildSignature, evaluateTool, type PolicyConfig } from "../src/main/approval/policy.ts";
@@ -782,6 +788,39 @@ describe("resources / prompts 能力：声明了才包成工具，且走同一�
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("server 自报的 instructions（SDK 不会替你注入）", () => {
+  test("instructions() 如实带出，composeMcpInstructions 拼成块；没报的原样返回 base", async () => {
+    const capsDir = await fixtureProject({
+      mcpServers: { caps: { command: process.execPath, args: [CAPS_FIXTURE] } },
+    });
+    const plainDir = await fixtureProject(fixtureServerConfig());
+    const caps = await createMcpRuntime(capsDir, () => undefined);
+    const plain = await createMcpRuntime(plainDir, () => undefined);
+    try {
+      // 取值口如实反映握手内容
+      assert.deepEqual(caps.instructions(), [
+        { server: "caps", text: "caps 用法：先 list_resources 看有什么，再 read_resource 取正文。" },
+      ]);
+      // 没报的 server 不产出条目（否则会给每台 server 都拼一个空标题）
+      assert.deepEqual(plain.instructions(), []);
+
+      const composed = composeMcpInstructions("BASE", caps);
+      assert.ok(composed.startsWith("BASE\n\n"), `基线必须原样在前：${composed.slice(0, 24)}`);
+      assert.match(composed, /MCP server 自报的用法说明/);
+      assert.match(composed, /### caps/);
+      assert.match(composed, /先 list_resources 看有什么/);
+
+      // 没 instructions 时**原样返回**——多一个换行都会让拼出的串每次都变、提示词缓存失效
+      assert.equal(composeMcpInstructions("BASE", plain), "BASE");
+    } finally {
+      await caps.close();
+      await plain.close();
+      await rm(capsDir, { recursive: true, force: true });
+      await rm(plainDir, { recursive: true, force: true });
     }
   });
 });

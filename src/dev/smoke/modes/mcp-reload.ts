@@ -70,7 +70,13 @@ export async function runMcpReload(
   );
   const otherProject = upsertProject(otherDir);
 
-  // 顺序有意：夹具项目**最后** upsert，last_opened_at 最新 ⇒ 渲染层自动打开的当前项目是它
+  // ⚠️ 必须**跨毫秒**（`sleep(5)`）：`listProjects()` 只有 `ORDER BY last_opened_at DESC`、
+  // **没有次级键**，两个 upsert 落在同一毫秒就排序不定——实测到两行 `last_opened_at` 完全相同
+  // （`1789816825110`），排序把 other 排到了第一，于是渲染层自动打开的是**那个没会话的项目**，
+  // 本模式的「前置：渲染层自动打开夹具会话」当场假红（`AGENTS.md` ⑬：前提要显式建立，
+  // 别指望「两次调用恰好不同毫秒」）。
+  await sleep(5);
+  // 顺序有意：夹具项目**最后** upsert，last_opened_at 严格最新 ⇒ 渲染层自动打开的当前项目是它
   const project = upsertProject(fixtureDir);
   const session = createSession(project.id, join(app.getPath("userData"), "sessions", project.id));
   log(`夹具项目：${fixtureDir}（.colt/mcp.json 第一版：只有 alpha）`);
