@@ -45,8 +45,8 @@ describe("contextUsedFromUsage", () => {
     assert.equal(contextUsedFromUsage(usageEvent()), 112);
   });
 
-  test("非主 lane 返回 null（子 agent 消耗不计入当前会话）", () => {
-    assert.equal(contextUsedFromUsage(usageEvent({ lane: "sub" })), null);
+  test("非主 lane 返回 null（上下文占用只算主对话）", () => {
+    assert.equal(contextUsedFromUsage(usageEvent({ lane: "sub:researcher:abcd1234" })), null);
   });
 
   test("adjustment 补记行返回 null（不是新的模型调用）", () => {
@@ -85,10 +85,11 @@ describe("buildUsageUpload", () => {
     assert.equal(buildUsageUpload(event, "deepseek/v4", "fb", 1), null);
   });
 
-  test("非主 lane 被跳过（子 agent 消耗不计入当前会话）", () => {
-    const event = usageEvent();
-    event.lane = "subagent";
-    assert.equal(buildUsageUpload(event, "deepseek/v4", "fb", 1), null);
+  test("非主 lane 也计入（子代理 / 整理的费用是用户付的钱，不能静默丢弃）", () => {
+    const event = usageEvent({ lane: "sub:researcher:abcd1234" });
+    const upload = buildUsageUpload(event, "deepseek/v4", "fb", 1);
+    assert.equal(upload?.input, 100);
+    assert.equal(upload?.costUsd, 0.5);
   });
 });
 
@@ -151,10 +152,12 @@ describe("ToolCallTracker", () => {
     assert.equal(upload?.timestamp, 5000);
   });
 
-  test("非主 lane 的工具调用被跳过", () => {
+  test("非主 lane 的工具调用也计入（子代理的动作同样发生过、同样过闸门）", () => {
     const tracker = new ToolCallTracker();
-    tracker.start("call-1", {}, 1000);
-    assert.equal(tracker.end(endEvent({ lane: "subagent" }), 1010), null);
+    tracker.start("call-1", { command: "ls" }, 1000);
+    const upload = tracker.end(endEvent({ lane: "sub:researcher:abcd1234" }), 1010);
+    assert.equal(upload?.toolName, "bash");
+    assert.equal(upload?.durationMs, 10);
   });
 
   test("isError 原样带出", () => {
@@ -184,7 +187,8 @@ describe("ToolCallTracker", () => {
   test("非主 lane 也会清理缓存，避免条目滞留", () => {
     const tracker = new ToolCallTracker();
     tracker.start("call-1", {}, 1);
-    tracker.end(endEvent({ lane: "subagent" }), 2);
+    const upload = tracker.end(endEvent({ lane: "sub:researcher:abcd1234" }), 2);
+    assert.equal(upload?.toolName, "bash");
     assert.equal(tracker.size, 0);
   });
 });

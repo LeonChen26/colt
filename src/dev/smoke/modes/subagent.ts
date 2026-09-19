@@ -1,0 +1,409 @@
+// Copyright (c) 2026 Colt
+// SPDX-License-Identifier: MIT
+
+/**
+ * 冒烟模式：subagent（子代理的呈现链路，**不跑模型、不计费**）。
+ *
+ * 为什么不打模型也能验：子代理在视图里的形态只由 `ConversationView.subagents` 决定，
+ * 而 `session.view` 是渲染层的**唯一数据入口**——从主进程推一份受控视图即可驱动全部
+ * 呈现逻辑（同 `dock` / `todo` 的做法）。这样验的是「界面把这份数据画对了吗」，
+ * 而「模型会不会用这个工具」属于 e2e（`subagent-e2e` **规划中、尚未建**，本模式下不做）。
+ *
+ * 覆盖（决策三 D5 / 决策七 D9 / 决策四 D6 的界面侧）：
+ *   1. ④ 的卡**特化**：`子代理 · <名字>` + 状态；展开是**有界预览**（如实说「最近 N / 共 M 步」）；
+ *   2. 「任务摘要」**此刻段**出现一行（名称 + 任务 + 当前动作 + 计时 + 中止），
+ *      且 **不重复列**那条 `subagent` 工具行（判据用产品自己算的「N 个动作进行中」）；
+ *   3. **不自动展开右栏**（决策三：子代理是模型自己发起的，routine 起来会反复撑开右栏）；
+ *   4. 已结束的子代理**从此刻段消失、但 ④ 的卡仍在**（卡的寿命跟着 transcript）；
+ *   5. 点 ④ 卡上的「在右栏查看完整过程」→ **下钻到子代理流**（面包屑 + ESC 逐层回退）；
+ *      完整流**按需拉**（`session.subagentTranscript`），拉不到时**如实说**而不是白屏；
+ *   6. 中止按钮**真的落在可视区**（小目标入口要做命中测试，别只查「在不在 DOM 里」）。
+ *
+ * 明确不覆盖（写明，免得被当成验过了）：
+ *   - 「`subagent` 调用不弹卡、它内部的写弹卡」需要真实 worker + 模型调用（决策四 D6 的
+ *     执行侧），本模式不打模型 ⇒ **未覆盖**。`entry.ts` 里的两处显式豁免（`before_tool` /
+ *     `after_tool`）当前**没有任何用例钉住**——删掉那两行不会有测试变红，端到端待打模型回归。
+ *   - **分支树排除与导航守卫**是 worker 侧会话级数据（`session.findEntries` + `harness.lanes()`），
+ *     受控视图驱动不到它；纯函数侧由 `tests/lane-ownership.test.ts` 覆盖。
+ */
+import { BrowserWindow } from "electron";
+import { createSession } from "../../../main/db/repo";
+import type {
+  ConversationView,
+  ViewMessage,
+  ViewRunningTool,
+  ViewSubagent,
+} from "@shared/worker-protocol";
+import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
+import { sleep, uncaughtErrors } from "../context";
+
+/** 造一条「运行中的工具」（子代理尾部里会出现它，此刻段那一行也用它说「在干什么」） */
+const runningTool = (): ViewRunningTool => ({
+  id: "smoke-sub-tool",
+  name: "read",
+  args: JSON.stringify({ path: "src/worker/lib/subagent.ts" }),
+  output: "",
+  startedAt: Date.now() - 1_000,
+});
+
+/**
+ * 造一个子代理总账。
+ * `stepCount` 故意大于视图上限（12），用来钉住「截断但**如实给总步数**」。
+ */
+const makeSubagent = (
+  id: string,
+  toolCallId: string,
+  status: ViewSubagent["status"],
+  stepCount: number,
+): ViewSubagent => {
+  const steps: ViewMessage[] = Array.from(
+    { length: Math.min(stepCount, 12) },
+    (_, index) => ({
+      id: `${id}-step-${index}`,
+      role: "assistant" as const,
+      text: `第 ${index + 1} 步`,
+      toolCalls: [],
+      timestamp: 1,
+    }),
+  );
+  return {
+    id,
+    toolCallId,
+    name: "researcher",
+    title: "查一下 read 工具在哪注册",
+    status,
+    startedAt: Date.now() - 5_000,
+    ...(status === "running" ? {} : { endedAt: Date.now() }),
+    tail: {
+      streamingText: null,
+      thought: null,
+      runningTools: status === "running" ? [runningTool()] : [],
+      recentSteps: steps,
+      stepCount,
+    },
+    stats: { inputTokens: 120, outputTokens: 40, costUsd: 0.012 },
+  };
+};
+
+export async function runSubagent(
+  window: BrowserWindow,
+  projectId: string,
+  sessionsDir: string,
+  log: (message: string) => void,
+  run: <T>(expression: string) => Promise<T>,
+): Promise<void> {
+  const session = createSession(projectId, sessionsDir);
+  log(`会话：${session.id}`);
+
+  const checks: [string, boolean][] = [];
+
+  const runningId = "sub:researcher:smoke0001";
+  const runningCallId = "smoke-sub-call-1";
+
+  /** 一条 ④ 的工具卡（`name: "subagent"` 才会被特化） */
+  const subagentCall = (toolCallId: string): ViewMessage["toolCalls"][number] => ({
+    id: toolCallId,
+    name: "subagent",
+    args: JSON.stringify({
+      agent: "researcher",
+      task: "在 src/worker/lib 下定位 read 工具的注册点，给出文件路径与关键行",
+      title: "查一下 read 工具在哪注册",
+    }),
+    durationMs: 1_200,
+  });
+
+  const viewBase: ConversationView = {
+    sessionId: session.id,
+    model: "smoke/model",
+    imageInput: false,
+    thinkingLevel: DEFAULT_THINKING_LEVEL,
+    skills: [],
+    subagents: [],
+    messages: [
+      {
+        id: "smoke-sub-msg-1",
+        role: "assistant",
+        text: "我委派一个子代理去查。",
+        toolCalls: [subagentCall(runningCallId)],
+        timestamp: 1,
+      },
+    ],
+    toolResults: [],
+    todos: [],
+    fileChanges: [],
+    streamingText: null,
+    thought: null,
+    // 把那条 `subagent` 工具也放进 runningTools：此刻段必须**认领**它、不重复列
+    runningTools: [
+      {
+        id: runningCallId,
+        name: "subagent",
+        args: subagentCall(runningCallId).args,
+        output: "",
+        startedAt: Date.now() - 5_000,
+      },
+    ],
+    running: true,
+    lastRun: null,
+    queuedCount: 0,
+    stats: {
+      messageCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      contextUsed: 0,
+    },
+  };
+  const smokeView = (over: Partial<ConversationView>): ConversationView => ({
+    ...viewBase,
+    ...over,
+  });
+  const push = (over: Partial<ConversationView>): void => {
+    window.webContents.send("session.view", smokeView(over));
+  };
+
+  /** 右栏（⑦）的状态：折叠与否、文本、此刻段的子代理行 */
+  const dockProbe = `(() => {
+    const aside = [...document.querySelectorAll("aside")].find((a) =>
+      a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+    if (!aside) return { present: false, collapsed: null, text: "", rows: [], aborts: [] };
+    const rowAttr = (name) => [...aside.querySelectorAll("[data-subagent-row]")]
+      .map((el) => [el.getAttribute("data-subagent-row"), el.getAttribute(name)]);
+    return {
+      present: true,
+      collapsed: aside.querySelector('button[aria-label="展开工作区"]') !== null,
+      text: aside.innerText ?? "",
+      rows: rowAttr("data-subagent-status"),
+      steps: [...aside.querySelectorAll("[data-subagent-steps]")].map((el) =>
+        Number(el.getAttribute("data-subagent-steps"))),
+      titles: [...aside.querySelectorAll("[data-subagent-title]")].map((el) =>
+        (el.textContent ?? "").trim()),
+      aborts: [...aside.querySelectorAll("[data-subagent-abort]")].map((el) =>
+        el.getAttribute("data-subagent-abort")),
+    };
+  })()`;
+
+  const clickBySelector = (selector: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  const clickDockTab = (label: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = [...document.querySelectorAll("[data-dock-tab]")]
+        .find((b) => (b.textContent ?? "").trim() === ${JSON.stringify(label)});
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+
+  /** 展开 ④ 里那张子代理卡（点它那一行的按钮）——按可见文案找，不按层级猜 */
+  const expandSubagentCard = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const span = [...document.querySelectorAll("span")]
+        .find((s) => (s.textContent ?? "").trim() === "子代理 · researcher");
+      const btn = span ? span.closest("button") : null;
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+
+  /** ④ 卡的状态徽标（`data-subagent-card-status` 只在 `name === "subagent"` 且认领到时才有） */
+  const cardProbe = `(() => {
+    const el = document.querySelector("[data-subagent-card-status]");
+    const preview = document.querySelector("[data-subagent-preview]");
+    return {
+      status: el ? el.getAttribute("data-subagent-card-status") : null,
+      text: el ? (el.textContent ?? "").trim() : "",
+      cardText: el ? (el.closest("[data-tool-card]")?.textContent ?? "") : "",
+      preview: preview ? (preview.textContent ?? "") : null,
+    };
+  })()`;
+
+  /** 小目标入口的命中测试：它得**真的落在可视区且那一层就是它**（AGENTS.md §3.6/§五⑥） */
+  const hitTest = (selector: string): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return false;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit === el || (hit !== null && hit.closest(${JSON.stringify(selector)}) === el);
+    })()`);
+
+  const escape = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return true;
+    })()`);
+
+  try {
+    window.reload();
+    await sleep(4000);
+
+    const list = await run<{ id: string }[]>(
+      `window.colt.invoke("session.list", ${JSON.stringify({ projectId })})`,
+    );
+    if (list[0]?.id !== session.id) {
+      log(`活动会话不是本会话（${list[0]?.id}），无法断言界面`);
+      checks.push(["渲染层显示的是本会话", false]);
+      return;
+    }
+
+    // ---- 0. 先推一份「没有子代理」的视图，确保右栏在「任务摘要」且展开 ----
+    push({ subagents: [], running: false, runningTools: [] });
+    await sleep(400);
+    await clickDockTab("任务摘要");
+    await sleep(300);
+
+    // ---- 1. 不自动展开右栏（决策三 D5：子代理是模型自己发起的，不抢焦）----
+    log("[决策三] 折叠右栏后推一个「有子代理在跑」的视图，预期**不**自动展开");
+    await clickBySelector('button[aria-label="折叠工作区"]');
+    await sleep(300);
+    const beforePush = await run<{ collapsed: boolean | null }>(dockProbe);
+    push({ subagents: [makeSubagent(runningId, runningCallId, "running", 20)] });
+    await sleep(600);
+    const afterPush = await run<{ collapsed: boolean | null }>(dockProbe);
+    checks.push([
+      "子代理启动**不**自动展开右栏（不抢焦；被看到已由 ④ 的卡保证）",
+      beforePush.collapsed === true && afterPush.collapsed === true,
+    ]);
+    await clickBySelector('button[aria-label="展开工作区"]');
+    await sleep(400);
+
+    // ---- 2. ④ 的卡特化 + 有界预览 ----
+    log("[④] 子代理卡特化 + 展开看到有界预览");
+    const card = await run<{ status: string | null; cardText: string }>(cardProbe);
+    checks.push([
+      `④ 里出现**特化**的子代理卡（状态 ${card.status}，文案「子代理 · researcher」）`,
+      card.status === "running" && card.cardText.includes("子代理 · researcher"),
+    ]);
+    const expanded = await expandSubagentCard();
+    await sleep(400);
+    const preview = await run<{ preview: string | null }>(cardProbe);
+    checks.push(["点卡展开后出现有界预览", expanded && preview.preview !== null]);
+    checks.push([
+      "预览**如实**说明截断（「最近 12 步（共 20 步）」，不静默砍掉）",
+      (preview.preview ?? "").includes("最近 12 步（共 20 步）"),
+    ]);
+    checks.push([
+      "预览里画出了最近几步的内容",
+      (preview.preview ?? "").includes("第 1 步"),
+    ]);
+
+    // ---- 3. 此刻段那一行 + 不重复列 ----
+    log("[⑦] 「任务摘要」此刻段：一行子代理，且不重复列那条 subagent 工具");
+    await clickDockTab("任务摘要");
+    await sleep(400);
+    const dock = await run<{
+      rows: [string, string][];
+      steps: number[];
+      titles: string[];
+      aborts: string[];
+      text: string;
+    }>(dockProbe);
+    checks.push([
+      `此刻段出现该子代理这一行（状态 ${dock.rows[0]?.[1]}）`,
+      dock.rows.length === 1 && dock.rows[0]?.[0] === runningId && dock.rows[0]?.[1] === "running",
+    ]);
+    checks.push([`这一行给出真实步数（${dock.steps[0]}）`, dock.steps[0] === 20]);
+    checks.push([
+      "这一行给出任务摘要",
+      dock.titles[0] === "查一下 read 工具在哪注册",
+    ]);
+    // 判据用**产品自己算的数**：子代理与它的 `subagent` 工具调用是同一件事，只该算一个动作
+    checks.push([
+      "那条 subagent 工具**没有**被重复列（产品自报「1 个动作进行中」）",
+      dock.text.includes("1 个动作进行中"),
+    ]);
+    checks.push([
+      "行上给了「中止」入口，且它**真的落在可视区**",
+      dock.aborts[0] === runningId && (await hitTest(`[data-subagent-abort="${runningId}"]`)),
+    ]);
+    // 点一次中止：worker 侧对一个不存在的 lane 是空操作，只要求不抛、不崩
+    const abortedClick = await clickBySelector(`[data-subagent-abort="${runningId}"]`);
+    await sleep(300);
+    checks.push(["点「中止」不抛异常（会话没真跑，worker 侧按空操作收下）", abortedClick]);
+
+    // ---- 4. 已结束：此刻段消失，但 ④ 的卡仍在 ----
+    log("[已结束] 子代理跑完后：此刻段不再列它，④ 的卡保留");
+    push({
+      subagents: [makeSubagent(runningId, runningCallId, "completed", 20)],
+      running: false,
+      runningTools: [],
+    });
+    await sleep(600);
+    const afterDone = await run<{ rows: unknown[]; text: string }>(dockProbe);
+    checks.push([
+      "已结束的子代理从此刻段消失（此刻段又能显示「空闲」）",
+      afterDone.rows.length === 0 && afterDone.text.includes("会话空闲"),
+    ]);
+    const doneCard = await run<{ status: string | null; cardText: string }>(cardProbe);
+    checks.push([
+      `④ 的卡仍在、状态转为完成（实为 ${doneCard.status}）`,
+      doneCard.cardText.includes("子代理 · researcher") && doneCard.status === "completed",
+    ]);
+
+    // ---- 5. 点 ④ 卡 → 下钻到子代理流；完整流按需拉，拉不到如实说 ----
+    log("[⑦下钻] 点「在右栏查看完整过程」→ 子代理流层；完整流按需拉");
+    // 小目标入口要先确认它**真的落在可视区**：`click()` 不要求可见，中栏滚动后滚出
+    // 视口的按钮照样点得到，只查「在不在 DOM 里」的断言于是永远为真（AGENTS.md §五⑥）
+    const openVisible = await hitTest(`[data-subagent-open="${runningId}"]`);
+    const opened = await clickBySelector(`[data-subagent-open="${runningId}"]`);
+    await sleep(800);
+    const drill = await run<{ layer: string; crumb: boolean; panel: string; back: boolean }>(`(() => {
+      const root = document.querySelector("[data-drill]");
+      return {
+        layer: root ? (root.getAttribute("data-drill") ?? "") : "",
+        crumb: document.querySelector('[data-drill-crumb="subagent"]') !== null,
+        back: document.querySelector("[data-drill-back]") !== null,
+        panel: (document.querySelector("[data-drill-subagent]")?.textContent ?? "").trim(),
+      };
+    })()`);
+    checks.push(["④ 卡上的下钻入口**真的落在可视区**（不只是「在 DOM 里」）", openVisible]);
+    checks.push([
+      `下钻落到**子代理流层**（层=${drill.layer}）`,
+      opened && drill.layer === "subagent",
+    ]);
+    checks.push(["面包屑上标出这是子代理流", drill.crumb]);
+    checks.push(["层底有「返回上一级」的出口", drill.back]);
+    checks.push([
+      "没有真实过程时**如实说**（不是白屏、也不是假装有内容）",
+      drill.panel.includes("还没有留下过程记录"),
+    ]);
+
+    // ESC 逐层回退：回到「任务摘要」
+    await escape();
+    await sleep(500);
+    const afterEsc = await run<{ drill: boolean }>(`(() => ({
+      drill: document.querySelector("[data-drill]") !== null,
+    }))()`);
+    checks.push(["ESC 逐层回退回到「任务摘要」（下钻层消失）", afterEsc.drill === false]);
+
+    // ---- 6. 按需拉的通道：查一个不存在的子代理 → 空数组而不是报错 ----
+    log("[IPC] session.subagentTranscript 查一个不存在的子代理 → 空数组（界面按「没有内容」呈现）");
+    const empty = await run<{ messages: unknown[]; toolResults: unknown[] }>(
+      `window.colt.invoke("session.subagentTranscript", ${JSON.stringify({
+        sessionId: session.id,
+        id: "sub:ghost:nope",
+      })})`,
+    );
+    checks.push([
+      "不存在的子代理回空（不是错误通道——「没有内容」与「失败」是两件事）",
+      Array.isArray(empty.messages) && empty.messages.length === 0,
+    ]);
+
+    checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
+  } catch (error) {
+    checks.push([`未抛未捕获异常（实际：${String(error)}）`, false]);
+    log(`异常：${String(error)}`);
+  } finally {
+    log("[subagent] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+  }
+}

@@ -585,6 +585,15 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
+  handle("session.subagentAbort", (request) => {
+    sessionManager.subagentAbort(request.sessionId, request.id);
+    return { ok: true } as const;
+  });
+
+  handle("session.subagentTranscript", (request) =>
+    sessionManager.subagentTranscript(request.sessionId, request.id),
+  );
+
   handle("git.status", (request) => readGitStatus(request.cwd));
 
   // 内嵌浏览器：渲染层上报页面区域矩形供主进程摆放 WebContentsView（原生视图不参与 DOM 叠层）

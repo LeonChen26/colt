@@ -273,6 +273,11 @@ export interface AskUserGateway extends AskUserHost {
 export function createAskUserGateway(
   send: (message: WorkerMessage) => void,
   defaultTimeoutMs: number,
+  /**
+   * 这次提问来自哪个子代理（主对话的提问返回 undefined）。
+   * 由 entry 提供：它手里有「toolCallId → lane」的记录，而提问的 execute 拿不到 lane。
+   */
+  resolveSubagent?: (toolCallId: string) => { id: string; name: string } | undefined,
 ): AskUserGateway {
   const pending = new Map<
     string,
@@ -282,6 +287,7 @@ export function createAskUserGateway(
   return {
     ask(toolCallId, questions, timeoutMs) {
       const durationMs = timeoutMs > 0 ? timeoutMs : defaultTimeoutMs;
+      const subagent = resolveSubagent?.(toolCallId);
       return new Promise<AskUserAnswer>((resolve) => {
         const timer = setTimeout(() => {
           pending.delete(toolCallId);
@@ -289,7 +295,13 @@ export function createAskUserGateway(
         }, durationMs);
         timer.unref?.();
         pending.set(toolCallId, { resolve, timer });
-        send({ type: "askUserRequest", toolCallId, questions, timeoutMs: durationMs });
+        send({
+          type: "askUserRequest",
+          toolCallId,
+          questions,
+          timeoutMs: durationMs,
+          ...(subagent === undefined ? {} : { subagent }),
+        });
       });
     },
 

@@ -9,7 +9,10 @@
  * 显式检查返回值，否则这些失败全部静默——用户点压缩只会「点了没反应」。
  * 这些错误类不在本仓类型面里（worker 只拿到运行时对象），故按 `_tag`（TaggedError）
  * 与 `code`（CompactionError）判别，与内核 `result.js` / `compaction.js` 的定义对齐。
+ *
+ * 本文件管压缩的**用户可见文案**：失败两种形态 + 成功一种（见下）。
  */
+import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 
 /** 压缩失败的几种形态 → 给用户看的一句话 */
 export function describeCompactError(error: unknown): string {
@@ -47,4 +50,16 @@ export function describeCompactOutcome(record: {
   if (record.error?.message) return `压缩上下文失败：${record.error.message}`;
   if (record.status === "declined") return "压缩未执行。";
   return "压缩上下文失败：原因未知。";
+}
+
+/** 压缩完成提示：带上「压缩前多少 tokens」，用户才看得出压缩干了多少活 */
+export function compactDoneMessage(snapshot: LaneSnapshot): string {
+  const head = snapshot.transcript[0] as { type?: string; tokensBefore?: number } | undefined;
+  const before =
+    head?.type === "compaction" && typeof head.tokensBefore === "number" && head.tokensBefore > 0
+      ? head.tokensBefore
+      : null;
+  if (before === null) return "上下文已压缩：较早的对话已替换为摘要。";
+  const label = before >= 1000 ? `${Math.round(before / 100) / 10}k` : `${before}`;
+  return `上下文已压缩：较早的对话已替换为摘要（压缩前约 ${label} tokens）。`;
 }

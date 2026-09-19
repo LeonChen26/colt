@@ -42,19 +42,42 @@ import {
   countPatchLines,
   project,
   projectBranchNodes,
+  projectTranscript,
   toRelative,
   type BranchEntry,
 } from "./lib/project";
+import { foreignLaneTips, ownedEntries, visibleEntries } from "./lib/lane-ownership";
+import { healLaneTools } from "./lib/lane-heal";
 import { spillToolImages } from "./lib/tool-image-spill";
 import { HostBridge } from "./lib/host-bridge";
+import { ApprovalBridge, trace } from "./lib/approval-bridge";
 import { captureBaseline } from "./lib/baseline";
 import { createAskUserGateway, createAskUserTools, isQuestionTool } from "./lib/ask-user-tool";
+import { agentDirs, describeAgents, loadAgentDefs, renderAgentCatalog } from "./lib/agent-defs";
+import {
+  Subagents,
+  isSubagentLane,
+  isSubagentTool,
+  subagentSystemPrompt,
+} from "./lib/subagent";
+import {
+  forgetToolLane,
+  rememberDuration,
+  rememberToolLane,
+  subagentRefOf,
+  subagentRefOfLane,
+  toolDurations,
+} from "./lib/tool-bookkeeping";
 import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
 import { createMemoryTools } from "./lib/memory-tool";
 import { createTodoTools } from "./lib/todo-tool";
-import { ToolCallTracker, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
-import { describeCompactError, describeCompactOutcome } from "./lib/compact-error";
+import { ToolCallTracker, MAIN_LANE, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
+import {
+  compactDoneMessage,
+  describeCompactError,
+  describeCompactOutcome,
+} from "./lib/compact-error";
 import {
   TIDY_LANE,
   TIDY_TOOLS,
@@ -89,30 +112,17 @@ import {
 const context: Context = BACKGROUND_CONTEXT;
 
 /**
- * 审批往返：worker 发起请求后阻塞，等主进程的 approvalResult。
+ * 审批往返（实现见 `lib/approval-bridge`）：worker 发起请求后阻塞，等主进程的 approvalResult。
  * 主进程持有策略与用户界面，worker 只负责阻塞与执行结果。
  */
-/** 启用 COLT_APPROVAL_DEBUG=1 时输出审批链路日志（排查安全功能为何未生效时用） */
-function trace(message: string): void {
-  if (process.env.COLT_APPROVAL_DEBUG === "1") {
-    process.stderr.write(`[approval] ${message}\n`);
-  }
-}
-
-const pendingApprovals = new Map<
-  string,
-  { resolve: (value: { approved: boolean; reason: string }) => void; timer: NodeJS.Timeout }
->();
+const approvals = new ApprovalBridge(send);
 
 /**
  * 提问的阻塞往返（状态与超时都在这个对象里，见 `lib/ask-user-tool.ts`）。
  * 超时上限与审批共用 `APPROVAL_TIMEOUT_MS`——两侧不一致会静默挂死（`shared/limits.ts`）。
+ * 来源 lane 的记账见 `lib/tool-bookkeeping`（审批与提问共用同一张表）。
  */
-const questions = createAskUserGateway(send, APPROVAL_TIMEOUT_MS);
-
-/** 已完成的工具调用耗时（toolCallId → ms），供工具卡片展示；有上限避免无界增长 */
-const toolDurations = new Map<string, number>();
-const TOOL_DURATION_LIMIT = 512;
+const questions = createAskUserGateway(send, APPROVAL_TIMEOUT_MS, subagentRefOf);
 
 /**
  * 一次性「临时提醒」队列：等下一次模型请求前注入，不进 transcript、也不触发运行。
@@ -122,53 +132,6 @@ const TOOL_DURATION_LIMIT = 512;
  * 只是让模型下次开口前知道这件事。注入点与理由见 init 里的 transform_context。
  */
 const pendingEphemeralNotices: string[] = [];
-
-function rememberDuration(toolCallId: string, durationMs: number | null): void {
-  if (durationMs === null) return;
-  if (toolDurations.size >= TOOL_DURATION_LIMIT) {
-    const oldest = toolDurations.keys().next().value;
-    if (oldest !== undefined) toolDurations.delete(oldest);
-  }
-  toolDurations.set(toolCallId, durationMs);
-}
-
-function requestApproval(
-  toolCallId: string,
-  toolName: string,
-  args: Record<string, unknown>,
-): Promise<{ approved: boolean; reason: string }> {
-  let argsJson = "{}";
-  try {
-    argsJson = JSON.stringify(args ?? {});
-  } catch {
-    argsJson = "{}";
-  }
-
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      pendingApprovals.delete(toolCallId);
-      resolve({ approved: false, reason: "审批超时，已自动拒绝。如需执行请重新发起。" });
-    }, APPROVAL_TIMEOUT_MS);
-    // 不阻止进程退出
-    timer.unref?.();
-
-    pendingApprovals.set(toolCallId, { resolve, timer });
-    trace(`已发出请求 ${toolName} ${toolCallId}`);
-    send({ type: "approvalRequest", toolCallId, toolName, argsJson, timeoutMs: APPROVAL_TIMEOUT_MS });
-  });
-}
-
-/** 主进程答复到达，唤醒对应的阻塞 */
-function settleApproval(toolCallId: string, approved: boolean, reason?: string): void {
-  const entry = pendingApprovals.get(toolCallId);
-  if (entry === undefined) return;
-  pendingApprovals.delete(toolCallId);
-  clearTimeout(entry.timer);
-  entry.resolve({
-    approved,
-    reason: reason ?? "用户拒绝了这次工具调用。请换一种做法，或先向用户说明原因。",
-  });
-}
 
 function send(message: WorkerMessage): void {
   process.parentPort?.postMessage(message);
@@ -220,6 +183,11 @@ interface WorkerState {
   /** 工具图片落盘目录（主进程下发；见 @shared/tool-output） */
   toolOutputDir: string;
   snapshot: LaneSnapshot;
+  /**
+   * 子代理总账。放在 state 上而不是留在 init 的闭包里：`pushView` 也需要它
+   * （视图里的 `subagents` 正是从这里投影的），而 pushView 在模块级。
+   */
+  subagents: Subagents;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
   /**
@@ -252,11 +220,30 @@ interface WorkerState {
 }
 
 /** 把全部条目投影成分支树（session 级扫描，含所有分支）。
- *  只保留用户输入、各轮最终回复与结构节点，折叠中间的 LLM 轮次与工具调用。 */
+ *  只保留用户输入、各轮最终回复与结构节点，折叠中间的 LLM 轮次与工具调用。
+ *
+ *  ⚠️ 会话级扫描会**连带扫到子 lane**（记忆整理 / 子代理）的条目：`fresh` 子 lane 的链
+ *  自成一根，不过滤就会在左栏凭空多出一个可点的根节点。排除与导航守卫共用同一个集合
+ *  （见 `lib/lane-ownership`）。 */
+async function foreignLaneEntryIds(current: WorkerState): Promise<Set<string>> {
+  const [entries, lanes] = await Promise.all([
+    current.session.findEntries({ order: "asc" }, context),
+    current.harness.lanes(context),
+  ]);
+  return ownedEntries(foreignLaneTips(lanes, current.lane.name), entries);
+}
+
 async function projectBranches(current: WorkerState): Promise<WorkerBranchNode[]> {
-  const entries = await current.session.findEntries({ order: "asc" }, context);
-  const tipId = await current.lane.getTipId(context);
-  return projectBranchNodes(entries as unknown as BranchEntry[], tipId ?? null);
+  const [entries, tipId, lanes] = await Promise.all([
+    current.session.findEntries({ order: "asc" }, context),
+    current.lane.getTipId(context),
+    current.harness.lanes(context),
+  ]);
+  const owned = ownedEntries(foreignLaneTips(lanes, current.lane.name), entries);
+  return projectBranchNodes(
+    visibleEntries(entries as unknown as BranchEntry[], owned) as BranchEntry[],
+    tipId ?? null,
+  );
 }
 
 let state: WorkerState | undefined;
@@ -283,7 +270,10 @@ const spilledImages = new Set<string>();
 function pushView(): void {
   if (!state) return;
   spillToolImages(state.snapshot.transcript, state.toolOutputDir, spilledImages);
-  send({ type: "view", view: project(state.snapshot, state.meta, toolDurations) });
+  send({
+    type: "view",
+    view: project(state.snapshot, state.meta, toolDurations, state.subagents.toView()),
+  });
 }
 
 function scheduleFlush(): void {
@@ -321,6 +311,13 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const skills = await loadSkillsForSession(executionEnv, skillDirs(cwd, homedir()), context);
   const skillsNotice = describeSkills(skills);
   if (skillsNotice !== null) send({ type: "notice", message: skillsNotice });
+
+  // 子代理定义（声明式 agents）：`<cwd>/.agents/agents/*.md` 与 `~/.agents/agents/*.md`，
+  // 同名时项目级胜出。与技能同一条隐式信任通道——定义决定子代理的系统提示词与工具白名单，
+  // 装了什么、哪个文件坏了、被谁遮蔽，都要如实报出来（docs/SECURITY.md）。
+  const agents = await loadAgentDefs(agentDirs(cwd, homedir()));
+  const agentsNotice = describeAgents(agents);
+  if (agentsNotice !== null) send({ type: "notice", message: agentsNotice });
 
   // AGENTS.md（agents.md 标准）：人机共同维护的项目约定文档，从 cwd 一路向上
   // 收集父目录。与记忆分工：AGENTS.md 收成文的约定（构建/风格/协作规范），
@@ -371,6 +368,15 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     onLoaded: (content) => reportMemoryIndex("user", content),
   });
 
+  // 子代理编排。工具在 `AgentHarness.create` **之前**就要交出去，而那时 `state` 还不存在，
+  // 故 harness 用惰性取值器——`execute` 真正被调用时 state 必然已经建好了。
+  const subagents = new Subagents({
+    mainLane: MAIN_LANE,
+    defs: agents.agents,
+    harness: () => state?.harness,
+    onUpdate: () => scheduleFlush(),
+  });
+
   const { harness, open } = await AgentHarness.create(
     {
       session,
@@ -387,6 +393,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createMemoryTools(hostBridge),
         ...createTodoTools(hostBridge),
         ...createAskUserTools(questions),
+        ...subagents.tools(),
       ],
       toolContext: { env: executionEnv },
       // create-time 静态部分只有：基础提示词 + 技能清单。
@@ -415,9 +422,16 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   /** 已经报过基线的路径：同一文件后续改动只报增量，不重发全文（主进程也按「最早那份」为准） */
   const baselineSent = new Set<string>();
   harness.hooks.on("before_tool", async (event) => {
+    // lane 必须在这里记：审批与提问的入口只有 toolCallId，而它们要标出「来自哪个子代理」。
+    // 记在**所有提前返回之前**——ask_user 在下一行就被放行，漏掉它就永远查不到来源。
+    rememberToolLane(event.toolCallId, event.lane);
     // ask_user 不受审批管辖：它是「向人要信息」，走审批通道会被 auto / full-access
     // 模式静默批准成「已通过」——模型拿到的是假答案
     if (isQuestionTool(event.toolName)) return undefined;
+    // subagent 自身同样豁免闸门（理由与 ask_user 不同，见 docs/DESIGN-subagents.md 决策四）：
+    // 否则同一件事弹两次卡（委派一次 + 子代理内部工具各一次），用户会去关审批——那更糟。
+    // 安全性不降：委派的副作用**全部落在子代理的工具调用上**，那里照样过本闸门。
+    if (isSubagentTool(event.toolName)) return undefined;
     gatedToolCalls.add(event.toolCallId);
     if (
       (event.toolName === "edit" || event.toolName === "write") &&
@@ -426,7 +440,12 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       pendingBaselines.set(event.toolCallId, captureBaseline(cwd, event.args.path));
     }
     trace(`hook 触发 ${event.toolName} ${event.toolCallId}`);
-    const decision = await requestApproval(event.toolCallId, event.toolName, event.args);
+    const decision = await approvals.request(
+      event.toolCallId,
+      event.toolName,
+      event.args,
+      subagentRefOfLane(event.lane),
+    );
     trace(`得到答复 ${event.toolName} approved=${decision.approved}`);
     if (decision.approved) return undefined;
     // terminate 不置位：只拦这一次调用，让模型知悉后自行调整，不终止整个对话
@@ -441,9 +460,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 返回的 messages 只作用于**这一次请求**，故不写进 transcript——
   // 否则对话与分支树里会凭空多出一轮「用户说……」的假历史，还会被压缩摘要当成真实对话。
   harness.hooks.on("transform_context", (event) => {
-    // 临时提醒是主对话的东西：整理 lane 的请求同样会触发本钩子，
-    // 不分流的话提醒会被整理那轮消费掉，主对话反而看不到。
-    if (event.lane === TIDY_LANE) return undefined;
+    // 临时提醒是**主对话**的东西：别的 lane（整理、子代理）的请求同样会触发本钩子，
+    // 不分流的话提醒会被那一轮消费掉，主对话反而看不到。判据用「不是主 lane 一律不碰」——
+    // 枚举「哪些 lane 要排除」的话，将来每加一种 lane 都得回来补一次。
+    if (event.lane !== MAIN_LANE) return undefined;
     if (pendingEphemeralNotices.length === 0) return undefined;
     const text = pendingEphemeralNotices.splice(0, pendingEphemeralNotices.length).join("\n");
     return {
@@ -461,6 +481,19 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     if (event.lane === TIDY_LANE) {
       return { systemPrompt: memoryTidySystemPrompt(cwd) };
     }
+    // 子代理：**定义正文** + AGENTS.md 块。刻意**不注入记忆、不注入技能清单**——
+    // 记忆是主对话的沉淀优势，注入等于把父的上下文偷渡给子代理；技能清单会暗示
+    // 「你可以调技能」，而子代理的工具面是硬白名单、根本没有 skill 能力（死入口，§3.6）。
+    // 定义可能已被删掉（磁盘上的文件没了）——那时给通用兜底正文，而不是落回编码助手提示词。
+    if (isSubagentLane(event.lane)) {
+      const withAgentsMd = await agentsMdInjector.systemPromptFor("");
+      return {
+        systemPrompt: subagentSystemPrompt(
+          subagents.definitionForLane(event.lane),
+          withAgentsMd,
+        ),
+      };
+    }
     let withContext = await agentsMdInjector.systemPromptFor(event.systemPrompt);
     withContext = await userMemoryInjector.systemPromptFor(withContext);
     withContext = await memoryInjector.systemPromptFor(withContext);
@@ -470,14 +503,27 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     // 逐字相同，提示词缓存照常命中；空清单不产出任何东西（`renderTodoBlock` 的口径）。
     const todoBlock = renderTodoBlock(todoMirror);
     if (todoBlock !== "") withContext = `${withContext}\n\n${todoBlock}`;
+    // 子代理目录：**必须应用自己拼**——内核的 AgentTool 没有任何「往提示词里塞清单」的钩子，
+    // 不拼的话模型根本不知道有哪些子代理可用，而装载/告警/计数全绿（§四那次翻车的同族）。
+    // 只在主 lane 注入：注进子 lane 会暗示递归（而递归是明令禁止的）。
+    const catalog = renderAgentCatalog(agents.agents);
+    if (catalog !== "") withContext = `${withContext}\n\n${catalog}`;
     return { systemPrompt: withContext };
   });
 
   // 纵深防御：若有影响性工具执行完却没经过闸门，说明拦截链路漏了。
   // 宁可吐一个显眼告警，也不能静默地把它放过去。
   harness.hooks.on("after_tool", (event) => {
-    // 提问同样不必过闸门（同上），别让纵深防御把它误报成「拦截链路漏了」
-    if (READONLY_TOOLS.has(event.toolName) || isQuestionTool(event.toolName)) return undefined;
+    // 记过的 lane 到这里就没人再需要了（提问/审批都已答复完），清理避免长会话无界增长
+    forgetToolLane(event.toolCallId);
+    // 提问与委派同样不必过闸门（见 before_tool），别让纵深防御把它们误报成「拦截链路漏了」
+    if (
+      READONLY_TOOLS.has(event.toolName) ||
+      isQuestionTool(event.toolName) ||
+      isSubagentTool(event.toolName)
+    ) {
+      return undefined;
+    }
     if (gatedToolCalls.has(event.toolCallId)) return undefined;
     trace(`安全告警：${event.toolName} 未经闸门即执行`);
     send({
@@ -563,7 +609,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     }
   });
 
-  const lane = await harness.lane("main", context);
+  const lane = await harness.lane(MAIN_LANE, context);
   // 恢复旧会话时，lane 持久化配置里的模型可能已在本进程不存在（provider 被删、模型下线、
   // 或测试残留）：内核恢复语义是原样采纳持久化配置（create 传入的模型只用于新建 lane），
   // 不校验可用性，第一条消息就会以 model_unavailable 失败。这里与主进程 resolveSessionModel
@@ -581,6 +627,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   if ((await lane.getThinkingLevel(context)) !== thinkingLevel) {
     await lane.setThinkingLevel(thinkingLevel, context);
   }
+  // 工具清单同理，而且**同样不能只靠 create 的种子**：内核只对新建 lane 套用 seed，
+  // 存量会话沿用自己持久化的清单。不补的话，老会话永远看不到后来新增的工具（子代理就是）。
+  await healLaneTools(lane, (await harness.getTools(context)).map((tool) => tool.name), context);
   const watch = await lane.watch(context);
   // 投影一律使用 Colt 的会话 ID，渲染层才能正确匹配
   // fileChanges 始终为空——主进程会用数据库中的完整列表覆盖它
@@ -610,6 +659,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     snapshot: watch.snapshot,
     resnapshot: () => watch.resnapshot(context),
     reportMemoryIndex,
+    subagents,
     meta,
     unsubscribe: () => watch.unsubscribe(),
   };
@@ -636,6 +686,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       try {
         const target =
           operation.lane === lane.name ? lane : await harness.lane(operation.lane, context);
+        // 子代理的恢复**不做**：它的结果接收方是主 lane 那次 `subagent` 调用，而崩溃时那次调用
+        // 已被合成 interrupted——没有接收方，resume 只会在后台烧到自然结束（无墙钟上限，界面
+        // 也看不见它：新进程注册表是空的）。直接中止，把这个悬挂运行收干净。
+        if (isSubagentLane(operation.lane)) {
+          await target.abort(context).catch(() => undefined);
+          send({ type: "log", message: `已中止崩溃前未完成的子代理运行：${operation.lane}` });
+          return;
+        }
         const resumed = await target.resume(context);
         send({ type: "log", message: `已恢复未完成的运行：${operation.lane}` });
         // 整理 lane 续跑完同样要有结果出口：子 lane 对界面不可见，崩溃打断的整理
@@ -692,18 +750,6 @@ function settleSuspendedTidy(target: AgentLane, operationId: string): void {
     .catch(() => undefined);
 }
 
-/** 压缩完成提示：带上「压缩前多少 tokens」，用户才看得出压缩干了多少活 */
-function compactDoneMessage(snapshot: LaneSnapshot): string {
-  const head = snapshot.transcript[0] as { type?: string; tokensBefore?: number } | undefined;
-  const before =
-    head?.type === "compaction" && typeof head.tokensBefore === "number" && head.tokensBefore > 0
-      ? head.tokensBefore
-      : null;
-  if (before === null) return "上下文已压缩：较早的对话已替换为摘要。";
-  const label = before >= 1000 ? `${Math.round(before / 100) / 10}k` : `${before}`;
-  return `上下文已压缩：较早的对话已替换为摘要（压缩前约 ${label} tokens）。`;
-}
-
 async function handle(command: WorkerCommand): Promise<void> {
   switch (command.type) {
     case "init":
@@ -712,7 +758,7 @@ async function handle(command: WorkerCommand): Promise<void> {
 
     // 审批答复不依赖会话状态，也不能报错中断：阻塞的 hook 必须被唤醒
     case "approvalResult":
-      settleApproval(command.toolCallId, command.approved, command.reason);
+      approvals.settle(command.toolCallId, command.approved, command.reason);
       return;
 
     // 提问答复：同样必须能唤醒阻塞的工具（ask_user 的 execute 正挂在这上面）
@@ -755,7 +801,37 @@ async function handle(command: WorkerCommand): Promise<void> {
 
     case "abort": {
       if (!state) return;
+      // 主会话中断 → **在跑的子代理一并收掉**。它们跑在自己的 lane 上，不会随主 lane
+      // 一起停；不收就会继续烧钱跑到自然结束，而界面上已经没人在看这次委派了。
+      await state.subagents.abortAll(context);
       await state.lane.abort(context);
+      return;
+    }
+
+    /** 中止单个子代理（界面上那一行 / ④ 卡上的「中止」） */
+    case "subagentAbort": {
+      if (!state) throw new Error("会话尚未初始化");
+      await state.subagents.abort(command.id, context);
+      return;
+    }
+
+    /**
+     * 按需拉一个子代理的完整流（视图只带有界尾部）。
+     *
+     * 注册表里有就用它（运行中 / 刚跑完）；没有（worker 重启过，注册表是空的）
+     * 就按 lane 名从会话里复活一份快照——内核会恢复全部已配置的 lane，所以条目还在。
+     * 都没有（名字根本不存在）时回空数组：界面按「没有内容」呈现，不走错误通道。
+     */
+    case "subagentTranscript": {
+      if (!state) throw new Error("会话尚未初始化");
+      const snapshot =
+        state.subagents.snapshotOf(command.id) ??
+        (await state.subagents.reviveSnapshot(command.id, context));
+      const { messages, toolResults } =
+        snapshot === undefined
+          ? { messages: [], toolResults: [] }
+          : projectTranscript(snapshot.transcript, toolDurations);
+      send({ type: "subagentTranscript", id: command.id, messages, toolResults });
       return;
     }
 
@@ -835,7 +911,8 @@ async function handle(command: WorkerCommand): Promise<void> {
         });
         return;
       }
-      // 独立子 lane 跑整理：不占主对话、消耗不计入会话统计（telemetry 只采主 lane）、
+      // 独立子 lane 跑整理：不占主对话、**上下文占用不计入**（费用照常计入——
+      // 见 lib/telemetry.ts 的两个口径）、
       // 审批闸门照常生效（写记忆文件仍要走审批——安全设计，见 docs/SECURITY.md）。
       // activeTools 按 lane 持久化，仅在确有差异时写（与 thinkingLevel 的等值短路同一理由）。
       const tidy = await state.harness.lane(TIDY_LANE, context);
@@ -897,6 +974,17 @@ async function handle(command: WorkerCommand): Promise<void> {
 
     case "navigate": {
       if (!state) throw new Error("会话尚未初始化");
+      // 纵深防御：分支树里已经排除了子 lane 的条目（`projectBranches`），但**能拒绝就要拒绝**——
+      // 「树里看不到、却能导航过去」的幽灵节点会把主对话的历史指针挪到子代理的链上，
+      // 而界面上没有任何东西能解释这次跳转。判据与分支树排除**共用同一个集合**。
+      if ((await foreignLaneEntryIds(state)).has(command.targetId)) {
+        send({
+          type: "error",
+          message: "这个节点属于子代理（或记忆整理）的运行记录，不属于主对话，不能切过去。",
+          fatal: false,
+        });
+        return;
+      }
       // summarize: false —— 直接跳转，不花额外 token 生成分支摘要
       await state.lane.navigateTree(command.targetId, { summarize: false }, context);
       // 跳转换了整条分支，transcript 需要整体重建
@@ -909,6 +997,8 @@ async function handle(command: WorkerCommand): Promise<void> {
     case "dispose": {
       if (state) {
         state.unsubscribe();
+        // 子代理的 watch 也要退订：否则事件会继续往已作废的快照上写，白烧 CPU
+        state.subagents.dispose();
         await state.harness.close(context).catch(() => undefined);
         await state.repo.close(context).catch(() => undefined);
         state = undefined;

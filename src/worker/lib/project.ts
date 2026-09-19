@@ -15,6 +15,7 @@ import type {
   ViewMessage,
   ViewRunOutcome,
   ViewRunningTool,
+  ViewSubagent,
   ViewToolResult,
   WorkerBranchNode,
 } from "@shared/worker-protocol";
@@ -205,57 +206,21 @@ export function projectBranchNodes(
   return nodes;
 }
 
-/** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
 /**
- * 把内核的「最近一次操作结果」投影成 ⑥ 需要的**运行终态**（C1）。
+ * 把一份 transcript 投影成渲染层要的「消息 + 工具结果」两列。
  *
- * 只认 `kind === "run"`：压缩 / 导航也会写 `lastResult`，但它们在状态条上答非所问
- * （用户问的是「我刚交办的那件事怎么样了」）。没有跑过、或最近一次是别的操作 → `null` → 「空闲」。
+ * 抽成独立函数（而不是留在 `project` 里）是因为**子代理的流**要用同一套投影：
+ * 下钻面板与「最近 N 步」预览拿到的必须与主对话**同一种形状**，否则渲染层要写两套。
+ * 调用方各传自己的 transcript 与耗时表，投影规则**只有一份**。
  */
-export function projectLastRun(result: LaneSnapshot["lastResult"]): ViewRunOutcome | null {
-  if (result === undefined || result.kind !== "run") return null;
-  return {
-    status: result.status,
-    ...(result.error !== undefined ? { error: result.error.message } : {}),
-  };
-}
-
-export function project(
-  snapshot: LaneSnapshot,
-  meta: {
-    sessionId: string;
-    cwd: string;
-    model: string;
-    /** 当前模型是否支持图片输入（取自模型目录的 input 能力），决定界面能否发图 */
-    imageInput: boolean;
-    /** 会话思考等级，供界面下拉回显 */
-    thinkingLevel: ThinkingLevel;
-    /**
-     * 本会话装载到的技能名字（装载后固定）。
-     *
-     * 渲染层要拿它**就地**判「这个名字存不存在」：名字打错时它不清空输入、把可用名报出来，
-     * 用户改一个字母就能重敲。没有它，那半句额外指示会跟着输入一起没掉。
-     */
-    skills: string[];
-    fileChanges: ViewFileChange[];
-    /**
-     * 待办清单。与 `fileChanges` 同一个道理：**投影时恒为空数组**，
-     * 主进程会用数据库里那份完整清单覆盖它（真源在主进程，不在 worker 内存）。
-     */
-    todos: ViewTodo[];
-    /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
-    contextUsed: number;
-  },
-  /**
-   * 已完成的工具调用耗时（toolCallId → ms）。由 entry.ts 的 after_tool 维护、有上限，
-   * 投影时只读——放在这里而不是本模块里，只因它是**会话运行期**的状态，不是纯数据。
-   */
+export function projectTranscript(
+  transcript: readonly unknown[],
   toolDurations: ReadonlyMap<string, number>,
-): ConversationView {
+): { messages: ViewMessage[]; toolResults: ViewToolResult[] } {
   const messages: ViewMessage[] = [];
   const toolResults: ViewToolResult[] = [];
 
-  for (const entry of snapshot.transcript) {
+  for (const entry of transcript) {
     if ((entry as { type?: string }).type !== "message") continue;
     const record = entry as unknown as {
       id: string;
@@ -313,16 +278,14 @@ export function project(
       timestamp: record.message.timestamp,
     });
   }
+  return { messages, toolResults };
+}
 
-  const operation = snapshot.operation;
-  const streamingText = operation?.streamingMessage
-    ? extractText(operation.streamingMessage.content)
-    : null;
-  const streamingThought = operation?.streamingMessage
-    ? extractThinking(operation.streamingMessage.content)
-    : "";
-
-  const runningTools: ViewRunningTool[] = (operation?.runningTools ?? []).map((tool) => {
+/** 正在执行的工具 → 渲染层 DTO（主对话与子代理共用同一份规则） */
+export function projectRunningTools(
+  operation: LaneSnapshot["operation"],
+): ViewRunningTool[] {
+  return (operation?.runningTools ?? []).map((tool) => {
     const record = tool as unknown as {
       toolCallId?: string;
       id?: string;
@@ -344,6 +307,71 @@ export function project(
       startedAt: record.startedAt ?? Date.now(),
     };
   });
+}
+
+/** 把 LaneSnapshot 投影成渲染层可直接消费的 DTO */
+/**
+ * 把内核的「最近一次操作结果」投影成 ⑥ 需要的**运行终态**（C1）。
+ *
+ * 只认 `kind === "run"`：压缩 / 导航也会写 `lastResult`，但它们在状态条上答非所问
+ * （用户问的是「我刚交办的那件事怎么样了」）。没有跑过、或最近一次是别的操作 → `null` → 「空闲」。
+ */
+export function projectLastRun(result: LaneSnapshot["lastResult"]): ViewRunOutcome | null {
+  if (result === undefined || result.kind !== "run") return null;
+  return {
+    status: result.status,
+    ...(result.error !== undefined ? { error: result.error.message } : {}),
+  };
+}
+
+export function project(
+  snapshot: LaneSnapshot,
+  meta: {
+    sessionId: string;
+    cwd: string;
+    model: string;
+    /** 当前模型是否支持图片输入（取自模型目录的 input 能力），决定界面能否发图 */
+    imageInput: boolean;
+    /** 会话思考等级，供界面下拉回显 */
+    thinkingLevel: ThinkingLevel;
+    /**
+     * 本会话装载到的技能名字（装载后固定）。
+     *
+     * 渲染层要拿它**就地**判「这个名字存不存在」：名字打错时它不清空输入、把可用名报出来，
+     * 用户改一个字母就能重敲。没有它，那半句额外指示会跟着输入一起没掉。
+     */
+    skills: string[];
+    fileChanges: ViewFileChange[];
+    /**
+     * 待办清单。与 `fileChanges` 同一个道理：**投影时恒为空数组**，
+     * 主进程会用数据库里那份完整清单覆盖它（真源在主进程，不在 worker 内存）。
+     */
+    todos: ViewTodo[];
+    /** 最近一轮上下文占用，由 usage 事件维护；重启后由主进程用 DB 回填 */
+    contextUsed: number;
+  },
+  /**
+   * 已完成的工具调用耗时（toolCallId → ms）。由 entry.ts 的 after_tool 维护、有上限，
+   * 投影时只读——放在这里而不是本模块里，只因它是**会话运行期**的状态，不是纯数据。
+   */
+  toolDurations: ReadonlyMap<string, number>,
+  /**
+   * 子代理总账（有界尾部）。由 worker 的子代理注册表给出——它**不来自内核快照**：
+   * 子代理跑在独立 lane 上，主 lane 的快照里根本没有它们。
+   */
+  subagents: readonly ViewSubagent[],
+): ConversationView {
+  const { messages, toolResults } = projectTranscript(snapshot.transcript, toolDurations);
+
+  const operation = snapshot.operation;
+  const streamingText = operation?.streamingMessage
+    ? extractText(operation.streamingMessage.content)
+    : null;
+  const streamingThought = operation?.streamingMessage
+    ? extractThinking(operation.streamingMessage.content)
+    : "";
+
+  const runningTools = projectRunningTools(operation);
 
   const usage = snapshot.stats?.usage;
   return {
@@ -359,6 +387,7 @@ export function project(
     streamingText: streamingText && streamingText.length > 0 ? streamingText : null,
     thought: streamingThought.length > 0 ? streamingThought : null,
     runningTools,
+    subagents: [...subagents],
     // operation 非 null 即为「有一次 run/compaction/navigation 正在飞行」：
     // 内核 reducer 在 *_start 时写入该对象，在 *_end 时才置回 null。
     // 注意不要看 operation.status —— OperationStatus 只有 running|open|aborting，

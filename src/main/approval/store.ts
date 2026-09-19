@@ -148,6 +148,8 @@ export class ApprovalStore {
     now: number;
     /** worker 上报的等待上限；缺省用兜底值 */
     timeoutMs?: number;
+    /** 这次请求来自哪个子代理（主对话没有这个字段）——卡片上要标「来自 X」 */
+    subagent?: { id: string; name: string };
   }):
     | { decision: ApprovalDecision }
     | { request: ApprovalRequest }
@@ -225,6 +227,8 @@ export class ApprovalStore {
     allow: boolean;
     reason: string;
     timeoutMs?: number;
+    /** 同 `evaluate`：来源要一路带到卡片上，分析后退回人工确认时不能丢 */
+    subagent?: { id: string; name: string };
   }): { decision: ApprovalDecision } | { request: ApprovalRequest } {
     if (input.allow) {
       return { decision: { approved: true, reason: input.reason } };
@@ -244,7 +248,15 @@ export class ApprovalStore {
 
   /** 构造待审条目并入队 */
   #enqueue(
-    input: { sessionId: string; toolCallId: string; toolName: string; argsJson: string; now: number; timeoutMs?: number },
+    input: {
+      sessionId: string;
+      toolCallId: string;
+      toolName: string;
+      argsJson: string;
+      now: number;
+      timeoutMs?: number;
+      subagent?: { id: string; name: string };
+    },
     verdict: { summary: string; risk: ApprovalRisk; reason: string; signature: string },
   ): ApprovalRequest {
     const request: ApprovalRequest = {
@@ -258,6 +270,7 @@ export class ApprovalStore {
       signature: verdict.signature,
       requestedAt: input.now,
       timeoutMs: input.timeoutMs ?? APPROVAL_TIMEOUT_MS,
+      ...(input.subagent === undefined ? {} : { subagent: input.subagent }),
     };
     this.sessions.get(input.sessionId)?.pending.set(input.toolCallId, request);
     return request;

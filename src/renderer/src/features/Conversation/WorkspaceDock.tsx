@@ -245,6 +245,8 @@ export function WorkspaceDock({
   highlightPath,
   browser,
   fileRequest,
+  subagentRequest,
+  onAbortSubagent,
   onBrowserNav,
   onResetViewport,
   onBrowserZoom,
@@ -274,6 +276,14 @@ export function WorkspaceDock({
    * ⑦-G 之后它不再切「文件」页签，而是**让「任务摘要」落到下钻的内容层**。
    */
   fileRequest: { path: string; seq: number } | null;
+  /**
+   * 「要看某个子代理的完整过程」的请求（点 ④ 子代理卡的按钮）——`seq` 变化即重下钻。
+   * 与 `fileRequest` 同形：都让「任务摘要」落到**下钻的某一层**，只是目标从文件内容
+   * 多了一种到子代理流（决策三 D5 / 决策七 D9）。
+   */
+  subagentRequest: { id: string; seq: number } | null;
+  /** 中止单个子代理（此刻段那一行的「中止」）；不动主对话、不动别的子代理 */
+  onAbortSubagent?: (id: string) => void;
   /** 已打开的视图实例（⑦-B：页签可以很多） */
   instances: DockInstance[];
   /** 当前激活实例的 id */
@@ -314,13 +324,22 @@ export function WorkspaceDock({
    * 重置就静默不发生（点了没反应），而代码看上去完全正常。
    */
   const sendDrill = useCallback(
-    (target: { layer: DrillLayer; path?: string; token?: number }): void => {
+    (target: {
+      layer: DrillLayer;
+      path?: string;
+      token?: number;
+      subagentId?: string;
+    }): void => {
       drillNonce.current += 1;
       setDrillRequest({
         nonce: drillNonce.current,
         layer: target.layer,
         path: target.path ?? null,
-        token: target.token ?? 0,
+        // 没显式给令牌的层（子代理流）用 `nonce` 顶：它同样是单调递增的，于是「同一个
+        // 子代理再点一次」也必然换出一个新令牌，面板据此重拉——这一条不能省，否则
+        // 同 id 重进时 `layer` / `subagentId` 都不变，面板不重挂、也就读不到新产出。
+        token: target.token ?? drillNonce.current,
+        subagentId: target.subagentId ?? null,
       });
     },
     [],
@@ -331,6 +350,12 @@ export function WorkspaceDock({
     if (fileRequest === null) return;
     sendDrill({ layer: "content", path: fileRequest.path, token: fileRequest.seq });
   }, [fileRequest, sendDrill]);
+
+  // 「要看某个子代理的完整过程」→ 进下钻的**子代理流层**（④ 卡的按钮 / 此刻段那一行）
+  useEffect(() => {
+    if (subagentRequest === null) return;
+    sendDrill({ layer: "subagent", subagentId: subagentRequest.id });
+  }, [subagentRequest, sendDrill]);
 
   // 换会话时退出下钻：否则会停在上一个会话的文件上（那是另一个项目的路径）
   useEffect(() => {
@@ -754,6 +779,7 @@ export function WorkspaceDock({
         <ChangeDrilldown
           sessionId={sessionId}
           changes={view?.fileChanges ?? []}
+          subagents={view?.subagents ?? []}
           entry={drillRequest}
           highlightPath={highlightPath}
           menuOpen={menuOpen}
@@ -764,6 +790,8 @@ export function WorkspaceDock({
           view={view}
           highlightPath={highlightPath}
           onOpenChanges={() => sendDrill({ layer: "list" })}
+          onOpenSubagent={(id) => sendDrill({ layer: "subagent", subagentId: id })}
+          onAbortSubagent={onAbortSubagent}
         />
       )}
     </aside>

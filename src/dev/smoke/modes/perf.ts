@@ -87,6 +87,7 @@ function bigView(sessionId: string, count: number, plain = false): ConversationV
     streamingText: null,
     thought: null,
     runningTools: [],
+    subagents: [],
     running: false,
     lastRun: null,
     queuedCount: 0,

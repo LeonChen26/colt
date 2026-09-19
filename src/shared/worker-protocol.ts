@@ -71,6 +71,48 @@ export interface ViewRunningTool {
 }
 
 /**
+ * 一个子代理（subagent）实例的总账。
+ *
+ * 为什么只带**有界尾部**而不是整份流：视图是**全量快照**，流式期间每 50ms 整份重推
+ * （`worker/entry.ts` 的 `scheduleFlush`），N 个子代理的全文会按推送次数乘上去——
+ * 与「工具截图不进视图、落盘按需读回」是同一条教训。完整流走 `session.subagentTranscript`
+ * 按需拉（见 `@shared/protocol`）。
+ *
+ * ⚠️ 子代理的消息**不混进 `ConversationView.messages`**：`groupTurns` 只认 role，
+ * 两条 lane 的消息混进去会被错并成同一轮。隔离靠独立承载，不靠渲染层猜。
+ */
+export interface ViewSubagent {
+  /**
+   * lane 名 = `sub:${agent}:${shortId}`，**稳定持久身份**。
+   * 界面上用它取完整流（`session.subagentTranscript`）、中止单个子代理。
+   */
+  id: string;
+  /** 主对话里那次 `subagent` 调用——④ 工具卡与「任务摘要」此刻段那一行的锚点 */
+  toolCallId: string;
+  /** agent 定义名（显示用） */
+  name: string;
+  /** 一句话任务摘要（缺省取 task 首行） */
+  title: string;
+  status: "running" | "completed" | "failed" | "aborted";
+  startedAt: number;
+  endedAt?: number;
+  /** 仅 failed 时有值；摘要展示由渲染层负责 */
+  error?: string;
+  /** 运行中的**有界**尾部快照（视图每 50ms 全量重推，故必须有界） */
+  tail: {
+    streamingText: string | null;
+    thought: string | null;
+    runningTools: ViewRunningTool[];
+    /** 最近 `MAX_SUBAGENT_STEPS_IN_VIEW` 步 */
+    recentSteps: ViewMessage[];
+    /** 真实总步数——截断时如实给总数，不许静默裁掉 */
+    stepCount: number;
+  };
+  /** 子代理自己的消耗（费用计入会话；归属只在这里展示） */
+  stats: { inputTokens: number; outputTokens: number; costUsd: number };
+}
+
+/**
  * 「本次会话第一次改动这个文件之前」的内容快照——净变化的**基线**。
  *
  * 内核每次只给「这一次改了什么」（patch），把一串增量加起来并**不等于**文件的最终样子：
@@ -176,6 +218,13 @@ export interface ConversationView {
   thought: string | null;
   /** 正在执行的工具 */
   runningTools: ViewRunningTool[];
+  /**
+   * 本次会话里的子代理实例（`subagent` 工具委派的那些），按开始时间排列。
+   *
+   * 它是「任务摘要」此刻段与 ④ 子代理卡的**唯一**数据源（零新事件，搭 `session.view` 顺风车）。
+   * `tail` 有界（见 `ViewSubagent`）；完整流按需拉。
+   */
+  subagents: ViewSubagent[];
   /** 是否有进行中的操作 */
   running: boolean;
   /**
@@ -279,6 +328,16 @@ export type WorkerCommand =
    * 子 lane 的消耗不计入会话统计（telemetry 只采主 lane）。主 lane 忙时拒绝（文件竞态）。
    */
   | { type: "memoryTidy" }
+  /**
+   * 中止**单个**子代理（`ViewSubagent.id` = lane 名）。不动主对话、不动别的子代理——
+   * 用户看得见某个子代理跑偏了要能就地收掉它，而不是只能中断整个会话。
+   */
+  | { type: "subagentAbort"; id: string }
+  /**
+   * 按需拉一个子代理的**完整流**（视图只带有界尾部，见 `ViewSubagent`）。
+   * 与 `branches` 同形：worker 以消息形式回复，主进程排队兑现。
+   */
+  | { type: "subagentTranscript"; id: string }
   | { type: "branches" }
   | { type: "navigate"; targetId: string }
   /**
@@ -369,6 +428,11 @@ export type WorkerMessage =
       timestamp: number;
     }
   | { type: "branches"; nodes: WorkerBranchNode[] }
+  /**
+   * 一个子代理的完整流（`subagentTranscript` 命令的回复）。
+   * `id` 原样带回，主进程据此配对等待方（FIFO）。
+   */
+  | { type: "subagentTranscript"; id: string; messages: ViewMessage[]; toolResults: ViewToolResult[] }
   /** 工具需要审批：worker 已阻塞在 before_tool，等主进程回 approvalResult */
   | {
       type: "approvalRequest";
@@ -378,6 +442,11 @@ export type WorkerMessage =
       argsJson: string;
       /** 审批等待上限（毫秒），主进程与界面据此显示倒计时 */
       timeoutMs: number;
+      /**
+       * 这次调用来自哪个子代理（主 lane 的调用没有这个字段）。
+       * 界面据此在阻塞卡上标「来自 X」——否则用户分不清是谁在请求授权。
+       */
+      subagent?: { id: string; name: string };
     }
   /**
    * 模型提问：worker 已阻塞在 `ask_user` 的 execute 里，等主进程回 askUserResult。
@@ -389,6 +458,8 @@ export type WorkerMessage =
       /** 已过校验的问卷（校验在 worker 侧，主进程不重复校验） */
       questions: AskUserQuestion[];
       timeoutMs: number;
+      /** 同 approvalRequest：来自哪个子代理（主 lane 的提问没有这个字段） */
+      subagent?: { id: string; name: string };
     }
   | { type: "modelChanged"; providerId: string; modelId: string }
   /** worker 请求宿主能力（浏览器/桌面）：主进程执行后回 toolRpcResult */

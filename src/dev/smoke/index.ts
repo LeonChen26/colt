@@ -43,6 +43,12 @@
  *        最后断言「目录 / 搜历史」：列出每条提问、搜索只回命中、点一行**真的跳过去**，
  *        且跳过去之后**挂载数仍是一个窗口**（尾行不等于末尾）——
  *        跳转若沿用「一直挂到末尾」就把几千条一次挂出来，等于把窗口作废
+ * subagent：子代理的呈现链路（不调模型、不计费）——推受控视图驱动：④ 卡**特化** + 有界预览
+ *        （如实说「最近 12 / 共 20 步」）、「任务摘要」此刻段一行（名称 / 任务 / 步数 / 中止，
+ *        且**不重复列**那条 subagent 工具）、**不自动展开右栏**（决策三）、
+ *        已结束后此刻段消失而 ④ 卡保留、点 ④ 卡「在右栏查看完整过程」→ **下钻到子代理流**
+ *        （面包屑 + ESC 逐层回退；完整流按需拉、拉不到如实说）、不存在的子代理回空而非报错；
+ *        分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖
  *
  * 本文件只做**调度**：建 log / run 两个闭包、按 COLT_SMOKE_MODE 分派、收尾截图与落日志。
  * 各模式的正文在 `modes/` 下，共享件在 `context.ts`。
@@ -76,6 +82,7 @@ import {
   runSessionDraft,
 } from "./modes/model";
 import { runReenter } from "./modes/reenter";
+import { runSubagent } from "./modes/subagent";
 import { runTodo } from "./modes/todo";
 
 export async function runSmoke(window: BrowserWindow, outputPath: string): Promise<void> {
@@ -184,6 +191,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runPerf(window, project.id, sessionsDir, log, run);
     } else if (mode === "todo") {
       await runTodo(window, project.id, sessionsDir, log, run);
+    } else if (mode === "subagent") {
+      await runSubagent(window, project.id, sessionsDir, log, run);
     } else if (mode === "model") {
       await runModelSelect(window, sessionsDir, project.id, log, run);
       await runModelFallback(window, sessionsDir, project.id, log, run);

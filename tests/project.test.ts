@@ -319,7 +319,7 @@ describe("project：工具结果只走 toolResults，不进 messages", () => {
     ]);
 
   test("messages 里只有用户与助手，工具结果走 toolResults", () => {
-    const view = project(conversation(), meta, new Map());
+    const view = project(conversation(), meta, new Map(), []);
     assert.deepEqual(
       view.messages.map((message) => message.role),
       ["user", "assistant"],
@@ -332,13 +332,13 @@ describe("project：工具结果只走 toolResults，不进 messages", () => {
   });
 
   test("同一段工具正文在整份视图里**只出现一次**（过去的重复就发生在这里）", () => {
-    const serialized = JSON.stringify(project(conversation(), meta, new Map()));
+    const serialized = JSON.stringify(project(conversation(), meta, new Map(), []));
     const occurrences = serialized.split("这是文件正文标记TOOLTEXT").length - 1;
     assert.equal(occurrences, 1, `工具正文在视图里出现了 ${occurrences} 次，应为 1 次`);
   });
 
   test("助手消息仍带着工具调用 id —— 工具卡就是靠它去 toolResults 取结果", () => {
-    const view = project(conversation(), meta, new Map());
+    const view = project(conversation(), meta, new Map(), []);
     const assistant = view.messages.find((message) => message.role === "assistant");
     assert.deepEqual(
       assistant?.toolCalls.map((call) => call.id),
@@ -356,12 +356,28 @@ describe("project：工具结果只走 toolResults，不进 messages", () => {
       ]),
       meta,
       new Map(),
+      [],
     );
     assert.deepEqual(
       view.messages.map((message) => message.role),
       ["user"],
     );
     assert.equal(view.toolResults.length, 0);
+  });
+
+  test("子代理总账原样带出（视图里的 subagents 是这条通道，不是从内核快照来的）", () => {
+    const subagent = {
+      id: "sub:researcher:abcd1234",
+      toolCallId: "call_sub",
+      name: "researcher",
+      title: "查一下 read 工具在哪注册",
+      status: "running" as const,
+      startedAt: 1,
+      tail: { streamingText: null, thought: null, runningTools: [], recentSteps: [], stepCount: 0 },
+      stats: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    };
+    const view = project(conversation(), meta, new Map(), [subagent]);
+    assert.deepEqual(view.subagents, [subagent]);
   });
 });
 
@@ -394,22 +410,22 @@ describe("project：工具截图能落盘的只报 hasImage", () => {
   const base64 = "iVBORw0KGgoAAAANSUhEUg";
 
   test("png 截图：只留标记，base64 不进视图", () => {
-    const view = project(shot("call_shot", "image/png"), meta, new Map());
+    const view = project(shot("call_shot", "image/png"), meta, new Map(), []);
     assert.equal(view.toolResults[0]?.hasImage, true);
     assert.equal(view.toolResults[0]?.image, undefined);
     assert.ok(!JSON.stringify(view).includes(base64), "能落盘的截图不该把 base64 留在视图里");
   });
 
   test("落不了盘的图片类型仍内联（宁可这一条大点，也别让用户看不到图）", () => {
-    const view = project(shot("call_tiff", "image/tiff"), meta, new Map());
+    const view = project(shot("call_tiff", "image/tiff"), meta, new Map(), []);
     assert.equal(view.toolResults[0]?.hasImage, undefined);
     assert.equal(view.toolResults[0]?.image?.data, base64);
     assert.equal(view.toolResults[0]?.image?.mimeType, "image/tiff");
   });
 
   test("对照：同一个 id 换成能落盘的 png，行为立刻反过来——证明上面的断言不是空转", () => {
-    const inline = project(shot("call_same", "image/tiff"), meta, new Map());
-    const spilled = project(shot("call_same", "image/png"), meta, new Map());
+    const inline = project(shot("call_same", "image/tiff"), meta, new Map(), []);
+    const spilled = project(shot("call_same", "image/png"), meta, new Map(), []);
     assert.notDeepEqual(inline.toolResults[0], spilled.toolResults[0]);
   });
 });

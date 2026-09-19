@@ -6,7 +6,12 @@
  * 主进程、预加载、渲染进程共享此定义。
  */
 
-import type { AskUserQuestion, ConversationView } from "./worker-protocol";
+import type {
+  AskUserQuestion,
+  ConversationView,
+  ViewMessage,
+  ViewToolResult,
+} from "./worker-protocol";
 import type { ThinkingLevel } from "./thinking-level";
 import type { ToolImageResult } from "./tool-output";
 
@@ -274,6 +279,10 @@ export const IPC_CHANNELS = [
   "approval.analyzeConfig.set",
   "session.branches",
   "session.navigate",
+  /** 中止单个子代理（`ViewSubagent.id` = lane 名） */
+  "session.subagentAbort",
+  /** 按需拉一个子代理的完整流（视图只带有界尾部） */
+  "session.subagentTranscript",
   "git.status",
   "browser.bounds",
   "browser.state.get",
@@ -612,6 +621,24 @@ export interface IpcInvokeMap {
     request: { sessionId: string; targetId: string };
     response: { ok: true };
   };
+  /**
+   * 中止**单个**子代理（`ViewSubagent.id`）。与 `session.abort` 分开：那个中断整个会话，
+   * 这个只收掉跑偏的某一个子代理。worker 已回收时是空操作（子代理随 worker 同寿命）。
+   */
+  "session.subagentAbort": {
+    request: { sessionId: string; id: string };
+    response: { ok: true };
+  };
+  /**
+   * 按需拉一个子代理的**完整流**（视图里只有有界尾部，见 `ViewSubagent`）。
+   *
+   * 范式抄 `session.branches`：worker 以消息回复，主进程排队兑现 + 超时。
+   * 会话没开着 / 该子代理已不可解析时回空数组（不是错误）——界面按「没有内容」呈现。
+   */
+  "session.subagentTranscript": {
+    request: { sessionId: string; id: string };
+    response: { messages: ViewMessage[]; toolResults: ViewToolResult[] };
+  };
   /** 读取会话工作目录的 git 分支（会话头展示） */
   "git.status": {
     request: { cwd: string };
@@ -910,6 +937,11 @@ export interface ApprovalRequest {
   requestedAt: number;
   /** 审批等待上限（毫秒），界面据此显示倒计时 */
   timeoutMs: number;
+  /**
+   * 这次请求来自哪个子代理（主对话的调用没有这个字段）。
+   * 界面据此在卡片上标「来自 X」——子代理内部的工具照样过闸门，用户得知道是谁在请求。
+   */
+  subagent?: { id: string; name: string };
 }
 
 /** 一条待答的模型提问（ask_user） */
@@ -919,6 +951,8 @@ export interface UserQuestionRequest {
   requestedAt: number;
   /** 等待上限（毫秒），界面据此显示倒计时 */
   timeoutMs: number;
+  /** 同 `ApprovalRequest`：来自哪个子代理（主对话的提问没有这个字段） */
+  subagent?: { id: string; name: string };
 }
 
 /** 规则类别：放行 or 拒绝 */

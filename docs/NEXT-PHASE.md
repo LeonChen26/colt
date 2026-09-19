@@ -190,7 +190,7 @@
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
   | ③ | MCP | 未开工（先出设计） | MCP 工具调用天然过 `before_tool`；审批层抄 `pi-mcp-adapter` 的 `session-approvals.ts` |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
-  | ⑤ | 子代理 | 未开工（先设计 fork 语义） | 多 lane 有 `TIDY_LANE` 先例 |
+  | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**未覆盖（别当成验过了）**：`subagent` 免闸门 / 内部写弹卡的**执行侧**、`fresh` 隔离的**真实效果**、**「模型真的在系统提示词里看得见子代理清单」**——三者都要模型真的调用工具，待 `subagent-e2e`（**打模型、计费**，尚未建）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
 
   ①的入口级遗留（别当成验过了）：worker 侧跳过闸门那条守卫与「全权模式下提问仍要弹」已由
@@ -391,7 +391,7 @@
    npm run dev        # 夹具站在进程内以 port 0 拉起，无需另开终端
    ```
    看 `out/.smoke-dock.png.log` 末行是否 `通过 211/211`。
-   ⚠️ **计费**：`dock`、`fixture`、`memory` 与 `ask-user` 是**仅有的四个不调用模型**的模式（其余模式、含不给
+   ⚠️ **计费**：`dock`、`fixture`、`memory`、`perf`、`ask-user` 与 `subagent` 是**不调用模型**的模式（其余模式、含不给
    `COLT_SMOKE_MODE` 时的 `basic`，都会真实打模型并计费）。`dock` 曾经也会：它的 `/compact`
    段把打桩转给了真实现，会真发 `/compact 帮我看看` 与 `/usr/local/bin/node` 两句 prompt、
    计一次费，并把它们写进用户真实项目里的真实会话历史——v1.41 起该段改为**只记账、不转发**。
@@ -435,6 +435,27 @@
    `out/smoke-ask-user-e2e-fixture/`，worker 的生死交给渲染层（同 `memory-e2e`，`window.reload()`
    等它自动打开、worker 就绪）——**别**自己抢 `session.open`（`AGENTS.md` §五末条）。
    **它测不到** worker **意外崩溃**那一支的收尾与提问的桌面通知（`notifyQuestion`）。
+
+   **3-d. 子代理呈现（subagent）：改 ④ 的工具卡 / `MessageList.tsx` / `SubagentPreview.tsx` /
+   `FollowPanel.tsx` / `ChangeDrilldown.tsx` / `panels/SubagentStream.tsx` / `use-stableView.ts` /
+   `lib/stable-view.ts`，或改 `ConversationView.subagents` 的形状时必跑**（2026-09-19 加，免模型）：
+
+   ```powershell
+   $env:COLT_SMOKE=".smoke-subagent.png"
+   $env:COLT_SMOKE_MODE="subagent"
+   npm run dev
+   ```
+
+   看 `out/.smoke-subagent.png.log` 末行是否 `通过 22/22`。它从主进程推**受控视图**驱动（同
+   `todo` / `dock`），不跑模型、不计费：④ 卡特化 + 有界预览（如实说「最近 12 / 共 20 步」）、
+   此刻段一行（且**不重复列**那条 `subagent` 工具）、**不自动展开右栏**（决策三 D5）、
+   已结束后此刻段消失而 ④ 卡保留、点 ④ 卡「在右栏查看完整过程」→ 下钻子代理流（面包屑 + ESC）、
+   不存在的子代理回空而非报错。**它测不到**：`subagent` 免闸门 / 内部写弹卡的**执行侧**、
+   `fresh` 隔离的**真实效果**，以及**「模型真的在系统提示词里看得见子代理清单」**——最后一条与
+   `todo` 同源（§3.2 提到）：免模型冒烟只能验**目录块拼得出来**（`tests/agent-defs.test.ts`
+   断言最终字符串里有 `<available_subagents>`），验不了它**真的进了模型那次请求的提示词**。
+   三者都要模型真调用，待 `subagent-e2e`（**尚未建、会打模型**）；
+   分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖。
 
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell

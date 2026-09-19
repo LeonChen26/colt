@@ -291,6 +291,7 @@ export async function runTodo(
       skills: [],
       messages: [],
       toolResults: [],
+      subagents: [],
       fileChanges: [
         {
           id: "smoke-todo-change",

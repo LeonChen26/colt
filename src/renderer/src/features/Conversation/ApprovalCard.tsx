@@ -8,7 +8,7 @@
  * 并给出四档语义 + 可见超时，而不是以为程序卡死。
  */
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Clock, ShieldAlert, ShieldQuestion, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Clock, ShieldAlert, ShieldQuestion, X } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ApprovalRequest, ApprovalRisk } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
@@ -76,9 +76,20 @@ export function ApprovalCard({
           <ShieldQuestion {...ICON.lg} className="mt-0.5 shrink-0 text-warning" />
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium text-text-primary">需要你的许可</span>
             <span className={cn("text-xs", risk.className)}>{risk.label}</span>
+            {/* 来源：这次调用是某个子代理发起的，不是主对话（决策三 D5 的「来自 X」chip） */}
+            {request.subagent !== undefined && (
+              <span
+                data-approval-subagent={request.subagent.name}
+                title="这次调用来自一个子代理，不是主对话"
+                className="flex items-center gap-1 rounded-[4px] border border-line px-1.5 py-0.5 text-[11px] text-text-secondary"
+              >
+                <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
+                来自 {request.subagent.name}
+              </span>
+            )}
           </div>
           <p className="mt-1 break-all font-mono text-xs text-text-primary">{request.summary}</p>
           <p className="mt-1 text-xs text-text-muted">{request.reason}</p>

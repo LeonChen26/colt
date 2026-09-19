@@ -14,7 +14,7 @@
  * 落定后卡片消失，结果由随后的 `ask_user` 工具结果承载（用户与模型看到的是同一句话）。
  */
 import { useEffect, useState } from "react";
-import { Clock, MessageCircleQuestion, Send, SkipForward } from "lucide-react";
+import { Bot, Clock, MessageCircleQuestion, Send, SkipForward } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { AskUserQuestion } from "@shared/worker-protocol";
 import type { UserQuestionRequest } from "@shared/protocol";
@@ -104,12 +104,23 @@ export function QuestionCard({
       <div className="flex items-start gap-2">
         <MessageCircleQuestion {...ICON.lg} className="mt-0.5 shrink-0 text-accent" />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium text-text-primary">需要你的决定</span>
             <span className="text-xs text-text-muted">
               {request.questions.length} 个问题
               {allAnswered ? "" : `（已答 ${answeredCount}）`}
             </span>
+            {/* 来源：这次提问是某个子代理发起的，不是主对话（决策三 D5 的「来自 X」chip） */}
+            {request.subagent !== undefined && (
+              <span
+                data-question-subagent={request.subagent.name}
+                title="这次提问来自一个子代理，不是主对话"
+                className="flex items-center gap-1 rounded-[4px] border border-line px-1.5 py-0.5 text-[11px] text-text-secondary"
+              >
+                <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
+                来自 {request.subagent.name}
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs text-text-muted">
             模型卡在这里等你回答，不作答它不会继续。

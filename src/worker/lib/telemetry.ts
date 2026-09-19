@@ -12,7 +12,11 @@ import { splitModelRef } from "@shared/model-ref";
 type UsageUpload = Extract<WorkerMessage, { type: "usage" }>;
 type ToolCallUpload = Extract<WorkerMessage, { type: "toolCall" }>;
 
-/** 只采集主 lane：子 agent 走独立 lane，其消耗不应计入当前会话 */
+/**
+ * 主 lane 名：会话的对话主线。entry 用它开 lane、`transform_context` 用它分流，
+ * 而这里只用在一个判据上——上下文占用条（`contextUsedFromUsage`）：
+ * 子 lane 与主对话共用同一份模型上下文预算没有意义，占用条该答的是「主对话还剩多少」。
+ */
 export const MAIN_LANE = "main";
 
 /**
@@ -20,6 +24,10 @@ export const MAIN_LANE = "main";
  * pi-ai 的 Usage.input 是扣除 cache 后的净输入，
  * prompt tokens = input + cacheRead + cacheWrite，这才是实际喂给模型的上下文量。
  * 返回 null 表示该行不计入占用（非主 lane 或 adjustment 补记行）。
+ *
+ * ⚠️ **这条过滤只属于「占用」，不属于「费用」**：子 lane（记忆整理、子代理）的消耗
+ * 同样是用户付的钱，必须计入会话统计（见 `buildUsageUpload`）。以前两者共用一条
+ * `lane !== MAIN_LANE` 过滤，于是「整理/子代理花了钱」在用量明细里**静默消失**。
  */
 export function contextUsedFromUsage(event: KernelUsageEvent): number | null {
   if (event.lane !== MAIN_LANE) return null;
@@ -61,8 +69,12 @@ export interface ToolMetaEntry {
 
 /**
  * 构造一条用量上报；返回 null 表示这条不该记账。
- * 跳过两类：非主 lane 的消耗、adjustment 行（手工补记与旧版历史导入，
- * 它们不是新的模型调用，计入会重复累计）。
+ * 只跳过 adjustment 行（手工补记与旧版历史导入，它们不是新的模型调用，计入会重复累计）。
+ *
+ * ⚠️ **不过滤 lane**：子 lane（记忆整理 `memory-tidy`、子代理 `sub:*`）的调用同样是
+ * 真实发生的计费请求。「只采主 lane」会让用户**付了钱却在用量明细里看不到**——
+ * 那是静默（`docs/ERRORS.md`）。归属由调用方（子代理注册表）另外累计，
+ * 不在这里往线上加一个没人读的字段。
  */
 export function buildUsageUpload(
   event: KernelUsageEvent,
@@ -70,7 +82,6 @@ export function buildUsageUpload(
   fallbackProvider: string,
   now: number,
 ): UsageUpload | null {
-  if (event.lane !== MAIN_LANE) return null;
   if (event.row.adjustment) return null;
 
   const { provider, model } = splitModelRef(modelRef, fallbackProvider);
@@ -127,13 +138,15 @@ export class ToolCallTracker {
   }
 
   /**
-   * 构造一条工具调用上报；返回 null 表示不该记录（非主 lane）。
-   * 无论是否配对到 start，都会清理该条目。
+   * 构造一条工具调用上报。
+   *
+   * ⚠️ **不过滤 lane**：子代理的工具调用与主对话的一样，是真实发生过的动作（也照样过闸门），
+   * 统计页里应该看得到；只按主 lane 过滤会让整段子代理的活动凭空消失。
+   * 无论是否配对到 start，都会清理该条目（避免未配对的 start 长期驻留）。
    */
-  end(event: KernelToolEndEvent, now: number): ToolCallUpload | null {
+  end(event: KernelToolEndEvent, now: number): ToolCallUpload {
     const meta = this.meta.get(event.toolCallId);
     this.meta.delete(event.toolCallId);
-    if (event.lane !== MAIN_LANE) return null;
 
     return {
       type: "toolCall",

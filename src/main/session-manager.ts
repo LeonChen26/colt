@@ -9,7 +9,15 @@ import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "el
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import type { ConversationView, ViewFileChange, ViewTodo, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
+import type {
+  ConversationView,
+  ViewFileChange,
+  ViewMessage,
+  ViewTodo,
+  ViewToolResult,
+  WorkerCommand,
+  WorkerMessage,
+} from "@shared/worker-protocol";
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
@@ -99,6 +107,14 @@ export interface WorkerEntry {
    * 并发时单槽会让先到的请求永远拿不到结果（只能等到超时）。
    */
   pendingBranches: Array<(nodes: BranchNode[]) => void>;
+  /**
+   * 子代理完整流的待决队列（同 `pendingBranches` 的范式）。
+   * 队列里的等待方各自带 `id` 过滤——worker 的回复带回了请求的 id，只有匹配的那个被兑现。
+   */
+  pendingTranscripts: Array<{
+    id: string;
+    settle: (result: { messages: ViewMessage[]; toolResults: ViewToolResult[] }) => void;
+  }>;
   /**
    * 中断代数：每次用户中断自增。审批分析在飞行中跨越了中断时据此丢弃结果——
    * 否则会在已中断的会话上留下无法解释的幽灵待审卡片，并让 worker 悬空等待。
@@ -406,6 +422,7 @@ export class SessionManager {
         allow: false,
         reason: "审批模式在分析期间发生变更，已转为人工确认。",
         timeoutMs: message.timeoutMs,
+        ...(message.subagent === undefined ? {} : { subagent: message.subagent }),
       });
       if ("request" in requeued) {
         this.#armApprovalTimer(entry, options.sessionId, toolCallId, message.timeoutMs);
@@ -423,6 +440,7 @@ export class SessionManager {
       allow: result.allow,
       reason: result.reason,
       timeoutMs: message.timeoutMs,
+      ...(message.subagent === undefined ? {} : { subagent: message.subagent }),
     });
 
     if ("decision" in outcome) {
@@ -689,6 +707,7 @@ export class SessionManager {
       // 非空即表示「尚未就绪」：ready 一到就清空，命令恢复直接下发
       pendingCommands: [],
       pendingBranches: [],
+      pendingTranscripts: [],
       abortEpoch: 0,
       modeEpoch: 0,
     };
@@ -812,6 +831,8 @@ export class SessionManager {
             argsJson: message.argsJson,
             now: Date.now(),
             timeoutMs: message.timeoutMs,
+            // 来自子代理的请求要在卡片上标出来源（主对话的没有这个字段）
+            ...(message.subagent === undefined ? {} : { subagent: message.subagent }),
           });
           if ("decision" in outcome) {
             entry.child.postMessage({
@@ -838,6 +859,7 @@ export class SessionManager {
             message.toolCallId,
             message.questions,
             message.timeoutMs,
+            message.subagent,
           );
           break;
         }
@@ -859,6 +881,14 @@ export class SessionManager {
           // FIFO：worker 按收到的顺序回复，最早的等待方先兑现
           const settle = entry.pendingBranches.shift();
           settle?.(message.nodes);
+          break;
+        }
+
+        case "subagentTranscript": {
+          // 按 id 配对（同一会话可能有多个下钻请求在飞）；没配上的丢弃——等待方各自的超时会收敛
+          const index = entry.pendingTranscripts.findIndex((item) => item.id === message.id);
+          const pending = index === -1 ? undefined : entry.pendingTranscripts.splice(index, 1)[0];
+          pending?.settle({ messages: message.messages, toolResults: message.toolResults });
           break;
         }
 
@@ -903,6 +933,8 @@ export class SessionManager {
         this.questions.cancelAll(options.sessionId);
         if (dropped.length > 0) this.#emitPending(options.sessionId);
         entry.pendingBranches.length = 0;
+        // 完整流同理：没人能再回复，等待方各自的超时会收敛
+        entry.pendingTranscripts.length = 0;
         this.#emit("session.error", {
           sessionId: options.sessionId,
           message: `会话进程异常退出（code=${code ?? "unknown"}），历史已保留。再发一条消息会自动重连恢复。`,
@@ -1171,6 +1203,50 @@ export class SessionManager {
     });
   }
 
+  /**
+   * 中止**单个**子代理（界面上那一行 / ④ 卡上的「中止」）。
+   * worker 已回收时是空操作——子代理随 worker 同寿命，没有可中止的对象，
+   * 那也不是错误（用户只是在一个已经过去的运行上点了中止）。
+   */
+  subagentAbort(sessionId: string, id: string): void {
+    if (!this.#workers.has(sessionId)) return;
+    this.#post(sessionId, { type: "subagentAbort", id });
+  }
+
+  /**
+   * 拉一个子代理的完整流（视图里只有有界尾部，见 `ViewSubagent`）。
+   *
+   * 与 `branches` 同形：worker 以消息回复，这里排队兑现 + 超时。
+   * 「会话没开着 / 那个子代理已不可解析」回**空**而不是报错——界面按「看过了，没有内容」呈现
+   * （`docs/ERRORS.md`：不是所有没有结果的情形都算失败）。真超时才 reject。
+   */
+  async subagentTranscript(
+    sessionId: string,
+    id: string,
+  ): Promise<{ messages: ViewMessage[]; toolResults: ViewToolResult[] }> {
+    const entry = this.#workers.get(sessionId);
+    if (!entry) return { messages: [], toolResults: [] };
+    const queue = entry.pendingTranscripts;
+    return new Promise((resolve, reject) => {
+      const item = {
+        id,
+        settle: (result: { messages: ViewMessage[]; toolResults: ViewToolResult[] }): void => {
+          clearTimeout(timer);
+          const index = queue.indexOf(item);
+          if (index !== -1) queue.splice(index, 1);
+          resolve(result);
+        },
+      };
+      const timer = setTimeout(() => {
+        const index = queue.indexOf(item);
+        if (index !== -1) queue.splice(index, 1);
+        reject(new Error("查询子代理过程超时"));
+      }, 10_000);
+      queue.push(item);
+      this.#post(sessionId, { type: "subagentTranscript", id });
+    });
+  }
+
   getView(sessionId: string): ConversationView | undefined {
     const entry = this.#workers.get(sessionId);
     // 经 DB 回填，保证 fileChanges 与持久化一致
@@ -1219,6 +1295,7 @@ export class SessionManager {
     if (dropped.length > 0) this.#emitPending(entry.sessionId);
     // 无人再能响应分支查询；清空队列，等待方各自的超时会收敛
     entry.pendingBranches.length = 0;
+    entry.pendingTranscripts.length = 0;
     try {
       entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
     } catch {

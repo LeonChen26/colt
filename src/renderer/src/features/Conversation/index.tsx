@@ -216,6 +216,9 @@ export function Conversation({
   /** 「要看某个文件」的请求（A3-2）；null = 尚未点过；seq 用于「同一文件再点一次也重读」。
    *  ⑦-G 之后它不再切「文件」页签，而是让「任务摘要」落到下钻的**内容层**。 */
   const [dockFile, setDockFile] = useState<{ path: string; seq: number } | null>(null);
+  /** 「要看某个子代理的完整过程」的请求（④ 子代理卡的按钮）；null = 尚未点过。
+   *  与 `dockFile` 同形：都让「任务摘要」落到**下钻的某一层**，目标从文件内容多了一种到子代理流。 */
+  const [dockSubagent, setDockSubagent] = useState<{ id: string; seq: number } | null>(null);
   /** 内嵌浏览器视图状态（loaded 为 false 表示尚未创建 WebContents） */
   const [browser, setBrowser] = useState<BrowserViewState | null>(null);
   /** 右栏可用宽度：用于把「建议宽度」钳制到不挤压中栏（⑦-B 中栏下限 360px） */
@@ -331,6 +334,33 @@ export function Conversation({
       openDockKind(DOCK_DEFAULT_KIND);
     },
     [openDockKind],
+  );
+
+  /**
+   * 打开一个子代理的**完整过程流**（④ 子代理卡的「在右栏查看完整过程」）。
+   * 同 `openFile`：先切回「任务摘要」，再由容器把下钻落到**子代理流层**。
+   * `seq` 每次自增，保证**同一个子代理再点一次也会重下钻**（重挂面板、重拉流）。
+   */
+  const openSubagent = useCallback(
+    (id: string) => {
+      setDockSubagent((prev) => ({ id, seq: (prev?.seq ?? 0) + 1 }));
+      openDockKind(DOCK_DEFAULT_KIND);
+    },
+    [openDockKind],
+  );
+
+  /**
+   * 中止**单个**子代理（「任务摘要」此刻段那一行的「中止」）。
+   * 与「停止」分开：那个中断整个会话，这个只收掉跑偏的某一个子代理；worker 已回收时
+   * 是空操作（子代理随 worker 同寿命）。
+   */
+  const abortSubagent = useCallback(
+    (id: string) => {
+      void window.colt.invoke("session.subagentAbort", { sessionId, id }).catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    },
+    [sessionId],
   );
 
   /**
@@ -478,6 +508,8 @@ export function Conversation({
     setDockActiveId(DOCK_DEFAULT_KIND);
     // 文件预览目标也清掉：路径是相对本会话工作目录的，跨会话沿用会指向别的项目
     setDockFile(null);
+    // 子代理目标同理：lane 名是本会话内生成的，跨会话沿用会指向一个不存在的子代理
+    setDockSubagent(null);
 
     const apply = (next: BrowserViewState): void => {
       if (disposed) return;
@@ -883,7 +915,7 @@ export function Conversation({
    * `resultMap` 的值就是契约里的 `ViewToolResult`（含 `hasImage`）——别在这里收窄成
    * `{output,isError}`，否则「图在视图外」会被静默丢掉，卡片就永远读不回截图。
    */
-  const { messages, resultMap, changes } = useStableView(view);
+  const { messages, resultMap, changes, subagents } = useStableView(view);
 
   const running = view?.running ?? false;
 
@@ -1132,8 +1164,10 @@ export function Conversation({
               messages={messages}
               resultMap={resultMap}
               changes={changes}
+              subagents={subagents}
               onHoverFile={setHoveredFile}
               onOpenFile={openFile}
+              onOpenSubagent={openSubagent}
               openState={toolOpenState}
               onToggleOpen={toggleToolOpen}
               scrollRef={scrollRef}
@@ -1164,7 +1198,9 @@ export function Conversation({
                     args={tool.args}
                     running
                     result={{ output: tool.output, isError: false }}
+                    subagent={subagents.get(tool.id)}
                     onOpenFile={openFile}
+                    onOpenSubagent={openSubagent}
                   />
                 ))}
               </AssistantRow>
@@ -1578,6 +1614,8 @@ export function Conversation({
           onResetViewport={resetBrowserViewport}
           onBrowserZoom={browserZoom}
           fileRequest={dockFile}
+          subagentRequest={dockSubagent}
+          onAbortSubagent={abortSubagent}
           instances={dockInstances}
           activeId={dockActiveId}
           onActivate={activateDockInstance}

@@ -25,6 +25,8 @@ export interface UserQuestionRecord {
   /** 入队时刻（ms），界面据此算剩余时间 */
   requestedAt: number;
   timeoutMs: number;
+  /** 这次提问来自哪个子代理（主对话的提问没有这个字段）——卡片要能标出来源 */
+  subagent?: { id: string; name: string };
 }
 
 /**
@@ -68,6 +70,8 @@ export class QuestionStore {
     toolCallId: string,
     questions: AskUserQuestion[],
     timeoutMs: number,
+    /** 这次提问来自哪个子代理（主对话没有这个字段）——卡片上要标「来自 X」 */
+    subagent?: { id: string; name: string },
   ): void {
     const durationMs = timeoutMs > 0 ? timeoutMs : APPROVAL_TIMEOUT_MS;
     // 同一条重复入队（上游重发）时先撤旧定时器：它到点会把**新**记录一起判成超时，
@@ -83,6 +87,7 @@ export class QuestionStore {
       questions,
       requestedAt: Date.now(),
       timeoutMs: durationMs,
+      ...(subagent === undefined ? {} : { subagent }),
     });
 
     const timer = setTimeout(() => {

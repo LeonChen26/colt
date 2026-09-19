@@ -17,11 +17,13 @@ import type {
   ConversationView,
   ViewFileChange,
   ViewMessage,
+  ViewSubagent,
   ViewToolResult,
 } from "@shared/worker-protocol";
 import {
   keepStableById,
   keepStableResultMap,
+  keepStableSubagentMap,
   sameViewFileChange,
   sameViewMessage,
 } from "@/lib/stable-view";
@@ -32,6 +34,8 @@ export type StableView = {
   /** `toolCallId → 结果`；引用稳定同样是为了让消息组件不被无谓地重渲染 */
   resultMap: Map<string, ViewToolResult>;
   changes: ViewFileChange[];
+  /** `toolCallId → 子代理`：④ 卡据此认出「这次工具调用是个子代理」 */
+  subagents: Map<string, ViewSubagent>;
 };
 
 /**
@@ -45,6 +49,7 @@ export function useStableView(view: ConversationView | null): StableView {
     messages: keepStableById(last?.messages ?? [], view?.messages ?? [], sameViewMessage),
     resultMap: keepStableResultMap(last?.resultMap, view?.toolResults ?? []),
     changes: keepStableById(last?.changes ?? [], view?.fileChanges ?? [], sameViewFileChange),
+    subagents: keepStableSubagentMap(last?.subagents, view?.subagents ?? []),
   };
   previous.current = next;
   return next;

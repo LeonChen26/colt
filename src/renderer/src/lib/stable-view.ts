@@ -18,7 +18,13 @@
  * 漏掉一个就会表现成「后台数据变了、界面纹丝不动」。`tests/stable-view.test.ts`
  * 用「逐字段扰动」的办法守着这件事——契约新增字段而这里没跟上，那条用例会先红。
  */
-import type { ViewFileChange, ViewMessage, ViewToolResult } from "@shared/worker-protocol";
+import type {
+  ViewFileChange,
+  ViewMessage,
+  ViewRunningTool,
+  ViewSubagent,
+  ViewToolResult,
+} from "@shared/worker-protocol";
 
 /** 图片块：`data` 是 base64、可能很长，但 `===` 先比引用能短路掉绝大多数调用 */
 function sameImage(
@@ -142,5 +148,89 @@ export function keepStableResultMap(
   }
   const map = new Map<string, ViewToolResult>();
   for (const item of next) map.set(item.id, item);
+  return map;
+}
+
+/** 一条正在跑的工具是否等价（子代理尾部里也会出现它） */
+function sameRunningTool(a: ViewRunningTool, b: ViewRunningTool): boolean {
+  if (a === b) return true;
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.args === b.args &&
+    a.output === b.output &&
+    a.fullOutputPath === b.fullOutputPath &&
+    a.startedAt === b.startedAt
+  );
+}
+
+function sameRunningTools(a: ViewRunningTool[], b: ViewRunningTool[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (!sameRunningTool(a[index]!, b[index]!)) return false;
+  }
+  return true;
+}
+
+/**
+ * 一个子代理总账是否等价。
+ *
+ * 尾部与统计都要逐项比：它们**都会显示出来**（此刻段那一行、④ 卡里的预览与耗时/花费）。
+ * 只比 status 的话，运行中的文本流与工具进度就永远刷不出来——界面看着像卡住了。
+ */
+export function sameViewSubagent(a: ViewSubagent, b: ViewSubagent): boolean {
+  if (a === b) return true;
+  return (
+    a.id === b.id &&
+    a.toolCallId === b.toolCallId &&
+    a.name === b.name &&
+    a.title === b.title &&
+    a.status === b.status &&
+    a.startedAt === b.startedAt &&
+    a.endedAt === b.endedAt &&
+    a.error === b.error &&
+    a.tail.streamingText === b.tail.streamingText &&
+    a.tail.thought === b.tail.thought &&
+    a.tail.stepCount === b.tail.stepCount &&
+    sameRunningTools(a.tail.runningTools, b.tail.runningTools) &&
+    sameViewMessageList(a.tail.recentSteps, b.tail.recentSteps) &&
+    a.stats.inputTokens === b.stats.inputTokens &&
+    a.stats.outputTokens === b.stats.outputTokens &&
+    a.stats.costUsd === b.stats.costUsd
+  );
+}
+
+/** 一组消息是否逐条等价（顺序也是内容的一部分） */
+function sameViewMessageList(a: ViewMessage[], b: ViewMessage[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (!sameViewMessage(a[index]!, b[index]!)) return false;
+  }
+  return true;
+}
+
+/**
+ * `toolCallId → 子代理` 的查表（④ 卡靠它把工具调用认成子代理卡）。
+ * 与 `keepStableResultMap` 同一套理由：视图每 50ms 重推，Map 换引用等于整列表重渲染。
+ */
+export function keepStableSubagentMap(
+  prev: Map<string, ViewSubagent> | undefined,
+  next: ViewSubagent[],
+): Map<string, ViewSubagent> {
+  if (prev !== undefined && prev.size === next.length) {
+    let unchanged = true;
+    for (const item of next) {
+      const old = prev.get(item.toolCallId);
+      if (old === undefined || !sameViewSubagent(old, item)) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) return prev;
+  }
+  const map = new Map<string, ViewSubagent>();
+  for (const item of next) map.set(item.toolCallId, item);
   return map;
 }

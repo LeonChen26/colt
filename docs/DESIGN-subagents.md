@@ -1,6 +1,10 @@
 # 子代理（subagent）设计草案
 
-> **状态**：**设计完成、尚未实施**（2026-09）。决策 D1–D10 已逐条拍定（见 §3、§13）。
+> **状态**：**已实施**（2026-09-19，P0–P3；决策 D1–D10 逐条落地，见 §3、§13）。
+> **落地位置**：worker 侧 `src/worker/lib/{subagent,agent-defs,subagent-view,lane-ownership,tool-bookkeeping,approval-bridge}.ts`；
+> 界面侧 `SubagentPreview.tsx` / `panels/SubagentStream.tsx` / `FollowPanel.tsx` / `MessageList.tsx` / `ChangeDrilldown.tsx`；
+> 冒烟 `COLT_SMOKE_MODE=subagent`（免模型）；单测 `tests/{subagent,lane-ownership,agent-defs,subagent-view,stable-view,telemetry,project}.test.ts`。
+> **P4 未做**（按计划）：按子代理归属分组统计、`/subagent` 命令；**计费 e2e**（`subagent-e2e`）亦未建（见 §10、§12）。
 > **一句话**：给模型一个「把一件事整包交给另一个 agent 去做」的工具——子代理跑在**同会话的独立
 > lane** 上（进程内、独立 transcript、独立工具白名单），**开局只有委托方写的那段任务描述**（`fresh`，
 > 刻意不继承主对话历史），产出一段结论回到主对话；界面上它是 ④ 的一张**活卡** + ⑦「任务摘要」

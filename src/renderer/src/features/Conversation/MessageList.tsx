@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  Bot,
   Brain,
   Check,
   ChevronRight,
@@ -28,13 +29,15 @@ import {
   FilePlus,
   Globe,
   Monitor,
+  PanelRight,
   Terminal,
   Wrench,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
-import type { ViewFileChange, ViewMessage } from "@shared/worker-protocol";
+import type { ViewFileChange, ViewMessage, ViewSubagent } from "@shared/worker-protocol";
 import { Markdown } from "../../components/Markdown";
 import { DiffView } from "../../components/DiffView";
+import { SubagentPreview } from "./SubagentPreview";
 import { TerminalOutput } from "../../components/TerminalOutput";
 import { formatArgs, matchChangeByPath, parseArgsJson } from "../../lib/format";
 import {
@@ -116,8 +119,10 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   resultMap,
   changes,
+  subagents,
   onHoverFile,
   onOpenFile,
+  onOpenSubagent,
   openState,
   onToggleOpen,
 }: {
@@ -126,9 +131,13 @@ export const MessageBubble = memo(function MessageBubble({
   message: ViewMessage;
   resultMap: Map<string, ToolResult>;
   changes: ViewFileChange[];
+  /** `toolCallId → 子代理`：`subagent` 那次调用据此特化成子代理卡 */
+  subagents: ReadonlyMap<string, ViewSubagent>;
   onHoverFile?: (path: string | null) => void;
   /** 点工具卡里的文件路径 → 在右栏预览它（A3-2） */
   onOpenFile?: (path: string) => void;
+  /** 点子代理卡上的「在右栏查看完整过程」→ 下钻到它的完整流 */
+  onOpenSubagent?: (id: string) => void;
   /** 工具卡展开状态共享表（键 = 工具调用 id），与流式区共用，完成迁移时不丢展开态 */
   openState: ReadonlyMap<string, boolean>;
   /** 卡片改了展开状态 → 回传容器（唯一真源在 `Conversation`） */
@@ -173,9 +182,11 @@ export const MessageBubble = memo(function MessageBubble({
           args={call.args}
           durationMs={call.durationMs}
           result={resultMap.get(call.id)}
+          subagent={subagents.get(call.id)}
           change={matchChangeByPath(changes, parseArgsJson(call.args).path)}
           onHoverFile={onHoverFile}
           onOpenFile={onOpenFile}
+          onOpenSubagent={onOpenSubagent}
         />
       ))}
     </AssistantRow>
@@ -214,8 +225,10 @@ export function MessageWindow({
   messages,
   resultMap,
   changes,
+  subagents,
   onHoverFile,
   onOpenFile,
+  onOpenSubagent,
   openState,
   onToggleOpen,
   scrollRef,
@@ -227,8 +240,11 @@ export function MessageWindow({
   messages: ViewMessage[];
   resultMap: Map<string, ToolResult>;
   changes: ViewFileChange[];
+  /** `toolCallId → 子代理`（④ 卡特化用；引用由 `useStableView` 稳定住） */
+  subagents: Map<string, ViewSubagent>;
   onHoverFile?: (path: string | null) => void;
   onOpenFile?: (path: string) => void;
+  onOpenSubagent?: (id: string) => void;
   openState: ReadonlyMap<string, boolean>;
   onToggleOpen: (id: string, open: boolean) => void;
   /** 消息流的滚动容器：窗口要知道滚到哪了，补一段/翻页时也要自己摆 `scrollTop` */
@@ -451,8 +467,10 @@ export function MessageWindow({
         message={message}
         resultMap={resultMap}
         changes={changes}
+        subagents={subagents}
         onHoverFile={onHoverFile}
         onOpenFile={onOpenFile}
+        onOpenSubagent={onOpenSubagent}
         openState={openState}
         onToggleOpen={onToggleOpen}
       />
@@ -624,6 +642,13 @@ function describeTool(
         typeof args.x === "number" && typeof args.y === "number" ? `(${args.x}, ${args.y})` : undefined;
       return { icon: <Monitor {...ICON.sm} />, subtitle: coords ? `${action} ${coords}` : action };
     }
+    // 子代理：副标题给任务（与「任务摘要」此刻段说的是同一件事）。**认领不到那条总账时**
+    // （被 `MAX_FINISHED_SUBAGENTS` 淘汰了）走的就是这一支，别让它退化成一排空白。
+    case "subagent": {
+      const title = typeof args.title === "string" ? args.title : undefined;
+      const task = typeof args.task === "string" ? args.task : undefined;
+      return { icon: <Bot {...ICON.sm} />, subtitle: title ?? task };
+    }
     default:
       return { icon: <Wrench {...ICON.sm} />, subtitle: path ?? command };
   }
@@ -634,6 +659,14 @@ function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** 子代理终态的界面措辞（四种状态都要有名字——颜色只是辅助） */
+function subagentStatusLabel(status: ViewSubagent["status"]): string {
+  if (status === "running") return "运行中";
+  if (status === "completed") return "完成";
+  if (status === "aborted") return "已中止";
+  return "失败";
+}
+
 /** 可展开的工具调用卡片：折叠时显示名称 + 参数摘要 + 增删/耗时 */
 export function ToolCard({
   sessionId,
@@ -641,6 +674,7 @@ export function ToolCard({
   args,
   result,
   durationMs,
+  subagent,
   change,
   running,
   openId,
@@ -648,6 +682,7 @@ export function ToolCard({
   onToggleOpen,
   onHoverFile,
   onOpenFile,
+  onOpenSubagent,
 }: {
   /** 会话 id（按需读回落盘截图用） */
   sessionId: string;
@@ -655,6 +690,11 @@ export function ToolCard({
   args: string;
   result?: ToolResult;
   durationMs?: number;
+  /**
+   * 这次调用是个子代理（按 `toolCallId` 认领）。有它时本卡片**特化**：
+   * 标题变成「子代理 · <名字>」，展开是有界预览 + 「在右栏查看完整过程」。
+   */
+  subagent?: ViewSubagent;
   change?: ViewFileChange;
   running?: boolean;
   /** 展开 state 共享表里的键（工具调用 id） */
@@ -666,6 +706,8 @@ export function ToolCard({
   onHoverFile?: (path: string | null) => void;
   /** 点副标题里的文件路径 → 在右栏预览它（A3-2） */
   onOpenFile?: (path: string) => void;
+  /** 点子代理卡的「在右栏查看完整过程」→ 下钻到它的完整流 */
+  onOpenSubagent?: (id: string) => void;
 }): React.JSX.Element {
   /**
    * 展开状态**不放在本组件里**：同一个工具调用在「流式区」与「完成态消息」是两次挂载，
@@ -718,7 +760,17 @@ export function ToolCard({
         ? `data:${fetchedImage.mimeType};base64,${fetchedImage.data}`
         : undefined;
   const parsed = useMemo(() => parseArgsJson(args), [args]);
-  const { icon, subtitle } = describeTool(name, parsed);
+  const base = describeTool(name, parsed);
+  /**
+   * 子代理卡：`subagent` 这次调用**且**它在视图总账里（按 toolCallId 认领）。
+   * 认领不到时按普通工具卡渲染——宁可退化成一张普通卡，也不要凭空造一张卡。
+   */
+  const card = name === "subagent" ? subagent : undefined;
+  const icon = card === undefined ? base.icon : <Bot {...ICON.sm} />;
+  // 子代理没有路径/命令可言，副标题用任务摘要
+  const subtitle = card === undefined ? base.subtitle : card.title;
+  const subagentElapsed =
+    card?.endedAt === undefined ? undefined : card.endedAt - card.startedAt;
   const isError = result?.isError ?? false;
   const path = typeof parsed.path === "string" ? parsed.path : undefined;
   const hasArgs = Object.keys(parsed).length > 0;
@@ -751,6 +803,7 @@ export function ToolCard({
 
   return (
     <div
+      data-tool-card=""
       className={cn(
         "self-start overflow-hidden rounded-[8px] border bg-surface-raised",
         isError ? "border-danger/50" : "border-line",
@@ -772,7 +825,7 @@ export function ToolCard({
           />
           <span className="shrink-0 text-text-muted">{icon}</span>
           <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
-            {name}
+            {card === undefined ? name : `子代理 · ${card.name}`}
           </span>
         </button>
         <span
@@ -806,7 +859,23 @@ export function ToolCard({
               <span className="text-danger-fg">−{change!.removedLines}</span>
             </span>
           )}
-          {running ? (
+          {card !== undefined ? (
+            <span
+              data-subagent-card-status={card.status}
+              className={cn(
+                "flex items-center gap-1.5",
+                card.status === "running"
+                  ? "text-text-secondary"
+                  : card.status === "completed"
+                    ? "text-success"
+                    : "text-danger-fg",
+              )}
+            >
+              {card.status === "running" && <span className="live-dot" />}
+              {subagentStatusLabel(card.status)}
+              {subagentElapsed !== undefined && ` ${formatDuration(subagentElapsed)}`}
+            </span>
+          ) : running ? (
             <span className="flex items-center gap-1.5 text-text-secondary">
               <span className="live-dot" />
               运行中
@@ -826,7 +895,32 @@ export function ToolCard({
 
       {open && (
         <div className="border-t border-line bg-surface p-2">
-          {change?.patch ? (
+          {card !== undefined ? (
+            <>
+              <SubagentPreview subagent={card} />
+              {result?.output ? (
+                <>
+                  <div className="mt-2 mb-1 text-[11px] text-text-muted">
+                    作为工具结果回到主对话的内容
+                  </div>
+                  <pre className="max-h-60 overflow-auto rounded-[6px] bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                    {result.output}
+                  </pre>
+                </>
+              ) : null}
+              {onOpenSubagent !== undefined && (
+                <button
+                  type="button"
+                  data-subagent-open={card.id}
+                  onClick={() => onOpenSubagent(card.id)}
+                  className="mt-2 flex items-center gap-1 rounded-[5px] border border-line px-2 py-1 text-[11px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+                >
+                  <PanelRight {...ICON.xs} />
+                  在右栏查看完整过程
+                </button>
+              )}
+            </>
+          ) : change?.patch ? (
             <DiffView patch={change.patch} />
           ) : (
             <>

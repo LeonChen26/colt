@@ -745,6 +745,8 @@ export async function runDock(
       // 夹具里**一个技能都没装**：这是「知道，且为空」，正是 `/skill` 本地拦截该生效的那种情形
       // （区别于 `undefined` = 拿不到清单，那时必须放行，否则会把有效调用误判成失败）。
       skills: [],
+      // 子代理同上：**知道，且没有**——本模式下不驱动子代理（它有自己的 `subagent` 模式）
+      subagents: [],
       messages: [
         {
           id: "smoke-msg-1",

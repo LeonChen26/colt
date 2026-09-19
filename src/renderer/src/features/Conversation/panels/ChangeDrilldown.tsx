@@ -27,17 +27,25 @@
  * 层内跳转不该绕一圈回到容器再下来。
  */
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, FileDiff, FileText, Folder, Undo2 } from "lucide-react";
+import { Bot, ChevronLeft, ChevronRight, FileDiff, FileText, Folder, Undo2 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { buildChangeList, type ChangeFile } from "@/lib/change-list";
 import { formatAgo, samePath } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { DiffView } from "../../../components/DiffView";
 import type { NetChangeResult } from "@shared/protocol";
-import type { ViewFileChange } from "@shared/worker-protocol";
+import type { ViewFileChange, ViewSubagent } from "@shared/worker-protocol";
 import { FilePreview } from "./FilePreview";
+import { SubagentStream } from "./SubagentStream";
 
-export type DrillLayer = "list" | "diff" | "content";
+/**
+ * 下钻的层。
+ *
+ * `list / diff / content` 是「本次改动」那条线（清单 → diff → 文件内容）；
+ * `subagent` 是**并排的另一种下钻目标**：某个子代理的完整过程流（决策三 D5）。
+ * 它不是「改动」这条线的某一层——进入它不经过清单，回退也是直接回「任务摘要」。
+ */
+export type DrillLayer = "list" | "diff" | "content" | "subagent";
 
 /**
  * 容器发来的「进入下钻 / 换层」**指令**。
@@ -56,8 +64,10 @@ export interface DrillRequest {
   readonly layer: DrillLayer;
   /** 仅 `content` 层有意义 */
   readonly path: string | null;
-  /** 仅 `content` 层有意义：重读同一文件靠它自增 */
+  /** 仅 `content` / `subagent` 层有意义：重读同一目标（文件内容 / 子代理流）靠它自增 */
   readonly token: number;
+  /** 仅 `subagent` 层有意义：要展开的那个子代理（`ViewSubagent.id`） */
+  readonly subagentId: string | null;
 }
 
 /**
@@ -229,6 +239,7 @@ function NetDiff({
 export function ChangeDrilldown({
   sessionId,
   changes,
+  subagents,
   entry,
   highlightPath,
   menuOpen,
@@ -236,7 +247,9 @@ export function ChangeDrilldown({
 }: {
   sessionId: string;
   changes: ViewFileChange[];
-  /** 容器发来的进入请求（点总账 = 清单层；点路径 = 内容层） */
+  /** 本次会话的子代理总账——`subagent` 层靠它在面包屑上写出名字 */
+  subagents: ViewSubagent[];
+  /** 容器发来的进入请求（点总账 = 清单层；点路径 = 内容层；点子代理 = 子代理流层） */
   entry: DrillRequest;
   /** hover ④ 的工具卡时跟随高亮清单里对应的文件行（⑦-A 的现场联动） */
   highlightPath?: string | null;
@@ -255,13 +268,16 @@ export function ChangeDrilldown({
 
   const [layer, setLayer] = useState<DrillLayer>(entry.layer);
   const [path, setPath] = useState<string | null>(entry.layer === "content" ? entry.path : null);
+  const [subagentId, setSubagentId] = useState<string | null>(
+    entry.layer === "subagent" ? entry.subagentId : null,
+  );
   const [revisionId, setRevisionId] = useState<string | null>(null);
   /** `×N` 展开了历史的那几个文件 */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   /** 内容层的重读令牌：换文件时靠 `path` 变，重读同一文件靠它自增 */
   const [token, setToken] = useState(entry.layer === "content" ? entry.token : 0);
 
-  // 容器再次发来请求（④ 又点了一个路径 / 又点了总账）→ 按请求重置层。
+  // 容器再次发来请求（④ 又点了一个路径 / 又点了总账 / 又点了一个子代理）→ 按请求重置层。
   // 依赖是 **`nonce`** 而不是 `entry` 对象本身：对象身份会因调用方的实现细节而变或不变，
   // `nonce` 只随「真的有新请求」而变。理由见 `DrillRequest`。
   useEffect(() => {
@@ -269,6 +285,11 @@ export function ChangeDrilldown({
     setRevisionId(null);
     if (entry.layer === "content") {
       setPath(entry.path);
+      setToken(entry.token);
+    }
+    if (entry.layer === "subagent") {
+      setSubagentId(entry.subagentId);
+      // 同一个子代理再点一次也要重拉（它可能又跑了新步骤）：令牌变 → 面板重读
       setToken(entry.token);
     }
     // eslint 式的「依赖不全」在此是有意的：`entry` 的其余字段都随 `nonce` 一起换。
@@ -305,6 +326,11 @@ export function ChangeDrilldown({
    * 「返回」应该直接回「任务摘要」，而不是落在一个空清单上。
    */
   const goUp = (): void => {
+    // 子代理流是**并排的另一种目标**，不是改动这条线的某一层：回退直接回「任务摘要」
+    if (layer === "subagent") {
+      onExit();
+      return;
+    }
     if (layer === "content" && current !== undefined && current.history.length > 0) {
       goDiff(current.path, current.history[0]?.id);
       return;
@@ -342,13 +368,33 @@ export function ChangeDrilldown({
   });
 
   const inList = layer === "list";
-  const showChangeCrumb = inList || (current !== undefined && current.history.length > 0);
+  const inSubagent = layer === "subagent";
+  const subagent =
+    inSubagent && subagentId !== null
+      ? subagents.find((item) => item.id === subagentId)
+      : undefined;
+  // 子代理流是另一条线，不显示「本次改动」那一段面包屑
+  const showChangeCrumb =
+    !inSubagent && (inList || (current !== undefined && current.history.length > 0));
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col" data-drill={layer}>
       {/* 面包屑：只列**真实存在**的层（没被改过的文件没有「本次改动」这一层） */}
       <nav className="flex h-[30px] shrink-0 items-center gap-0.5 border-b border-line px-1.5">
         <CrumbButton marker="follow" label="任务摘要" onClick={onExit} />
+        {inSubagent && (
+          <>
+            <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
+            <span
+              data-drill-crumb="subagent"
+              className="flex min-w-0 items-center gap-1 px-1 text-[11px] font-medium text-text-primary"
+              title={subagent?.title}
+            >
+              <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
+              <span className="truncate">子代理 · {subagent?.name ?? subagentId}</span>
+            </span>
+          </>
+        )}
         {showChangeCrumb && (
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
@@ -368,7 +414,7 @@ export function ChangeDrilldown({
             )}
           </>
         )}
-        {!inList && path !== null && (
+        {!inList && !inSubagent && path !== null && (
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             <span
@@ -561,6 +607,15 @@ export function ChangeDrilldown({
             </div>
           )}
         </div>
+      ) : inSubagent ? (
+        /* 子代理的完整过程流：视图里只有有界尾部，这里按需拉整份（决策七 D9） */
+        <div className="min-h-0 flex-1 overflow-auto" data-drill-subagent={subagentId ?? ""}>
+          {subagentId === null ? (
+            <p className="px-3 py-6 text-center text-[11.5px] text-text-muted">没有选中的子代理。</p>
+          ) : (
+            <SubagentStream sessionId={sessionId} subagentId={subagentId} reloadToken={token} />
+          )}
+        </div>
       ) : layer === "diff" ? (
         <div className="flex min-h-0 flex-1 flex-col" data-drill-diff="">
           <div className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line px-2.5">
@@ -647,7 +702,13 @@ export function ChangeDrilldown({
       )}
 
       <BackRow
-        label={inList ? "返回「任务摘要」" : layer === "diff" ? "返回清单" : "返回上一级"}
+        label={
+          inList || inSubagent
+            ? "返回「任务摘要」"
+            : layer === "diff"
+              ? "返回清单"
+              : "返回上一级"
+        }
         onClick={goUp}
       />
     </div>

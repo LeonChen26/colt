@@ -12,12 +12,20 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import type { ViewFileChange, ViewMessage, ViewToolResult } from "../src/shared/worker-protocol.ts";
+import type {
+  ViewFileChange,
+  ViewMessage,
+  ViewRunningTool,
+  ViewSubagent,
+  ViewToolResult,
+} from "../src/shared/worker-protocol.ts";
 import {
   keepStableById,
   keepStableResultMap,
+  keepStableSubagentMap,
   sameViewFileChange,
   sameViewMessage,
+  sameViewSubagent,
   sameViewToolResult,
 } from "../src/renderer/src/lib/stable-view.ts";
 
@@ -50,6 +58,36 @@ const FILE_CHANGE: ViewFileChange = {
   timestamp: 1_700_000_000_000,
   netAddedLines: 3,
   netRemovedLines: 4,
+};
+
+/** 运行中的工具（子代理尾部里会出现它） */
+const RUNNING_TOOL: ViewRunningTool = {
+  id: "c1",
+  name: "read",
+  args: '{"path":"a.ts"}',
+  output: "读到的内容",
+  fullOutputPath: "/tmp/colt/out.txt",
+  startedAt: 1_700_000_000_000,
+};
+
+/** 一个字段齐全的子代理总账（可选字段也写全，否则扰动覆盖不到） */
+const SUBAGENT: ViewSubagent = {
+  id: "sub:researcher:abcd1234",
+  toolCallId: "c1",
+  name: "researcher",
+  title: "查一下 read 工具在哪注册",
+  status: "running",
+  startedAt: 1_700_000_000_000,
+  endedAt: 1_700_000_000_100,
+  error: "连接被拒",
+  tail: {
+    streamingText: "正在写结论",
+    thought: "先定位注册点",
+    runningTools: [RUNNING_TOOL],
+    recentSteps: [MESSAGE],
+    stepCount: 3,
+  },
+  stats: { inputTokens: 10, outputTokens: 2, costUsd: 0.01 },
 };
 
 /**
@@ -111,12 +149,25 @@ describe("稳定投影：逐字段判等", () => {
       "removedLines",
       "timestamp",
     ]);
+    assert.deepEqual(Object.keys(SUBAGENT).sort(), [
+      "endedAt",
+      "error",
+      "id",
+      "name",
+      "startedAt",
+      "stats",
+      "status",
+      "tail",
+      "title",
+      "toolCallId",
+    ]);
   });
 
   test("对照：内容相同的两份判为「没变」（否则扰动用例可能只是恒假）", () => {
     assert.ok(sameViewMessage(MESSAGE, structuredClone(MESSAGE)));
     assert.ok(sameViewToolResult(TOOL_RESULT, structuredClone(TOOL_RESULT)));
     assert.ok(sameViewFileChange(FILE_CHANGE, structuredClone(FILE_CHANGE)));
+    assert.ok(sameViewSubagent(SUBAGENT, structuredClone(SUBAGENT)));
     assert.ok(sameViewMessage(MESSAGE, MESSAGE));
   });
 
@@ -130,6 +181,31 @@ describe("稳定投影：逐字段判等", () => {
 
   test("文件改动：每个字段被改动都判为「变了」（含净值这两个可空字段）", () => {
     assertEveryFieldDetected(FILE_CHANGE, sameViewFileChange, "文件改动");
+  });
+
+  test("子代理：每个字段被改动都判为「变了」（尾部与统计都要逐项比）", () => {
+    assertEveryFieldDetected(SUBAGENT, sameViewSubagent, "子代理");
+  });
+
+  test("子代理尾部：流式文本 / 思考 / 工具 / 步数 / 最近步任一不同都算变了", () => {
+    const mutate = (patch: Partial<ViewSubagent["tail"]>): ViewSubagent => ({
+      ...SUBAGENT,
+      tail: { ...SUBAGENT.tail, ...patch },
+    });
+    assert.ok(!sameViewSubagent(SUBAGENT, mutate({ streamingText: null })));
+    assert.ok(!sameViewSubagent(SUBAGENT, mutate({ thought: null })));
+    assert.ok(!sameViewSubagent(SUBAGENT, mutate({ runningTools: [] })));
+    assert.ok(!sameViewSubagent(SUBAGENT, mutate({ stepCount: 4 })));
+    assert.ok(!sameViewSubagent(SUBAGENT, mutate({ recentSteps: [] })));
+  });
+
+  test("子代理统计：自己那一份消耗变了也要判为变了（④ 卡里会显示它）", () => {
+    assert.ok(
+      !sameViewSubagent(SUBAGENT, { ...SUBAGENT, stats: { ...SUBAGENT.stats, costUsd: 0.02 } }),
+    );
+    assert.ok(
+      !sameViewSubagent(SUBAGENT, { ...SUBAGENT, stats: { ...SUBAGENT.stats, inputTokens: 11 } }),
+    );
   });
 
   test("净值算不出（null）与 0 不是一回事", () => {
@@ -227,6 +303,27 @@ describe("稳定投影：引用复用", () => {
   test("结果表：条数一样但换了一条（id 不同）也要换新 Map", () => {
     const prev = keepStableResultMap(undefined, [TOOL_RESULT]);
     const next = keepStableResultMap(prev, [{ ...TOOL_RESULT, id: "c2" }]);
+    assert.notStrictEqual(next, prev);
+    assert.equal(next.has("c1"), false);
+    assert.equal(next.has("c2"), true);
+  });
+
+  test("子代理查表：内容没变时返回同一个 Map 引用", () => {
+    const prev = keepStableSubagentMap(undefined, [SUBAGENT]);
+    assert.equal(keepStableSubagentMap(prev, [structuredClone(SUBAGENT)]), prev);
+  });
+
+  test("子代理查表：某条变了就换新 Map（状态从运行中转完成）", () => {
+    const prev = keepStableSubagentMap(undefined, [SUBAGENT]);
+    const next = keepStableSubagentMap(prev, [{ ...SUBAGENT, status: "completed" }]);
+    assert.notStrictEqual(next, prev);
+    assert.equal(next.get("c1")?.status, "completed");
+    assert.equal(prev.get("c1")?.status, "running");
+  });
+
+  test("子代理查表：按 toolCallId 键控（换个 toolCallId 就是另一条）", () => {
+    const prev = keepStableSubagentMap(undefined, [SUBAGENT]);
+    const next = keepStableSubagentMap(prev, [{ ...SUBAGENT, toolCallId: "c2" }]);
     assert.notStrictEqual(next, prev);
     assert.equal(next.has("c1"), false);
     assert.equal(next.has("c2"), true);
