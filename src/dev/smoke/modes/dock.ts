@@ -13,7 +13,7 @@ import { hostBridge } from "../../../main/host";
 import { sessionManager } from "../../../main/session-manager";
 import { toolOutputDir } from "../../../main/tool-output";
 import { join, resolve } from "node:path";
-import type { ConversationView, ViewFileChange } from "@shared/worker-protocol";
+import type { ConversationView, ViewFileChange, ViewSkill } from "@shared/worker-protocol";
 import type { ApprovalRequest } from "@shared/protocol";
 import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
 import { createFixtureServer } from "../../../../scripts/fixture-server.mjs";
@@ -2083,7 +2083,15 @@ export async function runDock(
     // 夹具里那个真实会话**一个技能都没装**（本仓没有 `.agents/skills`），所以这里推一份
     // **带技能**的受控视图——`smokeView()` 会整份替换渲染层那份视图，`skills` 必须显式给，
     // 否则浮层只会列 `/compact`（见 `AGENTS.md` ⑪）。
-    const MENU_SKILLS = ["pdf", "code-review"];
+    const MENU_SKILL_NAMES = ["pdf", "code-review"];
+    const MENU_SKILLS: ViewSkill[] = MENU_SKILL_NAMES.map((name) => ({
+      name,
+      description: `夹具技能 ${name}`,
+      source: "project",
+      modelInvocable: true,
+      filePath: `/fixture/.agents/skills/${name}/SKILL.md`,
+      disabled: false,
+    }));
     window.webContents.send("session.view", smokeView({ skills: MENU_SKILLS }));
     await sleep(400);
     const menuItems = (): Promise<string[]> =>
@@ -2186,8 +2194,105 @@ export async function runDock(
       compactCalls.includes(session.id),
     ]);
     log(
-      `  / 候选浮层：清单=${MENU_SKILLS.join("、")}，最后 skill=${skillCalls.length}，prompt=${promptCalls.length}`,
+      `  / 候选浮层：清单=${MENU_SKILL_NAMES.join("、")}，最后 skill=${skillCalls.length}，prompt=${promptCalls.length}`,
     );
+
+    // ---- 技能调用的**归属**（P2）----
+    // 技能调用是内核发的一条 `user` 消息，正文被包成 `<skill …>` 原始 XML。不认它的话，
+    // 一大段 XML 会被当成「你」说的话——署名撒谎，正文还占满屏幕。这里推一条**真的技能调用形状**
+    // （标记由 worker 的 `parseSkillInvocation` 认出来，夹具直接给），验改归属确实落到界面上。
+    const skillInvocationText =
+      '<skill name="pdf" location="/fixture/.agents/skills/pdf/SKILL.md">\n' +
+      "References are relative to /fixture/.agents/skills/pdf.\n\n技能的正文\n</skill>\n\n只改这一处";
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        messages: [
+          {
+            id: "smoke-skill-1",
+            role: "user",
+            text: skillInvocationText,
+            skill: { name: "pdf", instructions: "只改这一处" },
+            toolCalls: [],
+          },
+        ],
+      }),
+    );
+    await sleep(400);
+    checks.push([
+      "技能调用画成「技能」卡，不是「你」的发言（签名不能把内核发的消息算到用户头上）",
+      await run<boolean>(
+        `(() => { const card = document.querySelector("[data-conv-skill='smoke-skill-1']");
+                  return !!card && card.textContent.includes("技能 pdf")
+                    && !document.querySelector("[data-conv-user='smoke-skill-1']"); })()`,
+      ),
+    ]);
+    checks.push([
+      "原始 XML 默认收起（不把整篇正文摊在对话流里）",
+      (await run<number>(`document.querySelectorAll("[data-conv-skill-body]").length`)) === 0,
+    ]);
+    // 收起不是「藏起来不让看」：展开要看得到模型**实际收到**的正文（归属透明的出口）
+    await run(
+      `(() => { const b = document.querySelector("[data-conv-skill-toggle='smoke-skill-1']"); if (b) b.click(); })()`,
+    );
+    await sleep(200);
+    checks.push([
+      "展开后能看到模型实际收到的正文（归属透明）",
+      await run<boolean>(
+        `(() => { const body = document.querySelector("[data-conv-skill-body='smoke-skill-1']");
+                  return !!body && body.textContent.includes("技能的正文"); })()`,
+      ),
+    ]);
+    // 复原，别把这段夹具视图留给后面的用例
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
+
+    // ---- 技能工具卡标记（P3）----
+    // 模型不「调用技能」——它读了技能描述后自觉去 `read` 技能文件。工具卡不打标记的话，
+    // 界面上只会多一张普通 `read` 卡，看不出这次读文件是技能驱动的。标记由 worker 投影时判定
+    // （技能路径集合在它内存里），这里推一条**已带标记**的调用 + 一条普通 read，
+    // 验渲染层确实画成「技能 X」徽标、且不给普通 read 无中生有。
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        messages: [
+          {
+            id: "smoke-skill-tool-1",
+            role: "assistant",
+            text: "",
+            toolCalls: [
+              {
+                id: "smoke-skill-read",
+                name: "read",
+                args: JSON.stringify({ path: "/fixture/.agents/skills/pdf/SKILL.md" }),
+                durationMs: 5,
+                skill: "pdf",
+              },
+              {
+                id: "smoke-plain-read",
+                name: "read",
+                args: JSON.stringify({ path: "src/index.ts" }),
+                durationMs: 4,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    await sleep(400);
+    checks.push([
+      "读技能文件的 read 工具卡带「技能 X」徽标（自选技能可见）",
+      await run<boolean>(
+        `(() => { const badge = document.querySelector("[data-tool-skill='pdf']");
+                  return !!badge && badge.textContent.includes("技能 pdf"); })()`,
+      ),
+    ]);
+    checks.push([
+      "普通 read 不带技能徽标（不给无关调用无中生有）",
+      (await run<number>(`document.querySelectorAll("[data-tool-skill]").length`)) === 1,
+    ]);
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
 
     // 复原打桩，避免影响后续断言（dock 到此也接近尾声）
     sessionManager.compactOrReconnect = realCompactOrReconnect;

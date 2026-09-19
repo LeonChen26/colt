@@ -35,6 +35,25 @@ export interface McpServerView {
   error?: string;
 }
 
+/**
+ * 一条 user 消息其实是**内核替我们发的技能调用**，不是用户自己打的字。
+ *
+ * 为什么必须把它认出来：内核把技能正文包成一条**普通的 user 消息**（`formatSkillInvocation`），
+ * 没有任何结构化标记可依（内核 `acceptRun` 的 `case "skill"` 里就是个 `role: "user"`）。
+ * 不认的话三处都会把它当成「用户说的话」：
+ *   ④ 会话流画成右对齐的用户气泡（一大段原始 XML，署名还是「你」）；
+ *   ② 会话目录的标签取「第一行非空文字」＝`<skill name="…" location="…">`；
+ *   ③ 分支树的摘要同样是那段 XML。
+ * 识别办法见 `worker/lib/skills.ts` 的 `parseSkillInvocation`（锚定内核模板的开头，
+ * 并有单测拿内核真函数钉住，模板一变就红）。
+ */
+export interface ViewSkillInvocation {
+  /** 技能名：`/skill <这个名字>` */
+  name: string;
+  /** 用户在命令后面写的那半句额外指示；没写则没有这个字段 */
+  instructions?: string;
+}
+
 /** 对话中的一条消息（投影后） */
 export interface ViewMessage {
   id: string;
@@ -45,8 +64,19 @@ export interface ViewMessage {
    */
   role: "user" | "assistant" | "other";
   text: string;
-  /** 助手消息里的工具调用 */
-  toolCalls: { id: string; name: string; args: string; durationMs?: number }[];
+  /**
+   * 有值即「这条 user 消息是技能调用」——渲染层据此**改归属**：不画成用户气泡、
+   * 目录/分支树不拿原始 XML 当标签。**不是**「隐藏这条消息」：它仍是一轮、仍可导航。
+   */
+  skill?: ViewSkillInvocation;
+  /**
+   * 助手消息里的工具调用。
+   *
+   * `skill` 有值即「这次 `read` 读的就是某个已装载技能的文件」——模型**因为技能而改变行为**
+   * 的唯一可观测信号（P3）：它靠读了描述后自觉去读技能文件，界面上不加标记就只剩一张普通卡。
+   * 由 worker 投影时判定（技能路径集合就在它内存里），渲染层只负责画出来。
+   */
+  toolCalls: { id: string; name: string; args: string; durationMs?: number; skill?: string }[];
   /** 助手消息的思考过程（思考轨），无则为空 */
   thought?: string;
   /** 用户消息随附的图片（base64 不含 data URI 前缀），无则为空 */
@@ -182,6 +212,81 @@ export interface ViewRunOutcome {
   error?: string;
 }
 
+/**
+ * 一条已装载技能的**可展示信息**。
+ *
+ * 为什么要整份信息、而不只是名字：装载状态应当由**视图**承载（谁装了、来自哪、
+ * 是不是对模型公开），而不是靠一条 `notice` 播报——状态当事件播报会把「事件」页签
+ * 灌满例行信息（见 `reviews/skills-gap-report-2026-09-19.md` P4）。
+ * 渲染层今天只用 `name`（本地拦截 `/skill`），其余字段是给「技能」面板/出处展示的底子。
+ */
+export interface ViewSkill {
+  /** 与内核 `Skill.name` 同名同义：`/skill <这个名字>` 就是按它查 */
+  name: string;
+  /** 技能自述的用途（来自 SKILL.md frontmatter），模型看到的就是它 */
+  description: string;
+  /** 来源层级：项目级 `<项目根>/.agents/skills` vs 用户级 `~/.agents/skills`（同名时前者胜出） */
+  source: "project" | "user";
+  /**
+   * 是否**对模型公开**（`disable-model-invocation: true` 时为 false）。
+   * false 不代表坏了：模型不会自己选它，但 `/skill <名字>` 仍可显式调用。
+   */
+  modelInvocable: boolean;
+  /** 技能文件绝对路径 */
+  filePath: string;
+  /**
+   * 是否被**使用者在设置里禁用**（`.colt/skills.json` 的 `disabled`，两层并集）。
+   *
+   * 被禁用的技能**仍然列在这里**：设置页要靠它把开关画成「关」，不列出来就再也没处改回来。
+   * 但**调用侧一律据此拒绝**（渲染层的 `/` 候选要滤掉，`/skill <名字>` 要给一句明说），
+   * 模型那侧更彻底——它根本不在 `resources.skills` 里（见 `enabledSkills`）。
+   */
+  disabled: boolean;
+}
+
+/**
+ * 设置页「查看正文」用的技能详情：`ViewSkill` + **正文全文**。
+ *
+ * 为什么单独一个类型、而不是给 `ViewSkill` 加一个可选 `content`：`ViewSkill` 会随
+ * `ConversationView` **每 50ms 全量重推**，正文不该进那条通道。同一个类型在两处含义不同
+ * ＝契约撒谎（读它的人无从知道这次有没有正文）。详情只在设置页**按需**取一次
+ * （`skills.status` / `skills.rescan`），与 `session.toolOutput` 按需读回落盘截图同一个取舍。
+ */
+export interface ViewSkillDetail extends ViewSkill {
+  /**
+   * `SKILL.md` 的正文**全文**（未截断——给用户看的就该是文件里那样）。
+   * 模型收到的那份会被截断并指回文件（见 `worker/lib/skills.ts` 的 `MAX_SKILL_BODY_CHARS`）。
+   */
+  content: string;
+  /**
+   * 这条禁用**来自用户级** `~/.colt/skills.json`。
+   *
+   * 为什么非要知道是哪一层：禁用是**并集**，用户级列的条目在项目级删不掉——开关照着点、
+   * 结果状态不变，就是「点了没反应」。界面据此把开关置灰并说明「请改用户级配置」。
+   */
+  disabledByUser: boolean;
+}
+
+/**
+ * 技能装载现状——设置页「技能」分区的一步查询（`skillsStatus` / `skillsRescan` 的回复）。
+ *
+ * 为什么走**会话进程**而不是主进程自己扫盘：技能清单是内核 `loadSkills` 的产物（递归遍历、
+ * 忽略文件、frontmatter 校验、去重都在内核里），主进程复刻一遍必然与 worker 那份漂移。
+ * 代价是**会话没开着时查不到**——此时 `live: false`、清单为空，界面据此说要先开会话，
+ * 而不是把「没开」说成「没装」（那是反话，同 `McpServerView` 那条注记的教训）。
+ */
+export interface SkillsStatus {
+  /** 去重后的技能清单（项目级在前、同名项目级胜出），**带正文全文**（设置页「查看正文」用） */
+  skills: ViewSkillDetail[];
+  /**
+   * 装载**告警**（同名遮蔽 / 解析失败 / 「不对模型公开」）。
+   * 与「事件」页签同一口径（`skillWarningParts`）——设置页照它逐条列出，不另起一套文案。
+   */
+  warnings: string[];
+  /** 是否有活着的会话进程在回答：false = 本项目的会话未运行，看不到清单（也不该说成「没装」） */
+  live: boolean;
+}
+
 /** 会话视图：渲染层唯一的数据结构 */
 export interface ConversationView {
   sessionId: string;
@@ -207,7 +312,7 @@ export interface ConversationView {
    */
   thinkingLevel: ThinkingLevel;
   /**
-   * 本会话装载到的技能**名字**（装载后固定，投影自 worker 装载时的清单）。
+   * 本会话装载到的技能（装载后固定，投影自 worker 装载时的清单）。
    *
    * 渲染层拿它在**本地**判「这个名字存不存在」，然后才决定发不发：名字打错时它**不清空输入**、
    * 把可用名报出来，用户改一个字母就能重敲。少了这个字段，渲染层只能先清空再发，
@@ -216,8 +321,12 @@ export interface ConversationView {
    * ⚠️ 判据要按「**知道**才知道」来用：拿不到视图时（没有 worker / 还没上报，`view?.skills`
    * 就是 `undefined`）**不要**拦——那时候清单是**不知道**，不是「空的」，凭它拒绝会把一次
    * 有效调用误判成失败，那是**另一种丢输入**。
+   *
+   * 这里放的是**整份可见信息**而不只是名字：装载状态本来就该由**视图**承载，
+   * 而不是靠一条 `notice` 播报（状态当事件播报会灌满「事件」页签，见
+   * `reviews/skills-gap-report-2026-09-19.md` P4）。名字是 `skills.map(s => s.name)`。
    */
-  skills: string[];
+  skills: ViewSkill[];
   messages: ViewMessage[];
   /** toolCallId → 工具结果，供工具卡片展开时查阅 */
   toolResults: ViewToolResult[];
@@ -371,6 +480,25 @@ export type WorkerCommand =
    */
   | { type: "mcpReload" }
   /**
+   * 查技能装载现状（设置页「技能」分区）。与 `mcpStatus` 同形：worker 以 `skillsStatus`
+   * 消息回复，**只读当前内存里那份清单**，不重新扫盘。
+   */
+  | { type: "skillsStatus" }
+  /**
+   * 重新扫描技能目录：重扫项目级与用户级 `.agents/skills`，把新清单写回 harness
+   * （`setResources`）并让**下一次请求**的系统提示词立即反映它——不必重启会话
+   * （技能装载原本是 create-time 一次，见报告 A2）。同样以 `skillsStatus` 消息回复。
+   */
+  | { type: "skillsRescan" }
+  /**
+   * 禁用 / 启用某个技能（设置页的开关）：写项目级 `.colt/skills.json` 后**重新装载**
+   * （于是下一轮起就生效），并回一份 `skillsStatus`——开关要一步拿到新现状，不能靠猜。
+   *
+   * 写盘放在 worker 而不是主进程：这份配置的**读者**就是装载器（它知道两层目录在哪、
+   * 当前哪些名字生效），一个地方拥有它才不会读写两套口径。主进程只负责路由。
+   */
+  | { type: "skillsSetDisabled"; name: string; disabled: boolean }
+  /**
    * 用户手动操作了浏览器（B1：后退 / 前进 / 刷新），把这件事告知 agent。
    *
    * 与 `steer` 的区别是**它不是用户说的话、也不该触发新一轮运行**：
@@ -460,6 +588,8 @@ export type WorkerMessage =
   | { type: "branches"; nodes: WorkerBranchNode[] }
   /** `mcpStatus` / `mcpReload` 的回复：重载后（或当前）的 MCP server 现状 */
   | { type: "mcpStatus"; servers: McpServerView[] }
+  /** `skillsStatus` / `skillsRescan` 的回复：重扫后（或当前）的技能装载现状 */
+  | { type: "skillsStatus"; status: SkillsStatus }
   /**
    * 一个子代理的完整流（`subagentTranscript` 命令的回复）。
    * `id` 原样带回，主进程据此配对等待方（FIFO）。

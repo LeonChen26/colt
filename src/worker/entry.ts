@@ -26,6 +26,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import type {
   FileBaseline,
   ViewFileChange,
+  ViewSkill,
   WorkerBranchNode,
   WorkerCommand,
   WorkerMessage,
@@ -87,13 +88,14 @@ import {
   memoryTidySystemPrompt,
   memoryTidyTask,
 } from "./lib/memory-tidy";
-import { describeSkillError, unknownSkillMessage } from "@shared/skill-error";
 import {
   composeSystemPrompt,
-  describeSkills,
-  loadSkillsForSession,
-  skillDirs,
+  enabledSkills,
+  loadSkillsForSessionWithConfig,
+  modelSkills,
 } from "./lib/skills";
+import { skillsUserHome } from "@shared/skills-config";
+import { createSkillsRuntime, dispatchSkills, type SkillsRuntime } from "./lib/skills-command";
 import {
   compactMemoryReminder,
   createMemoryInjector,
@@ -173,6 +175,8 @@ interface WorkerState {
   subagents: Subagents;
   /** MCP 运行态（各 server 的连接 + 工具）；dispose 收尸与 mcpStatus/mcpReload 命令都用它 */
   mcp: McpRuntime;
+  /** 技能运行期（可变清单 + 设置页宿主）：命令分发也要读它，故挂在 state 上而不是 init 闭包里 */
+  skills: SkillsRuntime;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
   resnapshot: () => Promise<LaneSnapshot>;
   /**
@@ -189,13 +193,13 @@ interface WorkerState {
     /** 会话思考等级（投影到 view，供界面下拉回显） */
     thinkingLevel: ThinkingLevel;
     /**
-     * 本会话装载到的技能**名字**（装载后固定）。
+     * 本会话装载到的技能（整份 `ViewSkill`，见 `toViewSkills`）。
      *
-     * 一份数据两个用处，都是「按名核对」：worker 用它给 `/skill <名字>` 兜底自查，
-     * 渲染层用它**就地拦下打错的名字**——所以它必须跟着 view 一起发出去，
-     * 少了它用户敲错一个字母就得连那半句额外指示一起重敲。
+     * 两个用处：worker 用它给 `/skill <名字>` 兜底自查、渲染层用**名字**就地拦下打错的
+     * ——所以它必须跟着 view 一起发出去，少了它用户敲错一个字母就得连那半句额外指示一起重敲。
+     * 设置页「重新扫描」会就地换掉它（`state.skills` 那边同时更新，两条路径同源）。
      */
-    skills: string[];
+    skills: ViewSkill[];
     fileChanges: ViewFileChange[];
     /** 待办清单：投影时恒为空，主进程会用库里的完整清单覆盖它（真源在主进程） */
     todos: ViewTodo[];
@@ -297,14 +301,19 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const session = await openSession(repo, command.kernelSessionId, cwd);
 
   // 技能（Agent Skills，agentskills.io 标准）：项目级 `.agents/skills` 与用户级 `~/.agents/skills`
-  // 各扫一遍，同名时项目级胜出。装到的**走两条路**、缺一不可：
-  // ① `composeSystemPrompt` 把技能清单拼进系统提示词（**内核不会自己拼**，见 lib/skills.ts）；
-  // ② `resources.skills` 让内核能按名取出整份正文（`lane.skill`）。
-  // **装了什么、跳过了什么如实报给用户**——技能来自磁盘且会改模型行为，是一条隐式信任通道，
-  // 不该悄悄发生（见 `docs/SECURITY.md`）。加载失败只记告警，不拦会话。
-  const skills = await loadSkillsForSession(executionEnv, skillDirs(cwd, homedir()), context);
-  const skillsNotice = describeSkills(skills);
-  if (skillsNotice !== null) send({ type: "notice", message: skillsNotice, kind: "security" });
+  // 各扫一遍，同名时项目级胜出；每请求拼进系统提示词 + 进 `resources.skills` + 随视图下发。
+  // 装载 / 告警 / 设置页「重新扫描」的热更新都在 lib/skills-command.ts。技能来自磁盘且会改模型
+  // 行为，是隐式信任通道，跳过了什么必须可见（`docs/SECURITY.md`）。
+  const skills = await createSkillsRuntime({
+    reload: () => loadSkillsForSessionWithConfig(executionEnv, cwd, skillsUserHome(), context),
+    cwd,
+    harness: () => state?.harness,
+    onNotice: (message) => send({ type: "notice", message, kind: "security" }),
+    onViewSkills: (list) => {
+      if (state) state.meta.skills = list;
+    },
+    onChanged: scheduleFlush,
+  });
 
   // 子代理定义（声明式 agents）：`<cwd>/.agents/agents/*.md` 与 `~/.agents/agents/*.md`，
   // 同名时项目级胜出。与技能同一条隐式信任通道——定义决定子代理的系统提示词与工具白名单，
@@ -373,12 +382,16 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
 
   const mcp = await createMcpRuntime(cwd, (message) => send({ type: "notice", message, kind: "security" }), mcpUserHome());
 
+  // 给模型的技能副本：先滤掉被禁用的（P6），再对超长正文截断并指回文件（P7）；
+  // 装载结果本身既不滤也不截——设置页要看全文、要画开关。
+  const harnessSkills = modelSkills(skills.ref.current);
+
   const { harness, open } = await AgentHarness.create(
     {
       session,
       models,
       model,
-      resources: skills.skills.length > 0 ? { skills: skills.skills } : undefined,
+      resources: harnessSkills.length > 0 ? { skills: harnessSkills } : undefined,
       tools: [
         createReadTool(),
         createWriteTool(),
@@ -392,10 +405,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...subagents.tools(), ...mcp.tools,
       ],
       toolContext: { env: executionEnv },
-      // create-time 静态部分只有：基础提示词 + 技能清单。
-      // AGENTS.md 与记忆块都不在这里拼——它们在 transform_context 里每请求重读注入
-      // （见下），中途创建/更新下一次请求立即可见
-      systemPrompt: composeSystemPrompt(systemPrompt(cwd), skills.skills),
+      // create-time 静态部分只有**基础提示词**本身；技能清单、AGENTS.md、记忆块都在
+      // transform_context 里每请求重拼——技能清单放那里是「重新扫描」能当轮生效的前提（A2），
+      // 其余几块本来就要每请求重读。
+      systemPrompt: systemPrompt(cwd),
       // 只对**新建 lane** 生效；已存在的会话沿用自己持久化的值，
       // 故下面还有一步显式下发（见 lane 拿到之后的注释）
       thinkingLevel,
@@ -490,7 +503,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ),
       };
     }
-    let withContext = await agentsMdInjector.systemPromptFor(event.systemPrompt);
+    // 技能清单**每请求重拼**（不是 create-time 一次）：设置页「重新扫描」才能当轮生效（A2）。
+    // 拼在最前（基础提示词之后）以保持段落顺序不变，内容不变时缓存照常命中。
+    let withContext = composeSystemPrompt(event.systemPrompt, enabledSkills(skills.ref.current));
+    withContext = await agentsMdInjector.systemPromptFor(withContext);
     withContext = await userMemoryInjector.systemPromptFor(withContext);
     withContext = await memoryInjector.systemPromptFor(withContext);
     // 待办清单（每请求）：与记忆块同一处注入、同样走 systemPrompt。
@@ -634,7 +650,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     // 模型目录声明的输入能力；纯文本模型（如 deepseek-v4-flash）不含 "image"
     imageInput: model.input?.includes("image") ?? false,
     thinkingLevel,
-    skills: skills.skills.map((item) => item.name),
+    skills: skills.view(),
     fileChanges: [] as ViewFileChange[],
     // 与 fileChanges 同理：投影时恒为空，主进程会用数据库里那份完整清单覆盖它
     todos: [] as ViewTodo[],
@@ -655,6 +671,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     reportMemoryIndex,
     subagents,
     mcp,
+    skills,
     meta,
     unsubscribe: () => watch.unsubscribe(),
   };
@@ -934,30 +951,15 @@ async function handle(command: WorkerCommand): Promise<void> {
       return;
     }
 
-    case "skill": {
-      if (!state) throw new Error("会话尚未初始化");
-      // 先按**本会话装到的清单**自查一遍再交给内核：内核的 UnknownSkill 只带名字、不带候选，
-      // 而技能名是用户自己在磁盘上定的——打错时必须把可用名一起给出来，否则用户无从修正。
-      // 渲染层有一份同样的清单（`ConversationView.skills`）会在本地先拦一次，这里是**兜底**：
-      // 渲染层不知道清单时（无 worker / 还没上报）或有人直接调 IPC 时，这条路径负责说同一句话。
-      if (!state.meta.skills.includes(command.name)) {
-        send({
-          type: "error",
-          message: unknownSkillMessage(command.name, state.meta.skills),
-          fatal: false,
-        });
-        return;
-      }
-      const result = await state.lane.skill(command.name, command.instructions, context);
-      // 内核的技能调用失败**走 `Result.err` 而不是抛异常**，不查返回值就是「敲了没反应」。
-      // （对照 `case "prompt"` 不查：那一条的失败由 view 里的 `lastRun` 终态体现；
-      //   而 LaneBusy / Closed / UnknownSkill 只走这条路，不查就静默。）
-      if (!result.ok) {
-        send({ type: "error", message: describeSkillError(result.error), fatal: false });
-        return;
-      }
-      // 运行结束后补推一次终态（同 prompt）
-      pushView();
+    // 技能的四条命令（显式调用 / 查现状 / 重新扫描 / 禁用启用）都落在 lib/skills-command.ts。
+    // 合成一个出口：它们共用同一份「会话未就绪怎么办」的判断，判定全在那里，这里只管发。
+    case "skill":
+    case "skillsStatus":
+    case "skillsRescan":
+    case "skillsSetDisabled": {
+      const result = await dispatchSkills(command, state, context);
+      if (result.kind === "delivered") pushView();
+      else send(result.message);
       return;
     }
 

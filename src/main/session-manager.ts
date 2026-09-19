@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ConversationView,
   McpServerView,
+  SkillsStatus,
   ViewFileChange,
   ViewMessage,
   ViewTodo,
@@ -75,6 +76,12 @@ const IDLE_SWEEP_MS = 60 * 1000;
  */
 const MCP_QUERY_TIMEOUT_MS = READY_TIMEOUT_MS + 2 * MCP_STEP_TIMEOUT_MS;
 /**
+ * 等技能回话的预算（`skillsStatus` / `skillsRescan` 共用那条往返）。
+ * 同 MCP 那条：必须盖住「未就绪时命令暂存」的上限（`READY_TIMEOUT_MS`）。但技能重扫**只扫盘**、
+ * 没有网络连接那两步，故不叠加 `MCP_STEP_TIMEOUT_MS`，留一段富余即可。
+ */
+const SKILLS_QUERY_TIMEOUT_MS = READY_TIMEOUT_MS + 30_000;
+/**
  * 发出 dispose 后等 worker 自行退出的宽限时长，超时强杀。
  * dispose 只是一条消息，worker 正忙时可能迟迟不处理。
  */
@@ -95,6 +102,18 @@ const KEYLESS_PLACEHOLDER = "colt-local-no-key";
  */
 export interface PendingMcpQuery {
   settle: (servers: McpServerView[]) => void;
+  fail: (error: Error) => void;
+}
+
+/**
+ * 技能现状查询的一个等待方（与 `PendingMcpQuery` 同构，只是兑现的是 `SkillsStatus`）。
+ *
+ * 为什么不与 MCP 共用一条队列：两条往返的**回复消息类型不同**（`mcpStatus` / `skillsStatus`），
+ * 而兑现是按 FIFO 认「最早那个等待方」的——混在一条队列里，先到的技能查询会被 MCP 的回复
+ * 兑现成一份类型不对的载荷。分开两条队列，类型与顺序都各自自洽。
+ */
+export interface PendingSkillsQuery {
+  settle: (status: SkillsStatus) => void;
   fail: (error: Error) => void;
 }
 
@@ -150,6 +169,11 @@ export interface WorkerEntry {
    * 设置页问一次、热重载回复一次，都落在它上面。收场口子见 `PendingMcpQuery`。
    */
   pendingMcp: PendingMcpQuery[];
+  /**
+   * 技能现状查询的待决队列（同 `pendingMcp`：FIFO，设置页查一次 / 重扫回一次）。
+   * 分成独立队列的理由见 `PendingSkillsQuery`。
+   */
+  pendingSkills: PendingSkillsQuery[];
   /**
    * 中断代数：每次用户中断自增。审批分析在飞行中跨越了中断时据此丢弃结果——
    * 否则会在已中断的会话上留下无法解释的幽灵待审卡片，并让 worker 悬空等待。
@@ -785,6 +809,7 @@ export class SessionManager {
       pendingBranches: [],
       pendingTranscripts: [],
       pendingMcp: [],
+      pendingSkills: [],
       abortEpoch: 0,
       modeEpoch: 0,
     };
@@ -840,7 +865,7 @@ export class SessionManager {
             // 永远建不起来，它收到 mcpStatus 只会回一条 `error`——而按 FIFO 配对，那条
             // error 落不到等待方头上（它只按 `mcpStatus` 兑现）。不在这里兑现，等待方要等满
             // `MCP_QUERY_TIMEOUT_MS` 才收敛（2026-09-19 审计 ⑦-b）。
-            this.#drainPendingMcp(entry, `会话初始化失败：${message.message}`);
+            this.#drainPendingQueries(entry, `会话初始化失败：${message.message}`);
           }
           break;
         }
@@ -1001,6 +1026,13 @@ export class SessionManager {
           break;
         }
 
+        case "skillsStatus": {
+          // 与 mcpStatus 同款：FIFO 兑现 skillsStatus / skillsRescan 的等待方
+          const pending = entry.pendingSkills.shift();
+          pending?.settle(message.status);
+          break;
+        }
+
         case "subagentTranscript": {
           // 按 id 配对（同一会话可能有多个下钻请求在飞）；没配上的丢弃——等待方各自的超时会收敛
           const index = entry.pendingTranscripts.findIndex((item) => item.id === message.id);
@@ -1054,7 +1086,7 @@ export class SessionManager {
         entry.pendingTranscripts.length = 0;
         // MCP 查询**不能**只清空：它的超时预算是 150s（要盖住 worker 侧的连接上限），
         // 拖着不报等于让设置页显示一条假的「重载中…」，所以当场兑现成失败
-        this.#drainPendingMcp(entry, "会话进程已退出，MCP 状态查询已取消。");
+        this.#drainPendingQueries(entry, "会话进程已退出，设置页查询已取消。");
         this.#emit("session.error", {
           sessionId: options.sessionId,
           message: `会话进程异常退出（code=${code ?? "unknown"}），历史已保留。再发一条消息会自动重连恢复。`,
@@ -1319,6 +1351,36 @@ export class SessionManager {
   }
 
   /**
+   * 查某会话**装载到的技能**（设置页「技能」分区）。
+   *
+   * worker 不在池中时回 `live: false` 的空结果——「会话没开着」不是错误，但**绝不能**说成
+   * 「一个技能都没装」（那是反话，同 MCP 那条的教训）。技能清单是内核 loader 的产物，
+   * 主进程**不自己扫盘复刻**（必然与 worker 那份漂移），所以没有活会话就等于查不到。
+   */
+  skillsStatus(sessionId: string): Promise<SkillsStatus> {
+    return this.#querySkills(sessionId, { type: "skillsStatus" });
+  }
+
+  /**
+   * 重扫技能目录并**热更新**该会话：worker 重扫 `.agents/skills`，把新清单写回 harness 的
+   * `resources.skills`（下次请求的系统提示词随之更新）。与 `skillsStatus` 共用一条往返。
+   */
+  skillsRescan(sessionId: string): Promise<SkillsStatus> {
+    return this.#querySkills(sessionId, { type: "skillsRescan" });
+  }
+
+  /**
+   * 禁用 / 启用某个技能（设置页的开关）：worker 写项目级 `.colt/skills.json` 后**重新装载**，
+   * 并把新现状回给我们——开关要一步拿到新现状，不能靠界面自己猜。共用同一条往返。
+   *
+   * 写盘放在 worker（不是这里）：那份配置的读者是装载器，一个地方拥有它才不会读写两套口径
+   * （见 `protocol.ts` 里 `skills.setDisabled` 的注释）。主进程只路由。
+   */
+  skillsSetDisabled(sessionId: string, name: string, disabled: boolean): Promise<SkillsStatus> {
+    return this.#querySkills(sessionId, { type: "skillsSetDisabled", name, disabled });
+  }
+
+  /**
    * 某项目下**任一**活 worker 的会话 id（设置页据此问活状态）。
    * 反查链路与 `session.compact` 的重建一致：项目 → 会话列表 → 池里有没有它。
    */
@@ -1330,14 +1392,16 @@ export class SessionManager {
   }
 
   /**
-   * worker 没了（崩溃 / 被回收 / 用户切走）：没人能再回这份查询，**当场**把等待方失败掉。
+   * worker 没了（崩溃 / 被回收 / 用户切走）：没人能再回设置页的查询，**当场**把等待方失败掉。
    *
    * 别只写 `pendingMcp.length = 0`：等待方会被拖到 `MCP_QUERY_TIMEOUT_MS`（150s）才收敛，
    * 界面上是一条**假的**「重载中…」，比直接报错更糟。`splice(0)` 先摘空队列，再由每个
    * 等待方自己掐掉定时器（`fail` 里做的），不会留下空转的 timer。
+   * MCP 与技能两条队列**都要收**——漏掉哪条，那条的等待方就得等满超时才收敛。
    */
-  #drainPendingMcp(entry: WorkerEntry, message: string): void {
+  #drainPendingQueries(entry: WorkerEntry, message: string): void {
     for (const pending of entry.pendingMcp.splice(0)) pending.fail(new Error(message));
+    for (const pending of entry.pendingSkills.splice(0)) pending.fail(new Error(message));
   }
 
   /** `mcpStatus` / `mcpReload` 的共用往返（同 `branches` 的范式：排队兑现 + 超时） */
@@ -1366,6 +1430,33 @@ export class SessionManager {
         () => pending.fail(new Error("查询 MCP 状态超时")),
         MCP_QUERY_TIMEOUT_MS,
       );
+      queue.push(pending);
+      this.#post(sessionId, command);
+    });
+  }
+
+  /** `skillsStatus` / `skillsRescan` 的共用往返（同 `#queryMcp`：排队兑现 + 超时） */
+  #querySkills(sessionId: string, command: WorkerCommand): Promise<SkillsStatus> {
+    const entry = this.#workers.get(sessionId);
+    // 没活 worker：`live: false` 的空结果——是「查不到」，不是「没装」
+    if (!entry) return Promise.resolve({ skills: [], warnings: [], live: false });
+    const queue = entry.pendingSkills;
+    return new Promise<SkillsStatus>((resolve, reject) => {
+      const pending: PendingSkillsQuery = {
+        settle: (status: SkillsStatus): void => {
+          clearTimeout(timer);
+          const index = queue.indexOf(pending);
+          if (index !== -1) queue.splice(index, 1);
+          resolve(status);
+        },
+        fail: (error: Error): void => {
+          clearTimeout(timer);
+          const index = queue.indexOf(pending);
+          if (index !== -1) queue.splice(index, 1);
+          reject(error);
+        },
+      };
+      const timer = setTimeout(() => pending.fail(new Error("查询技能超时")), SKILLS_QUERY_TIMEOUT_MS);
       queue.push(pending);
       this.#post(sessionId, command);
     });
@@ -1465,7 +1556,7 @@ export class SessionManager {
     entry.pendingBranches.length = 0;
     entry.pendingTranscripts.length = 0;
     // MCP 查询当场失败（理由见崩溃那条分支：它的超时预算 150s，拖着就是假「重载中…」）
-    this.#drainPendingMcp(entry, "会话已回收，MCP 状态查询已取消。");
+    this.#drainPendingQueries(entry, "会话已回收，设置页查询已取消。");
     try {
       entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
     } catch {

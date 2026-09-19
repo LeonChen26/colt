@@ -158,7 +158,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 | 内核已提供 | 我们的状态 |
 |---|---|
-| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 扫 `.agents/skills`（项目级）与 `~/.agents/skills`（用户级），同名项目级胜出，装载情况走 `notice` 如实告知（信任口径见 `docs/SECURITY.md`）。**内核这里是两套机制、缺一不可**：`resources.skills` 只管「按名显式调用」（`lane.skill`，界面入口是输入框的 `/skill <名字>`，v1.42），让模型**看见**必须由应用把 `formatSkillsForSystemPrompt` 拼进系统提示词——**内核只导出这个函数、自己从不调用**，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住 |
+| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 扫 `.agents/skills`（项目级）与 `~/.agents/skills`（用户级），同名项目级胜出；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**内核这里是两套机制、缺一不可**：`resources.skills` 只管「按名显式调用」（`lane.skill`，界面入口是输入框的 `/skill <名字>`，v1.42），让模型**看见**必须由应用把 `formatSkillsForSystemPrompt` 拼进系统提示词——**内核只导出这个函数、自己从不调用**，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住 |
 | `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
 | 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
 | 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |

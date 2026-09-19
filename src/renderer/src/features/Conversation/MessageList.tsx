@@ -30,6 +30,7 @@ import {
   Globe,
   Monitor,
   PanelRight,
+  ScrollText,
   Terminal,
   Wrench,
 } from "lucide-react";
@@ -151,8 +152,49 @@ export const MessageBubble = memo(function MessageBubble({
   if (!message.text && !message.image && message.toolCalls.length === 0) return null;
 
   if (message.role === "user") {
+    // 技能调用**不是用户说的话**：正文是内核塞进来的（还带着 `<skill …>` 这层原始 XML），
+    // 署名不能是「你」、也不该把整篇正文摊在对话流里。画成一张折叠卡：卡面给
+    // 「哪个技能 + 那半句额外指示」，正文默认收起、可展开——展开是为了**归属透明**，
+    // 用户有权看到模型实际收到了什么（`ViewMessage.skill` 是 worker 认出来的）。
+    if (message.skill !== undefined) {
+      const { name, instructions } = message.skill;
+      const open = openState.get(message.id) === true;
+      return (
+        <div className="flex justify-start" data-conv-skill={message.id}>
+          <div className="flex max-w-[86%] flex-col gap-1.5 rounded-[8px] border border-l-[3px] border-line border-l-accent-dim bg-surface-raised px-3 py-2">
+            <div className="flex items-center gap-1.5 text-[12px]">
+              <ScrollText {...ICON.sm} className="shrink-0 text-accent-dim" />
+              <span className="font-medium text-text-primary">技能 {name}</span>
+              <span className="text-text-muted">· 本会话装载，非你的发言</span>
+            </div>
+            {instructions !== undefined && (
+              <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap text-text-primary">
+                {instructions}
+              </p>
+            )}
+            <button
+              type="button"
+              data-conv-skill-toggle={message.id}
+              onClick={() => onToggleOpen(message.id, !open)}
+              className="flex items-center gap-1 self-start text-[11px] text-text-muted transition hover:text-text-primary"
+            >
+              <ChevronRight {...ICON.xs} className={open ? "shrink-0 rotate-90" : "shrink-0"} />
+              {open ? "收起技能正文" : "展开技能正文"}
+            </button>
+            {open && (
+              <pre
+                data-conv-skill-body={message.id}
+                className="max-h-72 overflow-auto rounded-[6px] border border-line bg-surface-overlay px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-text-muted"
+              >
+                {message.text}
+              </pre>
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
-      <div className="flex justify-end">
+      <div className="flex justify-end" data-conv-user={message.id}>
         <div className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-[8px] border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap text-text-primary">
           {message.image && (
             <img
@@ -182,6 +224,7 @@ export const MessageBubble = memo(function MessageBubble({
           name={call.name}
           args={call.args}
           durationMs={call.durationMs}
+          skill={call.skill}
           result={resultMap.get(call.id)}
           subagent={subagents.get(call.id)}
           change={matchChangeByPath(changes, parseArgsJson(call.args).path)}
@@ -675,6 +718,7 @@ export function ToolCard({
   args,
   result,
   durationMs,
+  skill,
   subagent,
   change,
   running,
@@ -691,6 +735,14 @@ export function ToolCard({
   args: string;
   result?: ToolResult;
   durationMs?: number;
+  /**
+   * 这次 `read` 读的是某个已装载技能的文件（P3）。
+   *
+   * 模型不会「调用技能」——它读了技能描述后自觉去读技能文件，界面上原本只会多一张
+   * 普通 `read` 卡，看不出这次读文件是技能驱动的。这个标记由 worker 投影时判定（技能路径
+   * 集合在它内存里），这里只负责画一个「技能 X」徽标。
+   */
+  skill?: string;
   /**
    * 这次调用是个子代理（按 `toolCallId` 认领）。有它时本卡片**特化**：
    * 标题变成「子代理 · <名字>」，展开是有界预览 + 「在右栏查看完整过程」。
@@ -828,6 +880,17 @@ export function ToolCard({
           <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
             {card === undefined ? mcpToolLabel(name) ?? name : `子代理 · ${card.name}`}
           </span>
+          {/* P3：这次读的是技能文件——模型「自己想起来用技能」的唯一可见信号 */}
+          {skill !== undefined && (
+            <span
+              data-tool-skill={skill}
+              title={`这次读取的是技能「${skill}」的文件`}
+              className="flex shrink-0 items-center gap-1 rounded bg-accent-soft px-1.5 py-0.5 text-[10.5px] text-accent-dim"
+            >
+              <ScrollText {...ICON.xs} />
+              技能 {skill}
+            </span>
+          )}
         </button>
         <span
           ref={subtitleRef}

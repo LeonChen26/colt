@@ -36,7 +36,11 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-import { loadSkillsForSession } from "../src/worker/lib/skills.ts";
+import {
+  MAX_SKILL_BODY_CHARS,
+  capSkillBodies,
+  loadSkillsForSession,
+} from "../src/worker/lib/skills.ts";
 import { MAIN_LANE } from "../src/worker/lib/telemetry.ts";
 
 type Harness = Awaited<ReturnType<typeof AgentHarness.create>>["harness"];
@@ -85,8 +89,11 @@ function messagesOf(watch: Watch, context: Context): Promise<{ role: string; tex
   });
 }
 
-/** 起一个真 harness + 主 lane（每个用例各起一份，互不影响） */
-async function openHarness(): Promise<{
+/**
+ * 起一个真 harness + 主 lane（每个用例各起一份，互不影响）。
+ * `override` 传了就换掉默认那份技能清单（用来验「超限正文被截断后才交给内核」）。
+ */
+async function openHarness(override?: Skill[]): Promise<{
   harness: Harness;
   lane: AgentLane;
   watch: Watch;
@@ -107,7 +114,7 @@ async function openHarness(): Promise<{
       session,
       models,
       model: faux.getModel(),
-      resources: skills.length > 0 ? { skills } : undefined,
+      resources: (override ?? skills).length > 0 ? { skills: override ?? skills } : undefined,
       systemPrompt: "测试用系统提示词",
     },
     BACKGROUND_CONTEXT,
@@ -211,5 +218,40 @@ describe("技能接线：resources.skills → lane.skill", () => {
     const result = await execute("call-1", { path }, undefined, { env }, undefined, BACKGROUND_CONTEXT);
     const text = result.content.map((block) => block.text ?? "").join("");
     assert.ok(text.includes(SKILL_BODY), `工作区外的技能文件必须读得到，实得：${text}`);
+  });
+
+  test("超限正文：模型收到的是截断后的正文 + 指回文件的标记（P7 的 cap 真的经内核生效）", async () => {
+    const long = "x".repeat(MAX_SKILL_BODY_CHARS + 300);
+    const big: Skill = {
+      name: "big",
+      description: "很长的技能",
+      content: long,
+      filePath: join(root, "big", "SKILL.md"),
+    };
+    // 入口给内核的就是 `capSkillBodies(...)` 的产物（见 `worker/entry.ts`），这里照抄那一步
+    const { harness, lane, watch, faux } = await openHarness(capSkillBodies([big]));
+    try {
+      faux.setResponses([fauxAssistantMessage("好的。")]);
+      const result = await lane.skill("big", undefined, BACKGROUND_CONTEXT);
+      assert.equal(result.ok, true);
+
+      const messages = await messagesOf(watch, BACKGROUND_CONTEXT);
+      const skillMessage = messages.find(
+        (item) => item.role === "user" && item.text.includes('<skill name="big"'),
+      );
+      assert.ok(
+        skillMessage !== undefined,
+        `transcript 里应有一条技能调用消息，实得：${JSON.stringify(messages)}`,
+      );
+      assert.ok(skillMessage.text.includes("x".repeat(MAX_SKILL_BODY_CHARS)), "上限内的正文照常带上");
+      assert.ok(
+        !skillMessage.text.includes("x".repeat(MAX_SKILL_BODY_CHARS + 1)),
+        "超出上限的正文不该整段进上下文",
+      );
+      assert.match(skillMessage.text, /正文过长已截断/);
+      assert.ok(skillMessage.text.includes(big.filePath), "要指回文件——被裁掉的尾部仍可 read 到");
+    } finally {
+      await harness.close(BACKGROUND_CONTEXT);
+    }
   });
 });

@@ -15,6 +15,7 @@ import type {
   ViewMessage,
   ViewRunOutcome,
   ViewRunningTool,
+  ViewSkill,
   ViewSubagent,
   ViewToolResult,
   WorkerBranchNode,
@@ -23,7 +24,9 @@ import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import type { ViewTodo } from "@shared/todo";
 import { toolImageFileName } from "@shared/tool-output";
+import { skillInvocationLabel } from "@shared/skill-invocation";
 import { serializeArgs } from "./telemetry";
+import { parseSkillInvocation, skillPathMatcher } from "./skills";
 
 /**
  * 内核消息内容块的**已知类型**——真源是 pi 的联合类型，不是我们手写的字符串。
@@ -74,6 +77,28 @@ export function extractToolCalls(content: unknown): ViewMessage["toolCalls"] {
         }
       })(),
     }));
+}
+
+/**
+ * 这次工具调用若是 `read`，它读的路径命中了哪个已装载技能？（P3）
+ *
+ * 只认 `read`：技能正文是模型用 `read` 读进去的（内核没有 skill 工具，见报告 A4）。
+ * `args` 是序列化后的 JSON，解析失败就当没命中——工具卡标记是**锦上添花**，
+ * 为它去抛错或乱标都不划算。
+ */
+function skillOfReadCall(
+  call: { name: string; args: string },
+  matchSkill: (path: string) => string | undefined,
+): string | undefined {
+  if (call.name !== "read") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(call.args);
+  } catch {
+    return undefined;
+  }
+  const path = (parsed as { path?: unknown } | null)?.path;
+  return typeof path === "string" ? matchSkill(path) : undefined;
 }
 
 /** 从助手消息内容块中抽取思考（thinking）文本 */
@@ -193,11 +218,15 @@ export function projectBranchNodes(
   for (const entry of entries) {
     if (!keep.has(entry.id)) continue;
     const text = entry.message ? extractText(entry.message.content) : "";
+    const skill = entry.message?.role === "user" ? parseSkillInvocation(text) : null;
     nodes.push({
       id: entry.id,
       parentId: nearestKept(entry.id),
       kind: entry.message?.role ?? entry.type,
-      summary: text.slice(0, 60).replace(/\s+/g, " ").trim() || `(${entry.type})`,
+      summary:
+        skill === null
+          ? text.slice(0, 60).replace(/\s+/g, " ").trim() || `(${entry.type})`
+          : skillInvocationLabel(skill).slice(0, 60),
       timestamp: entry.timestamp ?? 0,
       onActivePath: activePath.has(entry.id),
       isTip: entry.id === effectiveTip,
@@ -216,6 +245,11 @@ export function projectBranchNodes(
 export function projectTranscript(
   transcript: readonly unknown[],
   toolDurations: ReadonlyMap<string, number>,
+  /**
+   * 「这个路径是不是某个已装载技能的文件」——命中返回技能名，用来给 `read` 工具卡打标记（P3）。
+   * 可选：子代理的流**没有**技能（worker 刻意不给子代理注入技能），不传就没有标记。
+   */
+  matchSkill?: (path: string) => string | undefined,
 ): { messages: ViewMessage[]; toolResults: ViewToolResult[] } {
   const messages: ViewMessage[] = [];
   const toolResults: ViewToolResult[] = [];
@@ -258,21 +292,30 @@ export function projectTranscript(
       continue;
     }
 
+    const text = extractText(record.message.content);
+    // 技能调用是内核发的一条 user 消息，归属**不是用户**：目录/分支树的标签与摘要
+    // 都要拿技能名，而不是把 `<skill name="…" location="…">` 那段原始 XML 摆出来
+    const skill = role === "user" ? parseSkillInvocation(text) : null;
     messages.push({
       id: record.id,
       role:
         role === "user" || role === "assistant"
           ? (role as ViewMessage["role"])
           : "other",
-      text: extractText(record.message.content),
+      text,
+      ...(skill === null ? {} : { skill }),
       // 用户随消息发送的图片回显到对话里；与工具截图同源，均为不含前缀的 base64
       image: role === "user" ? extractImage(record.message.content) : undefined,
       toolCalls:
         role === "assistant"
-          ? extractToolCalls(record.message.content).map((call) => ({
-              ...call,
-              durationMs: toolDurations.get(call.id),
-            }))
+          ? extractToolCalls(record.message.content).map((call) => {
+              const skill = matchSkill === undefined ? undefined : skillOfReadCall(call, matchSkill);
+              return {
+                ...call,
+                durationMs: toolDurations.get(call.id),
+                ...(skill === undefined ? {} : { skill }),
+              };
+            })
           : [],
       thought: role === "assistant" ? extractThinking(record.message.content) || undefined : undefined,
       timestamp: record.message.timestamp,
@@ -335,12 +378,13 @@ export function project(
     /** 会话思考等级，供界面下拉回显 */
     thinkingLevel: ThinkingLevel;
     /**
-     * 本会话装载到的技能名字（装载后固定）。
+     * 本会话装载到的技能（装载后固定）。
      *
-     * 渲染层要拿它**就地**判「这个名字存不存在」：名字打错时它不清空输入、把可用名报出来，
+     * 渲染层要拿它的**名字**就地判「这个名字存不存在」：名字打错时它不清空输入、把可用名报出来，
      * 用户改一个字母就能重敲。没有它，那半句额外指示会跟着输入一起没掉。
+     * 其余字段（来源/是否对模型公开/路径）是给「技能」面板用的底子。
      */
-    skills: string[];
+    skills: ViewSkill[];
     fileChanges: ViewFileChange[];
     /**
      * 待办清单。与 `fileChanges` 同一个道理：**投影时恒为空数组**，
@@ -361,7 +405,13 @@ export function project(
    */
   subagents: readonly ViewSubagent[],
 ): ConversationView {
-  const { messages, toolResults } = projectTranscript(snapshot.transcript, toolDurations);
+  // 技能工具卡标记（P3）：判定函数由「已装载技能的路径集合 + cwd」构成，
+  // 让每次 `read` 命中技能文件时打上「技能 X」——主对话才有技能，子代理的流不传。
+  const { messages, toolResults } = projectTranscript(
+    snapshot.transcript,
+    toolDurations,
+    skillPathMatcher(meta.skills, meta.cwd),
+  );
 
   const operation = snapshot.operation;
   const streamingText = operation?.streamingMessage

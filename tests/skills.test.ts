@@ -12,18 +12,27 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
-import { BACKGROUND_CONTEXT, type Skill } from "@earendil-works/pi-agent-core";
+import { BACKGROUND_CONTEXT, formatSkillInvocation, type Skill } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import {
+  MAX_SKILL_BODY_CHARS,
+  capSkillBodies,
   composeSystemPrompt,
   dedupeByName,
   describeDiagnostic,
-  describeSkills,
+  describeSkillWarnings,
+  enabledSkills,
   loadSkillsForSession,
+  modelSkills,
+  parseSkillInvocation,
   skillDirs,
-  MAX_NOTICE_SKILL_NAMES,
+  skillPathMatcher,
+  skillWarningParts,
+  toSkillDetails,
+  toViewSkills,
   type LoadedSkills,
 } from "../src/worker/lib/skills.ts";
+import type { ViewSkill } from "../src/shared/worker-protocol.ts";
 
 const skill = (name: string): Skill => ({
   name,
@@ -42,20 +51,41 @@ describe("skillDirs", () => {
 });
 
 describe("dedupeByName", () => {
-  test("同名只留先到的那份（项目级），被遮蔽的名字如实收集", () => {
-    const { skills, shadowed } = dedupeByName([
+  test("同名只留先到的那份（项目级），被遮蔽的那份**连来源**如实收集", () => {
+    const { skills, shadowed, sources, counts } = dedupeByName([
       [skill("a"), skill("b")],
       [skill("b"), skill("c")],
     ]);
     assert.deepEqual(skills.map((item) => item.name), ["a", "b", "c"]);
     assert.equal(skills.find((item) => item.name === "b")?.filePath, "b/SKILL.md");
-    assert.deepEqual(shadowed, ["b"]);
+    // from=1（用户级）被 by=0（项目级）遮蔽——只说名字的话，同目录重名会被说成这一种
+    assert.deepEqual(shadowed, [{ name: "b", from: 1, by: 0 }]);
+    // `sources` 与 `skills` 一一对应：视图要回答「这份技能来自哪一层」只能靠它
+    assert.deepEqual(sources, [0, 0, 1]);
+    // 计数必须是**去重后**的贡献数（求和 = skills.length），才谈得上按来源归因；
+    // 否则「用户级 = 总数 − 项目级」会在同目录重名时算出负数
+    assert.deepEqual(counts, [2, 1]);
+    assert.equal(
+      counts.reduce((sum, value) => sum + value, 0),
+      skills.length,
+    );
   });
 
   test("没有重名时既不丢也不误报", () => {
-    const { skills, shadowed } = dedupeByName([[skill("a")], [skill("b")]]);
+    const { skills, shadowed, sources, counts } = dedupeByName([[skill("a")], [skill("b")]]);
     assert.deepEqual(skills.map((item) => item.name), ["a", "b"]);
     assert.deepEqual(shadowed, []);
+    assert.deepEqual(sources, [0, 1]);
+    assert.deepEqual(counts, [1, 1]);
+  });
+
+  test("**同一个目录里**重名也去重，且来源下标相同（那不是「项目级盖用户级」）", () => {
+    // 内核不去重（`name ≠ 目录名` 只告警、不丢弃），所以同目录重名是真会发生的
+    const { skills, shadowed, sources, counts } = dedupeByName([[skill("x"), skill("x")], []]);
+    assert.deepEqual(skills.map((item) => item.name), ["x"]);
+    assert.deepEqual(shadowed, [{ name: "x", from: 0, by: 0 }]);
+    assert.deepEqual(sources, [0]);
+    assert.deepEqual(counts, [1, 0]);
   });
 });
 
@@ -73,29 +103,76 @@ describe("describeDiagnostic", () => {
   });
 });
 
-describe("describeSkills", () => {
-  const empty: LoadedSkills = { skills: [], shadowed: [], diagnostics: [], counts: [0, 0] };
+describe("describeSkillWarnings", () => {
+  const empty: LoadedSkills = {
+    skills: [],
+    disabled: [],
+    disabledByUser: [],
+    shadowed: [],
+    sources: [],
+    diagnostics: [],
+    counts: [0, 0],
+  };
 
   test("什么都没有时返回 null（不制造噪音）", () => {
-    assert.equal(describeSkills(empty), null);
+    assert.equal(describeSkillWarnings(empty), null);
   });
 
-  test("给出计数、覆盖与被覆盖者", () => {
+  test("**状态不再播报**：装了技能而没有任何告警时，一条通知都不发", () => {
+    // 状态（装了几个、都叫什么）由 `ConversationView.skills` 承载、渲染层自己展示。
+    // 把它当事件播报的后果：每次 worker 启动都往「事件」页签写一条例行信息，
+    // 而 `session_events` 只对 5 分钟内的同内容去重（见报告 P4）。
+    const loaded: LoadedSkills = {
+      skills: [skill("pdf"), skill("code-review")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0, 1],
+      diagnostics: [],
+      counts: [1, 1],
+    };
+    assert.equal(describeSkillWarnings(loaded), null);
+  });
+
+  test("跨来源覆盖：说「项目级覆盖了同名用户级技能」", () => {
     const loaded: LoadedSkills = {
       skills: [skill("a"), skill("b"), skill("c")],
-      shadowed: ["b"],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [{ name: "b", from: 1, by: 0 }],
+      sources: [0, 0, 1],
       diagnostics: [],
       counts: [2, 1],
     };
-    const notice = describeSkills(loaded);
-    assert.ok(notice?.includes("已加载 3 个技能（项目级 2 · 用户级 1）"), notice ?? "");
+    const notice = describeSkillWarnings(loaded);
     assert.ok(notice?.includes("项目级覆盖了同名用户级技能：b"), notice ?? "");
+  });
+
+  test("同一目录内重名：按「同目录」口径说（不是「项目级盖用户级」）", () => {
+    // 内核不去重，所以同一目录里真会产出两条同名技能（`name ≠ 目录名` 只告警）。
+    // 照旧文案会写成「项目级覆盖了同名用户级技能」——一句假话，出现在一个**只为
+    // 「如实告知」而存在**的模块里。
+    const loaded: LoadedSkills = {
+      skills: [skill("x")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [{ name: "x", from: 0, by: 0 }],
+      sources: [0],
+      diagnostics: [],
+      counts: [1, 0],
+    };
+    const notice = describeSkillWarnings(loaded);
+    assert.ok(notice?.includes("同一目录下有同名技能"), notice ?? "");
+    assert.ok(!notice?.includes("项目级覆盖了同名用户级技能"), notice ?? "");
   });
 
   test("告警列到上限就只报个数（列满屏就不是提示了）", () => {
     const loaded: LoadedSkills = {
       skills: [],
+      disabled: [],
+      disabledByUser: [],
       shadowed: [],
+      sources: [],
       counts: [0, 0],
       diagnostics: Array.from({ length: 5 }, (_, index) => ({
         type: "warning" as const,
@@ -104,47 +181,27 @@ describe("describeSkills", () => {
         path: `s${index}/SKILL.md`,
       })),
     };
-    const notice = describeSkills(loaded);
+    const notice = describeSkillWarnings(loaded);
     assert.ok(notice?.includes("技能告警 5 条"), notice ?? "");
     assert.ok(notice?.includes("s2/SKILL.md"), notice ?? "");
     assert.ok(!notice?.includes("s3/SKILL.md"), notice ?? "");
     assert.ok(notice?.includes("（另有 2 条）"), notice ?? "");
   });
-  test("报出技能名与用法——/skill 没有界面入口，这里是用户唯一能知道「有哪些名字」的地方", () => {
-    const loaded: LoadedSkills = {
-      skills: [skill("pdf"), skill("code-review")],
-      shadowed: [],
-      diagnostics: [],
-      counts: [1, 1],
-    };
-    const notice = describeSkills(loaded);
-    assert.ok(notice?.includes("pdf、code-review"), notice ?? "");
-    assert.ok(notice?.includes("用 /skill <名字> 调用"), notice ?? "");
-  });
-
-  test("技能名太多时只说个数，不把通知撑成一屏", () => {
-    const loaded: LoadedSkills = {
-      skills: Array.from({ length: MAX_NOTICE_SKILL_NAMES + 3 }, (_, index) => skill(`s${index}`)),
-      shadowed: [],
-      diagnostics: [],
-      counts: [11, 0],
-    };
-    const notice = describeSkills(loaded);
-    assert.ok(notice?.includes(`已加载 ${MAX_NOTICE_SKILL_NAMES + 3} 个技能`), notice ?? "");
-    assert.ok(notice?.includes(`s${MAX_NOTICE_SKILL_NAMES - 1} 等`), notice ?? "");
-    assert.ok(!notice?.includes(`s${MAX_NOTICE_SKILL_NAMES}`), "超出上限的名字不该出现");
-  });
 
   test("标了 disableModelInvocation 的技能要说清「不是坏了、是不让模型自选」", () => {
     const loaded: LoadedSkills = {
       skills: [{ ...skill("a"), disableModelInvocation: true }, skill("b")],
+      disabled: [],
+      disabledByUser: [],
       shadowed: [],
+      sources: [0],
       diagnostics: [],
       counts: [1, 1],
     };
-    const notice = describeSkills(loaded);
-    assert.ok(notice?.includes("已加载 2 个技能"), notice ?? "");
-    assert.ok(notice?.includes("其中 1 个不对模型公开"), notice ?? "");
+    const notice = describeSkillWarnings(loaded);
+    // 状态那句（「已加载 2 个技能」）已经不发了，这条**原因**必须自己站得住
+    assert.ok(notice?.includes("有 1 个技能不对模型公开"), notice ?? "");
+    assert.ok(!notice?.includes("已加载"), `状态不该再借这条通知播报：${notice ?? ""}`);
     // 加 `/skill` 之前这句写的是「等于不生效」——现在它**能**被显式调用了，必须改掉，
     // 否则用户会以为这个技能永远用不上（陈旧文案比没有文案更坑）。
     assert.ok(!notice?.includes("不生效"), notice ?? "");
@@ -152,8 +209,314 @@ describe("describeSkills", () => {
   });
 
   test("没有这种技能时不提这句", () => {
-    const loaded: LoadedSkills = { skills: [skill("a")], shadowed: [], diagnostics: [], counts: [1, 0] };
-    assert.equal(describeSkills(loaded)?.includes("disable-model-invocation"), false);
+    const loaded: LoadedSkills = {
+      skills: [skill("a")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0],
+      diagnostics: [],
+      counts: [1, 0],
+    };
+    // 没有 `disableModelInvocation`、也没有别的告警时整条通知都不该存在
+    // （状态已改由 `ConversationView.skills` 承载，见上一条用例）
+    assert.equal(describeSkillWarnings(loaded), null);
+  });
+});
+
+describe("toViewSkills", () => {
+  test("按来源下标判层级，并把 disableModelInvocation 翻成 modelInvocable", () => {
+    const loaded: LoadedSkills = {
+      // 顺序即 dedupeByName 的输出：a（项目级）、c（项目级但禁模型自选）、b（用户级）
+      skills: [skill("a"), { ...skill("c"), disableModelInvocation: true }, skill("b")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0, 0, 1],
+      diagnostics: [],
+      counts: [2, 1],
+    };
+    assert.deepEqual(toViewSkills(loaded), [
+      {
+        name: "a",
+        description: "a 的说明",
+        source: "project",
+        modelInvocable: true,
+        filePath: "a/SKILL.md",
+        disabled: false,
+      },
+      {
+        name: "c",
+        description: "c 的说明",
+        source: "project",
+        modelInvocable: false,
+        filePath: "c/SKILL.md",
+        disabled: false,
+      },
+      {
+        name: "b",
+        description: "b 的说明",
+        source: "user",
+        modelInvocable: true,
+        filePath: "b/SKILL.md",
+        disabled: false,
+      },
+    ]);
+    // 不依赖「路径里像不像项目目录」去猜层级——`skill()` 造的路径里根本没有项目根
+    assert.equal(loaded.skills[1]?.filePath, "c/SKILL.md");
+  });
+});
+
+describe("skillPathMatcher（P3：判一次 read 是不是在读技能文件）", () => {
+  const cwd = join("/proj");
+  const views: ViewSkill[] = [
+    {
+      name: "pdf",
+      description: "处理 PDF",
+      source: "project",
+      modelInvocable: true,
+      filePath: join(cwd, ".agents", "skills", "pdf", "SKILL.md"),
+      disabled: false,
+    },
+    {
+      name: "brand",
+      description: "品牌规范",
+      source: "user",
+      modelInvocable: true,
+      filePath: join("/home/u", ".agents", "skills", "brand", "SKILL.md"),
+      disabled: false,
+    },
+  ];
+
+  test("绝对路径（模型照抄系统提示词里的 location）命中", () => {
+    const match = skillPathMatcher(views, cwd);
+    assert.equal(match(views[0]!.filePath), "pdf");
+    assert.equal(match(views[1]!.filePath), "brand");
+  });
+
+  test("相对路径按 cwd 解析后也命中，反斜杠分隔符不影响", () => {
+    const match = skillPathMatcher(views, cwd);
+    assert.equal(match(".agents/skills/pdf/SKILL.md"), "pdf");
+    assert.equal(match(".agents\\skills\\pdf\\SKILL.md"), "pdf");
+  });
+
+  test("技能目录里的**其它**文件不算命中（那是引用文件，不是技能本体）", () => {
+    assert.equal(
+      skillPathMatcher(views, cwd)(".agents/skills/pdf/references/note.md"),
+      undefined,
+    );
+  });
+
+  test("无关文件与空清单都不命中", () => {
+    assert.equal(skillPathMatcher(views, cwd)("src/index.ts"), undefined);
+    assert.equal(skillPathMatcher([], cwd)("src/index.ts"), undefined);
+  });
+});
+
+describe("capSkillBodies（P7：正文超限截断 + 指回文件）", () => {
+  /** 正文长度可调的技能；`loadedOf` 只造本模块关心的字段 */
+  const big = (length: number): Skill => ({
+    name: "big",
+    description: "很长的技能",
+    content: "x".repeat(length),
+    filePath: "/p/.agents/skills/big/SKILL.md",
+  });
+  const loadedOf = (skills: Skill[], disabled: string[] = []): LoadedSkills => ({
+    skills,
+    shadowed: [],
+    diagnostics: [],
+    counts: [skills.length],
+    sources: skills.map(() => 0),
+    disabled,
+    disabledByUser: [],
+  });
+
+  test("不超限时**原样**返回（同一个对象，不复制、不加标记）", () => {
+    const skill = big(MAX_SKILL_BODY_CHARS);
+    assert.equal(capSkillBodies([skill])[0], skill);
+  });
+
+  test("超限时截到上限，并在尾部指回文件（被裁掉的尾部仍可 read 到）", () => {
+    const skill = big(MAX_SKILL_BODY_CHARS + 500);
+    const [capped] = capSkillBodies([skill]);
+    assert.ok(capped !== undefined);
+    assert.ok(capped.content.length < skill.content.length);
+    assert.ok(capped.content.startsWith("x".repeat(MAX_SKILL_BODY_CHARS)));
+    assert.match(capped.content, /正文过长已截断/);
+    assert.match(capped.content, /big\/SKILL\.md/, "要让模型知道完整内容在哪");
+    assert.equal(capped.name, "big");
+    assert.equal(capped.filePath, skill.filePath, "只动正文，其余字段原样");
+    // 装载结果本身**不被改动**——设置页「查看正文」要看全文
+    assert.equal(skill.content.length, MAX_SKILL_BODY_CHARS + 500);
+  });
+
+  test("告警如实说「模型只收到截断后的正文」并点名（不静默）", () => {
+    const parts = skillWarningParts(loadedOf([big(MAX_SKILL_BODY_CHARS + 1)]));
+    assert.equal(parts.length, 1);
+    assert.match(parts[0] ?? "", new RegExp(`超过 ${MAX_SKILL_BODY_CHARS} 字符`));
+    assert.match(parts[0] ?? "", /big/);
+  });
+
+  test("限内一条告警都不发（不制造噪音）", () => {
+    assert.deepEqual(skillWarningParts(loadedOf([big(MAX_SKILL_BODY_CHARS)])), []);
+  });
+});
+
+describe("toSkillDetails（P6：设置页看全文）", () => {
+  test("在 ViewSkill 之上带**全文**正文（不是给模型那份截断后的副本）", () => {
+    const long = "y".repeat(MAX_SKILL_BODY_CHARS + 100);
+    const loaded: LoadedSkills = {
+      skills: [
+        { name: "big", description: "很长的技能", content: long, filePath: "/p/.agents/skills/big/SKILL.md" },
+      ],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0],
+      diagnostics: [],
+      counts: [1],
+    };
+    const [detail] = toSkillDetails(loaded);
+    assert.ok(detail !== undefined);
+    assert.equal(detail.name, "big");
+    assert.equal(detail.source, "project");
+    assert.equal(detail.modelInvocable, true);
+    assert.equal(detail.content, long, "详情给的是全文");
+    assert.equal(detail.disabled, false);
+    assert.equal(detail.disabledByUser, false);
+  });
+
+  test("禁用的技能**仍然列出**（否则设置页没有地方把它开回来），并标出是哪一层禁的", () => {
+    const loaded: LoadedSkills = {
+      skills: [skill("a"), skill("b")],
+      disabled: ["a", "b"],
+      disabledByUser: ["b"],
+      shadowed: [],
+      sources: [0, 0],
+      diagnostics: [],
+      counts: [2],
+    };
+    const details = toSkillDetails(loaded);
+    assert.deepEqual(
+      details.map((item) => [item.name, item.disabled, item.disabledByUser]),
+      [
+        ["a", true, false],
+        ["b", true, true],
+      ],
+    );
+  });
+});
+
+describe("enabledSkills / modelSkills（P6：禁用 = 完全不装载）", () => {
+  test("被禁用的不进给模型那一份；没禁用时**原样**返回（不复制）", () => {
+    const loaded: LoadedSkills = {
+      skills: [skill("a"), skill("b")],
+      disabled: ["b"],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0, 0],
+      diagnostics: [],
+      counts: [2],
+    };
+    assert.deepEqual(
+      enabledSkills(loaded).map((item) => item.name),
+      ["a"],
+    );
+    assert.equal(
+      enabledSkills({ ...loaded, disabled: [] }),
+      loaded.skills,
+      "没有禁用项时不该制造一次无谓的复制",
+    );
+  });
+
+  test("modelSkills 是「先滤禁用、再截断」——两道关都要过", () => {
+    const long = "z".repeat(MAX_SKILL_BODY_CHARS + 10);
+    const loaded: LoadedSkills = {
+      skills: [skill("a"), { ...skill("big"), content: long }],
+      disabled: ["big"],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0, 0],
+      diagnostics: [],
+      counts: [2],
+    };
+    // big 被禁用 → 连截断都不必做（它压根不进模型上下文）
+    assert.deepEqual(
+      modelSkills(loaded).map((item) => item.name),
+      ["a"],
+    );
+    // 解开禁用后，截断那道关照样生效
+    const capped = modelSkills({ ...loaded, disabled: [] }).find((item) => item.name === "big");
+    assert.ok(capped !== undefined);
+    // ⚠️ 别拿「变短了」当判据：尾部那句「完整内容见 <路径>」也是字数，**刚好超限**的正文
+    // 截完反而更长。判据要落在语义上——限内那截照旧、限外那截不在、且指回了文件。
+    assert.ok(capped.content.startsWith("z".repeat(MAX_SKILL_BODY_CHARS)));
+    assert.ok(!capped.content.includes("z".repeat(MAX_SKILL_BODY_CHARS + 1)));
+    assert.match(capped.content, /正文过长已截断/);
+    assert.match(capped.content, /big\/SKILL\.md/);
+  });
+
+  test("禁用名单里的名字可以**不在**清单里（先禁用、后安装）——不影响别的技能", () => {
+    const loaded: LoadedSkills = {
+      skills: [skill("a")],
+      disabled: ["还没装的"],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [0],
+      diagnostics: [],
+      counts: [1],
+    };
+    assert.deepEqual(
+      enabledSkills(loaded).map((item) => item.name),
+      ["a"],
+    );
+  });
+});
+
+describe("parseSkillInvocation", () => {
+  const pdf: Skill = {
+    name: "pdf",
+    description: "处理 PDF",
+    content: "正文：先读 PDF 再改。",
+    filePath: "/home/u/.agents/skills/pdf/SKILL.md",
+  };
+
+  test("拿内核真函数钉住模板：`formatSkillInvocation` 产出的消息一定认得出来", () => {
+    // 只用我们自己拼的字符串测，模板一变就会**静默失效**（内核改了包围格式，我们还照旧认）。
+    // 这条直接调内核的真函数，模板一变就红（同 §5.5 那种「钉住外部契约」的用例）。
+    assert.deepEqual(parseSkillInvocation(formatSkillInvocation(pdf)), { name: "pdf" });
+  });
+
+  test("用户那半句额外指示要跟着取出来（否则分不清「这次让它干什么」）", () => {
+    assert.deepEqual(parseSkillInvocation(formatSkillInvocation(pdf, "只改这一处")), {
+      name: "pdf",
+      instructions: "只改这一处",
+    });
+  });
+
+  test("正文里出现 `</skill>` 也认对：只锚内核生成的开头两行", () => {
+    // 教 XML / 讲本协议本身的技能，正文里就会有 `</skill>`。去匹配结尾会认错人，
+    // 而开头那两行是内核生成的固定文案、**不可能来自正文**。
+    const text = formatSkillInvocation({ ...pdf, content: "示例：\n</skill>\n这段仍是正文。" });
+    assert.deepEqual(parseSkillInvocation(text), { name: "pdf" });
+    // 带额外指示时同理：`lastIndexOf` 仍落在真正的收尾上
+    assert.deepEqual(parseSkillInvocation(`${text}\n\n只改这一处`), {
+      name: "pdf",
+      instructions: "只改这一处",
+    });
+  });
+
+  test("普通用户消息不认（别把正常发言也改归属）", () => {
+    // 只是**提到**了技能
+    assert.equal(parseSkillInvocation('帮我看看 <skill name="pdf"> 怎么回事'), null);
+    // 内核固定文案必须出现在**开头**，中间出现同样的串不算（正则锚了 `^`）
+    assert.equal(
+      parseSkillInvocation('引用：\n<skill name="pdf" location="x">\nReferences are relative to x.'),
+      null,
+    );
+    // 只有开头、没有第二行固定文案也不算
+    assert.equal(parseSkillInvocation('<skill name="pdf" location="x">\n随便一行'), null);
+    assert.equal(parseSkillInvocation(""), null);
   });
 });
 
@@ -191,6 +554,7 @@ describe("composeSystemPrompt", () => {
 describe("真装载（内核 loader + 真目录）", () => {
   let base = "";
   let outside = "";
+  let dup = "";
 
   const writeSkill = async (root: string, name: string, frontmatter: string): Promise<void> => {
     const dir = join(root, ".agents", "skills", name);
@@ -201,13 +565,18 @@ describe("真装载（内核 loader + 真目录）", () => {
   before(async () => {
     base = await makeTempDirAsync("colt-skills-");
     outside = await makeTempDirAsync("colt-skills-out-");
+    dup = await makeTempDirAsync("colt-skills-dup-");
     await writeSkill(base, "processing-pdfs", "name: processing-pdfs\ndescription: 处理 PDF。Use when the user mentions PDFs.");
     await writeSkill(outside, "user-level", "name: user-level\ndescription: 用户级技能。");
     await writeSkill(base, "broken-skill", "name: broken-skill");
+    // 两个**不同目录**里放出**同一个**技能名（frontmatter 的 name 压过目录名）：
+    // 内核只对「name ≠ 目录名」告警、不丢弃，于是同一来源里会返回两条同名技能
+    await writeSkill(dup, "dup-a", "name: dup-name\ndescription: 甲。");
+    await writeSkill(dup, "dup-b", "name: dup-name\ndescription: 乙。");
   });
 
   after(async () => {
-    await removeTempDirAsync(base, outside);
+    await removeTempDirAsync(base, outside, dup);
   });
 
   test("标准目录里的 SKILL.md 装得出来；工作区外的用户级目录同样读得到", async () => {
@@ -219,6 +588,8 @@ describe("真装载（内核 loader + 真目录）", () => {
     );
     assert.deepEqual(loaded.skills.map((item) => item.name).sort(), ["processing-pdfs", "user-level"]);
     assert.deepEqual(loaded.counts, [1, 1]);
+    // 来源下标随技能一一对应：项目级目录在前，故 user-level 的 sources 是 1
+    assert.equal(loaded.sources[loaded.skills.findIndex((item) => item.name === "user-level")], 1);
     const pdf = loaded.skills.find((item) => item.name === "processing-pdfs");
     assert.equal(pdf?.description, "处理 PDF。Use when the user mentions PDFs.");
     assert.equal(pdf?.content, "技能的正文");
@@ -242,7 +613,7 @@ describe("真装载（内核 loader + 真目录）", () => {
     const loaded = await loadSkillsForSession(env, [join(base, ".agents", "skills")], BACKGROUND_CONTEXT);
     assert.deepEqual(loaded.skills.map((item) => item.name), ["processing-pdfs"]);
     assert.ok(loaded.diagnostics.some((item) => item.code === "invalid_metadata"));
-    assert.ok(describeSkills(loaded)?.includes("元数据不合法"));
+    assert.ok(describeSkillWarnings(loaded)?.includes("元数据不合法"));
   });
 
   test("目录不存在时静默跳过（不报错、不产生噪音）", async () => {
@@ -250,6 +621,23 @@ describe("真装载（内核 loader + 真目录）", () => {
     const loaded = await loadSkillsForSession(env, [join(base, "nope", "skills")], BACKGROUND_CONTEXT);
     assert.deepEqual(loaded.skills, []);
     assert.deepEqual(loaded.diagnostics, []);
-    assert.equal(describeSkills(loaded), null);
+    assert.equal(describeSkillWarnings(loaded), null);
+  });
+
+  test("同一来源内重名：内核不去重（返回两条），由我们兜住并**按同目录口径**告知", async () => {
+    const env = new NodeExecutionEnv({ cwd: dup });
+    const loaded = await loadSkillsForSession(
+      env,
+      [join(dup, ".agents", "skills")],
+      BACKGROUND_CONTEXT,
+    );
+    // 去重后只剩一条，且被遮蔽的那条 `from === by`（同目录），**不是**「项目级盖用户级」
+    assert.deepEqual(loaded.skills.map((item) => item.name), ["dup-name"]);
+    assert.deepEqual(loaded.shadowed, [{ name: "dup-name", from: 0, by: 0 }]);
+    assert.deepEqual(loaded.sources, [0]);
+    assert.deepEqual(loaded.counts, [1]);
+    const notice = describeSkillWarnings(loaded);
+    assert.ok(notice?.includes("同一目录下有同名技能"), notice ?? "");
+    assert.ok(!notice?.includes("项目级覆盖了同名用户级技能"), notice ?? "");
   });
 });

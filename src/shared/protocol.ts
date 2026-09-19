@@ -10,6 +10,7 @@ import type {
   AskUserQuestion,
   ConversationView,
   McpServerView,
+  SkillsStatus,
   ViewMessage,
   ViewToolResult,
 } from "./worker-protocol";
@@ -18,6 +19,8 @@ import type { ToolImageResult } from "./tool-output";
 
 /** MCP server 现状的契约定义在 `@shared/worker-protocol`，这里转出去方便界面一处 import */
 export type { McpServerView } from "./worker-protocol";
+/** 技能装载现状同理（设置页「技能」分区用） */
+export type { SkillsStatus } from "./worker-protocol";
 
 /** 环境体检结果 */
 export interface EnvReport {
@@ -267,6 +270,10 @@ export const IPC_CHANNELS = [
   "providers.remove",
   "mcp.status",
   "mcp.reload",
+  "skills.status",
+  "skills.rescan",
+  "skills.setDisabled",
+  "skills.reveal",
   "session.setModel",
   "session.setThinkingLevel",
   "session.compact",
@@ -610,6 +617,47 @@ export interface IpcInvokeMap {
   "mcp.reload": {
     request: { projectId: string };
     response: { servers: McpServerView[]; live: boolean; diagnostics: string[] };
+  };
+  /**
+   * 查某项目**当前会话**装载到的技能（设置页「技能」分区）。
+   *
+   * 与 MCP 那条不同：技能清单是内核 loader 的产物，主进程不自己扫盘复刻，只把问题转给
+   * 该项目的活会话进程。**没有活会话时 `live: false` 且清单为空**——那是「会话没开」，
+   * 不是「一个技能都没装」；界面必须分开说，否则又是一句反话。
+   */
+  "skills.status": {
+    request: { projectId: string };
+    response: SkillsStatus;
+  };
+  /**
+   * 重新扫描技能目录并**热更新**当前会话：重扫 `.agents/skills`、写回 harness 的
+   * `resources.skills`，下一次模型请求的系统提示词立即反映新清单（不必重启会话）。
+   * 没有活会话时退化成 `live: false` 的空回复——那时重扫也无处生效（下次开会话自然重装）。
+   */
+  "skills.rescan": {
+    request: { projectId: string };
+    response: SkillsStatus;
+  };
+  /**
+   * 禁用 / 启用某个技能，落在**项目级** `<项目根>/.colt/skills.json`（`.colt/` 已被 gitignore，
+   * 本地偏好不会跟着提交进仓库），随后重载并回新现状——开关一步到位。
+   *
+   * 用户级 `~/.colt/skills.json` 只读不写（手工编辑）：禁用是**并集**，那条在项目里解不开，
+   * 故现状里的 `disabledByUser` 会让界面把开关置灰并说明。没有活会话时无事可做，
+   * 返回 `live: false`——写盘本身要靠 worker（见 `skillsSetDisabled` 命令）。
+   */
+  "skills.setDisabled": {
+    request: { projectId: string; name: string; disabled: boolean };
+    response: SkillsStatus;
+  };
+  /**
+   * 在文件管理器里定位某个技能的 `SKILL.md`（**不做删除**：技能是随仓库分发的，
+   * 删不删由用户在文件管理器里自己决定，产品不替他拍板）。
+   * 只做一次「揭开所在目录」，不读内容、不写盘，故拿到的路径只做形状校验。
+   */
+  "skills.reveal": {
+    request: { filePath: string };
+    response: { ok: boolean; reason?: string };
   };
   /** 切换会话使用的模型 */
   "session.setModel": {

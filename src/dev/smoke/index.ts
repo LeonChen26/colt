@@ -22,6 +22,11 @@
  *       现写现 reload：冷启动装载 → 加 server（分页那支在真 worker 里也收全）→ 删 server
  *       （连工具一起消失，同一 worker 不重启）；再验 `mcp.status` / `mcp.reload` 两个 IPC 的
  *       返回形状，含「没有活会话」时的退路（live=false + 声明 + idle）
+ * skills-reload：技能的**设置页可见性 + 热重载 + 启用/禁用**链路（**不打模型、不计费**）——三版技能目录
+ *       现写现 rescan：冷启动装载 → 加技能（不重启会话即可用）→ 超长正文（给用户看全文、
+ *       告警如实说模型只收到截断后的）；再单个禁用（偏好落到项目级 .colt/skills.json、`/` 候选
+ *       随之排除、启用后恢复）；最后验 `skills.status` / `skills.rescan` / `skills.setDisabled` /
+ *       `skills.reveal` 的返回形状，含「没有活会话」时的退路（live=false + 空清单）
  * subagent-e2e：子代理链路的**真实模型**端到端（打模型；云端计费，本地 Ollama 免费）——
  *       模型按名调用 demo 子代理（＝<available_subagents> 清单真进了提示词）→
  *       subagent 调用免闸、子 lane 的内部 write 照常弹审批卡（带「来自 demo」归属）→
@@ -92,6 +97,7 @@ import { runMemory, runMemoryE2e } from "./modes/memory";
 import { runMcpE2e } from "./modes/mcp-e2e";
 import { runMcpReal } from "./modes/mcp-real";
 import { runMcpReload } from "./modes/mcp-reload";
+import { runSkillsReload } from "./modes/skills-reload";
 import { runSubagentE2e } from "./modes/subagent-e2e";
 import { runPerf } from "./modes/perf";
 import {
@@ -224,6 +230,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runMcpReal(window, log, run);
     } else if (mode === "mcp-reload") {
       await runMcpReload(window, log, run);
+    } else if (mode === "skills-reload") {
+      await runSkillsReload(window, log, run);
     } else if (mode === "subagent-e2e") {
       await runSubagentE2e(window, log, run);
     } else if (mode === "reenter") {

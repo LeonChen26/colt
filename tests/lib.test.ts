@@ -1452,6 +1452,26 @@ describe("sessionOutline（会话目录与历史搜索）", () => {
     assert.match(items[0]!.label, /只有图片/);
   });
 
+  test("技能调用在目录里写「技能 X」——它仍占一轮，但归属不是用户", () => {
+    // 正文是内核塞的原始 XML，拿第一行当标签会得到 `<skill name="pdf" location="…">`；
+    // 技能调用**确实**换来一次回复，所以照样计数、照样可导航，只是标签要换。
+    const invocation: ViewMessage = {
+      id: "u1",
+      role: "user",
+      text:
+        '<skill name="pdf" location="/u/skills/pdf/SKILL.md">\n' +
+        "References are relative to /u/skills/pdf.\n\n技能的正文\n</skill>",
+      skill: { name: "pdf" },
+      toolCalls: [],
+    };
+    const items = outlineOf([invocation]);
+    assert.equal(items[0]!.label, "技能 pdf");
+    assert.ok(!items[0]!.label.includes("<skill"), items[0]!.label);
+    // 带上额外指示时，指示才是这一轮的意图，一并写进标签
+    const withInstr = outlineOf([{ ...invocation, skill: { name: "pdf", instructions: "只改这一处" } }]);
+    assert.equal(withInstr[0]!.label, "技能 pdf · 只改这一处");
+  });
+
   test("搜索：提问与回复都搜，返回下标、角色与上下文", () => {
     const hits = searchHistory([user("u1", "问"), bot("a1", "这里有 内存泄漏 的问题")], "内存");
     assert.equal(hits.length, 1);

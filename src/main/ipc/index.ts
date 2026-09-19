@@ -4,9 +4,9 @@
 /**
  * IPC 路由：所有渲染进程调用的落点
  */
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
@@ -194,6 +194,20 @@ function handleWithSender<C extends IpcChannel>(
 /** 会话的历史目录（真实 JSONL 由内核在其中按「转义后的 cwd + kernelId」生成） */
 function jsonlPathFor(projectId: string): string {
   return join(app.getPath("userData"), "sessions", projectId);
+}
+
+/**
+ * 是不是「一个技能的 `SKILL.md`」——即 `<...>/.agents/skills/<名字>/SKILL.md`。
+ *
+ * 为什么按**形状**判，而不是「问 worker 这个路径对不对」：只是为了在文件管理器里揭开一次
+ * 目录，不值得再走一个 IPC 往返；而这最终只调 `shell.showItemInFolder`（不读内容、不写盘），
+ * 把形状钉死，危害上界就定住了。用 `basename` / `dirname` 而非字符串前缀比对——Windows 的
+ * 分隔符与大小写都不该参与这个判断。
+ */
+function isSkillFilePath(filePath: string): boolean {
+  if (basename(filePath) !== "SKILL.md") return false;
+  const skillsDir = dirname(dirname(filePath)); // `<...>/.agents/skills`
+  return basename(skillsDir) === "skills" && basename(dirname(skillsDir)) === ".agents";
 }
 
 /**
@@ -554,6 +568,51 @@ export function registerIpcHandlers(): void {
       live: true,
       diagnostics: declared.diagnostics,
     } as const;
+  });
+
+  handle("skills.status", async (request) => {
+    // 技能清单是内核 loader 的产物，主进程**不自己扫盘复刻**——只把问题转给该项目的活会话。
+    // 没有活会话时 `live: false` 且清单为空：那是「会话没开着」，界面据此说要先开会话，
+    // 而不是渲染成「一个技能都没装」（反话，见 `protocol.ts` 里 `skills.status` 的注释）。
+    const sessionId = sessionManager.workerSessionForProject(request.projectId);
+    if (sessionId === undefined) {
+      return { skills: [], warnings: [], live: false } as const;
+    }
+    return await sessionManager.skillsStatus(sessionId);
+  });
+
+  handle("skills.rescan", async (request) => {
+    // 与 skills.status 同款：没有活会话就无处生效（重扫的是**运行中**那份清单，下次开会话
+    // 本来就会重新装载），此时照实回 `live: false`，不假装成功。
+    const sessionId = sessionManager.workerSessionForProject(request.projectId);
+    if (sessionId === undefined) {
+      return { skills: [], warnings: [], live: false } as const;
+    }
+    return await sessionManager.skillsRescan(sessionId);
+  });
+
+  handle("skills.setDisabled", async (request) => {
+    // 落盘在 worker（见 `skillsSetDisabled` 命令）：它才是这份配置的读者，主进程不碰那个文件。
+    // 没活会话就无处生效——照实回 `live: false`，别让开关显示一个并未发生的状态。
+    const sessionId = sessionManager.workerSessionForProject(request.projectId);
+    if (sessionId === undefined) {
+      return { skills: [], warnings: [], live: false } as const;
+    }
+    return await sessionManager.skillsSetDisabled(sessionId, request.name, request.disabled);
+  });
+
+  handle("skills.reveal", async (request) => {
+    // 只做一次「揭开所在目录」：不读内容、不写盘，故危害上界很小。路径来自渲染层，
+    // 但仍按**形状**钉死（`.agents/skills/<名字>/SKILL.md` 上的真实文件）——最坏也只是
+    // 「在文件管理器里定位到一个不存在的位置」，不会把别的什么位置掀开。
+    if (!isSkillFilePath(request.filePath)) {
+      return { ok: false, reason: "只支持定位 .agents/skills/<名字>/SKILL.md。" };
+    }
+    if (!existsSync(request.filePath)) {
+      return { ok: false, reason: "文件已不在（可能被删掉或移走了）。" };
+    }
+    shell.showItemInFolder(request.filePath);
+    return { ok: true };
   });
 
   handle("session.setModel", async (request) => {

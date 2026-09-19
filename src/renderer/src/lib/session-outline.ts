@@ -12,6 +12,7 @@
  * 超长提问、命中在开头/结尾、查询为空）才能被单测逐条钉死。
  */
 import type { ViewMessage } from "@shared/worker-protocol";
+import { skillInvocationLabel } from "@shared/skill-invocation";
 
 /** 目录里一行显示多少字（界面上就是一行，多了只能截） */
 export const LABEL_MAX = 72;
@@ -82,12 +83,19 @@ export function outlineOf(messages: ViewMessage[]): OutlineItem[] {
     const message = messages[index]!;
     if (message.role !== "user") continue;
     turn += 1;
+    // 技能调用也是一轮（用户确实敲了这条命令、它也确实换来一次回复），所以**照样计数、
+    // 照样可导航**；要改的只是**归属**——它的正文是内核塞的原始 XML，拿第一行当标签
+    // 会得到 `<skill name="pdf" location="…">`。
+    const label =
+      message.skill === undefined
+        ? labelOf(message.text)
+        : labelOf(skillInvocationLabel(message.skill));
     // 只有图片、没有文字的提问也要在目录里占一行——否则它在目录上「不存在」，
     // 而用户明明记得问过（位置比文字重要）
     items.push({
       index,
       id: message.id,
-      label: labelOf(message.text) || `（第 ${turn} 轮：只有图片）`,
+      label: label || `（第 ${turn} 轮：只有图片）`,
       turn,
     });
   }

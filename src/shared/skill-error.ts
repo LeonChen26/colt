@@ -26,6 +26,17 @@ export function unknownSkillMessage(name: string, available: readonly string[]):
   return `${head}。可用：${available.join("、")}`;
 }
 
+/**
+ * 技能**被使用者禁用** → 给用户看的一句话。
+ *
+ * 与「不存在」**必须分开说**：名字打错时用户要改拼写，而这个名字恰恰是他自己刚关掉的——
+ * 说成「不存在」会让他去翻拼写、越找越远。两条路径（渲染层就地拦 / worker 兜底）共用它，
+ * 理由同 `unknownSkillMessage`。
+ */
+export function disabledSkillMessage(name: string): string {
+  return `技能「${name}」已被你在设置里禁用（设置 → 技能 可重新启用）。`;
+}
+
 /** 技能调用的失败 → 给用户看的一句话 */
 export function describeSkillError(error: unknown): string {
   const tag = (error as { _tag?: string } | undefined)?._tag;

@@ -4,6 +4,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 import {
   countPatchLines,
@@ -14,6 +15,7 @@ import {
   isCoveredBlockType,
   project,
   projectBranchNodes,
+  projectTranscript,
   toRelative,
   type BranchEntry,
 } from "../src/worker/lib/project.ts";
@@ -255,6 +257,86 @@ describe("projectBranchNodes", () => {
   });
 });
 
+describe("project：技能调用消息带上归属标记（别再冒充用户发言）", () => {
+  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
+    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
+
+  /** 内核 `formatSkillInvocation` 的真实形状（模板由 `skills.test.ts` 拿真函数钉住） */
+  const invocation = (instructions?: string): string => {
+    const block =
+      '<skill name="pdf" location="/u/skills/pdf/SKILL.md">\n' +
+      "References are relative to /u/skills/pdf.\n\n" +
+      "技能的正文\n</skill>";
+    return instructions === undefined ? block : `${block}\n\n${instructions}`;
+  };
+
+  const entry = (id: string, message: unknown): unknown => ({ type: "message", id, message });
+  const userEntry = (id: string, text: string): unknown =>
+    entry(id, { role: "user", content: [{ type: "text", text }] });
+
+  test("认出来并带上 skill；正文照旧保留（展开技能卡要看的就是它）", () => {
+    const { messages } = projectTranscript([userEntry("u1", invocation("只改这一处"))], new Map());
+    assert.equal(messages[0]?.role, "user");
+    assert.deepEqual(messages[0]?.skill, { name: "pdf", instructions: "只改这一处" });
+    assert.ok(messages[0]?.text.includes("技能的正文"), "正文不能被丢掉");
+  });
+
+  test("普通用户消息**不带** skill（别把正常发言也改归属）", () => {
+    const { messages } = projectTranscript([userEntry("u1", "帮我看看这个文件")], new Map());
+    assert.equal(messages[0]?.skill, undefined);
+    assert.ok(!("skill" in messages[0]!), "没有技能归属时不该多出这个键");
+  });
+
+  test("分支树摘要写「技能 X」，而不是原始 XML", () => {
+    const nodes = projectBranchNodes(
+      [{ id: "u1", parentId: null, type: "message", message: { role: "user", content: [{ type: "text", text: invocation() }] } }],
+      "u1",
+    );
+    assert.equal(nodes[0]?.summary, "技能 pdf");
+    assert.ok(!nodes[0]?.summary.includes("<skill"), nodes[0]?.summary ?? "");
+  });
+
+  test("分支树摘要带上额外指示（分得清这次让它干什么）", () => {
+    const nodes = projectBranchNodes(
+      [
+        {
+          id: "u1",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: invocation("只改这一处") }] },
+        },
+      ],
+      "u1",
+    );
+    assert.equal(nodes[0]?.summary, "技能 pdf · 只改这一处");
+  });
+
+  test("整份视图里没有裸露的技能调用 XML（归属是标记，不是靠正则再认一遍）", () => {
+    // 「同一份数据只出现一次」的另一面：原始 XML 只该留在 `text` 里（展开时看），
+    // 不该出现在 `skill` 标记或摘要里——否则界面会两处显示同一段内核文案
+    const snapshot = snapshotOf([userEntry("u1", invocation("只改这一处"))]);
+    const view = project(
+      snapshot,
+      {
+        sessionId: "s",
+        cwd: "/cwd",
+        model: "m",
+        imageInput: false,
+        thinkingLevel: "medium" as never,
+        skills: [],
+        fileChanges: [],
+        todos: [],
+        contextUsed: 0,
+      } as never,
+      new Map(),
+      [],
+    );
+    const marker = JSON.stringify(view.messages[0]?.skill);
+    assert.ok(!marker.includes("<skill"), marker);
+    assert.ok(!marker.includes("References are relative to"), marker);
+  });
+});
+
 describe("内容块覆盖哨兵（升级 pi 时的护栏）", () => {
   test("四个已知类型都算已覆盖", () => {
     for (const type of ["text", "thinking", "image", "toolCall"]) {
@@ -427,5 +509,64 @@ describe("project：工具截图能落盘的只报 hasImage", () => {
     const inline = project(shot("call_same", "image/tiff"), meta, new Map(), []);
     const spilled = project(shot("call_same", "image/png"), meta, new Map(), []);
     assert.notDeepEqual(inline.toolResults[0], spilled.toolResults[0]);
+  });
+});
+
+describe("project：read 命中技能文件时工具卡带 skill 标记（P3）", () => {
+  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
+    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
+  const cwd = join("/proj");
+  const skillFile = join(cwd, ".agents", "skills", "pdf", "SKILL.md");
+  const meta = {
+    providerId: "test-provider",
+    modelId: "test-model",
+    thinkingLevel: "medium",
+    cwd,
+    skills: [
+      {
+        name: "pdf",
+        description: "处理 PDF",
+        source: "project",
+        modelInvocable: true,
+        filePath: skillFile,
+      },
+    ],
+    fileChanges: [],
+    contextUsed: 0,
+  } as unknown as Parameters<typeof project>[1];
+  const entry = (id: string, message: unknown): unknown => ({ type: "message", id, message });
+
+  /** 一次助手轮次里同时出现：读技能文件、读普通文件、跑 bash */
+  const transcript = (): LaneSnapshot =>
+    snapshotOf([
+      entry("a1", {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "c_skill", name: "read", arguments: { path: skillFile } },
+          { type: "toolCall", id: "c_other", name: "read", arguments: { path: "src/index.ts" } },
+          { type: "toolCall", id: "c_bash", name: "bash", arguments: { command: "cat x" } },
+        ],
+      }),
+    ]);
+
+  test("读技能文件的那次带 skill，读普通文件 / bash 都不带", () => {
+    const view = project(transcript(), meta, new Map(), []);
+    const calls = view.messages[0]?.toolCalls ?? [];
+    assert.equal(calls.find((call) => call.id === "c_skill")?.skill, "pdf");
+    assert.equal(calls.find((call) => call.id === "c_other")?.skill, undefined);
+    assert.equal(calls.find((call) => call.id === "c_bash")?.skill, undefined);
+  });
+
+  test("没有装载技能时任何调用都不带标记（不给普通 read 无中生有）", () => {
+    const view = project(
+      transcript(),
+      { ...meta, skills: [] } as unknown as Parameters<typeof project>[1],
+      new Map(),
+      [],
+    );
+    assert.equal(
+      view.messages[0]?.toolCalls.every((call) => call.skill === undefined),
+      true,
+    );
   });
 });

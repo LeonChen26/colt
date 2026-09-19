@@ -41,6 +41,7 @@ import {
 import { cn } from "../../lib/utils";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
+import { disabledSkillMessage } from "@shared/skill-error";
 import { Markdown } from "../../components/Markdown";
 import { AssistantRow, MessageWindow, ThinkingRail, ToolCard } from "./MessageList";
 import { ApprovalCard } from "./ApprovalCard";
@@ -690,6 +691,22 @@ export function Conversation({
     }
   }, [sessionId]);
 
+  /**
+   * 清单只剩名字：斜杠命令（`resolveSkillCommand` / `slashCandidates`）是纯函数，
+   * 只按名核对，不该认识 `ViewSkill`。
+   *
+   * 被**禁用**的技能**不进这份名单**：`/` 候选只该列「敲了真能用的」——把一个敲了必被拒的
+   * 名字摆进候选，等于把用户往墙上引。但拦下时要说清是「禁用」而不是「不存在」（见下面
+   * `submit` 里那个分支：它拿的是完整视图，能分辨这两件事）。
+   *
+   * `undefined`（拿不到视图）必须**原样保留**——那是「**不知道**」，不是「空的」；
+   * 混成 `[]` 会把一次有效调用误判成失败（另一种丢输入，见 `ConversationView.skills` 的注释）。
+   */
+  const skillNames = useMemo(
+    () => view?.skills?.filter((item) => !item.disabled).map((item) => item.name),
+    [view?.skills],
+  );
+
   const submit = useCallback(async () => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
@@ -710,9 +727,15 @@ export function Conversation({
     if (command?.name === "skill") {
       // **本地先判一次**再决定清不清：名字打错时把输入留着（含那半句额外指示），
       // 而不是先清空再发、让 worker 报错——那时用户已经白敲了一整句。
-      // `view?.skills` 是本会话的清单（worker 投影来的）；拿不到视图时它是 `undefined`，
+      // `skillNames` 是本会话**可调用**的名字（worker 投影来的）；拿不到视图时它是 `undefined`，
       // 该函数会放行，由 worker 兜底报同一句话（见 `resolveSkillCommand` 的注释）。
-      const dispatch = resolveSkillCommand(command.skillName, view?.skills);
+      // 被禁用的名字要**先判**：它不在 `skillNames` 里（那份只列可调用的），直接交给
+      // `resolveSkillCommand` 会被说成「不存在」——而这个名字恰恰是用户自己刚关掉的。
+      const off = view?.skills?.some((item) => item.disabled && item.name === command.skillName);
+      const dispatch =
+        off === true
+          ? { kind: "reject" as const, message: disabledSkillMessage(command.skillName) }
+          : resolveSkillCommand(command.skillName, skillNames);
       if (dispatch.kind === "reject") {
         setError(dispatch.message);
         return;
@@ -752,7 +775,7 @@ export function Conversation({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [input, attachments, view, sessionId, compact]);
+  }, [input, attachments, view, skillNames, sessionId, compact]);
 
   const abort = useCallback(async () => {
     try {
@@ -769,7 +792,7 @@ export function Conversation({
    * 用户得记住名字再手打，所以它必须真的能落地：**弹出 → 选中 → 写入 → 回车发送**，一环不缺。
    * 匹配规则（前缀匹配；整条命令已敲全就不弹）在 `slashCandidates` 里，有单测。
    */
-  const candidates = useMemo(() => slashCandidates(input, view?.skills), [input, view?.skills]);
+  const candidates = useMemo(() => slashCandidates(input, skillNames), [input, skillNames]);
   const slashOpen = candidates.length > 0 && slashDismissed !== input;
   /** 高亮项下标可能越界（候选因为输入变化而变少），用的时候夹一下，而不是再写一个 effect 去同步 */
   const activeCandidate = candidates[Math.min(slashActive, Math.max(candidates.length - 1, 0))];

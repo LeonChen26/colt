@@ -6,9 +6,20 @@
  * 密钥只上行不下行——界面永远拿不到明文，只能看到是否已配置
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Brain, Check, Image as ImageIcon, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+  Brain,
+  Check,
+  ChevronRight,
+  Image as ImageIcon,
+  KeyRound,
+  Pencil,
+  Plus,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { ICON } from "@/lib/icon";
-import type { McpServerView, ModelOption, Project, ProviderConfig } from "@shared/protocol";
+import type { McpServerView, ModelOption, Project, ProviderConfig, SkillsStatus } from "@shared/protocol";
+import type { ViewSkillDetail } from "@shared/worker-protocol";
 import { DEFAULT_CONTEXT_WINDOW, LEGACY_MAX_TOKENS } from "@shared/model-option";
 import { cn } from "../lib/utils";
 
@@ -100,6 +111,7 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
 
         <ApprovalPolicySettings onSaved={notify} onError={fail} />
         <McpSettings project={project} />
+        <SkillSettings project={project} />
       </div>
     </div>
   );
@@ -361,6 +373,308 @@ function McpServerCard({ server }: { server: McpServerView }): React.JSX.Element
             </span>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 技能（Agent Skills，agentskills.io 标准）：本会话装载到的技能清单。
+ *
+ * 与 MCP 分区同构。`live` 是关键区分：会话开着时展示的是 worker 报的**真实清单**；
+ * 没开着就只能看到引导——绝不能说成「一个技能都没装」，那是反话（同 `McpServerView` 的注记）。
+ *
+ * 技能是**跨会话**的配置（项目级随仓库分发、用户级全局生效），故归设置页，与 MCP 一致。
+ * 每个技能**如实标出处**：项目级会随仓库分发、进系统提示词、影响模型行为——用户有权知道来源。
+ */
+function SkillSettings({ project }: { project: Project | null }): React.JSX.Element {
+  const [status, setStatus] = useState<SkillsStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
+  /**
+   * 正在切换的那个技能名：只用来把开关锁一下，防连点。
+   *
+   * 为什么按**名字**而不是一个全局 `boolean`：`skills.setDisabled` 要做「写盘 + 重新装载」，
+   * 慢的一步在 worker；期间整份现状都还没回来，用全局 busy 会把所有开关一起灰掉。
+   */
+  const [busyName, setBusyName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  /**
+   * **动作级**失败（重新扫描 / 开关 / 在文件管理器中显示）。
+   *
+   * 为什么与 `error` 分开：`error` 那一格在渲染里会**顶掉整份清单**（那是「现状不可信」的语义）。
+   * 而这三件事失败并不代表现状不可信——尤其「在文件管理器中显示」遇到「文件已不在」是**预期会
+   * 发生**的，用它去替换整块列表，用户就再也看不到技能、只能靠重扫捞回来。所以动作失败单独一格，
+   * 渲染在清单**上方**。
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
+  const projectId = project?.id;
+
+  const load = useCallback(async () => {
+    if (projectId === undefined) {
+      setStatus(null);
+      setActionError(null);
+      return;
+    }
+    setLoading(true);
+    try {
+      setStatus(await window.colt.invoke("skills.status", { projectId }));
+      setError(null);
+      setActionError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const rescan = async (): Promise<void> => {
+    if (projectId === undefined) return;
+    setRescanning(true);
+    try {
+      setStatus(await window.colt.invoke("skills.rescan", { projectId }));
+      setError(null);
+      setActionError(null);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRescanning(false);
+    }
+  };
+
+  const skills = status?.skills ?? [];
+  const hasProjectSkill = skills.some((skill) => skill.source === "project");
+
+  /**
+   * 禁用 / 启用某个技能。落盘在 worker（`.colt/skills.json`），这里只把返回的新现状换上——
+   * 状态**以 worker 回的那份为准**，不本地猜：那份才是模型真正会收到的东西。
+   */
+  const setDisabled = async (name: string, disabled: boolean): Promise<void> => {
+    if (projectId === undefined) return;
+    setBusyName(name);
+    try {
+      setStatus(await window.colt.invoke("skills.setDisabled", { projectId, name, disabled }));
+      setError(null);
+      setActionError(null);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  /** 在文件管理器里揭开技能文件所在目录（**不做删除**：删不删由用户自己决定） */
+  const reveal = async (filePath: string): Promise<void> => {
+    try {
+      const result = await window.colt.invoke("skills.reveal", { filePath });
+      setActionError(result.ok ? null : (result.reason ?? "定位失败。"));
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <div className="mt-6">
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-sm">技能</h3>
+        <button
+          type="button"
+          data-skill-rescan=""
+          onClick={() => void rescan()}
+          disabled={projectId === undefined || rescanning}
+          className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {rescanning ? "重扫中…" : "重新扫描"}
+        </button>
+      </div>
+      <p className="mb-3 text-xs text-text-muted">
+        在项目根的 <span className="font-mono">{".agents/skills/<名字>/SKILL.md"}</span> 或用户级的{" "}
+        <span className="font-mono">{"~/.agents/skills/<名字>/SKILL.md"}</span> 里放技能（agentskills.io
+        标准），项目级同名覆盖用户级；用 <span className="font-mono">{"/skill <名字>"}</span> 调用。改完点
+        「重新扫描」即可生效、会话不必重启。
+      </p>
+
+      {status !== null && status.warnings.length > 0 && (
+        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning">
+          <span>装载告警（与「事件」页签同一记录）：</span>
+          {status.warnings.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      )}
+
+      {hasProjectSkill && (
+        <p className="mb-3 text-xs text-warning">
+          项目级技能随仓库分发，会进系统提示词、影响模型行为——注意来源是否可信。
+        </p>
+      )}
+
+      <p className="mb-3 text-xs text-text-muted">
+        关掉某个技能 = <strong>不再装载</strong>：不进系统提示词、模型看不见，
+        <span className="font-mono">/skill</span> 也会被明确拒绝；文件仍在磁盘上，随时可以开回来
+        （偏好写在项目根的 <span className="font-mono">{".colt/skills.json"}</span>
+        ，`.colt/` 已被 gitignore，不会跟着提交）。
+      </p>
+
+      {/* 动作级失败：只加一条说明，**不动清单**（见 `actionError` 的注释） */}
+      {actionError !== null && (
+        <div className="mb-3 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {actionError}
+        </div>
+      )}
+
+      {project === null ? (
+        <SkillNotice>先打开一个项目，才能看到它装载的技能。</SkillNotice>
+      ) : error !== null ? (
+        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {error}
+        </div>
+      ) : loading ? (
+        <SkillNotice>读取中…</SkillNotice>
+      ) : status === null ? null : !status.live ? (
+        // 「没开会话」不是「没装」：分开说，否则是一句反话
+        <SkillNotice>
+          本项目当前没有开着的会话——打开一个会话后这里会显示它装载的技能（「重新扫描」也要有会话才生效）。
+        </SkillNotice>
+      ) : skills.length === 0 ? (
+        <SkillNotice>
+          还没有装任何技能。把技能目录放进去，再点「重新扫描」。
+        </SkillNotice>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {skills.map((skill) => (
+            <SkillCard
+              key={`${skill.source}:${skill.name}`}
+              skill={skill}
+              busy={busyName === skill.name}
+              onToggle={(disabled) => void setDisabled(skill.name, disabled)}
+              onReveal={() => void reveal(skill.filePath)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
+      {children}
+    </div>
+  );
+}
+
+function SkillCard({
+  skill,
+  busy,
+  onToggle,
+  onReveal,
+}: {
+  skill: ViewSkillDetail;
+  busy: boolean;
+  onToggle: (disabled: boolean) => void;
+  onReveal: () => void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  /**
+   * 用户级禁用的开关**必须置灰**：禁用是**并集**，用户级列的名字在项目级删不掉——
+   * 开关照点也不会有任何变化，那就是「点了没反应」。所以这里不但灰掉，还要说清去哪改。
+   */
+  const locked = skill.disabledByUser;
+  return (
+    <div
+      data-skill={skill.name}
+      data-skill-disabled={skill.disabled ? "" : undefined}
+      className={cn(
+        "rounded-lg border border-line bg-surface-raised p-3",
+        skill.disabled && "opacity-60",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2 text-sm">
+        <Sparkles {...ICON.xs} className="shrink-0 text-text-muted" />
+        <span className="truncate">{skill.name}</span>
+        {/* 出处如实标：项目级随仓库分发，值得一眼看出（P5） */}
+        <span
+          className={cn(
+            "shrink-0 rounded px-1.5 py-0.5 text-xs",
+            skill.source === "project"
+              ? "bg-warning-soft text-warning"
+              : "bg-surface-overlay text-text-muted",
+          )}
+        >
+          {skill.source === "project" ? "项目级 .agents" : "用户级 ~/.agents"}
+        </span>
+        {!skill.modelInvocable && (
+          <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 text-xs text-text-muted">
+            仅手动调用
+          </span>
+        )}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!skill.disabled}
+          data-skill-switch={skill.name}
+          disabled={busy || locked}
+          onClick={() => onToggle(!skill.disabled)}
+          title={
+            locked
+              ? "这条禁用来自用户级 ~/.colt/skills.json，项目里改不了"
+              : skill.disabled
+                ? "启用：重新装载这个技能"
+                : "禁用：不再装载这个技能"
+          }
+          className="ml-auto shrink-0 rounded-md border border-line px-2 py-0.5 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {busy ? "…" : skill.disabled ? "已禁用" : "已启用"}
+        </button>
+      </div>
+      <div className="mt-1 text-xs text-text-secondary">{skill.description}</div>
+      <div className="mt-0.5 truncate font-mono text-xs text-text-muted" title={skill.filePath}>
+        {skill.filePath}
+      </div>
+      {locked && (
+        <p className="mt-1 text-[11px] text-text-muted">
+          这条禁用来自用户级 <span className="font-mono">{"~/.colt/skills.json"}</span>
+          ——项目配置里删不掉它（两层是并集），要开回来请改那份。
+        </p>
+      )}
+      <div className="mt-1.5 flex items-center gap-3">
+        {/*
+          查看正文（P6）：技能正文会进系统提示词、改变模型行为，用户有权看到它到底是什么。
+          `content` 是**全文**（未被截断）——模型那份超限会被截断并指回文件，那件事由上面的
+          告警如实说明；这里给的是文件里那样，不是模型收到的样子。
+        */}
+        <button
+          type="button"
+          data-skill-toggle={skill.name}
+          onClick={() => setOpen((value) => !value)}
+          className="flex items-center gap-1 text-[11px] text-text-muted transition hover:text-text-primary"
+        >
+          <ChevronRight {...ICON.xs} className={open ? "shrink-0 rotate-90" : "shrink-0"} />
+          {open ? "收起正文" : "查看正文"}
+        </button>
+        {/* 不做删除：技能随仓库分发，删不删是用户的决定——产品只把他送到那个文件跟前 */}
+        <button
+          type="button"
+          data-skill-reveal={skill.name}
+          onClick={onReveal}
+          className="text-[11px] text-text-muted transition hover:text-text-primary"
+        >
+          在文件管理器中显示
+        </button>
+      </div>
+      {open && (
+        <pre
+          data-skill-body={skill.name}
+          className="mt-1.5 max-h-72 overflow-auto rounded-[6px] border border-line bg-surface-code px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-text-secondary"
+        >
+          {skill.content}
+        </pre>
       )}
     </div>
   );
