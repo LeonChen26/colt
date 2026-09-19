@@ -103,6 +103,7 @@ import {
   readMemoryFile,
   userMemoryFilePath,
 } from "./lib/memory";
+import { loadMcpTools } from "./lib/mcp-tools";
 import {
   createAgentsMdInjector,
   describeAgentsMd,
@@ -386,6 +387,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     onUpdate: () => scheduleFlush(),
   });
 
+  const mcpTools = await loadMcpTools(cwd, (message) => send({ type: "notice", message, kind: "security" }));
+
   const { harness, open } = await AgentHarness.create(
     {
       session,
@@ -402,7 +405,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createMemoryTools(hostBridge),
         ...createTodoTools(hostBridge),
         ...createAskUserTools(questions),
-        ...subagents.tools(),
+        ...subagents.tools(), ...mcpTools,
       ],
       toolContext: { env: executionEnv },
       // create-time 静态部分只有：基础提示词 + 技能清单。
