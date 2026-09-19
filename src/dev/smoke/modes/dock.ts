@@ -933,13 +933,16 @@ export async function runDock(
     ]);
 
     // 「+」菜单：只列产品里真有的视图；点菜单外即收
+    // 清单由 DOCK_KIND_META 的 closable 推导：follow（默认视图）不可关闭不进菜单，
+    // browser / usage / rules 之外，F3（v1.49 之后的安全事件流）新增了 events「事件」页签——
+    // 共 4 项；「工具」「改动」「文件」三个被取消的 kind 必须不在其中。
     await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
     await sleep(300);
     const menu = await probe();
     checks.push([
-      "「+」菜单只列真的存在的视图（⑦-H 取消「工具」、⑦-G 取消「改动」「文件」后共 3 项）",
-      menu.menuItems.length === 3 &&
-        ["browser", "usage", "rules"].every((kind) => menu.menuItems.includes(kind)),
+      "「+」菜单只列真的存在的视图（browser/usage/rules + F3 的 events，共 4 项）",
+      menu.menuItems.length === 4 &&
+        ["browser", "usage", "rules", "events"].every((kind) => menu.menuItems.includes(kind)),
     ]);
     // 三个被取消的 kind 都**不是被藏起来**：只断言「菜单里少一项」不够——
     // 要确认它们连打开都打不开（否则就是一个点了没反应的死菜单项）。
