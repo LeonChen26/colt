@@ -8,7 +8,9 @@
 > 夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用低层 `Server` 类、给**裸 JSON Schema**，
 > 与生产方同构）。
 > **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端（工具可见性 → 审批弹卡 →
-> 结果回模型）只有 `mcp-e2e`（打模型、计费，尚未建）能覆盖；worker 被主进程**强杀**
+> 结果回模型）——冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型、计费）已建并部分实测：
+> 装载告知段通过（2026-09-19，事件流如实记「已连接 1 个 MCP server：fixture」），
+> 模型调用段因账户 429 余额不足未跑成、待复跑；worker 被主进程**强杀**
 > （dispose 超时 / 崩溃）时 MCP 子进程成孤儿的那一支，只有正常 dispose 的
 > `process.on("exit")` 兜底。
 > **一句话**：`<cwd>/.colt/mcp.json` 里声明的 stdio MCP server，其工具被包成普通内核工具

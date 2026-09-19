@@ -188,7 +188,7 @@
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）；冒烟 `COLT_SMOKE_MODE=ask-user`（23 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
-  | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。**未覆盖（别当成验过了）**：真模型调用 MCP 工具的端到端（工具可见性 → 审批弹卡 → 结果回模型）待 `mcp-e2e`（打模型、计费，尚未建）；worker 被强杀时 MCP 子进程成孤儿（正常 dispose 有 `process.on("exit")` 兜底） |
+  | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型、计费）已建：夹具项目写 `.colt/mcp.json`（server 用 `ELECTRON_RUN_AS_NODE` 起 electron-as-node，不依赖 PATH 有 node），验「装载告知（事件落库）→ 模型调用弹审批卡 → 点允许 → 结果回模型」。**已实测**（2026-09-19）：真 worker 连接夹具 server、事件流如实记录「已连接 1 个 MCP server：fixture」3/3 通过；**模型调用段因账户 429（余额不足）未跑成，待余额恢复后复跑** |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**未覆盖（别当成验过了）**：`subagent` 免闸门 / 内部写弹卡的**执行侧**、`fresh` 隔离的**真实效果**、**「模型真的在系统提示词里看得见子代理清单」**——三者都要模型真的调用工具，待 `subagent-e2e`（**打模型、计费**，尚未建）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
@@ -464,6 +464,28 @@
    断言最终字符串里有 `<available_subagents>`），验不了它**真的进了模型那次请求的提示词**。
    三者都要模型真调用，待 `subagent-e2e`（**尚未建、会打模型**）；
    分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖。
+
+> **3-e. MCP 工具真实模型端到端：改 `worker/lib/mcp-tools.ts` 的装载/包装、
+>   或 `worker/entry.ts` 里 MCP 接线、或 MCP 与审批闸门的边界时必跑**
+>   （2026-09-19 加，**打模型、计费**，2 次调用左右）：
+>
+>   ```powershell
+>   $env:COLT_SMOKE=".smoke-mcp-e2e.png"
+>   $env:COLT_SMOKE_MODE="mcp-e2e"
+>   npm run dev
+>   ```
+>
+>   看 `out/.smoke-mcp-e2e.png.log` 末行。免费的 14 条单测只验「装载函数本身」，
+>   本模式验**只有真模型才走得到的三段**：① 模型在提示词里真的看得见 `mcp__` 工具
+>   （看不见就不会调用，待审队列不会出现它——快速失败并报出本轮终态）；
+>   ② 未知 MCP 工具走 `before_tool` 弹审批卡（approval 档，risk=moderate，
+>   不静默放行），卡真画在界面上且「允许一次」**命中测试**可点（批准确走 UI 路径）；
+>   ③ 批准后夹具 stdio server 真实往返，`echo:<nonce>` 作为工具结果回到模型。
+>   夹具项目 `out/smoke-mcp-e2e-fixture/`（gitignored），`.colt/mcp.json` 由用例现写，
+>   server 进程用 `ELECTRON_RUN_AS_NODE` 让 electron 按 Node 跑——不依赖 PATH 里有 node。
+>   判据同 ask-user-e2e：一律取自主进程（待审队列 / 视图 / 事件库）。
+>   **已实测**（2026-09-19）：装载告知那段 3/3 通过（事件流如实记「已连接 1 个 MCP
+>   server：fixture」）；模型调用段因账户 **429 余额不足**未跑成，**待余额恢复后复跑**。
 
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell
