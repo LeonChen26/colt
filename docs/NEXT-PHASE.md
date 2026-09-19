@@ -38,7 +38,7 @@
   **2026-09 全库缺陷审计**：按用户指令重新审读代码找 bug，确认并批量修复一批
   （工具卡展开态丢失 / 自动滚底抢滚动 / newSession 闭包 / 导航清缓冲时机等，清单见 `UI-REGIONS` v1.35）；
   3 处上报经核实不修（Esc 已有守卫 / 全量授权不清队列是刻意设计 / 并发投递常规路径不可达）。
-  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准） + `build` + `fixture` **25/25** + `dock` **211/211** + `model` **46 条（7/6/6/6/1/20）**。
+  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1000**） + `build` + `fixture` **25/25** + `dock` **216/216** + `model` **46 条（7/6/6/6/1/20）**。
 - **下一步做什么**：暂无排期——原 §3.1 的 **N1–N4 已按用户指令删除**（2026-09），
   新计划确定后再写回 §3.1。
 - **别重开**：§2 的「已定调」条目（尤其 ⑦ 的宽度是**全局统一值**、⑥ 的**四态**语义）。
@@ -57,8 +57,8 @@
 | ② 会话头 | cwd + git 分支 chip（游离 HEAD 转琥珀色、窗口获焦刷新）；**统计 / 规则两个入口**（⑦-H 把原来的「改动 / 用量 / 工具 / 规则」四个收敛成两个：「改动」改由「任务摘要」底部的总账进入下钻（⑦-G，v1.32 连页签一起取消）、「工具」整体并入了「统计」，v1.30） |
 | ④ 会话流 | 思考轨、工具卡（**内嵌 diff**）、授权卡；工具卡默认折叠为一行。⚠️ 注意**没有「变更卡」**：`ProjectChanges` 是**主区整页**（项目级跨会话汇总，由 ① 的「改动」打开），不在 ④——④ 禁止跨会话信息 |
 | ⑤ 输入区 | 模型选择、附件（图片 / 文件）、审批模式、**思考等级**（v1.38，默认「高」）、**`/compact` 手动压缩入口**（v1.34）、**`/skill <名字>` 技能调用**（v1.42）、**敲 `/` 弹候选浮层**（v1.44：技能与 `/compact` 的可发现入口，选中即写入输入框）、发送 / 停止；Enter 发送或插话 |
-| ⑥ Live Bar | 位于输入区**下方**，**只读区、不放任何操作**：上下文条（>70% 转琥珀、>90% 转红）+ 成本 + 心跳 / 最后活动 / 「似乎卡住了」；**压缩入口在 ② 会话头**（上下文 >70% 才出现，v1.34）——⑥ 这里只有条，没有按钮；非运行态有明确四态——**运行中 / 已中断 / 已失败（带 error 摘要）/ 空闲**（C1+C2） |
-| ⑦ 右栏 | **工作区容器**：页签只有**四种 kind**——「任务摘要 / 浏览器 / 统计 / 规则」（`follow` / `browser` / `usage` / `rules`）；浏览器是内嵌 `WebContentsView`（独立 partition），首次加载自动切页签，页签底部带**观测抽屉**（B2：控制台 / 网络 / 下载；**每行可点开展开完整字段 + 复制**，v1.33——**时间戳 / 耗时 / 请求头仍未做、未排期**）；宽度是**全局统一值 544**（不随页签变，v1.24）。**⑦-G / ⑦-H 的重组已全部落地**：「任务摘要」= 计划 + 进行中的动作 + 底部一行总账（v1.29；第一段「计划」v1.48 加），点总账或工具卡路径进入**下钻**（清单 → diff → 文件内容，v1.32）；原「改动」「文件」两个页签**整个取消**，「工具」并入「统计」（v1.31）——故「+」菜单只剩 3 项（`browser / usage / rules`） |
+| ⑥ Live Bar | 位于输入区**下方**，**只读区、不放任何操作**：上下文条（>70% 转琥珀、>90% 转红）+ 成本 + 心跳 / 最后活动 / 「似乎卡住了」；心跳等周期定时器**窗口不可见时暂停、回可见立即补跳**（v1.51，F11）；**压缩入口在 ② 会话头**（上下文 >70% 才出现，v1.34）——⑥ 这里只有条，没有按钮；非运行态有明确四态——**运行中 / 已中断 / 已失败（带 error 摘要）/ 空闲**（C1+C2） |
+| ⑦ 右栏 | **工作区容器**：页签只有**五种 kind**——「任务摘要 / 浏览器 / 统计 / 规则 / 事件」（`follow` / `browser` / `usage` / `rules` / `events`；「事件」是 F3 安全事件流的回查页签，v1.50）；浏览器是内嵌 `WebContentsView`（独立 partition），首次加载自动切页签，页签底部带**观测抽屉**（B2：控制台 / 网络 / 下载；**每行可点开展开完整字段 + 复制**，v1.33——**时间戳 / 耗时 / 请求头仍未做、未排期**）；宽度是**全局统一值 544**（不随页签变，v1.24）。**⑦-G / ⑦-H 的重组已全部落地**：「任务摘要」= 计划 + 进行中的动作 + 底部一行总账（v1.29；第一段「计划」v1.48 加），点总账或工具卡路径进入**下钻**（清单 → diff → 文件内容，v1.32）；原「改动」「文件」两个页签**整个取消**，「工具」并入「统计」（v1.31）——故「+」菜单共 **4 项**（`browser / usage / rules / events`，v1.50 起） |
 | 宿主能力 | 浏览器（`host/browser-host` + `browser-observe`）、桌面控制（`host/computer-host`）、输入合成（`host/input-keys`），统一经 `HostBridge` 路由 |
 | 审批 | 按工具风险分级（`safe / moderate / dangerous`）+ 四档动作（允许一次 / 本会话内始终允许 / 拒绝一次 / 始终拒绝）+ 可见倒计时超时；会话级记忆规则可列出 / 删除，切 full-access 时清空。**待批是多张卡（列表渲染），没有键盘入口** |
 | 已有面板 | 统计 `UsagePanel`（原「用量历史」，v1.31 重写为 KPI + 按模型 + 工具次数 / 耗时排行 + 可筛明细）、审批规则 `RulesPanel`——**两个都已迁入 ⑦ 页签**（A3-5，2026-09），不再是中栏浮层。**改动 `ChangesPanel` 与「工具」`ToolsPanel` 已删除**：前者并入「任务摘要」的下钻清单（⑦-G，v1.32），后者并入「统计」（⑦-H，v1.31） |
@@ -140,7 +140,7 @@
   浮层只在用户敲了 `/` 之后才出现。
 - **事 B 浏览器多实例**：前置是 `UI-REGIONS` **§五** 待决 #7——agent 的 `browser_act` / `browser_read` 作用于**哪个**实例。
   且**必须与资源上限 / 挂起同时交付**（否则 5 个实例 = 5 个渲染进程）。
-  账单提醒：`fixture` 25 条 + `dock` **211 条**都按 `sessionId` 驱动，协议一改两边都要重写。
+  账单提醒：`fixture` 25 条 + `dock` **216 条**都按 `sessionId` 驱动，协议一改两边都要重写。
   推荐方向（`UI-REGIONS` **§五** 待决 #7）：agent 固定绑定会话主视图，用户额外开的页签标记为「我的浏览」——这样 agent 工具面零改动
 - **终端视图**（原型的「+」菜单画了它）：需要新的 host 能力（**PTY**），
   而本仓 `package.json` **没有任何 pty / 终端依赖**。这是后端活，不是 UI 活——**别照着菜单补页面**
@@ -175,7 +175,7 @@
   ② **绕过审批闸门**——扩展是**代码**，在 worker 内以完整权限运行，其副作用不是工具调用，
   天然躲开 `before_tool`；技能那条隐式信任通道之所以可接受，靠的是「只是文本、不改盘」
   （`SECURITY.md` §技能节），代码扩展连这个辩护都没有，会在 §零「这不是沙箱」上开口子。
-  ③ **验收手段失效**——全部单测 + `dock` 211 条冒烟都是对**自己代码**的断言，
+  ③ **验收手段失效**——全部单测 + `dock` 216 条冒烟都是对**自己代码**的断言，
   对第三方扩展内容无效，而冒烟仅开发期存在，生产侧无兜底。
   **替代路径（已选定）**：能力**内建**（像 `browser` / `computer` / `memory` 一样进
   `AgentHarness.create({ tools: [...] })` 数组，每个都过审批闸门）；可编程的行为交给
@@ -188,7 +188,7 @@
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）；冒烟 `COLT_SMOKE_MODE=ask-user`（23 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
-  | ③ | MCP | 未开工（先出设计） | MCP 工具调用天然过 `before_tool`；审批层抄 `pi-mcp-adapter` 的 `session-approvals.ts` |
+  | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。**未覆盖（别当成验过了）**：真模型调用 MCP 工具的端到端（工具可见性 → 审批弹卡 → 结果回模型）待 `mcp-e2e`（打模型、计费，尚未建）；worker 被强杀时 MCP 子进程成孤儿（正常 dispose 有 `process.on("exit")` 兜底） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**未覆盖（别当成验过了）**：`subagent` 免闸门 / 内部写弹卡的**执行侧**、`fresh` 隔离的**真实效果**、**「模型真的在系统提示词里看得见子代理清单」**——三者都要模型真的调用工具，待 `subagent-e2e`（**打模型、计费**，尚未建）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
@@ -269,7 +269,7 @@
 - 依据 ⑦-B「外部世界」；原状是数据已在 `browser-observe.ts` 的 `CaptureBuffer` 里，但**渲染层没有任何观测 UI**（⑦-A「现场 vs 叙述」缺的「现场」那一半）。
 - 契约：`ConsoleEntry / NetworkEntry / DownloadEntry` 上移 `@shared/protocol`，新增只读通道 `browser.observe`；`CaptureBuffer` 加快照访问器（**返回副本**）；`BrowserHost.observe()` 对未建视图的会话返回空快照 + `loaded:false` 而非抛错（区分「还没开始」与「没输出」）。
 - 渲染层：`ObserveDrawer.tsx` 挂在**浏览器页签内**、页面区域之下；三页签徽标读**问题条数**，**点已激活页签 = 收起/展开**。抽屉占的是**页面区域高度**，收起/展开经 ResizeObserver → `browser.bounds` 让原生视图变高。
-- **轮询（1s，仅浏览器页签挂载时）而非主进程逐条推**：console / network 事件密集，逐条推就是 IPC 洪泛。
+- **轮询（1s，仅浏览器页签挂载时；窗口不可见时暂停，v1.51）而非主进程逐条推**：console / network 事件密集，逐条推就是 IPC 洪泛。
 - ⚠️ 顺带修了一处**用例自身缺陷**：`dock` 原先按 `aria-pressed` 数页签，被抽屉的三个页签干扰 → 改按 `data-dock-tab` 认（产品没错，见 AGENTS §1.2）。
 
 ### 批次 C — 状态语义补完
@@ -303,6 +303,8 @@
 | （原）中心列面板样式——**这些面板现在渲染在 ⑦ 页签内**，不再是中栏浮层 | `features/Conversation/panels/` |
 | 数字缩写 / 心跳点 / 窄栏降级 | `formatTokens`（**`Conversation/index.tsx` 里的局部函数，不是共享 lib**）/ `.live-dot`（含 `.stale-dot` / `.idle-dot` / `.danger-dot`）/ `styles.css` 的容器查询（**六档：900 / 760 / 620 / 560 / 520 / 400**） |
 | ⑥ 状态判定 | `lib/format.ts` 的 `runStateOf`（纯函数 + 单测）——复用它，别在组件里再写一遍分支 |
+| 周期定时器「不可见即停」（v1.51，F11） | `renderer/src/lib/visible-interval.ts`（纯逻辑，环境注入可单测）+ `use-visible-interval.ts`（React 包装，回调走 ref 不重启定时器）。语义：启动即跳一次、重新可见立即补跳再续周期。「不可见时暂停」本身由 `tests/visible-interval.test.ts` 逐拍覆盖 |
+| MCP 工具装载（验证性原型） | `worker/lib/mcp-tools.ts`：`loadMcpConfig` / `loadMcpTools` / `mcpToolName` / `mapMcpContent` / `closeMcpTools` 都是纯函数或可注入的纯逻辑，有单测 |
 | 复制到剪贴板 | `navigator.clipboard.writeText`（`App.tsx` 复制会话 ID、`Markdown.tsx` 复制代码已用）——**不需要新 IPC** |
 | 冒烟里推「受控视图」 | `src/dev/smoke/` 的 `smokeView(over)`——不跑模型就能把任意 `ConversationView` 经 `session.view` 推入渲染层（A3-2 / C1 都这么测） |
 
@@ -345,7 +347,7 @@
    还有 **v1.36 的净值场景**（多次改动后卡片给的是**净值**、改完又退回原样写「已还原」、
    **算不出（没有基线）时不显示数字**并在清单底部如实计数、展开里的「累计」档落到 diff 层且画「基线 → 当前」），
    以及 **⑦-H 的会话头收敛与「统计」视图**（② 只剩「统计」「规则」两个入口：「改动」「工具」的入口已**点不到**；
-   **「工具」「改动」「文件」三个 kind 都已整体取消**，「+」菜单由 6 项收敛到 3 项且三者都打不开；
+   **「工具」「改动」「文件」三个 kind 都已整体取消**，「+」菜单现为 4 项（`browser / usage / rules / events`，v1.50 起；三个被取消的 kind 打不开）；
    点「统计」后渲染的是新面板并给出**空态**——聚合内容在 `dock` 里喂不了数据，
    那部分由 `tests/lib.test.ts` 的单测覆盖），
    以及**观测条目详情**（v1.33；三个页签各点开一条，断言完整字段画出来、**没被截断**（量
@@ -390,7 +392,13 @@
    $env:COLT_SMOKE_MODE="dock"
    npm run dev        # 夹具站在进程内以 port 0 拉起，无需另开终端
    ```
-   看 `out/.smoke-dock.png.log` 末行是否 `通过 211/211`。
+   看 `out/.smoke-dock.png.log` 末行是否 `通过 216/216`（2026-09-19 从 211 涨到 216：
+   F3 的「事件」页签 + 子代理批的断言；「+」菜单断言已按 4 项改）。
+   ⚠️ **环境前提（v1.51 起）**：冒烟把主窗口**钉为「始终可见」并关掉后台节流**
+   （`src/dev/smoke/index.ts` 的 `pinVisibility`）——F11 之后「窗口不可见就停表」是产品行为，
+   而断言依赖的 400ms 电平重申 / 1s 观测轮询在遮挡（Windows occlusion → `document.hidden`）
+   期间会停摆，红的是环境不是产品（2026-09-19 实测交互桌面上 3 红，全因遮挡）。
+   「不可见时暂停」行为本身由 `tests/visible-interval.test.ts` 单测覆盖，冒烟不再重复验。
    ⚠️ **计费**：`dock`、`fixture`、`memory`、`perf`、`ask-user` 与 `subagent` 是**不调用模型**的模式（其余模式、含不给
    `COLT_SMOKE_MODE` 时的 `basic`，都会真实打模型并计费）。`dock` 曾经也会：它的 `/compact`
    段把打桩转给了真实现，会真发 `/compact 帮我看看` 与 `/usr/local/bin/node` 两句 prompt、
