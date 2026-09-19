@@ -188,7 +188,7 @@
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）；冒烟 `COLT_SMOKE_MODE=ask-user`（23 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
-  | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型、计费）已建：夹具项目写 `.colt/mcp.json`（server 用 `ELECTRON_RUN_AS_NODE` 起 electron-as-node，不依赖 PATH 有 node），验「装载告知（事件落库）→ 模型调用弹审批卡 → 点允许 → 结果回模型」。**已实测**（2026-09-19）：真 worker 连接夹具 server、事件流如实记录「已连接 1 个 MCP server：fixture」3/3 通过；**模型调用段因账户 429（余额不足）未跑成，待余额恢复后复跑** |
+  | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）：装载告知 → 模型真的调用 `mcp__fixture__echo` → 未知工具弹审批卡（risk=moderate）→ 点「允许一次」→ `echo:<nonce>` 真实 stdio 往返回到模型。**仅剩**：worker 被强杀时 MCP 子进程成孤儿（正常 dispose 有 `process.on("exit")` 兜底） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**未覆盖（别当成验过了）**：`subagent` 免闸门 / 内部写弹卡的**执行侧**、`fresh` 隔离的**真实效果**、**「模型真的在系统提示词里看得见子代理清单」**——三者都要模型真的调用工具，待 `subagent-e2e`（**打模型、计费**，尚未建）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
@@ -484,8 +484,10 @@
 >   夹具项目 `out/smoke-mcp-e2e-fixture/`（gitignored），`.colt/mcp.json` 由用例现写，
 >   server 进程用 `ELECTRON_RUN_AS_NODE` 让 electron 按 Node 跑——不依赖 PATH 里有 node。
 >   判据同 ask-user-e2e：一律取自主进程（待审队列 / 视图 / 事件库）。
->   **已实测**（2026-09-19）：装载告知那段 3/3 通过（事件流如实记「已连接 1 个 MCP
->   server：fixture」）；模型调用段因账户 **429 余额不足**未跑成，**待余额恢复后复跑**。
+>   **已实测**（2026-09-19，本地 Ollama qwen3:0.6b，9/9 全绿）：模型真的调用
+>   `mcp__fixture__echo` → 未知工具弹审批卡（risk=moderate「未知工具，按需确认」）→
+>   点「允许一次」→ `echo:<nonce>` 经真实 stdio 往返作为工具结果回到模型、模型复述 nonce。
+>   （首次跑时 GLM 账户 429 余额不足未跑成；换成本地 Ollama 后复跑通过——本地模型不计费。）
 
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell
