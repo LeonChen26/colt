@@ -188,7 +188,7 @@
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）；冒烟 `COLT_SMOKE_MODE=ask-user`（23 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
-  | ③ | MCP | **已实施**（2026-09-19） | 设计 `docs/DESIGN-mcp.md`；配置的**纯解析层** `shared/mcp-config.ts`（worker 与主进程共用）；worker 侧 `lib/mcp-tools.ts`（官方 SDK **v2** 直连）+ `lib/mcp-reload.ts`（热重载写回）；配置 `<cwd>/.colt/mcp.json`。**原型边界已补齐**：传输 stdio + 远程（Streamable HTTP / SSE）、`listTools` 分页、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重（内核见重名会 `TypeError`，必须在包装层挡）、设置页可见性（`McpSettings`）。单测 `tests/mcp-tools.test.ts`（**31 条**，真实 stdio / 真实 HTTP / 真实 SSE 往返，夹具 `helpers/mcp-fixture-server.mjs` / `mcp-paged-fixture-server.mjs` / `mcp-http-fixture-server.mjs` / `mcp-sse-fixture-server.mjs` / `mcp-crash-fixture-server.mjs` / `mcp-capabilities-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）；**连接生命周期**另有 3 条钉住「连失败的 server 热重载会重试」「连上后掉线 `status` 如实转 error 且可重载救回」「`transport: sse` 的成功路径」（此前 SSE 只验过失败分支——`reload` 原先**永不重试**失败态，等于设置页那个「重新加载」按钮对失败是死的）。**SDK 已迁 v2**（`@modelcontextprotocol/*@2.0.0`，官方 codemod 迁移，2026-09-19）：v2 **没有砍**旧式 SSE——`SSEClientTransport` 只是从 `client/sse.js` 子路径挪到了**包根导出**，服务端 `SSEServerTransport` 走 `@modelcontextprotocol/server-legacy/sse`（v1 冻结副本，仅夹具用），所以 `transport: "sse"` 能力**原样保留**（上条那条 SSE 用例在 v2 上仍绿）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。**能力面也已接**（2026-09-19）：server 声明了 `resources` / `prompts` 就多出 `list_resources` / `read_resource` / `list_prompts` / `get_prompt`（**未声明就不加**，别放死入口；命名同款 ⇒ 同样天然过闸），二进制资源不展开成 base64、提示词交给**服务端**按参数渲染（设计 §3 决策 13）。**同轮修两处真缺陷**：① `ServerState.config` 改存**声明值**——原先连上的 server 存的是 `${VAR}` **解析后**的值，于是 `status().target` 把真实密钥画在设置页上、且每次「重新加载」都被判成「配置变了」白重连一次（决策 7 明说不该重连）；② v2 下 `listTools()` 不传 cursor 会**自己翻完所有页**，v1 时代那段按 `nextCursor` 的手工循环是**死代码**（`MAX_TOOL_PAGES` 从未被读到），已删，页数上限改钉 `ClientOptions.listMaxPages` 并由单测直接钉 SDK 契约。**再一补**（同日）：接 **server 自报的 `instructions`**——`composeMcpInstructions` 每请求拼进系统提示词（SDK 只给 `getInstructions()` 这个取值口、**一处都不替你调**，与技能清单同一个坑；决策 14）；并顺手把设置页那两条命令收进 `lib/mcp-reload.ts`，worker 入口**净减 2 行**（棘轮 1031 → 1029，见 `AGENTS.md` §1.4）。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）；`mcp-real` 用**真实第三方 server**（官方 filesystem / pi-lens）跑同一条链路；热重载 + 设置页可见性的**接线**由**免费**冒烟 `COLT_SMOKE_MODE=mcp-reload`（9 条）覆盖（见 §5 3-g）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（正常 dispose 走 `runtime.close()`） |
+  | ③ | MCP | **已实施**（2026-09-19） | 设计 `docs/DESIGN-mcp.md`；配置的**纯解析层** `shared/mcp-config.ts`（worker 与主进程共用）；worker 侧 `lib/mcp-tools.ts`（官方 SDK **v2** 直连）+ `lib/mcp-reload.ts`（热重载写回）；配置 `<cwd>/.colt/mcp.json`。**原型边界已补齐**：传输 stdio + 远程（Streamable HTTP / SSE）、`listTools` 分页、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重（内核见重名会 `TypeError`，必须在包装层挡）、设置页可见性（`McpSettings`）。单测 `tests/mcp-tools.test.ts`（**31 条**，真实 stdio / 真实 HTTP / 真实 SSE 往返，夹具 `helpers/mcp-fixture-server.mjs` / `mcp-paged-fixture-server.mjs` / `mcp-http-fixture-server.mjs` / `mcp-sse-fixture-server.mjs` / `mcp-crash-fixture-server.mjs` / `mcp-capabilities-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）；**连接生命周期**另有 3 条钉住「连失败的 server 热重载会重试」「连上后掉线 `status` 如实转 error 且可重载救回」「`transport: sse` 的成功路径」（此前 SSE 只验过失败分支——`reload` 原先**永不重试**失败态，等于设置页那个「重新加载」按钮对失败是死的）。**SDK 已迁 v2**（`@modelcontextprotocol/*@2.0.0`，官方 codemod 迁移，2026-09-19）：v2 **没有砍**旧式 SSE——`SSEClientTransport` 只是从 `client/sse.js` 子路径挪到了**包根导出**，服务端 `SSEServerTransport` 走 `@modelcontextprotocol/server-legacy/sse`（v1 冻结副本，仅夹具用），所以 `transport: "sse"` 能力**原样保留**（上条那条 SSE 用例在 v2 上仍绿）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。**能力面也已接**（2026-09-19）：server 声明了 `resources` / `prompts` 就多出 `list_resources` / `read_resource` / `list_prompts` / `get_prompt`（**未声明就不加**，别放死入口；命名同款 ⇒ 同样天然过闸），二进制资源不展开成 base64、提示词交给**服务端**按参数渲染（设计 §3 决策 13）。**同轮修两处真缺陷**：① `ServerState.config` 改存**声明值**——原先连上的 server 存的是 `${VAR}` **解析后**的值，于是 `status().target` 把真实密钥画在设置页上、且每次「重新加载」都被判成「配置变了」白重连一次（决策 7 明说不该重连）；② v2 下 `listTools()` 不传 cursor 会**自己翻完所有页**，v1 时代那段按 `nextCursor` 的手工循环是**死代码**（`MAX_TOOL_PAGES` 从未被读到），已删，页数上限改钉 `ClientOptions.listMaxPages` 并由单测直接钉 SDK 契约。**再一补**（同日）：接 **server 自报的 `instructions`**——`composeMcpInstructions` 每请求拼进系统提示词（SDK 只给 `getInstructions()` 这个取值口、**一处都不替你调**，与技能清单同一个坑；决策 14）；并顺手把设置页那两条命令收进 `lib/mcp-reload.ts`，worker 入口**净减 2 行**（棘轮 1031 → 1029，见 `AGENTS.md` §1.4）。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）；`mcp-real` 用**真实第三方 server**（官方 filesystem / pi-lens）跑同一条链路；热重载 + 设置页可见性的**接线**由**免费**冒烟 `COLT_SMOKE_MODE=mcp-reload`（9 条）覆盖（见 §5 3-g）。**收盘审计又修两处假信号**（2026-09-19）：① 主进程「等 MCP 回话」的预算原先是 **10s**（抄自 `branches` / 子代理那两条**快**操作），而 worker 侧光「连接」一步的上限就是 15s、会话没就绪时还要等 `ready`（上限 `READY_TIMEOUT_MS` 120s）——于是设置页会**假报**「查询 MCP 状态超时」，而 server 正在正常连接。现在预算按 `READY_TIMEOUT_MS + 2×MCP_STEP_TIMEOUT_MS` 推导，单步值进 `shared/limits.ts`（由 `limits.test.ts` 守「两侧不许各写一份」——这正是那条守卫针对的症状），并在免费冒烟里用一个**不说话的 server**（实测重载 **15035ms** 仍正常兑现）把这条判据钉住；② `declaredMcpServers` 原先把 `loadMcpConfig` 的 `diagnostics` **整包丢掉**，于是语法错的 `mcp.json` 被设置页渲染成「本项目未声明 MCP server」——把「你写错了」说成了「你没配」，恰好是反的；现在两条路都随响应带出诊断、设置页在列表**上方**单独画一块（不替换列表）。冒烟 `mcp-reload` 因此 9 条 → **12 条**。**同一轮还补了一处缺口**：server 连上后**掉线原先只是静默翻状态**（工具仍留在清单里、调用会失败，但用户只有自己点开设置页才知道）——现在 `onclose` 里同时发一条 security 类 notice（toast 之外**落 `session_events`**、可在「事件」里回查），并**只报一次**（HTTP 传输会重复触发 `onclose`）、**我们主动关的不报**；由真实自杀夹具 `mcp-crash-fixture-server.mjs` 钉住（断言通知恰好一条、点名 server、且重载救回后不再冒第二条；把 `notify` 摘掉这条立刻红）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（正常 dispose 走 `runtime.close()`） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属、`fresh` 隔离真实效果、清单真进提示词）由 `subagent-e2e`（打模型）覆盖，**15/15 全绿**（2026-09-19，qwen3:0.6b 实测，见 §5 3-f）。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e（abort 链路只走了单测与呈现层）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
@@ -304,7 +304,7 @@
 | 数字缩写 / 心跳点 / 窄栏降级 | `formatTokens`（**`Conversation/index.tsx` 里的局部函数，不是共享 lib**）/ `.live-dot`（含 `.stale-dot` / `.idle-dot` / `.danger-dot`）/ `styles.css` 的容器查询（**六档：900 / 760 / 620 / 560 / 520 / 400**） |
 | ⑥ 状态判定 | `lib/format.ts` 的 `runStateOf`（纯函数 + 单测）——复用它，别在组件里再写一遍分支 |
 | 周期定时器「不可见即停」（v1.51，F11） | `renderer/src/lib/visible-interval.ts`（纯逻辑，环境注入可单测）+ `use-visible-interval.ts`（React 包装，回调走 ref 不重启定时器）。语义：启动即跳一次、重新可见立即补跳再续周期。「不可见时暂停」本身由 `tests/visible-interval.test.ts` 逐拍覆盖 |
-| MCP 工具装载 | `worker/lib/mcp-tools.ts`：`createMcpRuntime`（连接 / 包装 / `reload` / `status` / `close`）、`mcpToolName`、`mapMcpContent`、`closeMcpTools`；配置解析在 `shared/mcp-config.ts`（`loadMcpConfig` / `parseServerConfig` / `transportOf` / `targetOf` / `configKey` / `interpolateConfig`，都是纯函数，有单测）；热重载写回在 `worker/lib/mcp-reload.ts` |
+| MCP 工具装载 | `worker/lib/mcp-tools.ts`：`createMcpRuntime`（连接 / 包装 / `reload` / `status` / `close`）、`mcpToolName`、`mapMcpContent`、`closeMcpTools`；配置解析在 `shared/mcp-config.ts`（`loadMcpConfig` / `parseServerConfig` / `transportOf` / `targetOf` / `configKey` / `interpolateConfig`，都是纯函数，有单测）；热重载写回在 `worker/lib/mcp-reload.ts`；主进程那条「拿现状 / 点重新加载」的往返在 `main/session-manager.ts`（`mcpStatus` / `mcpReload` / `#queryMcp`，**等待预算 `MCP_QUERY_TIMEOUT_MS` 按 worker 侧的单步上限推导**，那个单步值在 `shared/limits.ts`——它被两侧各读一次，漂成两份就会假报超时）；设置页可见性在 `main/ipc` 的 `mcp.status` / `mcp.reload` + `renderer/src/features/Settings.tsx` 的 `McpSettings` |
 | 复制到剪贴板 | `navigator.clipboard.writeText`（`App.tsx` 复制会话 ID、`Markdown.tsx` 复制代码已用）——**不需要新 IPC** |
 | 冒烟里推「受控视图」 | `src/dev/smoke/` 的 `smokeView(over)`——不跑模型就能把任意 `ConversationView` 经 `session.view` 推入渲染层（A3-2 / C1 都这么测） |
 
@@ -531,7 +531,7 @@
 >   npm run dev
 >   ```
 >
->   看 `out/.smoke-mcp-reload.png.log` 末行是否 `通过 9/9`。免费的 31 条单测覆盖 runtime 的
+>   看 `out/.smoke-mcp-reload.png.log` 末行是否 `通过 12/12`。免费的 31 条单测覆盖 runtime 的
 >   装载 / 分页 / 远程（HTTP + SSE）/ **失败重试** / **掉线上报** / reload 与配置纯函数
 >   （含「`${VAR}` 服务器不泄露解析后密钥、配置没变不重连」与「单次 `listTools()` 就收全所有页」
 >   两条），以及 **resources / prompts 能力面**（`mcp-capabilities-fixture-server.mjs` 的真实
@@ -540,21 +540,28 @@
 >   但都停在 worker **之内**；本模式补的是
 >   **renderer → main → worker → 绕回** 这一段**「名字对不上就静默失效」的接线**——
 >   `mcp.status` / `mcp.reload` 两个 IPC → `SessionManager` 的 FIFO 兑现 → worker 的
->   `mcpReload` 命令 → 工具清单写回 harness 与主 lane。四组断言：
+>   `mcpReload` 命令 → 工具清单写回 harness 与主 lane。五组断言：
 >   ① **冷启动装载**：`alpha`（3 工具的 stdio 夹具）已连接、工具名逐字正确；
 >   ② **热加 server**：`beta`（分页夹具）的 5 个工具一个不少，且**会话没重启**（同一个 worker）；
 >   ③ **热删 server**：`alpha` 连工具一起消失——验 `lane-heal.ts` 那支「删掉 server 的老会话
 >   不会 brick」（`generation.js` 见清单里有内核不认识的工具名会 `configured_tools_unavailable`
 >   硬失败，所以清单必须与 harness **同时**对齐）；
 >   ④ **两个 IPC 的形状**（设置页看到的就是它们），含**没有活 worker** 的项目回
->   `live:false` + `status:idle` 的退路（「没打开会话」≠「没连上」）。
->   夹具 `out/smoke-mcp-reload-fixture/`（含分页 server）与 `out/smoke-mcp-reload-other/`
->   （**刻意全程不开会话**，专验退路），都 gitignored；server 用 `ELECTRON_RUN_AS_NODE`
+>   `live:false` + `status:idle` 的退路（「没打开会话」≠「没连上」），以及**随响应带出的配置诊断**
+>   ——那个没会话的项目里故意放了一条坏声明（`broken` 既没 command 也没 url），断言诊断里
+>   指名道姓提到了它（否则设置页会把「你写错了」显示成「你没配」，见 ③ 行的审计记录）；
+>   ⑤ **「慢 server 不该被判成超时」**：配置里放一个**起来后一句话不说**的子进程，把「连接」
+>   这一步耗到 worker 侧的上限（15s），断言这次 `mcp.reload` **真的等过了 10s 仍正常兑现**
+>   （实测 15035ms，返回该 server 的 `error` 态）——这条正是「主进程的等待预算必须盖住
+>   worker 侧单步上限」的判据，把预算改回 10s 它就红。
+>   夹具 `out/smoke-mcp-reload-fixture/`（含分页 server 与那个不说话的 server）与
+>   `out/smoke-mcp-reload-other/`（**刻意全程不开会话**，专验退路与诊断），都 gitignored；
+>   server 用 `ELECTRON_RUN_AS_NODE`
 >   让 electron 按 Node 跑（不依赖 PATH 里有 node，同 mcp-e2e）。worker 的生死交给渲染层
 >   （同 mcp-e2e：`window.reload()` 等它自动打开夹具会话）。
 >   **不含设置页 DOM 断言**：设置页跟着渲染层的 `activeProject` 走（渲染层是**并发参与者**），
 >   界面层的判据落在这两个 IPC 上——组件只是把它们画出来，DOM 那一半靠人工看一眼截图。
->   **已实测**（2026-09-19，9/9 全绿）。
+>   **已实测**（2026-09-19，12/12 全绿）。
 
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell

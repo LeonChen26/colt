@@ -359,6 +359,22 @@ describe("纯函数", () => {
       mapMcpContent({ content: [{ type: "resource", resource: { text: "文件内容" } }] }),
       [{ type: "text", text: "文件内容" }],
     );
+    // 内嵌资源里的**二进制**：只说清「二进制 + MIME + 长度」、不展开；**更不能**被说成
+    // 「不支持的内容块类型：resource」——`resource` 是支持的类型，此前只认 `.text` 的说法是反的
+    const blob = mapMcpContent({
+      content: [
+        { type: "resource", resource: { uri: "caps://logo", mimeType: "image/png", blob: "QUJD" } },
+      ],
+    });
+    const blobText = (blob[0] as { text: string }).text;
+    assert.match(blobText, /二进制/);
+    assert.match(blobText, /image\/png/);
+    assert.ok(!blobText.includes("不支持"), `把支持的类型说成了不支持：${blobText}`);
+    assert.ok(!blobText.includes("QUJD"), `二进制被展开进上下文了：${blobText}`);
+    // 既没有 text 也没有 blob：如实说「没有可读内容」，同样不算「不支持的类型」
+    assert.deepEqual(mapMcpContent({ content: [{ type: "resource", resource: { uri: "caps://void" } }] }), [
+      { type: "text", text: "[mcp] 资源 caps://void 没有可读内容" },
+    ]);
     assert.deepEqual(mapMcpContent({ content: [], structuredContent: { x: 1 } }), [
       { type: "text", text: '{\n  "x": 1\n}' },
     ]);
@@ -662,11 +678,14 @@ describe("连接生命周期：失败可重试、掉线如实上报", () => {
     const dir = await fixtureProject({
       mcpServers: { crash: { command: process.execPath, args: [CRASH_FIXTURE] } },
     });
-    const runtime = await createMcpRuntime(dir, () => undefined);
+    const notices: string[] = [];
+    const runtime = await createMcpRuntime(dir, (message) => notices.push(message));
     try {
       assert.equal(runtime.status()[0]?.status, "connected");
       const ping = runtime.tools.find((tool) => tool.name === "mcp__crash__ping")!;
       assert.deepEqual((await callTool(ping, {})).content, [{ type: "text", text: "pong" }]);
+      // 装载摘要是**唯一**一条「没事也报一声」的通知，掉线通知不能混在里面
+      const loaded = notices.length;
 
       // 让 server 自杀：它不回响应，这次调用注定失败——只当扳机用
       const boom = runtime.tools.find((tool) => tool.name === "mcp__crash__boom")!;
@@ -675,10 +694,21 @@ describe("连接生命周期：失败可重试、掉线如实上报", () => {
       await waitFor(() => runtime.status()[0]?.status === "error");
       assert.match(runtime.status()[0]?.error ?? "", /连接已断开/);
 
+      // 掉线**必须作声**：工具还留在清单里（决策 11 不伪造结果），光翻 status 等于
+      // 要用户自己开设置页才知道。判据取「通知里点名了那台 server」，且**只报一次**
+      // （HTTP 传输会重复触发 onclose，重复通知就是噪音）
+      const dropped = notices.filter((message) => message.includes("掉线"));
+      assert.equal(dropped.length, 1, `掉线通知应当恰好一条，实得：${JSON.stringify(notices)}`);
+      assert.match(dropped[0] ?? "", /"crash"/);
+      assert.match(dropped[0] ?? "", /重新加载/);
+      assert.equal(notices.length, loaded + 1);
+
       // 掉线态同样走「重载可救回」：重载会拉一个全新进程起来
       const reloaded = await runtime.reload();
       assert.equal(reloaded.statuses[0]?.status, "connected");
       assert.equal(reloaded.statuses[0]?.error, undefined);
+      // 我们主动关的（reload / dispose）**不算掉线**：重连后不该又冒一条掉线通知
+      assert.equal(notices.filter((message) => message.includes("掉线")).length, 1);
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });

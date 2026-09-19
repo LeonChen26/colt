@@ -6,6 +6,7 @@ import type { TSchema } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { McpServerView } from "@shared/worker-protocol";
+import { MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import {
   configKey,
   interpolateConfig,
@@ -39,8 +40,10 @@ export const MAX_TOOL_NAME_CHARS = 64;
  * 交给 SDK 原生的 `timeout` 选项（`RequestOptions.timeout`，超时会真取消请求并抛
  * `RequestTimeout`），**不用 `Promise.race`**——后者超时后底层请求还在跑，只是我们
  * 提前认输；只有 `callTool` 不传这个值，走 SDK 默认的 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`）。
+ *
+ * 值定义在 `@shared/limits`：主进程「等 MCP 回话」的预算要按它算（那里记着为什么
+ * 不能让两侧各写一份）。
  */
-const CONNECT_TIMEOUT_MS = 15_000;
 
 /**
  * 自动翻页的页数上限，钉在 `Client` 上（`ClientOptions.listMaxPages`，触顶抛错、
@@ -62,7 +65,7 @@ interface McpContentBlock {
   text?: string;
   data?: string;
   mimeType?: string;
-  resource?: { text?: string; blob?: string; mimeType?: string };
+  resource?: { uri?: string; text?: string; blob?: string; mimeType?: string };
 }
 
 /** listTools 返回的单条工具（只取本模块用到的字段） */
@@ -112,8 +115,13 @@ export function mapMcpContent(result: McpCallResult): (TextContent | ImageConten
       typeof block.mimeType === "string"
     ) {
       out.push({ type: "image", data: block.data, mimeType: block.mimeType });
-    } else if (block.type === "resource" && typeof block.resource?.text === "string") {
-      out.push({ type: "text", text: block.resource.text });
+    } else if (block.type === "resource" && block.resource !== undefined) {
+      // 内嵌资源（工具结果 / `prompts/get` 消息里的 EmbeddedResource）一律交给
+      // `mapResourceContents`：文本直取，二进制只说清「二进制 + MIME + 长度」、**不展开**。
+      // 刻意复用同一个函数是为了与 `read_resource` 同一口径——此前这里只认 `.text`，
+      // blob 会掉进下面那个 else、被说成「不支持的内容块类型：resource」：明明是支持的
+      // 类型，却在说反话（同一条资源，`read_resource` 说得好好的，工具结果里就说反了）。
+      out.push(mapResourceContents(block.resource));
     } else {
       out.push({ type: "text", text: `[mcp] 不支持的内容块类型：${block.type ?? "unknown"}` });
     }
@@ -165,7 +173,7 @@ function buildTransport(config: McpServerConfig): AnyTransport {
  * `MAX_TOOL_PAGES` 根本没被读到）。非收敛（cursor 重复）停了、页数触顶抛错，都由 SDK 兜。
  */
 async function listAllTools(client: Client): Promise<ListedTool[]> {
-  const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS });
+  const listed = await client.listTools(undefined, { timeout: MCP_STEP_TIMEOUT_MS });
   return listed.tools as unknown as ListedTool[];
 }
 
@@ -370,16 +378,23 @@ interface ServerState {
   closing?: boolean;
 }
 
+/**
+ * 掉线（连上**之后**断开）的说明文字，只此一份：设置页的 `error` 与那条 notice 都用它，
+ * 免得同一件事在界面上有两种说法。
+ */
+const MCP_DROPPED = "连接已断开（server 进程退出或网络中断）";
+
 async function connectServer(
   name: string,
   declared: McpServerConfig,
   resolved: McpServerConfig,
+  notify: (message: string) => void,
 ): Promise<ServerState> {
   const client = new Client({ name: "colt", version: "0.0.1" }, { listMaxPages: MAX_TOOL_PAGES });
   // config 存声明值（见 ServerState.config）：resolved 只用于造传输
   const state: ServerState = { name, config: declared, client, tools: [] };
   try {
-    await client.connect(buildTransport(resolved), { timeout: CONNECT_TIMEOUT_MS });
+    await client.connect(buildTransport(resolved), { timeout: MCP_STEP_TIMEOUT_MS });
     const listed = await listAllTools(client);
     // 工具面 + 该 server **声明了**的 resources / prompts 能力面（没声明就不加，见 capabilityTools）
     state.tools = [
@@ -391,14 +406,25 @@ async function connectServer(
     const instructions = client.getInstructions()?.trim();
     if (instructions !== undefined && instructions !== "") state.instructions = instructions;
     // 连上**之后**掉线要如实反映：否则设置页会一直显示「已连接」、而工具调用早已失败——
-    // 持续撒谎比没有信号更糟（AGENTS.md §四）。两个约束：
+    // 持续撒谎比没有信号更糟（AGENTS.md §四）。三个约束：
     // ① SDK 的 `onclose` 在**我们主动 close() 时同样触发**，所以先看 closing 标记，
     //    别把 reload / dispose 自己的关闭误报成「断开」；
     // ② 刻意**不**接 `onerror`：SDK 明说那里的 error「不一定是致命的」，拿它翻状态
-    //    会把健康 server 误标成红点，那种假信号比没有信号更贵。掉线一律以 onclose 为准。
+    //    会把健康 server 误标成红点，那种假信号比没有信号更贵。掉线一律以 onclose 为准；
+    // ③ **同时作声**（`notify`）：光翻状态等于要用户自己打开设置页才知道。掉线时工具仍留在
+    //    清单里（决策 11：不伪造成功结果），于是用户唯一的线索是「某个调用莫名失败」。
+    //    这条走 security 类 notice：toast 之外**同时落 session_events**（与装载摘要同一条通道），
+    //    所以 5 秒后仍能在「事件」里回查。
     client.onclose = () => {
       if (state.closing === true) return;
-      state.error = "连接已断开（server 进程退出或网络中断）";
+      // 只报一次：HTTP 传输会重复触发 onclose（SDK 自己注释：`HTTP transports re-fire onclose`），
+      // 而掉线是一次事件，不是一串
+      if (state.error !== undefined) return;
+      state.error = MCP_DROPPED;
+      notify(
+        `MCP server "${name}" 连上后掉线：${MCP_DROPPED}。` +
+          `它的工具仍在清单里、调用会失败；在设置页点「重新加载」可恢复。`,
+      );
     };
     liveClients.add(client);
     armExitHook();
@@ -521,7 +547,7 @@ export async function createMcpRuntime(
         continue;
       }
       try {
-        states.set(name, await connectServer(name, declared, resolved));
+        states.set(name, await connectServer(name, declared, resolved, notify));
       } catch (error) {
         const message = `server "${name}" 连接失败：${describeError(error)}`;
         diagnostics.push(message);

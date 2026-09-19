@@ -192,6 +192,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [reloading, setReloading] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const projectId = project?.id;
@@ -200,6 +201,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
     if (projectId === undefined) {
       setServers([]);
       setLive(false);
+      setDiagnostics([]);
       return;
     }
     setLoading(true);
@@ -207,6 +209,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       const result = await window.colt.invoke("mcp.status", { projectId });
       setServers(result.servers);
       setLive(result.live);
+      setDiagnostics(result.diagnostics);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -226,6 +229,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       const result = await window.colt.invoke("mcp.reload", { projectId });
       setServers(result.servers);
       setLive(result.live);
+      setDiagnostics(result.diagnostics);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -253,6 +257,20 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
         MCP 工具的每次调用照常走审批闸门。
       </p>
 
+      {diagnostics.length > 0 && (
+        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+          <span>
+            <span className="font-mono">.colt/mcp.json</span> 有 {diagnostics.length}{" "}
+            处问题——坏掉的条目不会出现在下面：
+          </span>
+          {diagnostics.map((item) => (
+            <span key={item} className="font-mono">
+              {item}
+            </span>
+          ))}
+        </div>
+      )}
+
       {project === null ? (
         <McpNotice>先打开一个项目，才能看到它声明的 MCP server。</McpNotice>
       ) : error !== null ? (
@@ -262,7 +280,12 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       ) : loading ? (
         <McpNotice>读取中…</McpNotice>
       ) : servers.length === 0 ? (
-        <McpNotice>本项目未声明 MCP server。</McpNotice>
+        // 有诊断时**不能说「未声明」**：那是「你写错了」，上面那块已经说明了原因
+        <McpNotice>
+          {diagnostics.length > 0
+            ? "配置里没有可用的 MCP server 声明。"
+            : "本项目未声明 MCP server。"}
+        </McpNotice>
       ) : (
         <div className="flex flex-col gap-2">
           {!live && (

@@ -593,10 +593,15 @@ export interface IpcInvokeMap {
    * `live` 说清这份数据从哪来：true = 该项目的活 worker 报的**真实运行态**（连上了没、
    * 有哪些工具）；false = 只有配置文件里的**声明**（会话没开着），此时每个 server 的
    * status 一律是 `idle`。两者语义不同，界面要分开呈现（见 `McpServerView`）。
+   *
+   * `diagnostics` 是**配置文件本身**的毛病（不是 JSON / 单个 server 声明不合法），
+   * **两种 live 下都由主进程自己解析给**——worker 那份运行态只讲「连上了什么」，
+   * 坏声明在它手里根本没有对应的 server 条目。不给这条通道时的症状是**说反话**：
+   * 语法错的 `mcp.json` 会渲染成「本项目未声明 MCP server」，而真相是「你写错了」。
    */
   "mcp.status": {
     request: { projectId: string };
-    response: { servers: McpServerView[]; live: boolean };
+    response: { servers: McpServerView[]; live: boolean; diagnostics: string[] };
   };
   /**
    * 热重载某项目的 MCP 配置：重读 `.colt/mcp.json`、只重连变更的 server，把新工具清单
@@ -604,7 +609,7 @@ export interface IpcInvokeMap {
    */
   "mcp.reload": {
     request: { projectId: string };
-    response: { servers: McpServerView[]; live: boolean };
+    response: { servers: McpServerView[]; live: boolean; diagnostics: string[] };
   };
   /** 切换会话使用的模型 */
   "session.setModel": {

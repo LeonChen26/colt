@@ -13,14 +13,16 @@
  * 的接线（协议字段名、FIFO 配对、命令路由），正是 `AGENTS.md` §四说的
  * 必须跑一遍真实链路才放心的那一类。
  *
- * 夹具：`out/smoke-mcp-reload-fixture/.colt/mcp.json`，全程改写三版配置：
- * ① 只有 `alpha`（3 工具的 stdio 夹具）→ ② 加上 `beta`（分页夹具，5 工具）→ ③ 只剩 `beta`。
+ * 夹具：`out/smoke-mcp-reload-fixture/.colt/mcp.json`，全程改写四版配置：
+ * ① 只有 `alpha`（3 工具的 stdio 夹具）→ ② 加上 `beta`（分页夹具，5 工具）→ ③ 只剩 `beta`
+ * → ④ 只剩 `hanging`（一个起来后**一句话不说**的子进程，把连接耗到 worker 侧上限）。
  * server 进程用 `ELECTRON_RUN_AS_NODE` 让 electron 按 Node 跑（不依赖 PATH 里有 node，
  * 同 mcp-e2e）。另有一个**永远不开会话**的项目 `out/smoke-mcp-reload-other`，
- * 专门验「没有活 worker」那条退路。
+ * 专门验「没有活 worker」那条退路（里面还**故意放了一条坏声明**，验诊断如实带出）。
  *
- * 断言分四组：① 冷启动装载；② 热重载加 server（分页那支真的收全了）；③ 热重载删 server；
- * ④ 两个 IPC 的返回形状（含 `live: false` 的退路）。
+ * 断言分五组：① 冷启动装载；② 热重载加 server（分页那支真的收全了）；③ 热重载删 server；
+ * ④ 两个 IPC 的返回形状（含 `live: false` 的退路、以及随响应带出的配置诊断）；
+ * ⑤ 「慢 server 不该被判成超时」——主进程的等待预算必须盖住 worker 侧的单步上限。
  *
  * **不含设置页 DOM 断言**：设置页那段跟渲染层的 `activeProject` 走，而冒烟里它是渲染层
  * 自己的选择（它是并发参与者，见 ask-user-e2e 的原则）。界面层的判据落在这两个 IPC 上——
@@ -50,6 +52,13 @@ export async function runMcpReload(
     args: [join(process.cwd(), "tests", "helpers", "mcp-paged-fixture-server.mjs")],
     env: { ELECTRON_RUN_AS_NODE: "1" },
   };
+  // 起来之后**一句话都不说**的子进程（不是 MCP server，但也不会退出）：专门用来把
+  // 「连接」这一步慢慢耗到 worker 侧的上限（`MCP_STEP_TIMEOUT_MS`，15s）。见 ⑤ 号断言。
+  const hanging = {
+    command: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+  };
 
   const writeConfig = (servers: Record<string, unknown>): void => {
     mkdirSync(join(fixtureDir, ".colt"), { recursive: true });
@@ -61,11 +70,14 @@ export async function runMcpReload(
   };
 
   writeConfig({ alpha });
-  // 另一个项目：有声明、但**全程不开会话**——验「没有活 worker」的退路（live:false + idle）
+  // 另一个项目：有声明、但**全程不开会话**——验「没有活 worker」的退路（live:false + idle）。
+  // 里面**故意放一条坏声明**（`broken` 既没 command 也没 url，是打错键名最典型的样子）：
+  // 坏条目在 `servers` 里没有对应项，若诊断不单独带出来，设置页就会把「你写错了」
+  // 显示成「本项目未声明 MCP server」——正好是反的（② 号审计发现）。
   mkdirSync(join(otherDir, ".colt"), { recursive: true });
   writeFileSync(
     join(otherDir, ".colt", "mcp.json"),
-    JSON.stringify({ mcpServers: { solo: alpha } }, null, 2),
+    JSON.stringify({ mcpServers: { solo: alpha, broken: {} } }, null, 2),
     "utf8",
   );
   const otherProject = upsertProject(otherDir);
@@ -156,7 +168,11 @@ export async function runMcpReload(
       live.live === true && live.servers.length === 1 && live.servers[0]!.name === "beta",
     ]);
 
-    const idle = await run<{ servers: { name: string; status: string }[]; live: boolean }>(
+    const idle = await run<{
+      servers: { name: string; status: string }[];
+      live: boolean;
+      diagnostics: string[];
+    }>(
       `window.colt.invoke("mcp.status", ${JSON.stringify({ projectId: otherProject.id })})`,
     );
     log(`无会话项目：${JSON.stringify(idle)}`);
@@ -167,13 +183,50 @@ export async function runMcpReload(
         idle.servers[0]!.name === "solo" &&
         idle.servers[0]!.status === "idle",
     ]);
+    // 坏声明必须**如实带出来**：它不在 servers 里，只有 diagnostics 这条通道能说清
+    // 「是配置写错了」而不是「没配」。判据取「提到了那个坏条目的名字」——比断言整串稳。
+    checks.push([
+      "IPC mcp.status（无活会话）：坏声明的诊断随响应带出（别把「写错了」显示成「没配」）",
+      idle.diagnostics.length === 1 && idle.diagnostics[0]!.includes('"broken"'),
+    ]);
 
-    const ipcReload = await run<{ servers: { name: string }[]; live: boolean }>(
+    const ipcReload = await run<{
+      servers: { name: string }[];
+      live: boolean;
+      diagnostics: string[];
+    }>(
       `window.colt.invoke("mcp.reload", ${JSON.stringify({ projectId: project.id })})`,
     );
     checks.push([
       "IPC mcp.reload（有活会话）：live=true，重载后仍是 beta",
       ipcReload.live === true && ipcReload.servers.length === 1 && ipcReload.servers[0]!.name === "beta",
+    ]);
+    // 有活会话时也要给诊断（配置诊断由主进程自己解析，两条路一致）——夹具项目这里没有坏条目
+    checks.push([
+      "IPC mcp.reload（有活会话）：诊断通道同样存在（此处配置干净，应为空）",
+      Array.isArray(ipcReload.diagnostics) && ipcReload.diagnostics.length === 0,
+    ]);
+
+    // ⑤ 「假超时」回归（审计发现 ①，2026-09-19 修）
+    //
+    // 主进程等 MCP 回话的预算原先是 10s（抄自分支 / 子代理那两条**快**操作），而 worker 侧
+    // 光「连接」一步的上限就是 15s（`MCP_STEP_TIMEOUT_MS`）。于是「慢 server」这一类
+    // 会得到一个**假失败**：设置页红字「查询 MCP 状态超时」，而 worker 正在正常连接。
+    // 判据取**真的等过了 10s 才兑现**——把预算改回 10s，这条立刻红（这就是它能证伪的地方）。
+    writeConfig({ hanging });
+    const slowStartedAt = Date.now();
+    const slow = await run<{
+      servers: { name: string; status: string; error?: string }[];
+      live: boolean;
+    }>(`window.colt.invoke("mcp.reload", ${JSON.stringify({ projectId: project.id })})`);
+    const elapsedMs = Date.now() - slowStartedAt;
+    log(`慢 server 重载：耗时 ${elapsedMs}ms → ${JSON.stringify(slow)}`);
+    checks.push([
+      "慢 server 重载：耗时长于旧预算（10s）也没被判成「查询 MCP 状态超时」（那会是假失败）",
+      elapsedMs >= 10_000 &&
+        slow.servers.length === 1 &&
+        slow.servers[0]!.name === "hanging" &&
+        slow.servers[0]!.status === "error",
     ]);
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);

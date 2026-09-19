@@ -85,18 +85,28 @@ function resolveSessionRoot(sessionId: string): string {
  * 配置由主进程按 projectId 反查 rootPath 读取，**不经渲染层**——「读哪个项目」若由
  * 渲染层指定，就等于让它决定我们读谁的文件（与 `resolveSessionRoot` 同一套信任假设）。
  * 项目不存在时回空：设置页按「没配」呈现，不是错误。
+ *
+ * `diagnostics` 一并带出（**不是丢掉**）：`loadMcpConfig` 把「不是合法 JSON / 某个
+ * server 声明不合法」都收在这里，而这类毛病在 `servers` 里**没有对应条目**（坏声明不
+ * 会变成一台 server）。早先只返回 `servers`，于是语法错的 `mcp.json` 在设置页上被渲染成
+ * 「本项目未声明 MCP server」——把「你写错了」说成了「你没配」，恰好是反的。
  */
-async function declaredMcpServers(projectId: string): Promise<McpServerView[]> {
+async function declaredMcpServers(
+  projectId: string,
+): Promise<{ servers: McpServerView[]; diagnostics: string[] }> {
   const project = getProject(projectId);
-  if (project === undefined) return [];
-  const { servers } = await loadMcpConfig(project.rootPath);
-  return Object.entries(servers).map(([name, config]) => ({
-    name,
-    transport: transportOf(config) ?? "stdio",
-    target: targetOf(config),
-    status: "idle" as const,
-    tools: [],
-  }));
+  if (project === undefined) return { servers: [], diagnostics: [] };
+  const { servers, diagnostics } = await loadMcpConfig(project.rootPath);
+  return {
+    servers: Object.entries(servers).map(([name, config]) => ({
+      name,
+      transport: transportOf(config) ?? "stdio",
+      target: targetOf(config),
+      status: "idle" as const,
+      tools: [],
+    })),
+    diagnostics,
+  };
 }
 
 /**
@@ -518,19 +528,32 @@ export function registerIpcHandlers(): void {
   });
 
   handle("mcp.status", async (request) => {
+    // 配置诊断**一律由主进程自己解析**（两条路都要）：活 worker 那份运行态只讲
+    // 「连上了什么」，坏声明在它手里没有对应条目，而会话开着时那些诊断只走了一条
+    // notice、设置页看不见。详见 `protocol.ts` 里 `mcp.status` 的注释。
+    const declared = await declaredMcpServers(request.projectId);
     const sessionId = sessionManager.workerSessionForProject(request.projectId);
     if (sessionId === undefined) {
-      return { servers: await declaredMcpServers(request.projectId), live: false } as const;
+      return { ...declared, live: false } as const;
     }
-    return { servers: await sessionManager.mcpStatus(sessionId), live: true } as const;
+    return {
+      servers: await sessionManager.mcpStatus(sessionId),
+      live: true,
+      diagnostics: declared.diagnostics,
+    } as const;
   });
 
   handle("mcp.reload", async (request) => {
+    const declared = await declaredMcpServers(request.projectId);
     const sessionId = sessionManager.workerSessionForProject(request.projectId);
     if (sessionId === undefined) {
-      return { servers: await declaredMcpServers(request.projectId), live: false } as const;
+      return { ...declared, live: false } as const;
     }
-    return { servers: await sessionManager.mcpReload(sessionId), live: true } as const;
+    return {
+      servers: await sessionManager.mcpReload(sessionId),
+      live: true,
+      diagnostics: declared.diagnostics,
+    } as const;
   });
 
   handle("session.setModel", async (request) => {

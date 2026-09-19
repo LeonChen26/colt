@@ -1,7 +1,8 @@
 # MCP 设计
 
 > **状态**：**已实施**（2026-09-19；当日晚些时候补齐了原型边界，见 §5；同日再补上
-> resources / prompts 两个能力面，见决策 13）。
+> resources / prompts 两个能力面，见决策 13，以及 `instructions` 注入，见决策 14；
+> 收盘审计后又修了「等 MCP 回话的预算」与「配置诊断通道」两条假信号，见决策 15 / 16）。
 > **落地落点**：
 > - `shared/mcp-config.ts`——配置的**纯解析层**（不 import SDK）。抽出来是为了**两侧共用**：
 >   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
@@ -10,8 +11,9 @@
 > - `worker/lib/mcp-reload.ts`——MCP 与 harness / 系统提示词 / 设置页的**接线**（三件事一处）：
 >   热重载写回（`reloadMcpIntoHarness`）、`instructions` 注入与设置页命令（决策 14）。
 > - `worker/entry.ts`——接线（`...mcp.tools` 进 tools 数组；两条 MCP 命令已收进上面那个文件）。
-> - `main/session-manager.ts` + `main/ipc`——`mcp.status` / `mcp.reload` 两个 IPC。
-> - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性）。
+> - `main/session-manager.ts` + `main/ipc`——`mcp.status` / `mcp.reload` 两个 IPC
+>   （配置诊断 `diagnostics` 由主进程自己解析后一并带出，见决策 16）。
+> - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性，含诊断块）。
 > 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
 > `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
 > **验收**：单测 `tests/mcp-tools.test.ts`（**31 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
@@ -28,10 +30,11 @@
 > 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；另有
 > `COLT_SMOKE_MODE=mcp-real` 用**真实第三方 server**（官方 filesystem / pi-lens）跑同一条链路。
 > **热重载 + 设置页可见性**那条「渲染层 → 主进程 → worker → 绕回」的接线由**免费**冒烟
-> `COLT_SMOKE_MODE=mcp-reload` 覆盖并**实测通过**（2026-09-19，9/9，不调模型、不计费）：
+> `COLT_SMOKE_MODE=mcp-reload` 覆盖并**实测通过**（2026-09-19，**12/12**，不调模型、不计费）：
 > 冷启动装载 → 热加 server（分页收全）→ 热删 server（工具清单与 harness **同时**对齐，
 > 见 `lane-heal.ts`）→ `mcp.status` / `mcp.reload` 两个 IPC 的返回形状（含「没打开会话」的
-> `live:false` + `status:idle` 退路）。
+> `live:false` + `status:idle` 退路、随响应带出的配置诊断）→ **「慢 server 不该被判成超时」**
+> （一个不说话的 server 把连接耗到 15s，旧预算下会假报超时；见决策 15）。
 > 仅剩 worker 被主进程**强杀**（dispose 超时 / 崩溃）时 MCP 子进程成孤儿的那一支，
 > 正常 dispose 走 `runtime.close()`。
 > **一句话**：`<cwd>/.colt/mcp.json` 里声明的 MCP server（stdio 或 HTTP/SSE），其工具被包成
@@ -68,6 +71,7 @@
 | SDK 无状态模式的 Streamable HTTP server **必须每个请求新建一套 transport + server** | 实测：共用一套会让第二个请求（`notifications/initialized`）回 500 |
 | v2 的 `listTools()` **不传 cursor 时自己翻完所有页并聚合**（一次调用拿回 5 条、`nextCursor` 为 undefined）；只有**显式传 cursor** 才回单页。自动翻页的页数上限是 `ClientOptions.listMaxPages`（默认 64，触顶**抛错**、不缓存半份聚合），重复 cursor 会停止翻页 | `@modelcontextprotocol/client`（实测，见决策 6）。同款自动聚合对 `listPrompts` / `listResources` / `listResourceTemplates` 一视同仁 |
 | SDK 的 `RequestOptions` 有 `signal` / `timeout`；`RequestOptions.timeout` 缺省用 `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`。超时由 SDK 自己取消请求并抛 `SdkError code=REQUEST_TIMEOUT` | `@modelcontextprotocol/client`（实测：给 `connect` 传 `{ timeout: 1500 }`，1531ms 后以 `SdkError code=REQUEST_TIMEOUT / Request timed out` 拒绝）。所以 `callTool` **不是没有超时**，是走 SDK 默认 60s |
+| `mcpReload` 的**最慢正当耗时** = 等就绪（≤ `READY_TIMEOUT_MS` 120s，命令在 `#post` 里暂存到 `ready`）+ 每台要重连的 server ≤ 2 × 15s（连接 + 列工具，串行）；而主进程那边原先只等 **10s** | 实测（免费冒烟第 ⑤ 组）：夹具里一个**不说话的 server** 让重载耗时 **15035ms** —— 旧预算下这里会假报「查询 MCP 状态超时」。修法与物证见决策 15 |
 | `client.getServerCapabilities()` 是公开方法，connect 之后就能读到 server 声明的 `tools` / `resources` / `prompts` 等能力面；`listResources` / `listPrompts` / `listResourceTemplates` 与 `listTools` 同款自动翻页；`readResource` / `getPrompt` 是单次请求 | `@modelcontextprotocol/client`（能力工具只在声明了对应面时才加，见决策 13） |
 | `client.getInstructions()` 是 server 握手时自报 `InitializeResult.instructions` 的**取值口**，但 SDK **自己一处都不调用**它；另有一个 `ClientOptions.listChanged`（`{ tools / prompts / resources: { onChanged } }`），SDK 会自己刷新并把新值回调给你 | 前者不自己拼进提示词就是**静默丢掉**（与技能清单同坑，见决策 14）；后者我们**尚未接**（见 §5 边界） |
 
@@ -126,6 +130,14 @@
     SDK 明说那里的错误「不一定是致命的」，拿它翻状态会把健康 server 误标成红点。
     掉线**不自动重连**（那是另一套策略），靠「重新加载」救回（见决策 5 / 7）；
     工具仍留在清单里，调用会照常失败——由 SDK 报「未连接」，不去伪造一个成功结果。
+    **2026-09-19 补（收盘审计发现）**：光翻状态等于**不作声**——掉线时工具仍留在清单里，
+    用户唯一的线索是「某个调用莫名失败」，而设置页得他自己点开才看得到。现在 `onclose` 里
+    同时发一条 security 类 notice（`MCP server "x" 连上后掉线：…；在设置页点「重新加载」可恢复。`），
+    toast 之外**同时落 `session_events`**、能在「事件」页签回查（与装载摘要同一条通道）。
+    两条附带约束：**只报一次**（SDK 自己注释 `HTTP transports re-fire onclose`，重复通知就是
+    噪音——用「`state.error` 已置位」当幂等闸），以及**我们主动关的不报**（`closing` 标记，见 ①）。
+    判据由真实自杀夹具 `mcp-crash-fixture-server.mjs` 钉住：通知**恰好一条**、点名那台 server、
+    且「重新加载」把它救回来之后**不再冒第二条**。
 12. **用 v2（`@modelcontextprotocol/*@2.0.0`）**：v2 把 v1 的单体包拆成 `client` / `server` /
     `core`（+ `node` / `express` / `hono` / `fastify` 中间件包）。迁移走官方 codemod
     （`npx @modelcontextprotocol/codemod@latest v1-to-v2 .`，**在包根跑**，它连 `package.json` 一起改）。
@@ -170,6 +182,41 @@
       `renderAgentCatalog` 也一样：渲染函数验串 + 接线靠行为观察）。给 MCP instructions 做行为
       观察要模型「照 server 自报的话做」，前提在模型侧、易假红（§四「前提由外部决定时要么显式
       建立、要么明说没建立」），故不做，在此**如实记下**。
+
+15. **「等 MCP 回话」的预算必须盖住 worker 侧的单步上限**（`main/session-manager.ts` 的
+    `MCP_QUERY_TIMEOUT_MS`；时序钉在免费冒烟里）。
+    - **症状**（收盘审计发现，2026-09-19）：预算原先是 `10_000`，抄自 `branches` /
+      `subagentTranscript` 那两条**快**操作。而这条往返最慢的正当耗时有两段都远超它：
+      ① 会话还没就绪时命令要等 `ready` 才下发（`#post` 暂存），上限是 `READY_TIMEOUT_MS`；
+      ② 就绪后 `mcpReload` 要**串行**把每台变更 / 上一轮失败的 server 重新连上，每台
+      ≤ `MCP_STEP_TIMEOUT_MS`（连接）+ 同样一步（列工具）。于是设置页会弹红字
+      「查询 MCP 状态超时」，**而 worker 正在正常连接**——不是报错，是界面在说谎
+      （与决策 11 同一条纪律的另一面：宁可不说话，也不说反话）。
+    - **改法**：预算改为 `READY_TIMEOUT_MS + 2 * MCP_STEP_TIMEOUT_MS`，且**单步值进
+      `shared/limits.ts`**——它被两侧各读一次（worker 当 `connect` / `listTools` 的超时，
+      主进程拿它算预算），正是 `limits.test.ts` 守的那一类「漂成两份就静默出错」的常量。
+      改回一个拍脑袋的数、或在别处再写一份字面量，都会让那条守卫变红。
+    - **物证**（免费冒烟 `mcp-reload` 第 ⑤ 组）：夹具里放一个**起来后一句话不说**的子进程，
+      断言「这次重载真的等过了 10s 仍然正常兑现」。实测 **15035ms** 后直接返回该 server 的
+      `error` 态（`连接失败：Request timed out`）。判据挂在「等过旧预算」上，所以把预算改回
+      10s 这条**立刻红**——这正是它能证伪的地方。
+    - **残余（如实记）**：多台 server 同时需要重连会**叠加**（每台 ≤ 2 步），超过这条线仍以
+      超时收敛——那时是「坏了」而不是「慢」，报错是对的。这条线是兜底、不是 UX 目标：
+      正常路径下 worker 一答完就兑现，用户不会真等这么久。
+
+16. **配置诊断走 IPC，两条路都给**（`main/ipc` 的 `declaredMcpServers` 返回值 + 协议字段）。
+    - **症状**（收盘审计发现，2026-09-19）：`declaredMcpServers` 只解构 `servers`，把
+      `loadMcpConfig` 一并返回的 `diagnostics` **整包丢掉**。而坏声明（不是合法 JSON /
+      缺 command 或 url / env 不是字符串字典）在 `servers` 里**没有对应条目**——于是设置页
+      把「你写错了」渲染成「本项目未声明 MCP server」，恰好是反的；有活 worker 时那些诊断
+      又只走了一条 `notice`（决策 5 / 9），设置页照样看不见。
+    - **改法**：`diagnostics` **一律由主进程自己解析**（它本来就在读这份文件），活 worker 那条路
+      只借它的 `servers`（真实运行态）。于是两条路都有诊断、口径一致；设置页在列表**上方**
+      单独画一块，**不替换列表**（好 server 照常显示），空列表时那句话也跟着改口，不再说
+      「未声明」。
+    - **物证**：免费冒烟 `mcp-reload` 的 `other` 项目里故意放一条坏声明（`broken` 既没 command
+      也没 url），断言响应带出 `server "broken" 缺少 command 或 url`，且**有活会话那条路字段
+      同样存在**。跑的是真实 IPC，不是单测里的替身。
 
 ## 4. 配置形态
 
@@ -229,6 +276,19 @@
   SSE 夹具与那条用例会一起消失，等于**把「这一支还能不能用」的证据也删了**，
   而客户端 `SSEClientTransport` 是**包根导出**、删依赖并不会让它消失——于是变成
   「代码里留着一条没人验过的 SSE 分支」。
+
+- **设置页那块诊断只讲「配置写没写对」**：它是 `loadMcpConfig` 的**解析级**结论（JSON 合法性、
+  必填字段、字段类型），**不预检**「这台 server 起得来吗」——那是运行态的结论（`status` / `error`，
+  决策 5 / 11）。两条信息在界面上是分开的（诊断块 vs 每台 server 的卡片），别把诊断块当校验器。
+
+- **工具调用的 60s 硬上限（已知限制，未改）**：`callTool` / `readResource` / `getPrompt` /
+  列表类都不传 `timeout`，走 SDK 的 `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`，且
+  `resetTimeoutOnProgress` 默认 `false`——**server 中途发 progress 也不续期**。后果：编译、
+  浏览器自动化、大下载这类**正当的长工具**会被就地掐断（`REQUEST_TIMEOUT`）。不是不能改，
+  是**要先定产品口径**，三条路各要选一个数：① 直接调大固定值？② 按 server / 按工具可配
+  （配置面要加字段）？③ 「有 progress 就续期 + `maxTotalTimeout` 兜总时长」（否则狂发 progress
+  的 server 能把一次调用挂死）？在定下来之前**别顺手把 60s 改成一个更大的固定值**——那只是把
+  「60s 掐断」换成「5 分钟掐断」，长工具照样断，而界面依旧没有任何「它还在跑」的反馈。
 
 已从边界转正的（原型阶段曾列在「有意不做」，现已实现且有单测）：远程 server（HTTP/SSE）、
 `listTools` 分页、`${VAR}` 插值、配置热重载、工具重名去重、设置页可见性、

@@ -21,7 +21,7 @@ import type {
   WorkerMessage,
 } from "@shared/worker-protocol";
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
-import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
+import { APPROVAL_TIMEOUT_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
 import { handleToolRpc } from "./host/tool-rpc";
@@ -58,6 +58,22 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const READY_TIMEOUT_MS = Number(process.env.COLT_READY_TIMEOUT_MS ?? 120_000);
 /** 空闲回收扫描间隔 */
 const IDLE_SWEEP_MS = 60 * 1000;
+/**
+ * 等 MCP 回话的预算（`mcpStatus` / `mcpReload` 共用那条往返）。
+ *
+ * **不能拍一个「看着够快」的数**：这里原先是 10s，抄自分支 / 子代理查询那两条快操作。
+ * 而 MCP 这条往返最慢的正当耗时有两段，都远超 10s：
+ *  ① 会话还没就绪——命令要等 `ready` 才下发（`#post` 暂存），上限就是 `READY_TIMEOUT_MS`；
+ *  ② 就绪后，`mcpReload` 要**串行**把每台变更 / 上一轮失败的 server 重新连上：
+ *     每台 ≤ `MCP_STEP_TIMEOUT_MS`（连接）+ ≤ 同样一步（列工具）。
+ * 预算短于这个上界时的症状不是报错而是**假失败**：设置页红字「查询 MCP 状态超时」，
+ * 而 worker 那边正在正常连接。宁可等，也不谎报。
+ *
+ * 残余（如实记下）：多台 server 同时需要重连会**叠加**（每台 ≤ 2 步），超过这条线仍以
+ * 超时收敛——那是「坏了」而不是「慢」，此时报错是对的。这条线也不是 UX 目标，是兜底：
+ * 正常路径下 worker 一答完就兑现，用户不会真等这么久。
+ */
+const MCP_QUERY_TIMEOUT_MS = READY_TIMEOUT_MS + 2 * MCP_STEP_TIMEOUT_MS;
 /**
  * 发出 dispose 后等 worker 自行退出的宽限时长，超时强杀。
  * dispose 只是一条消息，worker 正忙时可能迟迟不处理。
@@ -1310,7 +1326,7 @@ export class SessionManager {
         const index = queue.indexOf(settle);
         if (index !== -1) queue.splice(index, 1);
         reject(new Error("查询 MCP 状态超时"));
-      }, 10_000);
+      }, MCP_QUERY_TIMEOUT_MS);
       queue.push(settle);
       this.#post(sessionId, command);
     });

@@ -27,3 +27,14 @@ export const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 二进制判定的嗅探字节数：只扫头部，不必为判定读完整文件 */
 export const SNIFF_BYTES = 8000;
+
+/**
+ * MCP 的**单步**超时：worker 侧「连一台 server」与「列它的工具」各算一步。
+ *
+ * 进这个文件的理由与上面两条同源，但症状是**假失败**（本文件头说的那类静默出错）：
+ * worker 拿它当 `connect` / `listTools` 的超时（`worker/lib/mcp-tools.ts`），主进程拿它
+ * 算「等 MCP 回话」的预算（`main/session-manager.ts` 的 `MCP_QUERY_TIMEOUT_MS`）。
+ * 主进程那边只要比 worker 短，设置页就会弹「查询 MCP 状态超时」——而 worker 正在
+ * 正常连接，用户看到的失败是编出来的。
+ */
+export const MCP_STEP_TIMEOUT_MS = 15_000;
