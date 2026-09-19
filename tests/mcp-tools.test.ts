@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import {
   closeMcpTools,
@@ -49,6 +51,9 @@ const CRASH_FIXTURE = fileURLToPath(
   new URL("./helpers/mcp-crash-fixture-server.mjs", import.meta.url),
 );
 const SSE_FIXTURE = fileURLToPath(new URL("./helpers/mcp-sse-fixture-server.mjs", import.meta.url));
+const CAPS_FIXTURE = fileURLToPath(
+  new URL("./helpers/mcp-capabilities-fixture-server.mjs", import.meta.url),
+);
 
 type Tool = AgentHarnessTool<ExecutionToolContext>;
 
@@ -430,6 +435,27 @@ describe("listTools 分页", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("单次 listTools()（不传 cursor）就拿回全部 5 个、nextCursor 为空——我们据此不写循环", async () => {
+    // 这条钉的是**依赖的契约**（同 validateToolArguments 那条）：生产代码 `listAllTools`
+    // 只调一次 `listTools()`，成不成全看 v2 这句「不传 cursor 就自己翻完所有页」。
+    // 哪天 SDK 改成不聚合，这条先红，而不是等到线上只剩第一页工具。夹具 5 个工具 / 每页 2 个。
+    const client = new Client({ name: "paged-probe", version: "0.0.1" }, { listMaxPages: 100 });
+    await client.connect(
+      new StdioClientTransport({ command: process.execPath, args: [PAGED_FIXTURE] }),
+    );
+    try {
+      const all = await client.listTools();
+      assert.equal(all.tools.length, 5);
+      assert.equal(all.nextCursor, undefined);
+      // 反面：显式给 cursor 才回单页（证明上面那 5 条真是「翻完聚合」，不是 server 一页给全）
+      const page = await client.listTools({ cursor: "0" });
+      assert.equal(page.tools.length, 2);
+      assert.equal(page.nextCursor, "2");
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 describe("传输：远程（Streamable HTTP）", () => {
@@ -647,6 +673,112 @@ describe("连接生命周期：失败可重试、掉线如实上报", () => {
       const reloaded = await runtime.reload();
       assert.equal(reloaded.statuses[0]?.status, "connected");
       assert.equal(reloaded.statuses[0]?.error, undefined);
+    } finally {
+      await runtime.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("声明值与解析值分离（${VAR} 既不泄露、也不白重连）", () => {
+  test("target 显示声明里的 ${VAR}（不是解析后的密钥），且配置没变时不重连", async () => {
+    const previous = process.env.COLT_MCP_PROBE_TOKEN;
+    process.env.COLT_MCP_PROBE_TOKEN = "s3cr3t-LEAK";
+    const dir = await fixtureProject({
+      mcpServers: {
+        leaky: { command: process.execPath, args: [FIXTURE, "--token", "${COLT_MCP_PROBE_TOKEN}"] },
+      },
+    });
+    const runtime = await createMcpRuntime(dir, () => undefined);
+    try {
+      // ① 设置页画的就是 status().target——它必须停在声明值上，否则真实密钥会画在界面上
+      const target = runtime.status()[0]?.target ?? "";
+      assert.ok(target.includes("${COLT_MCP_PROBE_TOKEN}"), `target 丢了声明值：${target}`);
+      assert.ok(!target.includes("s3cr3t-LEAK"), `target 泄露了解析后的密钥：${target}`);
+
+      // ② 配置一字未改 → 不该重连。判据取工具对象的**引用同一性**：重连会重新 wrap，
+      //    引用就变了。若 state.config 存的是解析值，configKey 与文件里的声明永远不等，
+      //    这里必红（每次「重新加载」都白重连一次，决策 7 明说不该重连）。
+      const before = runtime.tools.find((tool) => tool.name === "mcp__leaky__echo");
+      assert.ok(before !== undefined);
+      const reloaded = await runtime.reload();
+      assert.equal(reloaded.statuses[0]?.status, "connected");
+      assert.equal(runtime.tools.find((tool) => tool.name === "mcp__leaky__echo"), before);
+    } finally {
+      await runtime.close();
+      if (previous === undefined) delete process.env.COLT_MCP_PROBE_TOKEN;
+      else process.env.COLT_MCP_PROBE_TOKEN = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resources / prompts 能力：声明了才包成工具，且走同一套闸门", () => {
+  const gateConfig: PolicyConfig = { mode: "approval", projectRoot: "E:/proj", allowRules: [] };
+
+  test("三面都声明的 server：多出 4 个能力工具，且真实往返到服务端", async () => {
+    const dir = await fixtureProject({
+      mcpServers: { caps: { command: process.execPath, args: [CAPS_FIXTURE] } },
+    });
+    const runtime = await createMcpRuntime(dir, () => undefined);
+    try {
+      assert.deepEqual(runtime.tools.map((tool) => tool.name).sort(), [
+        "mcp__caps__echo",
+        "mcp__caps__get_prompt",
+        "mcp__caps__list_prompts",
+        "mcp__caps__list_resources",
+        "mcp__caps__read_resource",
+      ]);
+
+      // 能力工具与普通工具**同一套**安全模型：不在任何豁免名单、policy 落到「不认识就问」
+      for (const tool of runtime.tools) {
+        assert.equal(READONLY_TOOLS.has(tool.name), false, `${tool.name} 混进了只读白名单`);
+        assert.equal(evaluateTool({ toolName: tool.name, args: {} }, gateConfig).decision, "ask");
+      }
+
+      const listResources = runtime.tools.find((tool) => tool.name === "mcp__caps__list_resources")!;
+      const listed = (await callTool(listResources, {})).content[0]!.text ?? "";
+      assert.match(listed, /caps:\/\/note/);
+      // 资源模板也在（模板列举失败会被静默留空，这条正是钉住它没失败）
+      assert.match(listed, /caps:\/\/item\/\{id\}/);
+
+      const readResource = runtime.tools.find((tool) => tool.name === "mcp__caps__read_resource")!;
+      assert.deepEqual((await callTool(readResource, { uri: "caps://note" })).content, [
+        { type: "text", text: "资源正文：hello" },
+      ]);
+      // 二进制资源**不展开**成 base64——只要「二进制 + 类型」说清了
+      const blob = (await callTool(readResource, { uri: "caps://logo" })).content[0]!.text ?? "";
+      assert.match(blob, /二进制/);
+      assert.match(blob, /image\/png/);
+      assert.ok(!blob.includes("QUJD"), `二进制被展开进上下文了：${blob}`);
+
+      const listPrompts = runtime.tools.find((tool) => tool.name === "mcp__caps__list_prompts")!;
+      assert.match((await callTool(listPrompts, {})).content[0]!.text ?? "", /greet/);
+
+      // 参数**真的到了服务端**（服务端按参数渲染）——这是「包成工具」而非「客户端格式化」的物证
+      const getPrompt = runtime.tools.find((tool) => tool.name === "mcp__caps__get_prompt")!;
+      assert.deepEqual(
+        (await callTool(getPrompt, { name: "greet", arguments: { who: "Colt" } })).content,
+        [{ type: "text", text: "user: 你好，Colt" }],
+      );
+    } finally {
+      await runtime.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("只声明 tools 的 server：一个能力工具都不加（别放用不上的入口）", async () => {
+    const dir = await fixtureProject(fixtureServerConfig());
+    const notices: string[] = [];
+    const runtime = await createMcpRuntime(dir, (message) => notices.push(message));
+    try {
+      assert.deepEqual(runtime.tools.map((tool) => tool.name).sort(), [
+        "mcp__fixture__add",
+        "mcp__fixture__echo",
+        "mcp__fixture__fail",
+      ]);
+      // 摘要里的计数也不该把能力工具算进去
+      assert.match(notices.join("；"), /fixture（3 个工具）/);
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });

@@ -34,12 +34,19 @@ export const MCP_TOOL_PREFIX = "mcp__";
 /** LLM API 对工具名普遍有 64 字符上限（含前缀），超长的截断并记诊断 */
 export const MAX_TOOL_NAME_CHARS = 64;
 
-/** 单个 server 的**连接 / 列工具**超时：挂死的 server 不许拖住会话启动 */
+/**
+ * 单个 server 的**连接 / 列工具**超时：挂死的 server 不许拖住会话启动。
+ * 交给 SDK 原生的 `timeout` 选项（`RequestOptions.timeout`，超时会真取消请求并抛
+ * `RequestTimeout`），**不用 `Promise.race`**——后者超时后底层请求还在跑，只是我们
+ * 提前认输；只有 `callTool` 不传这个值，走 SDK 默认的 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`）。
+ */
 const CONNECT_TIMEOUT_MS = 15_000;
 
 /**
- * `listTools` 分页上限。绝大多数 server 一页给全；留一个有限页数只为兜住
- * 「server 永远回同一个 cursor」这种坏实现——否则我们会在这里转圈。
+ * 自动翻页的页数上限，钉在 `Client` 上（`ClientOptions.listMaxPages`，触顶抛错、
+ * 不缓存半份聚合）。v2 的 `listTools()` **不传 cursor 时会自己翻完所有页**，所以这个
+ * 上限是唯一的分页兜底——留它是为了兜住「server 永远回同一个 cursor」这种坏实现。
+ * 显式写出来是为了让人一眼看到这个数，而不是去翻 SDK 默认值（默认 64）。
  */
 const MAX_TOOL_PAGES = 100;
 
@@ -125,22 +132,14 @@ function resultText(result: McpCallResult): string {
     .join("\n");
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error(`${label} 超时（${ms / 1000}s）`)), ms),
-    ),
-  ]);
-}
-
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 type AnyTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
 
-/** 按配置造传输：stdio 走子进程，远程走 Streamable HTTP / SSE（headers 透传） */
+/** 按**解析后**的配置造传输：stdio 走子进程，远程走 Streamable HTTP / SSE（headers 透传）。
+ *  入参必须是 `interpolateConfig` 的产物——`${VAR}` 在这里才被换成真实值，且**只**在这里。 */
 function buildTransport(config: McpServerConfig): AnyTransport {
   if (config.command !== undefined) {
     return new StdioClientTransport({
@@ -156,21 +155,18 @@ function buildTransport(config: McpServerConfig): AnyTransport {
     : new StreamableHTTPClientTransport(url, { requestInit });
 }
 
-/** 拉全量工具：跟随 `nextCursor` 翻页（页数有上限，见 MAX_TOOL_PAGES） */
-async function listAllTools(client: Client, serverName: string): Promise<ListedTool[]> {
-  const all: ListedTool[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_TOOL_PAGES; page += 1) {
-    const listed = await withTimeout(
-      client.listTools(cursor === undefined ? undefined : { cursor }),
-      CONNECT_TIMEOUT_MS,
-      `列出 "${serverName}" 的工具`,
-    );
-    all.push(...(listed.tools as unknown as ListedTool[]));
-    cursor = listed.nextCursor;
-    if (cursor === undefined) return all;
-  }
-  throw new Error(`列出 "${serverName}" 的工具超过 ${MAX_TOOL_PAGES} 页，疑似分页游标未推进`);
+/**
+ * 拉全量工具。
+ *
+ * v2 的 `listTools()` **不传 cursor 时会自己翻完所有页并聚合**（实测：夹具 5 工具 / 每页 2 个，
+ * 一次调用拿回 5 条、`nextCursor` 为 undefined；只有显式传 `cursor` 才回单页）。所以这里
+ * **不写循环**——客户端侧也没法「主动要第一页」（省略 cursor 就等于「全给我」），自己写循环
+ * 只会得到一段**永远只跑一轮的死代码**（v2 迁移前那段按 `nextCursor` 翻页的循环正是如此，
+ * `MAX_TOOL_PAGES` 根本没被读到）。非收敛（cursor 重复）停了、页数触顶抛错，都由 SDK 兜。
+ */
+async function listAllTools(client: Client): Promise<ListedTool[]> {
+  const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS });
+  return listed.tools as unknown as ListedTool[];
 }
 
 /** 把一个 MCP 工具包成内核工具（名字前缀、裸 schema 透传、失败要 throw） */
@@ -197,9 +193,173 @@ function wrapTool(
   };
 }
 
+/** 无参能力工具的入参：空对象（裸 JSON Schema，与工具同款透传） */
+const NO_ARGS_SCHEMA = { type: "object", properties: {} };
+
+/** `resources/read` 的入参 */
+const READ_RESOURCE_SCHEMA = {
+  type: "object",
+  properties: {
+    uri: { type: "string", description: "资源 URI（先用 list_resources 拿）" },
+  },
+  required: ["uri"],
+};
+
+/** `prompts/get` 的入参 */
+const GET_PROMPT_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string", description: "提示词名（先用 list_prompts 拿）" },
+    arguments: {
+      type: "object",
+      description: "提示词参数（键值都是字符串；哪个必填见 list_prompts）",
+      additionalProperties: { type: "string" },
+    },
+  },
+  required: ["name"],
+};
+
+/** 结构化的返回序列化成给模型读的文本（清单类结果不是富媒体，没必要拆内容块） */
+function jsonText(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+/** 资源内容块 → 内核内容块：文本原样；二进制**不展开**（base64 塞进上下文既费 token 又读不了） */
+function mapResourceContents(entry: unknown): TextContent | ImageContent {
+  const item = entry as { uri?: unknown; mimeType?: unknown; text?: unknown; blob?: unknown };
+  if (typeof item.text === "string") return { type: "text", text: item.text };
+  if (typeof item.blob === "string") {
+    return {
+      type: "text",
+      text:
+        `[mcp] 资源 ${String(item.uri ?? "")} 是二进制（${String(item.mimeType ?? "unknown")}，` +
+        `${item.blob.length} 字节 base64），未展开`,
+    };
+  }
+  return { type: "text", text: `[mcp] 资源 ${String(item.uri ?? "")} 没有可读内容` };
+}
+
+/** 提示词消息 → 文本：`<role>: <内容>`；图片/资源块压成文字标记，别丢信息、也不假装能看 */
+function promptMessagesText(messages: unknown): string {
+  const list = Array.isArray(messages) ? messages : [];
+  return list
+    .map((raw) => {
+      const message = raw as { role?: unknown; content?: unknown };
+      const role = typeof message.role === "string" ? message.role : "unknown";
+      const text = mapMcpContent({ content: [message.content] })
+        .map((block) => (block.type === "text" ? block.text : "[图片]"))
+        .join("\n");
+      return `${role}: ${text}`;
+    })
+    .join("\n\n");
+}
+
+/**
+ * 把 server **声明的** `resources` / `prompts` 能力包成内核工具。
+ *
+ * 为什么不走内核的 `resources.promptTemplates` + `lane.promptFromTemplate`（那条路存在且活着，
+ * 见 `lane.js`）：它要求「模板正文在客户端、参数由**客户端**格式化」，而 MCP 的 prompt 是
+ * **服务端**按类型化参数渲染的（`prompts/get`）——硬塞会得到一个「参数根本传不进服务端」的假接口。
+ * 包成工具则天然过 `before_tool` 审批闸门，与 `tools` 面**同一套**安全模型（零例外）。
+ *
+ * 只在 server **主动声明**该能力时才加（`getServerCapabilities()`）：没声明就不往清单里塞
+ * 用不上的入口——与技能/子代理同一条「别放死控件」的纪律（AGENTS.md §3.6）。
+ * 调用超时走 SDK 默认（60s，同 `callTool`），这些是**按需**发起的，不卡会话启动那条 15s 线。
+ */
+function capabilityTools(
+  serverName: string,
+  client: Client,
+  capabilities: { resources?: unknown; prompts?: unknown } | undefined,
+): AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] {
+  const tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] = [];
+  const label = (suffix: string): string => `MCP ${serverName}: ${suffix}`;
+  if (capabilities?.resources !== undefined) {
+    tools.push({
+      name: mcpToolName(serverName, "list_resources"),
+      label: label("list_resources"),
+      description: `列出 MCP server "${serverName}" 暴露的资源与资源模板（URI / 名称 / MIME 类型）。`,
+      parameters: NO_ARGS_SCHEMA as unknown as TSchema,
+      async execute() {
+        const listed = await client.listResources();
+        let templates: unknown = [];
+        try {
+          templates = (await client.listResourceTemplates()).resourceTemplates;
+        } catch {
+          // 有「声明了 resources 却不支持模板列举」的 server；模板是附加信息，取不到就留空
+        }
+        return {
+          content: [
+            { type: "text", text: jsonText({ resources: listed.resources, resourceTemplates: templates }) },
+          ],
+          details: undefined,
+        };
+      },
+    });
+    tools.push({
+      name: mcpToolName(serverName, "read_resource"),
+      label: label("read_resource"),
+      description: `读取 MCP server "${serverName}" 上某个 URI 的资源内容（URI 从 list_resources 拿）。`,
+      parameters: READ_RESOURCE_SCHEMA as unknown as TSchema,
+      async execute(_toolCallId, params) {
+        const { uri } = params as { uri: string };
+        const result = await client.readResource({ uri });
+        const contents = Array.isArray(result.contents) ? result.contents : [];
+        return {
+          content:
+            contents.length > 0
+              ? contents.map(mapResourceContents)
+              : [{ type: "text", text: "[mcp] 该资源没有内容" }],
+          details: undefined,
+        };
+      },
+    });
+  }
+  if (capabilities?.prompts !== undefined) {
+    tools.push({
+      name: mcpToolName(serverName, "list_prompts"),
+      label: label("list_prompts"),
+      description: `列出 MCP server "${serverName}" 提供的提示词（名称 / 说明 / 参数）。`,
+      parameters: NO_ARGS_SCHEMA as unknown as TSchema,
+      async execute() {
+        const listed = await client.listPrompts();
+        return { content: [{ type: "text", text: jsonText(listed.prompts) }], details: undefined };
+      },
+    });
+    tools.push({
+      name: mcpToolName(serverName, "get_prompt"),
+      label: label("get_prompt"),
+      description: `按名取 MCP server "${serverName}" 的一条提示词（由服务端按 arguments 渲染后返回）。`,
+      parameters: GET_PROMPT_SCHEMA as unknown as TSchema,
+      async execute(_toolCallId, params) {
+        const { name, arguments: args } = params as {
+          name: string;
+          arguments?: Record<string, string>;
+        };
+        const result = await client.getPrompt({ name, arguments: args });
+        const text = promptMessagesText(result.messages);
+        return {
+          content: [{ type: "text", text: text === "" ? "[mcp] 该提示词没有内容" : text }],
+          details: undefined,
+        };
+      },
+    });
+  }
+  return tools;
+}
+
 /** 一个 server 的运行态：连上了就有 client + tools；失败（或连上后掉线）则带 error */
 interface ServerState {
   name: string;
+  /**
+   * **声明值**——配置文件里那串原样的，**没展开 `${VAR}`**。两处都靠它，缺一不可：
+   * - 热重载的变更判定（`configKey(next) !== configKey(state.config)`）：若存解析值，
+   *   凡是用 `${VAR}` 的配置就**永远**与文件里的声明不相等，于是每次「重新加载」都把它
+   *   关掉重连一次——决策 7 明说「已连好的不重连」；
+   * - `status()` 的 `target`（设置页画的就是它）：若存解析值，`args: ["--token", "${TOKEN}"]`
+   *   会把**真实密钥**画在设置页上。声明值则原样显示 `${TOKEN}`，既如实又不泄密。
+   * 解析值只在 `connectServer` 的 `resolved` 参数里活一次，进 `buildTransport` 造传输，
+   * 别落到这个字段上。
+   */
   config: McpServerConfig;
   client?: Client;
   tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[];
@@ -208,13 +368,22 @@ interface ServerState {
   closing?: boolean;
 }
 
-async function connectServer(name: string, config: McpServerConfig): Promise<ServerState> {
-  const client = new Client({ name: "colt", version: "0.0.1" });
-  const state: ServerState = { name, config, client, tools: [] };
+async function connectServer(
+  name: string,
+  declared: McpServerConfig,
+  resolved: McpServerConfig,
+): Promise<ServerState> {
+  const client = new Client({ name: "colt", version: "0.0.1" }, { listMaxPages: MAX_TOOL_PAGES });
+  // config 存声明值（见 ServerState.config）：resolved 只用于造传输
+  const state: ServerState = { name, config: declared, client, tools: [] };
   try {
-    await withTimeout(client.connect(buildTransport(config)), CONNECT_TIMEOUT_MS, `连接 MCP server "${name}"`);
-    const listed = await listAllTools(client, name);
-    state.tools = listed.map((tool) => wrapTool(name, tool, client));
+    await client.connect(buildTransport(resolved), { timeout: CONNECT_TIMEOUT_MS });
+    const listed = await listAllTools(client);
+    // 工具面 + 该 server **声明了**的 resources / prompts 能力面（没声明就不加，见 capabilityTools）
+    state.tools = [
+      ...listed.map((tool) => wrapTool(name, tool, client)),
+      ...capabilityTools(name, client, client.getServerCapabilities()),
+    ];
     // 连上**之后**掉线要如实反映：否则设置页会一直显示「已连接」、而工具调用早已失败——
     // 持续撒谎比没有信号更糟（AGENTS.md §四）。两个约束：
     // ① SDK 的 `onclose` 在**我们主动 close() 时同样触发**，所以先看 closing 标记，
@@ -340,7 +509,7 @@ export async function createMcpRuntime(
         continue;
       }
       try {
-        states.set(name, await connectServer(name, resolved));
+        states.set(name, await connectServer(name, declared, resolved));
       } catch (error) {
         const message = `server "${name}" 连接失败：${describeError(error)}`;
         diagnostics.push(message);

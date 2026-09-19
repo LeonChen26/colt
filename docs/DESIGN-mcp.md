@@ -1,22 +1,26 @@
 # MCP 设计
 
-> **状态**：**已实施**（2026-09-19；当日晚些时候补齐了原型边界，见 §5）。
+> **状态**：**已实施**（2026-09-19；当日晚些时候补齐了原型边界，见 §5；同日再补上
+> resources / prompts 两个能力面，见决策 13）。
 > **落地落点**：
 > - `shared/mcp-config.ts`——配置的**纯解析层**（不 import SDK）。抽出来是为了**两侧共用**：
 >   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
-> - `worker/lib/mcp-tools.ts`——连接、包装、runtime（`createMcpRuntime` / `reload` / `status` / `close`）。
+> - `worker/lib/mcp-tools.ts`——连接、包装、runtime（`createMcpRuntime` / `reload` / `status` / `close`），
+>   以及 `capabilityTools`（把 server **声明了的** resources / prompts 也包成内核工具，决策 13）。
 > - `worker/lib/mcp-reload.ts`——热重载的**写回**一步（harness + 主 lane）。
 > - `worker/entry.ts`——接线（`...mcp.tools` 进 tools 数组；`mcpStatus` / `mcpReload` 两条命令）。
 > - `main/session-manager.ts` + `main/ipc`——`mcp.status` / `mcp.reload` 两个 IPC。
 > - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性）。
 > 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
 > `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
-> **验收**：单测 `tests/mcp-tools.test.ts`（**26 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
+> **验收**：单测 `tests/mcp-tools.test.ts`（**30 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
 > 夹具都与生产方同构（低层 `Server` 类 + 裸 JSON Schema）：
 > `mcp-fixture-server.mjs`（stdio，3 工具）/ `mcp-paged-fixture-server.mjs`（stdio，分页）/
 > `mcp-http-fixture-server.mjs`（Streamable HTTP，含 headers 回显）/
 > `mcp-sse-fixture-server.mjs`（旧式 SSE，有状态那套）/ `mcp-crash-fixture-server.mjs`
-> （stdio，可自杀——专门验「连上**之后**掉线」）。
+> （stdio，可自杀——专门验「连上**之后**掉线」）/
+> `mcp-capabilities-fixture-server.mjs`（stdio，**三面都声明**：tools + resources + prompts，
+> 含文本/二进制资源、资源模板、带参与无参提示词——验「声明了才包成工具」与能力面的真实往返）。
 > **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端由冒烟
 > `COLT_SMOKE_MODE=mcp-e2e` 覆盖并**实测通过**（2026-09-19，本地 Ollama qwen3:0.6b，
 > 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；另有
@@ -60,6 +64,9 @@
 | 内核 `lane.readConfig().tools` 是**活取的**（harness 的 `configStore`），`lane.configuration.activeToolNames` 是 lane 自己持久化的 | `harness/runtime/harness.js` 构造 + `lane.js`——热重载要同时写这两处，见 §3 决策 7 |
 | SDK 自带三种 client transport：`StdioClientTransport`（子路径 `client/stdio`）/ `StreamableHTTPClientTransport` / `SSEClientTransport`（后两者**从包根导出**，用 `requestInit.headers` 传自定义头） | `@modelcontextprotocol/client`（远程与 stdio 在包装层无差别） |
 | SDK 无状态模式的 Streamable HTTP server **必须每个请求新建一套 transport + server** | 实测：共用一套会让第二个请求（`notifications/initialized`）回 500 |
+| v2 的 `listTools()` **不传 cursor 时自己翻完所有页并聚合**（一次调用拿回 5 条、`nextCursor` 为 undefined）；只有**显式传 cursor** 才回单页。自动翻页的页数上限是 `ClientOptions.listMaxPages`（默认 64，触顶**抛错**、不缓存半份聚合），重复 cursor 会停止翻页 | `@modelcontextprotocol/client`（实测，见决策 6）。同款自动聚合对 `listPrompts` / `listResources` / `listResourceTemplates` 一视同仁 |
+| SDK 的 `RequestOptions` 有 `signal` / `timeout`；`RequestOptions.timeout` 缺省用 `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`。超时由 SDK 自己取消请求并抛 `SdkError code=REQUEST_TIMEOUT` | `@modelcontextprotocol/client`（实测：给 `connect` 传 `{ timeout: 1500 }`，1531ms 后以 `SdkError code=REQUEST_TIMEOUT / Request timed out` 拒绝）。所以 `callTool` **不是没有超时**，是走 SDK 默认 60s |
+| `client.getServerCapabilities()` 是公开方法，connect 之后就能读到 server 声明的 `tools` / `resources` / `prompts` 等能力面；`listResources` / `listPrompts` / `listResourceTemplates` 与 `listTools` 同款自动翻页；`readResource` / `getPrompt` 是单次请求 | `@modelcontextprotocol/client`（能力工具只在声明了对应面时才加，见决策 13） |
 
 ## 3. 决策
 
@@ -79,7 +86,14 @@
    MCP 告警 M 条：…」如实告知。会话启动不被一个挂死的 server 拖死。
    **失败不是终局**：`reload()` 会重试上一轮没连上的 server（配置没变也试）——
    否则「重新加载」对失败态就是个死按钮，直接推翻设置页那句「改完点「重新加载」即可生效」。
-6. **分页**：`listTools` 跟随 `nextCursor` 翻页（页数上限 100，只兜「游标不推进」的坏实现）。
+6. **分页**：**不用自己翻**——v2 的 `listTools()` 不传 cursor 时会自己翻完所有页并聚合，
+   只有显式传 `cursor` 才回单页；而客户端侧也没法「主动要第一页」（省略 cursor 就等于
+   「全给我」）。于是 v1 时代那段按 `nextCursor` 翻页的循环在 v2 下**只跑一轮就返回**，
+   是一段死代码（`MAX_TOOL_PAGES` 根本没被读到，2026-09-19 已删，`listAllTools` 收敛成一次调用）。
+   游标不收敛由 SDK 兜（重复 cursor 停止、触顶 `listMaxPages` 抛错、**不缓存半份聚合**），
+   页数上限显式钉在 `Client` 的 `listMaxPages: 100` 上——写出来是为了不藏在 SDK 默认值（64）里。
+   这个「一次调用就全给我」的契约由单测**直接钉 SDK**（同 `validateToolArguments` 那条）：
+   哪天 SDK 改成不聚合，先红的是用例，而不是线上悄悄只剩第一页工具。
 7. **热重载**：`createMcpRuntime` 持有各 server 的连接，`reload()` 重读配置——关掉
    **不再声明 / 配置变了 / 上一轮没连上**的（配置等价键键序无关，只调书写顺序不算变更），
    再连上**新声明的**与**上一轮没连上的**。后一类是刻意的：server 起晚了、网络刚恢复、
@@ -88,6 +102,12 @@
    **和** `lane.setActiveTools`（换清单）。只写前者，清单里的名字在 `toolsByName` 里查不到，
    生成会以 `configured_tools_unavailable` 直接失败；只写后者，模型看不到新工具。
    **删掉的工具必须连清单一起删**——否则下一次生成就炸。
+   **`ServerState.config` 存「声明值」**（配置文件里那串，**没展开 `${VAR}`**），解析值只在
+   造传输那一步活一次。存解析值会同时坏两件事：① 变更判定拿它跟文件里的**声明**比，凡是用
+   `${VAR}` 的 server 就**永远**被判成「变了」→ 每次「重新加载」都白重连一次（推翻本决策
+   第一句「已连好的不重连」）；② `status().target` 画的就是它（设置页渲染 `server.target`），
+   `args: ["--token", "${TOKEN}"]` 会把**真实密钥**画在界面上。这两条由单测钉住，判据取
+   「不重连」＝工具对象**引用同一性**不变（重连会重新 wrap，引用必变）。
 8. **回收**：正常 dispose 走 `runtime.close()`（优雅：`stdin.end` → 等 → `SIGTERM`）；
    worker 被**强杀**时退到 `process.on("exit")` 的同步兜底。已知边界：强杀那一刻正在启动的
    子进程仍可能成孤儿（记在文件头注释，不当 bug 修）。
@@ -115,6 +135,21 @@
     codemod 管不了、必须手工收的两条：① `ctx.http.req` 是 Web 标准 `Request`，其 `headers` 是
     **`Headers` 对象**，只能 `.get()`（方括号取键恒 `undefined`，会得到「headers 没透传」的**假阴性**）；
     ② 它把 `import` 提到文件顶部时会把版权头复制成两份。
+13. **`resources` / `prompts` 也包成内核工具**（`capabilityTools`）：server 声明了 `resources` 就加
+    `list_resources` / `read_resource`，声明了 `prompts` 就加 `list_prompts` / `get_prompt`
+    （命名仍走 `mcp__<server>__*`，于是**天然过审批闸门**——与 tools 面同一套安全模型，零例外）。
+    - **为什么不走内核的 `resources.promptTemplates` + `lane.promptFromTemplate`**：那条路存在且
+      活着（`lane.js` 真有 `prompt_template` 分支），但它要求「模板正文在客户端、参数由**客户端**
+      格式化」；而 MCP 的 prompt 是**服务端**按类型化参数渲染的（`prompts/get`）。硬套只会得到一个
+      「参数根本传不进服务端」的假接口——正是 §四「参数传了 ≠ 行为发生」那一类。
+    - **只加声明过的**：`getServerCapabilities()` 说了才算。没声明就一个都不加，不往模型面前放
+      用不上的入口（§3.6「死控件比缺失更伤信任」）。
+    - **二进制资源不展开**：`read_resource` 拿到 blob 只回「二进制 + MIME + base64 长度」——
+      把 base64 塞进上下文既费 token 又读不了。
+    - **提示词压成文本**：`get_prompt` 把各条消息拼成 `<role>: <内容>`（图片/资源块成文字标记）。
+    - 超时走 SDK 默认 60s（同 `callTool`）：这些是**按需**发起的调用，不该占会话启动那条 15s 线。
+    - **边界（未做）**：prompts 的**用户侧**入口（输入框 `/` 候选里按名选、填参数）没做——那要动
+      渲染层 + IPC；现在模型能自己按名取，用户则要手工拼一次工具调用。
 
 ## 4. 配置形态
 
@@ -148,8 +183,11 @@
 
 ## 5. 边界（有意不做的）
 
-- **只接 tools 能力**：MCP 的 `resources` / `prompts` 未接——它们没有「包成内核工具」这条
-  自然落点，需要另外的界面与注入路径，等真需求。
+- **只接 tools 能力**——**已改判**（2026-09-19）：原型阶段认为 resources / prompts「没有
+  『包成内核工具』这条自然落点」，实践下来 resources 的「列出 / 读取」本来就是读操作，
+  包成工具**有**自然落点；prompts 也顺带包了（参数交给服务端渲染，见决策 13）。
+- **prompts 没有用户侧入口**：模型能按名取（`get_prompt`），但输入框 `/` 候选里按名选、
+  填参数那套没做——那要动渲染层 + IPC，等真需求（决策 13 末条）。
 - **远程鉴权只支持静态头**：没接 `authProvider`（OAuth 流程需要回调页与凭据存储，
   与 `secrets` 那套的关系要先想清楚）。
 - **不做 server 的启停开关**：注释掉配置项即等效（`reload` 会关掉它）。
@@ -167,4 +205,5 @@
   「代码里留着一条没人验过的 SSE 分支」。
 
 已从边界转正的（原型阶段曾列在「有意不做」，现已实现且有单测）：远程 server（HTTP/SSE）、
-`listTools` 分页、`${VAR}` 插值、配置热重载、工具重名去重、设置页可见性。
+`listTools` 分页、`${VAR}` 插值、配置热重载、工具重名去重、设置页可见性、
+**`resources` / `prompts` 两个能力面**（决策 13）。
