@@ -464,7 +464,7 @@ tools: read, grep, glob, ls, memory_search
 6. 主会话 `abort` → 在跑的子代理状态全部转 `aborted`（打桩计数）；
 7. ⚠️ 断言小目标入口要**命中测试**（`document.elementFromPoint(中心)`），别只查「在不在 DOM 里」。
 
-### 打模型的端到端：**已建已实测** `COLT_SMOKE_MODE=subagent-e2e`（2026-09-19，15/15 全绿）
+### 打模型的端到端：**已建已实测** `COLT_SMOKE_MODE=subagent-e2e`（2026-09-19，22/22 全绿）
 
 做法同 `ask-user-e2e`：**worker 的生死交给渲染层**（`upsertProject(夹具)` + `window.reload()`
 等它自动打开会话就绪），**不要**直连 `session.open` 去抢 worker（`AGENTS.md` §五末条）。

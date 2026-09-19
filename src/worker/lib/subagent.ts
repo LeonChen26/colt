@@ -35,9 +35,11 @@ import {
   type ExecutionToolContext,
   type LaneSnapshot,
 } from "@earendil-works/pi-agent-core";
+import { READONLY_TOOLS } from "@shared/readonly-tools";
 import type { ViewSubagent } from "@shared/worker-protocol";
 import type { AgentDef } from "./agent-defs";
 import { projectSubagent, type SubagentProjectionInput } from "./subagent-view";
+import { isQuestionTool } from "./ask-user-tool";
 import { toolDurations } from "./tool-bookkeeping";
 
 /** 工具名常量：注册名与闸门判据**必须同源**（改错会静默变成「委派也要弹卡」） */
@@ -64,6 +66,13 @@ export const MAX_CONCURRENT_SUBAGENTS = 3;
 
 /** 单个子代理的墙钟上限，到点中止并在结果里如实说明（否则一路跑掉没人拦得住） */
 export const MAX_SUBAGENT_MS = 10 * 60 * 1000;
+
+/**
+ * 超时中止之后**还会等多久**（见 `#run` 里那段注释）。
+ *
+ * 30s：够一次网络往返或一次工具的收尾，又不至于让「卡死的额度」占太久——额度是 3 个。
+ */
+export const GRACE_AFTER_ABORT_MS = 30_000;
 
 /** 注册表里保留多少个**已结束**的子代理（④ 卡与下钻要能查到；再多就只保最近这些） */
 export const MAX_FINISHED_SUBAGENTS = 20;
@@ -172,12 +181,22 @@ interface RunReceipt {
   conclusion: string;
   steps: number;
   toolCounts: { name: string; count: number }[];
+  /** **能确定**改了哪些文件：只有 `edit` / `write` 带 `path` */
   changedFiles: Set<string>;
+  /**
+   * 非只读、又推不出文件名的调用（`bash` / `computer` / MCP 工具…）。
+   *
+   * 为什么单列出来：这些工具**可能**写盘，但文件名无从得知。只认 `edit` / `write` 的话，
+   * 子代理用 `bash` 改了一圈之后，回给模型的收据会写成「没有改动文件」——那是谎报，
+   * 而模型正是靠这份收据判断「要不要再核一遍」（`docs/ERRORS.md` 的诚实口径）。
+   */
+  opaqueCalls: { name: string; count: number }[];
 }
 
 export function collectReceipt(transcript: readonly unknown[]): RunReceipt {
   const toolCounts = new Map<string, number>();
   const changedFiles = new Set<string>();
+  const opaqueCalls = new Map<string, number>();
   let steps = 0;
   let conclusion = "";
   for (const entry of transcript) {
@@ -192,7 +211,18 @@ export function collectReceipt(transcript: readonly unknown[]): RunReceipt {
         toolCounts.set(call.name, (toolCounts.get(call.name) ?? 0) + 1);
         if ((call.name === "edit" || call.name === "write") && call.path !== null) {
           changedFiles.add(call.path);
+          continue;
         }
+        // 只读工具（真源 `READONLY_TOOLS`）与「本来就不碰用户工作区」的两把（提问 / 委派）
+        // 不入此列；其余一律算「可能写盘」——宁多报一次，不漏报成「什么都没动」。
+        if (
+          READONLY_TOOLS.has(call.name) ||
+          isQuestionTool(call.name) ||
+          call.name === SUBAGENT_TOOL_NAME
+        ) {
+          continue;
+        }
+        opaqueCalls.set(call.name, (opaqueCalls.get(call.name) ?? 0) + 1);
       }
     }
   }
@@ -201,6 +231,7 @@ export function collectReceipt(transcript: readonly unknown[]): RunReceipt {
     steps,
     toolCounts: [...toolCounts.entries()].map(([name, count]) => ({ name, count })),
     changedFiles,
+    opaqueCalls: [...opaqueCalls.entries()].map(([name, count]) => ({ name, count })),
   };
 }
 
@@ -245,18 +276,26 @@ export function buildResultText(
       : `用了 ${receipt.toolCounts.map((item) => `${item.name}×${item.count}`).join("、")}`;
   const files =
     receipt.changedFiles.size === 0
-      ? "没有改动文件"
+      ? "没有可确认的文件改动"
       : `改动了 ${receipt.changedFiles.size} 个文件：${[...receipt.changedFiles].join("、")}`;
+  // 「可能写盘」那一串跟着 files 一起报：它既不等于「改了文件」，也不能被省掉
+  const opaque =
+    receipt.opaqueCalls.length === 0
+      ? ""
+      : `；另有 ${receipt.opaqueCalls.map((item) => `${item.name}×${item.count}`).join("、")}` +
+        "，这类调用**可能也写了盘**，但改了哪个文件从记录里看不出来";
   if (input.status === "completed") {
-    head.push(`子代理「${input.name}」已完成（${receipt.steps} 步，${tools}，${files}）。`);
+    head.push(`子代理「${input.name}」已完成（${receipt.steps} 步，${tools}，${files}${opaque}）。`);
   } else if (input.status === "aborted") {
+    const why = input.timedOut ? "超过时间上限" : "用户或上游中断";
     head.push(
-      `子代理「${input.name}」被中止（${input.timedOut ? "超过时间上限" : "用户或上游中断"}），` +
-        `结果**不完整**（${receipt.steps} 步，${tools}）。别把它当成「做完了」。`,
+      `子代理「${input.name}」被中止（${why}${input.error === undefined ? "" : `：${input.error}`}），` +
+        `结果**不完整**（${receipt.steps} 步，${tools}${opaque}）。别把它当成「做完了」。`,
     );
   } else {
     head.push(
-      `子代理「${input.name}」失败：${input.error ?? "原因未知"}（${receipt.steps} 步，${tools}）。`,
+      `子代理「${input.name}」失败：${input.error ?? "原因未知"}` +
+        `（${receipt.steps} 步，${tools}${opaque}）。`,
     );
   }
   if (receipt.conclusion === "") {
@@ -277,6 +316,8 @@ export function buildResultText(
 export class Subagents {
   readonly #deps: SubagentDeps;
   readonly #runs = new Map<string, SubagentRun>();
+  /** 已结束 run 的冻结投影（见 `toView`；淘汰与关闭时同步删） */
+  readonly #frozenViews = new Map<string, ViewSubagent>();
   /** 已预约但还没注册进 `#runs` 的额度（见 `#reserve`：检查与占位之间不能有 await） */
   #pending = 0;
   #closed = false;
@@ -285,9 +326,20 @@ export class Subagents {
     this.#deps = deps;
   }
 
-  /** 当前注册在案的子代理 → 视图总账（运行中的在前，保持开始顺序） */
+  /** 当前注册在案的子代理 → 视图总账（按注册顺序，也就是开始顺序；此处不排序） */
   toView(): ViewSubagent[] {
-    return [...this.#runs.values()].map((run) => projectSubagent(this.#projectionOf(run)));
+    return [...this.#runs.values()].map((run) => {
+      // 已结束的 run **冻结投影**：`#run` 收尾时已经 unsubscribe，它的 snapshot 与 stats
+      // 都不会再变。视图在流式期间每 50ms 整份重推，重投影 20 个已完成 run 的完整
+      // transcript 是纯浪费；顺带让对象引用稳定（渲染层按引用比较，能少一批重渲染）。
+      // 淘汰与关闭时必须同步删，否则这份表自己变成新的无界缓存。
+      if (run.status === "running") return projectSubagent(this.#projectionOf(run));
+      const frozen = this.#frozenViews.get(run.id);
+      if (frozen !== undefined) return frozen;
+      const view = projectSubagent(this.#projectionOf(run));
+      this.#frozenViews.set(run.id, view);
+      return view;
+    });
   }
 
   /** 某个 lane 对应的定义（`transform_context` 用；重启后注册表为空，靠 lane 名解析） */
@@ -325,6 +377,7 @@ export class Subagents {
     this.#closed = true;
     for (const run of this.#runs.values()) run.unsubscribe();
     this.#runs.clear();
+    this.#frozenViews.clear();
   }
 
   /**
@@ -435,6 +488,7 @@ export class Subagents {
       if (victim === undefined) break;
       victim.unsubscribe();
       this.#runs.delete(victim.id);
+      this.#frozenViews.delete(victim.id);
     }
   }
 
@@ -551,26 +605,43 @@ export class Subagents {
     const { run, lane } = spawned;
 
     let timedOut = false;
+    /** 中止后仍不返回时的「停止等待」信号（见 GRACE_AFTER_ABORT_MS 的注释） */
+    let giveUp: (() => void) | undefined;
+    const grace = new Promise<"give-up">((resolve) => {
+      giveUp = () => resolve("give-up");
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       void lane.abort(context).catch(() => undefined);
+      // abort **不保证立刻生效**（内核可能正卡在一个不可中断的 await 上）。没有这道兜底，
+      // 那次 `lane.prompt` 会永远挂着：run 永远 running、**永久占住 3 个额度之一**，
+      // 用户之后再也委派不了，界面上还没有任何解释。宽限窗一到就停止等待——额度还回去，
+      // 那条 lane 交给会话自己收（它的产出已经没有接收方了）。
+      const graceTimer = setTimeout(() => giveUp?.(), GRACE_AFTER_ABORT_MS);
+      graceTimer.unref?.();
     }, MAX_SUBAGENT_MS);
     timer.unref?.();
 
     try {
-      const result = await lane.prompt(task, undefined, context);
-      // 失败有**两条**路径，缺一不可查（compact / memoryTidy 已经踩过两次）：
-      // ① accept 阶段被拒 → Result.err；② Result.ok 但 record.status 为 failed / aborted。
-      if (!result.ok) {
+      const prompt = lane.prompt(task, undefined, context);
+      // 先挂上 catch：race 之后败者不再有人 await，它的 rejection 会变成未处理拒绝
+      void prompt.catch(() => undefined);
+      const settled = await Promise.race([prompt, grace]);
+      // 失败有**两条**路径，缺一不可查（compact / memoryTidy 都踩过两次）：
+      // ① accept 阶段被拒 → `Result.err`；② `Result.ok` 但 record.status 是 failed / aborted。
+      if (settled === "give-up") {
+        run.status = "aborted";
+        run.error = "中止未生效（可能卡在不可中断的调用上），已停止等待";
+      } else if (!settled.ok) {
         run.status = "failed";
-        run.error = describeSubagentError(result.error);
-      } else if (result.value.status === "suspended") {
+        run.error = describeSubagentError(settled.error);
+      } else if (settled.value.status === "suspended") {
         // 内核把 run 挂起（deferred）时它在后台继续：等它落地再结算，别把「还在跑」报成完成
         await lane.waitForIdle(context).catch(() => undefined);
-        const settled = await lane.getResult(result.value.operationId, context).catch(() => undefined);
-        applyOutcome(run, settled, timedOut);
+        const late = await lane.getResult(settled.value.operationId, context).catch(() => undefined);
+        applyOutcome(run, late, timedOut);
       } else {
-        applyOutcome(run, result.value, timedOut);
+        applyOutcome(run, settled.value, timedOut);
       }
     } catch (error) {
       run.status = "failed";

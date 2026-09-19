@@ -7,7 +7,7 @@
  * 为什么不打模型也能验：子代理在视图里的形态只由 `ConversationView.subagents` 决定，
  * 而 `session.view` 是渲染层的**唯一数据入口**——从主进程推一份受控视图即可驱动全部
  * 呈现逻辑（同 `dock` / `todo` 的做法）。这样验的是「界面把这份数据画对了吗」，
- * 而「模型会不会用这个工具」属于 e2e（`subagent-e2e` **规划中、尚未建**，本模式下不做）。
+ * 而「模型会不会用这个工具」属于 e2e（`COLT_SMOKE_MODE=subagent-e2e`，**打模型、已实测**）。
  *
  * 覆盖（决策三 D5 / 决策七 D9 / 决策四 D6 的界面侧）：
  *   1. ④ 的卡**特化**：`子代理 · <名字>` + 状态；展开是**有界预览**（如实说「最近 N / 共 M 步」）；
@@ -20,11 +20,13 @@
  *   6. 中止按钮**真的落在可视区**（小目标入口要做命中测试，别只查「在不在 DOM 里」）。
  *
  * 明确不覆盖（写明，免得被当成验过了）：
- *   - 「`subagent` 调用不弹卡、它内部的写弹卡」需要真实 worker + 模型调用（决策四 D6 的
- *     执行侧），本模式不打模型 ⇒ **未覆盖**。`entry.ts` 里的两处显式豁免（`before_tool` /
- *     `after_tool`）当前**没有任何用例钉住**——删掉那两行不会有测试变红，端到端待打模型回归。
+ *   - 「`subagent` 调用不弹卡、它内部的写弹卡」是决策四 D6 的**执行侧**，本模式不打模型 ⇒
+ *     未覆盖；它由 `COLT_SMOKE_MODE=subagent-e2e`（打模型、计费）覆盖，运行手册见
+ *     `docs/NEXT-PHASE.md` §5 3-f、`docs/DESIGN-subagents.md` §12。
  *   - **分支树排除与导航守卫**是 worker 侧会话级数据（`session.findEntries` + `harness.lanes()`），
  *     受控视图驱动不到它；纯函数侧由 `tests/lane-ownership.test.ts` 覆盖。
+ *   - 子代理**生命周期**里的时序语义（并发上限的占位、崩溃恢复不 resume 子 lane、超时中止）
+ *     同样不在本模式内：它们要么需要真 worker，要么只能由单测与人工核对。
  */
 import { BrowserWindow } from "electron";
 import { createSession } from "../../../main/db/repo";
@@ -350,8 +352,16 @@ export async function runSubagent(
 
     // ---- 5. 点 ④ 卡 → 下钻到子代理流；完整流按需拉，拉不到如实说 ----
     log("[⑦下钻] 点「在右栏查看完整过程」→ 子代理流层；完整流按需拉");
-    // 小目标入口要先确认它**真的落在可视区**：`click()` 不要求可见，中栏滚动后滚出
-    // 视口的按钮照样点得到，只查「在不在 DOM 里」的断言于是永远为真（AGENTS.md §五⑥）
+    // 小目标入口先滚进视口，再验命中：「点得到」在真实使用里的意思是「用户看得见才点」，
+    // 而中栏是一列可滚的卡片、入口在展开区末尾——不滚过去命中测试必然为假，那验的不是
+    // 产品而是「用例忘了滚」（AGENTS.md §五⑬：环境前提要显式建立）。滚过去之后的命中
+    // 测试才有意义：它能抓出「被别的层盖住、点了到别处」这类真缺陷。
+    await run(`(() => {
+      const el = document.querySelector('[data-subagent-open="${runningId}"]');
+      if (el) el.scrollIntoView({ block: "center" });
+      return null;
+    })()`);
+    await sleep(300);
     const openVisible = await hitTest(`[data-subagent-open="${runningId}"]`);
     const opened = await clickBySelector(`[data-subagent-open="${runningId}"]`);
     await sleep(800);

@@ -16,6 +16,8 @@ import assert from "node:assert/strict";
 import {
   MAX_TITLE_CHARS,
   agentNameFromLane,
+  buildResultText,
+  collectReceipt,
   deriveTitle,
   describeSubagentError,
   isSubagentLane,
@@ -88,5 +90,73 @@ describe("失败文案（每种状态都要说得清）", () => {
 
   test("未知失败带上原因，而不是一句「失败了」", () => {
     assert.match(describeSubagentError(new Error("连接超时")), /连接超时/);
+  });
+});
+
+/**
+ * 收据是**回给模型**的（`buildResultText` → 工具结果），模型靠它判断要不要再核一遍。
+ *
+ * 曾经只认 `edit` / `write` 两个名字：子代理用 `bash`（或经 MCP 工具）改了一圈之后，
+ * 收据仍写「没有改动文件」——那是谎报。现在拆成两种口径：**能确定**的文件名，与
+ * **可能写盘但推不出名字**的调用次数。
+ */
+describe("收据的诚实口径", () => {
+  const step = (content: unknown[]): unknown => ({
+    type: "message",
+    message: { role: "assistant", content },
+  });
+
+  test("edit / write 带 path → 进「确定改动的文件」", () => {
+    const receipt = collectReceipt([
+      step([{ type: "toolCall", name: "write", arguments: { path: "a.txt" } }]),
+    ]);
+    assert.deepEqual([...receipt.changedFiles], ["a.txt"]);
+    assert.deepEqual(receipt.opaqueCalls, []);
+  });
+
+  test("bash / MCP 这类推不出文件名的调用 → 计入「可能写盘」，不被漏成「没动过」", () => {
+    const receipt = collectReceipt([
+      step([{ type: "toolCall", name: "bash", arguments: { command: "echo x > a.txt" } }]),
+      step([{ type: "toolCall", name: "mcp__fs__write", arguments: { p: "b.txt" } }]),
+    ]);
+    assert.equal(receipt.changedFiles.size, 0);
+    assert.deepEqual(receipt.opaqueCalls, [
+      { name: "bash", count: 1 },
+      { name: "mcp__fs__write", count: 1 },
+    ]);
+  });
+
+  test("只读工具与提问、委派都不入「可能写盘」（真源 READONLY_TOOLS）", () => {
+    const receipt = collectReceipt([
+      step([
+        { type: "toolCall", name: "read", arguments: { path: "a" } },
+        { type: "toolCall", name: "todo", arguments: {} },
+        { type: "toolCall", name: "ask_user", arguments: {} },
+        { type: "toolCall", name: "subagent", arguments: {} },
+      ]),
+    ]);
+    assert.deepEqual(receipt.opaqueCalls, []);
+  });
+
+  test("收据文本把两件事都说出来（确定的改动 + 可能写盘的）", () => {
+    const receipt = collectReceipt([
+      step([
+        { type: "toolCall", name: "write", arguments: { path: "a.txt" } },
+        { type: "toolCall", name: "bash", arguments: { command: "rm b" } },
+      ]),
+    ]);
+    const text = buildResultText({ name: "demo", status: "completed", timedOut: false }, receipt);
+    assert.match(text, /改动了 1 个文件：a\.txt/);
+    assert.match(text, /另有 bash×1/);
+    assert.match(text, /可能也写了盘/);
+  });
+
+  test("中止时带上原因（中止未生效 ≠ 普通超时）", () => {
+    const text = buildResultText(
+      { name: "demo", status: "aborted", error: "中止未生效", timedOut: true },
+      collectReceipt([]),
+    );
+    assert.match(text, /超过时间上限：中止未生效/);
+    assert.match(text, /不完整/);
   });
 });
