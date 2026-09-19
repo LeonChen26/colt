@@ -9,6 +9,7 @@ import type { McpServerView } from "@shared/worker-protocol";
 import { MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { MCP_TOOL_PREFIX, mcpToolLabel } from "@shared/mcp-label";
 import {
+  callTimeoutOf,
   configKey,
   interpolateConfig,
   loadMcpConfig,
@@ -20,6 +21,7 @@ import {
 // 配置层与纯函数从 shared 透传：`worker/lib/mcp-tools` 是既有的引用入口
 // （单测从它 import），不为搬文件去改一票调用点。
 export {
+  callTimeoutOf,
   configKey,
   interpolateConfig,
   loadMcpConfig,
@@ -42,7 +44,11 @@ export const MAX_TOOL_NAME_CHARS = 64;
  * 单个 server 的**连接 / 列工具**超时：挂死的 server 不许拖住会话启动。
  * 交给 SDK 原生的 `timeout` 选项（`RequestOptions.timeout`，超时会真取消请求并抛
  * `RequestTimeout`），**不用 `Promise.race`**——后者超时后底层请求还在跑，只是我们
- * 提前认输；只有 `callTool` 不传这个值，走 SDK 默认的 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`）。
+ * 提前认输。
+ *
+ * **调用**（`callTool` / `readResource` / `getPrompt` 等）是另一条线：不传就是 SDK
+ * 默认的 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`），由配置的 `timeout` / `toolTimeouts`
+ * 放宽（见 `callTimeoutOf`）——编译、下载这类正当长工具不该被 60s 就地掐断。
  *
  * 值定义在 `@shared/limits`：主进程「等 MCP 回话」的预算要按它算（那里记着为什么
  * 不能让两侧各写一份）。
@@ -190,11 +196,15 @@ async function listAllTools(client: Client): Promise<ListedTool[]> {
   return listed.tools as unknown as ListedTool[];
 }
 
+/** 按 server 原始工具名解析调用超时（毫秒）；未配置返回 undefined（交给 SDK 默认 60s） */
+type ToolTimeoutResolver = (toolName: string) => number | undefined;
+
 /** 把一个 MCP 工具包成内核工具（名字前缀、裸 schema 透传、失败要 throw） */
 function wrapTool(
   serverName: string,
   tool: ListedTool,
   client: Client,
+  timeout: number | undefined,
 ): AgentHarnessTool<ExecutionToolContext, TSchema, undefined> {
   return {
     name: mcpToolName(serverName, tool.name),
@@ -205,7 +215,8 @@ function wrapTool(
     parameters: tool.inputSchema as unknown as TSchema,
     async execute(_toolCallId, params) {
       const result = (await client.callTool(
-        { name: tool.name, arguments: params as Record<string, unknown> }
+        { name: tool.name, arguments: params as Record<string, unknown> },
+        { timeout },
       )) as unknown as McpCallResult;
       // 内核约定：失败要 throw，由内核转成错误工具结果（与 host-bridge 同款）
       if (result.isError === true) throw new Error(resultText(result));
@@ -285,12 +296,14 @@ function promptMessagesText(messages: unknown): string {
  *
  * 只在 server **主动声明**该能力时才加（`getServerCapabilities()`）：没声明就不往清单里塞
  * 用不上的入口——与技能/子代理同一条「别放死控件」的纪律（AGENTS.md §3.6）。
- * 调用超时走 SDK 默认（60s，同 `callTool`），这些是**按需**发起的，不卡会话启动那条 15s 线。
+ * 调用超时同 `callTool`：走配置的 `timeout` / `toolTimeouts`（键就是能力工具名，
+ * 如 `read_resource`），未配置退回 SDK 默认 60s——这些是**按需**发起的，不卡会话启动那条 15s 线。
  */
 function capabilityTools(
   serverName: string,
   client: Client,
   capabilities: { resources?: unknown; prompts?: unknown } | undefined,
+  timeoutFor: ToolTimeoutResolver,
 ): AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] {
   const tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] = [];
   const label = (suffix: string): string =>
@@ -302,10 +315,11 @@ function capabilityTools(
       description: `列出 MCP server "${serverName}" 暴露的资源与资源模板（URI / 名称 / MIME 类型）。`,
       parameters: NO_ARGS_SCHEMA as unknown as TSchema,
       async execute() {
-        const listed = await client.listResources();
+        const timeout = timeoutFor("list_resources");
+        const listed = await client.listResources(undefined, { timeout });
         let templates: unknown = [];
         try {
-          templates = (await client.listResourceTemplates()).resourceTemplates;
+          templates = (await client.listResourceTemplates(undefined, { timeout })).resourceTemplates;
         } catch {
           // 有「声明了 resources 却不支持模板列举」的 server；模板是附加信息，取不到就留空
         }
@@ -324,7 +338,7 @@ function capabilityTools(
       parameters: READ_RESOURCE_SCHEMA as unknown as TSchema,
       async execute(_toolCallId, params) {
         const { uri } = params as { uri: string };
-        const result = await client.readResource({ uri });
+        const result = await client.readResource({ uri }, { timeout: timeoutFor("read_resource") });
         const contents = Array.isArray(result.contents) ? result.contents : [];
         return {
           content:
@@ -343,7 +357,7 @@ function capabilityTools(
       description: `列出 MCP server "${serverName}" 提供的提示词（名称 / 说明 / 参数）。`,
       parameters: NO_ARGS_SCHEMA as unknown as TSchema,
       async execute() {
-        const listed = await client.listPrompts();
+        const listed = await client.listPrompts(undefined, { timeout: timeoutFor("list_prompts") });
         return { content: [{ type: "text", text: jsonText(listed.prompts) }], details: undefined };
       },
     });
@@ -357,7 +371,10 @@ function capabilityTools(
           name: string;
           arguments?: Record<string, string>;
         };
-        const result = await client.getPrompt({ name, arguments: args });
+        const result = await client.getPrompt(
+          { name, arguments: args },
+          { timeout: timeoutFor("get_prompt") },
+        );
         const text = promptMessagesText(result.messages);
         return {
           content: [{ type: "text", text: text === "" ? "[mcp] 该提示词没有内容" : text }],
@@ -411,10 +428,13 @@ async function connectServer(
   try {
     await client.connect(buildTransport(resolved, cwd), { timeout: MCP_STEP_TIMEOUT_MS });
     const listed = await listAllTools(client);
+    // 调用超时按 server 的**声明值**解析（`timeout` / `toolTimeouts`）——连接用 15s 那条线，
+    // 与调用无关；这里解析一次，包进每个工具的 execute 里。
+    const timeoutFor: ToolTimeoutResolver = (toolName) => callTimeoutOf(declared, toolName);
     // 工具面 + 该 server **声明了**的 resources / prompts 能力面（没声明就不加，见 capabilityTools）
     state.tools = [
-      ...listed.map((tool) => wrapTool(name, tool, client)),
-      ...capabilityTools(name, client, client.getServerCapabilities()),
+      ...listed.map((tool) => wrapTool(name, tool, client, timeoutFor(tool.name))),
+      ...capabilityTools(name, client, client.getServerCapabilities(), timeoutFor),
     ];
     // server 自报的「怎么用我」。这里只**保留**；拼进系统提示词是另一处的事
     // （见 `lib/mcp-reload.ts` 的 composeMcpInstructions）——SDK 只给取值口，不会替你塞。

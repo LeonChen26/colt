@@ -30,6 +30,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import {
+  callTimeoutOf,
   closeMcpTools,
   configKey,
   createMcpRuntime,
@@ -63,6 +64,7 @@ const CAPS_FIXTURE = fileURLToPath(
   new URL("./helpers/mcp-capabilities-fixture-server.mjs", import.meta.url),
 );
 const CWD_FIXTURE = fileURLToPath(new URL("./helpers/mcp-cwd-fixture-server.mjs", import.meta.url));
+const SLOW_FIXTURE = fileURLToPath(new URL("./helpers/mcp-slow-fixture-server.mjs", import.meta.url));
 
 type Tool = AgentHarnessTool<ExecutionToolContext>;
 
@@ -1005,5 +1007,83 @@ describe("展示名：注册名 → 人话", () => {
     // 形状不完整（缺 server / 缺 tool）不硬翻
     assert.equal(mcpToolLabel("mcp__onlyserver"), undefined);
     assert.equal(mcpToolLabel("mcp__s__"), undefined);
+  });
+});
+
+describe("调用超时：按 server / 工具可配（默认仍是 SDK 的 60s）", () => {
+  test("callTimeoutOf：工具级覆盖 > server 级 > undefined（退回 60s）", () => {
+    const config = parseServerConfig("s", {
+      command: "x",
+      timeout: 1000,
+      toolTimeouts: { slow: 5000 },
+    }) as McpServerConfig;
+    assert.equal(callTimeoutOf(config), 1000);
+    assert.equal(callTimeoutOf(config, "slow"), 5000);
+    assert.equal(callTimeoutOf(config, "other"), 1000);
+    assert.equal(callTimeoutOf({ command: "x" }), undefined);
+    assert.equal(callTimeoutOf({ command: "x" }, "slow"), undefined);
+  });
+
+  test("timeout / toolTimeouts 非法时成诊断，不静默接受", () => {
+    assert.match(parseServerConfig("s", { command: "x", timeout: 0 }) as string, /timeout 必须是正数/);
+    assert.match(parseServerConfig("s", { command: "x", timeout: "5" }) as string, /timeout 必须是正数/);
+    assert.match(
+      parseServerConfig("s", { command: "x", toolTimeouts: { slow: -1 } }) as string,
+      /toolTimeouts 必须是/,
+    );
+    assert.match(
+      parseServerConfig("s", { command: "x", toolTimeouts: [] }) as string,
+      /toolTimeouts 必须是/,
+    );
+  });
+
+  test("改了超时就是配置变了：热重载会重连（新值才进得了 execute 的闭包）", () => {
+    const base = parseServerConfig("s", { command: "x" }) as McpServerConfig;
+    const bumped = parseServerConfig("s", { command: "x", timeout: 5000 }) as McpServerConfig;
+    assert.notEqual(configKey(base), configKey(bumped));
+    const perTool = parseServerConfig("s", {
+      command: "x",
+      toolTimeouts: { slow: 5000 },
+    }) as McpServerConfig;
+    assert.notEqual(configKey(base), configKey(perTool));
+  });
+
+  test("server 级 timeout 真的掐断长调用（超时确实传到了 SDK，不只是解析了配置）", async () => {
+    const dir = await fixtureProject({
+      mcpServers: {
+        slow: { command: process.execPath, args: [SLOW_FIXTURE], timeout: 60 },
+      },
+    });
+    const runtime = await createMcpRuntime(dir, () => undefined);
+    try {
+      const sleep = runtime.tools.find((tool) => tool.name === "mcp__slow__sleep")!;
+      // 夹具要睡 400ms，而 server 级超时 60ms：调用必须被就地掐断
+      await assert.rejects(() => callTool(sleep, { ms: 400 }));
+    } finally {
+      await runtime.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("toolTimeouts 覆盖 server 级：同一个慢调用从被掐断变成跑完", async () => {
+    const dir = await fixtureProject({
+      mcpServers: {
+        slow: {
+          command: process.execPath,
+          args: [SLOW_FIXTURE],
+          timeout: 40,
+          toolTimeouts: { sleep: 8000 },
+        },
+      },
+    });
+    const runtime = await createMcpRuntime(dir, () => undefined);
+    try {
+      const sleep = runtime.tools.find((tool) => tool.name === "mcp__slow__sleep")!;
+      const result = await callTool(sleep, { ms: 300 });
+      assert.deepEqual(result.content, [{ type: "text", text: "slept:300" }]);
+    } finally {
+      await runtime.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

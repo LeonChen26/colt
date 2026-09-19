@@ -19,6 +19,9 @@
  *
  * 值里的 `${VAR}` 按进程环境变量展开（见 `interpolateConfig`）；只支持
  * `${NAME}` 这一种写法，不做 shell 式的 `$NAME` / 默认值语法——MCP 配置不是 shell。
+ *
+ * 调用超时：`timeout`（按 server）/ `toolTimeouts`（按工具名覆盖）。不写就走 SDK 默认的
+ * 60s——编译、下载、浏览器自动化这类**正当的长工具**会被就地掐断，这里给一个放宽的出口。
  */
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -38,6 +41,13 @@ export interface McpServerConfig {
   headers?: Record<string, string>;
   /** 远程传输方式；缺省 http（Streamable HTTP），仅远程有意义 */
   transport?: "http" | "sse";
+  /**
+   * 单次**调用**的超时（毫秒），覆盖 SDK 默认的 60s。
+   * 只影响调用（callTool / readResource / getPrompt 等），不影响连接与列工具。
+   */
+  timeout?: number;
+  /** 按**工具名**覆盖上面的 `timeout`（键是 server 原始工具名，如 `read_file`） */
+  toolTimeouts?: Record<string, number>;
 }
 
 interface McpConfigFile {
@@ -80,11 +90,30 @@ export function targetOf(config: McpServerConfig): string {
 }
 
 /**
+ * 一次调用的超时（毫秒）：先看该工具的单独覆盖（`toolTimeouts[toolName]`），
+ * 再回落 server 级的 `timeout`；都没配就返回 `undefined`——交给 SDK 默认的 60s。
+ * 传 `toolName` 省略时只取 server 级值（能力工具如 `read_resource` 也走这条）。
+ */
+export function callTimeoutOf(config: McpServerConfig, toolName?: string): number | undefined {
+  if (toolName !== undefined) {
+    const specific = config.toolTimeouts?.[toolName];
+    if (specific !== undefined) return specific;
+  }
+  return config.timeout;
+}
+
+/**
  * 配置等价键：热重载据此判断「这个 server 变了没」。
  * 键序无关（env / headers 排序后序列化）——否则用户只是调整了书写顺序就会被判成变更、白重连一次。
  */
 export function configKey(config: McpServerConfig): string {
   const sorted = (dict: Record<string, string> | undefined): Record<string, string> | undefined =>
+    dict === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(dict).sort(([a], [b]) => a.localeCompare(b)));
+  const sortedNumbers = (
+    dict: Record<string, number> | undefined,
+  ): Record<string, number> | undefined =>
     dict === undefined
       ? undefined
       : Object.fromEntries(Object.entries(dict).sort(([a], [b]) => a.localeCompare(b)));
@@ -95,6 +124,8 @@ export function configKey(config: McpServerConfig): string {
     url: config.url,
     headers: sorted(config.headers),
     transport: config.transport,
+    timeout: config.timeout,
+    toolTimeouts: sortedNumbers(config.toolTimeouts),
   });
 }
 
@@ -112,6 +143,32 @@ function readStringDict(
     return `server "${name}" 的 ${key} 必须是字符串字典`;
   }
   return Object.fromEntries(entries) as Record<string, string>;
+}
+
+/** 正数字段（毫秒超时用）：缺省返回 undefined，非法返回诊断字符串 */
+function readPositiveNumber(name: string, key: string, raw: unknown): number | string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return `server "${name}" 的 ${key} 必须是正数（毫秒）`;
+  }
+  return raw;
+}
+
+/** 「工具名 → 正数」字典（`toolTimeouts` 用）：缺省返回 undefined，非法返回诊断字符串 */
+function readNumberDict(
+  name: string,
+  key: string,
+  raw: unknown,
+): Record<string, number> | string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return `server "${name}" 的 ${key} 必须是「工具名 → 正数」的字典`;
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.some(([, value]) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
+    return `server "${name}" 的 ${key} 必须是「工具名 → 正数」的字典`;
+  }
+  return Object.fromEntries(entries) as Record<string, number>;
 }
 
 /** 校验并归一一个 server 声明；不合法返回诊断字符串 */
@@ -154,6 +211,12 @@ export function parseServerConfig(name: string, raw: unknown): McpServerConfig |
     }
     config.transport = candidate.transport;
   }
+  const timeout = readPositiveNumber(name, "timeout", candidate.timeout);
+  if (typeof timeout === "string") return timeout;
+  if (timeout !== undefined) config.timeout = timeout;
+  const toolTimeouts = readNumberDict(name, "toolTimeouts", candidate.toolTimeouts);
+  if (typeof toolTimeouts === "string") return toolTimeouts;
+  if (toolTimeouts !== undefined) config.toolTimeouts = toolTimeouts;
   return config;
 }
 
@@ -258,6 +321,8 @@ export function interpolateConfig(
   if (config.url !== undefined) resolved.url = interpolateValue(config.url, env, missing);
   if (config.headers !== undefined) resolved.headers = spread(config.headers);
   if (config.transport !== undefined) resolved.transport = config.transport;
+  if (config.timeout !== undefined) resolved.timeout = config.timeout;
+  if (config.toolTimeouts !== undefined) resolved.toolTimeouts = config.toolTimeouts;
   if (missing.size > 0) return `引用了未定义的环境变量：${[...missing].join("、")}`;
   return resolved;
 }

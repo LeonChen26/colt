@@ -747,3 +747,27 @@ describe("分析器自动放行的结构底线", () => {
     }
   });
 });
+
+describe("MCP 工具的审批摘要", () => {
+  test("注册名翻成人话，不把 mcp__server__tool 画给用户", () => {
+    assert.equal(
+      evaluateTool({ toolName: "mcp__alpha__echo", args: { text: "hi" } }, config()).summary,
+      "MCP alpha: echo",
+    );
+    assert.equal(
+      evaluateTool({ toolName: "mcp__my_server__read_file", args: {} }, config()).summary,
+      "MCP my_server: read_file",
+    );
+  });
+
+  test("非 MCP 工具照旧走原摘要", () => {
+    assert.equal(
+      evaluateTool({ toolName: "edit", args: { path: "E:/proj/a.ts" } }, config()).summary,
+      "edit: E:/proj/a.ts",
+    );
+  });
+
+  test("改了摘要不等于免审批：MCP 未知工具仍要问", () => {
+    assert.equal(evaluateTool({ toolName: "mcp__alpha__echo", args: {} }, config()).decision, "ask");
+  });
+});

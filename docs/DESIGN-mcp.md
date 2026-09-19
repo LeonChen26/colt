@@ -4,8 +4,9 @@
 > resources / prompts 两个能力面，见决策 13，以及 `instructions` 注入，见决策 14；
 > 收盘审计后又修了「等 MCP 回话的预算」「配置诊断通道」「掉线作声」「stdio 子进程的 cwd」
 > 与「答不回来的查询当场失败」五条假信号 / 缺口，见决策 15–18；再给重载补上**并发互斥**，
-> 见决策 19；产品评审后又做四件事——配置**两级**（用户级 + 项目级，项目级覆盖）、
-> **让 agent 自己安装**、工具**展示名**去黑话、通知**按 kind 分流**，见决策 20–23）。
+> 见决策 19；产品评审后又做五件事——配置**两级**（用户级 + 项目级，项目级覆盖）、
+> **让 agent 自己安装**、工具**展示名**去黑话、通知**按 kind 分流**、**调用超时按 server / 工具可配**，
+> 见决策 20–24）。
 > **落地落点**：
 > - `shared/mcp-config.ts`——配置的**纯解析层**（不 import SDK）。抽出来是为了**两侧共用**：
 >   worker 据它连 server，主进程据它**在会话没打开时**也能列出声明（设置页）。
@@ -24,7 +25,7 @@
 > - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性，含诊断块）。
 > 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
 > `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
-> **验收**：单测 `tests/mcp-tools.test.ts`（**33 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
+> **验收**：单测 `tests/mcp-tools.test.ts`（**42 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
 > 夹具都与生产方同构（低层 `Server` 类 + 裸 JSON Schema）：
 > `mcp-fixture-server.mjs`（stdio，3 工具）/ `mcp-paged-fixture-server.mjs`（stdio，分页）/
 > `mcp-http-fixture-server.mjs`（Streamable HTTP，含 headers 回显）/
@@ -34,7 +35,8 @@
 > 含文本/二进制资源、资源模板、带参与无参提示词，并**自报 `instructions`**——验「声明了才包成
 > 工具」、能力面的真实往返，以及 server 用法说明确实被拼进提示词）/
 > `mcp-cwd-fixture-server.mjs`（stdio，1 工具：回报**自己的工作目录**——钉「stdio server 的 cwd
-> = 会话的项目根」，见决策 17）。
+> = 会话的项目根」，见决策 17）/ `mcp-slow-fixture-server.mjs`（stdio，1 个 `sleep` 工具：真睡
+> 指定毫秒再回——把「配置的调用超时到底有没有传给 SDK」变成可观测的行为差分，见决策 24）。
 > **未覆盖**（别当成验过了）：**真模型调用 MCP 工具**的端到端由冒烟
 > `COLT_SMOKE_MODE=mcp-e2e` 覆盖并**实测通过**（2026-09-19，本地 Ollama qwen3:0.6b，
 > 9/9：工具可见 → 弹审批卡 → 批准 → `echo:<nonce>` 真实往返回到模型）；另有
@@ -313,6 +315,25 @@
     - **改法**：提示状态带上 `kind`；`security` 用**警示色 + 停留 12s**（其余仍是绿色 5s）。两个
       数据属性分开：`data-conv-compact-notice`（成功 / 信息）与 `data-conv-security-notice`。
 
+24. **调用超时按 server / 工具可配**（`shared/mcp-config.ts` 的 `timeout` / `toolTimeouts`）。
+    - **症状**（§5 旧条目）：`callTool` / `readResource` / `getPrompt` / 列表类原先**都不传
+      `timeout`**，走 SDK 默认的 60s，且 `resetTimeoutOnProgress` 默认 false——编译、下载、
+      浏览器自动化这类**正当的长工具**会被就地掐断（`REQUEST_TIMEOUT`），界面也没有「它还在跑」。
+    - **产品口径（用户拍板，2026-09-19）**：**按 server / 工具可配**——默认行为不变（仍 60s），
+      用户对某台 server 或某个工具**按需放宽**，而不是把全局固定值调大（那只是把「60s 掐断」
+      换成「N 分钟掐断」，长工具照样断）。
+    - **改法**：server 级 `timeout`（毫秒）+ 工具级 `toolTimeouts`（`{ 工具名: 毫秒 }` 覆盖，
+      键是 server 原始工具名；能力工具用 `read_resource` 这类）。解析收在 `callTimeoutOf`
+      （纯函数，**工具级 > server 级 > undefined**，undefined 即交回 SDK 的 60s）；
+      `connectServer` 用它算出每个工具调用要传的 `RequestOptions.timeout`（`callTool` /
+      `readResource` / `getPrompt` / 列表类）。**连接与「列工具」仍走 15s 那条线**，与本配置无关。
+    - **重载语义**：`timeout` / `toolTimeouts` 计入 `configKey`——改超时即「配置变了」，
+      点「重新加载」会重连并重建工具（新值才进得了 `execute` 的闭包）；否则会是一次静默的
+      空操作（改了半天、点了「重新加载」却不生效）。单测钉了这条。
+    - **判据落在行为上**：`mcp-slow-fixture-server.mjs` 的 `sleep` 真睡 N 毫秒——server 级
+      `timeout: 60` 下睡 400ms **必须被掐断**，而 `toolTimeouts: { sleep: 8000 }` 覆盖同一调用
+      **必须跑完**；只解析配置、不真传给 SDK 就过不了这组差分。
+
 ## 4. 配置形态
 
 **两级**，与技能 / 记忆同一条「用户目录 + 项目」的心智（决策 20）：
@@ -326,7 +347,9 @@
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-      "env": { "FOO": "bar" }
+      "env": { "FOO": "bar" },
+      "timeout": 300000,
+      "toolTimeouts": { "read_file": 600000 }
     },
     "remote": {
       "url": "https://example.com/mcp",
@@ -339,6 +362,8 @@
 
 - `command`（+ `args` / `env`）与 `url`（+ `headers` / `transport`）**二选一**；
   `transport` 缺省 `http`（Streamable HTTP），`"sse"` 走旧式 SSE。
+- `timeout`（毫秒）覆盖默认的 60s **调用**上限（连接 / 列工具不受它影响）；单个工具再用
+  `toolTimeouts: { "工具名": 毫秒 }` 单独放（决策 24）。
 - 所有字符串值支持 `${VAR}` 展开成进程环境变量。**缺变量不静默留空**——留空会把
   `https://${HOST}/mcp` 变成看似合法却指向错处的 URL，这里成诊断并跳过该 server。
   只支持 `${NAME}` 这一种写法，不做 shell 式的 `$NAME` / 默认值语法。
@@ -384,14 +409,12 @@
   必填字段、字段类型），**不预检**「这台 server 起得来吗」——那是运行态的结论（`status` / `error`，
   决策 5 / 11）。两条信息在界面上是分开的（诊断块 vs 每台 server 的卡片），别把诊断块当校验器。
 
-- **工具调用的 60s 硬上限（已知限制，未改）**：`callTool` / `readResource` / `getPrompt` /
-  列表类都不传 `timeout`，走 SDK 的 `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000`，且
-  `resetTimeoutOnProgress` 默认 `false`——**server 中途发 progress 也不续期**。后果：编译、
-  浏览器自动化、大下载这类**正当的长工具**会被就地掐断（`REQUEST_TIMEOUT`）。不是不能改，
-  是**要先定产品口径**，三条路各要选一个数：① 直接调大固定值？② 按 server / 按工具可配
-  （配置面要加字段）？③ 「有 progress 就续期 + `maxTotalTimeout` 兜总时长」（否则狂发 progress
-  的 server 能把一次调用挂死）？在定下来之前**别顺手把 60s 改成一个更大的固定值**——那只是把
-  「60s 掐断」换成「5 分钟掐断」，长工具照样断，而界面依旧没有任何「它还在跑」的反馈。
+- **工具调用的超时口径**（**已改判** 2026-09-19）：原先 `callTool` / `readResource` / `getPrompt` /
+  列表类一律走 SDK 默认的 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`）且不续期，编译 / 下载这类正当
+  长工具被就地掐断。产品口径定为**按 server / 工具可配**（决策 24）：默认仍是 60s，用户在配置里
+  给某台 server（`timeout`）或某个工具（`toolTimeouts`）按需放宽。**仍不做**「有 progress 就续期」
+  ——那要 server 主动发 progress 才生效，还得配 `maxTotalTimeout` 兜总时长（否则狂发 progress
+  的 server 能把一次调用挂死），等真需求再上。
 
 已从边界转正的（原型阶段曾列在「有意不做」，现已实现且有单测）：远程 server（HTTP/SSE）、
 `listTools` 分页、`${VAR}` 插值、配置热重载、工具重名去重、设置页可见性、
