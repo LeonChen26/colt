@@ -243,6 +243,21 @@ export async function runSubagent(
       return true;
     })()`);
 
+  /**
+   * 把 ④ 卡上的下钻入口滚进视口。
+   *
+   * 「点得到」在真实使用里的意思是「用户看得见才点」，而中栏是一列可滚的卡片，入口不一定
+   * 落在视区里——不滚过去命中测试必然为假，那验的不是产品而是「用例忘了滚」
+   * （AGENTS.md §五⑬：环境前提要显式建立）。滚过去之后的命中测试才有意义：它能抓出
+   * 「被别的层盖住、点了到别处」这类真缺陷。
+   */
+  const showOpenButton = (id: string): Promise<unknown> =>
+    run(`(() => {
+      const el = document.querySelector('[data-subagent-open="${id}"]');
+      if (el) el.scrollIntoView({ block: "center" });
+      return null;
+    })()`);
+
   try {
     window.reload();
     await sleep(4000);
@@ -331,6 +346,32 @@ export async function runSubagent(
     await sleep(300);
     checks.push(["点「中止」不抛异常（会话没真跑，worker 侧按空操作收下）", abortedClick]);
 
+    // ---- 3.5 运行中下钻：这一层走**实时通道**（有界），而不是拉一次就静止的快照 ----
+    // 判据是「有实时容器、且**没有**一次性快照容器」——两者是互斥的两个真源，见 SubagentStream
+    log("[下钻·运行中] 还在跑时点开 → 这一层跟着实时刷新（有界），并如实说明");
+    await showOpenButton(runningId);
+    await sleep(300);
+    await clickBySelector(`[data-subagent-open="${runningId}"]`);
+    await sleep(500);
+    const live = await run<{ live: string | null; text: string; stream: boolean }>(`(() => {
+      const el = document.querySelector("[data-subagent-live]");
+      return {
+        live: el ? el.getAttribute("data-subagent-live") : null,
+        text: el ? (el.textContent ?? "") : "",
+        stream: document.querySelector("[data-subagent-stream]") !== null,
+      };
+    })()`);
+    checks.push([
+      "运行中下钻走**实时**通道（不是「拉回来就静止」的快照）",
+      live.live === runningId && !live.stream,
+    ]);
+    checks.push([
+      "并**如实说明**这一层是实时但有界的（不假装完整）",
+      live.text.includes("实时刷新") && live.text.includes("最近几步"),
+    ]);
+    await escape(); // 退出下钻，免得挡住下面「此刻段」的断言
+    await sleep(400);
+
     // ---- 4. 已结束：此刻段消失，但 ④ 的卡仍在 ----
     log("[已结束] 子代理跑完后：此刻段不再列它，④ 的卡保留");
     push({
@@ -352,15 +393,17 @@ export async function runSubagent(
 
     // ---- 5. 点 ④ 卡 → 下钻到子代理流；完整流按需拉，拉不到如实说 ----
     log("[⑦下钻] 点「在右栏查看完整过程」→ 子代理流层；完整流按需拉");
-    // 小目标入口先滚进视口，再验命中：「点得到」在真实使用里的意思是「用户看得见才点」，
-    // 而中栏是一列可滚的卡片、入口在展开区末尾——不滚过去命中测试必然为假，那验的不是
-    // 产品而是「用例忘了滚」（AGENTS.md §五⑬：环境前提要显式建立）。滚过去之后的命中
-    // 测试才有意义：它能抓出「被别的层盖住、点了到别处」这类真缺陷。
-    await run(`(() => {
-      const el = document.querySelector('[data-subagent-open="${runningId}"]');
-      if (el) el.scrollIntoView({ block: "center" });
-      return null;
+    // 深看入口要排在预览**之前**：预览有十来步，把它排在末尾等于把唯一的深看出口埋掉
+    const order = await run<{ openFirst: boolean }>(`(() => {
+      const open = document.querySelector('[data-subagent-open="${runningId}"]');
+      const preview = document.querySelector("[data-subagent-preview]");
+      if (!open || !preview) return { openFirst: false };
+      const after = open.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING;
+      return { openFirst: after !== 0 };
     })()`);
+    checks.push(["深看入口排在预览**之前**（不被十来步预览埋掉）", order.openFirst]);
+    // 小目标入口先滚进视口，再验命中（判据与理由见 showOpenButton）
+    await showOpenButton(runningId);
     await sleep(300);
     const openVisible = await hitTest(`[data-subagent-open="${runningId}"]`);
     const opened = await clickBySelector(`[data-subagent-open="${runningId}"]`);

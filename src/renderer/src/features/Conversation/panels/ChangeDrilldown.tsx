@@ -613,7 +613,13 @@ export function ChangeDrilldown({
           {subagentId === null ? (
             <p className="px-3 py-6 text-center text-[11.5px] text-text-muted">没有选中的子代理。</p>
           ) : (
-            <SubagentStream sessionId={sessionId} subagentId={subagentId} reloadToken={token} />
+            <SubagentStream
+              sessionId={sessionId}
+              subagentId={subagentId}
+              reloadToken={token}
+              // 视图里那份（实时通道）：运行中由它渲染，跑完才去拉完整流（见 SubagentStream）
+              subagent={subagents.find((item) => item.id === subagentId)}
+            />
           )}
         </div>
       ) : layer === "diff" ? (

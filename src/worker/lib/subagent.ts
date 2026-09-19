@@ -74,7 +74,13 @@ export const MAX_SUBAGENT_MS = 10 * 60 * 1000;
  */
 export const GRACE_AFTER_ABORT_MS = 30_000;
 
-/** 注册表里保留多少个**已结束**的子代理（④ 卡与下钻要能查到；再多就只保最近这些） */
+/**
+ * 注册表里保留多少个**已结束**的子代理（④ 卡与下钻要能查到；再多就只保最近这些）。
+ *
+ * ⚠️ 它与「**每份 transcript 多大**」必须**一起重估**：这个上限管的是「留多少个 run」，
+ * 而每个 run 的 `snapshot.transcript` 是**全量**保留的（有界只发生在投影出去的那截 tail 上）。
+ * 目前两边都小；若子代理变成高频用法，先量这两个数再动其中任何一个——只调一个会得出错结论。
+ */
 export const MAX_FINISHED_SUBAGENTS = 20;
 
 /** 标题上限——它进「任务摘要」那一行与 ④ 卡，太长会把行撑爆 */
@@ -588,6 +594,13 @@ export class Subagents {
 
     // depth 守卫：调用方必须主 lane。判据落在**运行中的那个 lane**（按 operationId 认），
     // 而不是「猜」——工具入参里没有 lane 信息。
+    //
+    // ⚠️ `calling === null`（认不出调用方）时**刻意放行**，不是漏写。真挡住递归的是
+    // **硬白名单**：`#spawn` 无条件把 `subagent` 从工具面里剔掉（定义里显式列了，也会落成
+    // 「没有任何可用工具」并报错），所以子 lane 上的模型**根本看不到**这个工具。
+    // 这道守卫只是第二层；把它收紧成「认不出就拒绝」会误拒**合法**的委派（`harness.lanes()`
+    // 与 `operation.id` 的匹配可能落空），而它挡的东西白名单已经挡死——收益为零、代价真实。
+    // 物证：`subagent-e2e` 的对抗夹具（定义里显式写 subagent）实测被剥到只剩 `write`。
     const calling = await this.#callingLane(operationId, context);
     if (calling !== null && calling !== this.#deps.mainLane) {
       throw new Error("子代理不能再委派子代理（只允许一层）：请自己完成这件事。");

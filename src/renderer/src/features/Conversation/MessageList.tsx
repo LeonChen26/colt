@@ -897,6 +897,19 @@ export function ToolCard({
         <div className="border-t border-line bg-surface p-2">
           {card !== undefined ? (
             <>
+              {/* 出口在**前**：预览可能有十来步，把唯一的深看入口排在末尾等于把它藏起来
+                  （`⑦-H` 的「附属视图给结论不给流水」，出口本身就要好找） */}
+              {onOpenSubagent !== undefined && (
+                <button
+                  type="button"
+                  data-subagent-open={card.id}
+                  onClick={() => onOpenSubagent(card.id)}
+                  className="mb-2 flex items-center gap-1 rounded-[5px] border border-line px-2 py-1 text-[11px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+                >
+                  <PanelRight {...ICON.xs} />
+                  在右栏查看完整过程
+                </button>
+              )}
               <SubagentPreview subagent={card} />
               {result?.output ? (
                 <>
@@ -908,17 +921,6 @@ export function ToolCard({
                   </pre>
                 </>
               ) : null}
-              {onOpenSubagent !== undefined && (
-                <button
-                  type="button"
-                  data-subagent-open={card.id}
-                  onClick={() => onOpenSubagent(card.id)}
-                  className="mt-2 flex items-center gap-1 rounded-[5px] border border-line px-2 py-1 text-[11px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
-                >
-                  <PanelRight {...ICON.xs} />
-                  在右栏查看完整过程
-                </button>
-              )}
             </>
           ) : change?.patch ? (
             <DiffView patch={change.patch} />
