@@ -256,6 +256,7 @@ export const IPC_CHANNELS = [
   "secrets.set",
   "changes.list",
   "usage.list",
+  "session.events.list",
   "toolCalls.list",
   "providers.list",
   "providers.save",
@@ -390,8 +391,13 @@ export interface IpcInvokeMap {
     request: { projectId?: string };
     response: SessionInfo[];
   };
+  /**
+   * 打开会话。工作目录**不由渲染层传入**——主进程按 sessionId → 项目反查 rootPath
+   * （与 file.read 同一套信任假设：渲染层渲染 agent 生成的 Markdown，不可信）。
+   * 这个根同时是审批系统登记的项目根（approvals.register），不能由不可信方指定。
+   */
   "session.open": {
-    request: { sessionId: string; cwd: string; model?: string };
+    request: { sessionId: string; model?: string };
     response: { ok: true };
   };
   "session.prompt": {
@@ -400,11 +406,6 @@ export interface IpcInvokeMap {
       text: string;
       /** 随消息发送的图片；data 为 base64，不含 data URI 前缀 */
       images?: { data: string; mimeType: string }[];
-      /**
-       * 会话工作目录。worker 被空闲回收后主进程凭它自动重建会话进程，
-       * 因此渲染层必须回传（与 session.open 同源）。
-       */
-      cwd?: string;
     };
     response: { ok: true };
   };
@@ -475,6 +476,16 @@ export interface IpcInvokeMap {
   "usage.list": {
     request: { sessionId: string };
     response: SessionUsage;
+  };
+  /**
+   * 会话的**安全事件**流（新的在前）：技能装载告警、同名技能/子代理定义覆盖、
+   * AGENTS.md 与记忆读取失败等 SECURITY.md 承诺「如实告知」的事件。
+   * 它们打 worker 启动起就经 notice 通道报过，但 toast 5 秒即消失——这张表是
+   * 持久形态，供「事件」页签随时回查（F3）。
+   */
+  "session.events.list": {
+    request: { sessionId: string };
+    response: SessionEvent[];
   };
   /** 会话工具调用历史 */
   "toolCalls.list": {
@@ -572,8 +583,7 @@ export interface IpcInvokeMap {
   };
   /** 切换会话使用的模型 */
   "session.setModel": {
-    /** cwd 用于 worker 已被空闲回收时自愈重建（同 session.prompt / session.compact） */
-    request: { sessionId: string; providerId: string; modelId: string; cwd?: string };
+    request: { sessionId: string; providerId: string; modelId: string };
     /**
      * needsKey：选中的服务尚未配密钥。选择已落库（model_ref）但未启动会话，
      * 界面应引导去设置页填密钥，而不是把它当成错误。
@@ -582,13 +592,12 @@ export interface IpcInvokeMap {
   };
   /** 切换会话思考等级 */
   "session.setThinkingLevel": {
-    /** cwd 用于 worker 已被空闲回收时自愈重建（同 session.setModel） */
-    request: { sessionId: string; level: ThinkingLevel; cwd?: string };
+    request: { sessionId: string; level: ThinkingLevel };
     response: { ok: true };
   };
-  /** 手动触发上下文压缩。带 cwd 时在被空闲回收后自动重建会话进程（同 session.prompt） */
+  /** 手动触发上下文压缩。worker 被空闲回收后主进程按 sessionId → 项目反查 rootPath 自动重建会话进程 */
   "session.compact": {
-    request: { sessionId: string; cwd?: string };
+    request: { sessionId: string };
     response: { ok: true };
   };
   /**
@@ -598,17 +607,17 @@ export interface IpcInvokeMap {
    * 但把一次技能调用偷偷变成一句话就变味了——由内核返回 `LaneBusy` 并给可见报错。
    */
   "session.skill": {
-    request: { sessionId: string; name: string; instructions?: string; cwd?: string };
+    request: { sessionId: string; name: string; instructions?: string };
     response: { ok: true };
   };
   /**
    * 显式整理记忆（输入框的 `/memory-tidy`）：worker 在独立子 lane 跑一轮整理，
    * 合并重复、删除过时条目，需要时重写项目记忆文件。主 lane 忙时拒绝（避免与
-   * 运行中的任务并发写同一个记忆文件）。带 cwd 时在被空闲回收后自动重建会话进程
-   * （同 session.compact）。
+   * 运行中的任务并发写同一个记忆文件）。worker 被空闲回收后主进程按 sessionId → 项目
+   * 反查 rootPath 自动重建会话进程（同 session.compact）。
    */
   "session.memoryTidy": {
-    request: { sessionId: string; cwd?: string };
+    request: { sessionId: string };
     response: { ok: true };
   };
   /** 分支树 */
@@ -842,6 +851,13 @@ export interface SessionUsage {
   };
 }
 
+/** 一条安全事件（session_events 表行）：notice 分级后安全类的持久形态，可随时回查 */
+export interface SessionEvent {
+  id: number;
+  message: string;
+  createdAt: number;
+}
+
 /** 项目级文件改动（带会话归属） */
 export interface ProjectFileChange {
   id: number;
@@ -877,6 +893,7 @@ export const IPC_EVENTS = [
   "session.error",
   "session.notice",
   "approval.pending",
+  "approval.analyzing",
   "userquestion.pending",
   "browser.state",
 ] as const;
@@ -889,10 +906,23 @@ export interface IpcEventMap {
   "session.status": { sessionId: string; state: SessionRunState };
   /** 会话错误 */
   "session.error": { sessionId: string; message: string };
-  /** 会话级瞬时通知（非错误）：如压缩完成，渲染层短暂展示后自动消失 */
-  "session.notice": { sessionId: string; message: string };
+  /** 会话级瞬时通知（非错误）：如压缩完成，渲染层短暂展示后自动消失。
+   * kind="security" 是安全事件（技能装载告警、同名覆盖、读取失败等），已同时落库，
+   * 渲染层可在「事件」页签回查（F3） */
+  "session.notice": { sessionId: string; message: string; kind?: "security" };
   /** 待审批的工具调用（新增或清空时推送全量） */
   "approval.pending": { sessionId: string; requests: ApprovalRequest[] };
+  /**
+   * 自动审批的**分析中**状态（F8）：auto 模式下 moderate 调用会先经一次模型复核
+   * （最多 15s），期间既没弹卡也没放行。active=true 开始、false 结束（含被中断/
+   * 模式变更丢弃的情况）——界面据此显示「正在自动分析」，这个隐性延迟不再无从解释。
+   */
+  "approval.analyzing": {
+    sessionId: string;
+    toolCallId: string;
+    toolName: string;
+    active: boolean;
+  };
   /** 待答的模型提问（新增或清空时推送全量）；与审批分开推，语义不同 */
   "userquestion.pending": { sessionId: string; requests: UserQuestionRequest[] };
   /** 内嵌浏览器视图状态变化（首次加载 / 导航 / 标题变化 / 销毁） */
@@ -911,7 +941,8 @@ export type EventParityChecked = [
 /**
  * 审批模式：
  *   - approval：只读白名单放行，其余都需确认；
- *   - auto：白名单放行 + 普通操作自动放行，仅高风险需确认；
+ *   - auto：只读白名单直接放行；白名单内（moderate）操作经模型复核后自动执行，
+ *     其余（dangerous 等）仍逐条确认；
  *   - full-access：一律放行（等价于旧的全权执行）。
  */
 export type ApprovalMode = "approval" | "auto" | "full-access";

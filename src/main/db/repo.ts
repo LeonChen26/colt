@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import type { Project, ProjectFileChange, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
+import type { Project, ProjectFileChange, SessionEvent, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import type { ViewTodo } from "@shared/todo";
 import { toStoredThinkingLevel } from "@shared/thinking-level";
@@ -608,6 +608,8 @@ export function deleteSession(sessionId: string): SessionInfo | undefined {
     db.prepare("DELETE FROM file_baselines WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM session_events WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM approval_audit WHERE session_id = ?").run(sessionId);
     db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     db.exec("COMMIT");
   } catch (error) {
@@ -664,4 +666,62 @@ export function setSetting(key: string, value: string): void {
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .run(key, value);
+}
+
+/**
+ * 记一条安全事件。worker 每次启动都会重报技能装载状态（消息内容相同），
+ * 故按「同会话 + 同内容 + 5 分钟内」去重——重启风暴不会堆积重复行，
+ * 真在复发的错误（间隔超过窗口）仍逐条留痕。
+ */
+export function recordSessionEvent(sessionId: string, message: string): void {
+  const db = getDatabase();
+  const now = Date.now();
+  const latest = db
+    .prepare(
+      "SELECT message, created_at FROM session_events WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .get(sessionId) as unknown as { message: string; created_at: number } | undefined;
+  if (latest && latest.message === message && now - latest.created_at < 5 * 60 * 1000) return;
+  db.prepare("INSERT INTO session_events (session_id, message, created_at) VALUES (?, ?, ?)").run(
+    sessionId,
+    message,
+    now,
+  );
+}
+
+/** 会话的安全事件流（新的在前），供「事件」页签回查 */
+export function listSessionEvents(sessionId: string): SessionEvent[] {
+  const rows = getDatabase()
+    .prepare(
+      "SELECT id, message, created_at FROM session_events WHERE session_id = ? ORDER BY created_at DESC, id DESC",
+    )
+    .all(sessionId) as unknown as { id: number; message: string; created_at: number }[];
+  return rows.map((row) => ({ id: row.id, message: row.message, createdAt: row.created_at }));
+}
+
+/**
+ * 审批分析审计落盘（F9）：分析器每次结论一条（含被中断/模式变更丢弃的）。
+ * 写多读少——事后排查「本不该放行却被放行」才查，故不加查询函数。
+ */
+export function recordApprovalAudit(input: {
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  allow: boolean;
+  analyzed: boolean;
+  reason: string;
+}): void {
+  getDatabase()
+    .prepare(
+      "INSERT INTO approval_audit (session_id, tool_call_id, tool_name, allow, analyzed, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(
+      input.sessionId,
+      input.toolCallId,
+      input.toolName,
+      input.allow ? 1 : 0,
+      input.analyzed ? 1 : 0,
+      input.reason,
+      Date.now(),
+    );
 }

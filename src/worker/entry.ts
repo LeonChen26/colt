@@ -36,7 +36,7 @@ import type { ThinkingLevel } from "@shared/thinking-level";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 import { type ViewTodo, renderTodoBlock } from "@shared/todo";
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import {
   countPatchLines,
@@ -72,7 +72,7 @@ import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
 import { createMemoryTools } from "./lib/memory-tool";
 import { createTodoTools } from "./lib/todo-tool";
-import { ToolCallTracker, MAIN_LANE, buildUsageUpload, contextUsedFromUsage } from "./lib/telemetry";
+import { ToolCallTracker, MAIN_LANE, handleUsageEvent } from "./lib/telemetry";
 import {
   compactDoneMessage,
   describeCompactError,
@@ -266,14 +266,23 @@ const spilledImages = new Set<string>();
  * 为什么要有这个漏斗：图片不进视图（见 `@shared/tool-output`），而落盘必须发生在
  * 「视图被推出去之前」——否则渲染层会先拿到一个 `hasImage`、却读不到对应文件的窗口。
  * 这段逻辑若散在 8 处各写一遍，迟早漏掉一处，故收敛到一个函数。
+ *
+ * 推前先用 SHA-256 摘要去重（F7 ③「无变化不重推」）：流式期间 50ms 节流会把**整份**
+ * 视图在 worker→main、main→renderer 两段各克隆一次，而触发漏斗的并不全是真变化
+ * （思考静默期的重复事件、多个子系统同 burst 内各触发一次）。摘要相同即跳过——省掉
+ * 整段克隆 + 主进程处理 + 渲染层 diff 的开销；代价是每趟多一次序列化（结构化克隆反正
+ * 也要做），「真在流式」纯付出、「静默/重复」净赚。摘要用 SHA-256 而非留存整份 JSON：
+ * 2937 条消息的会话不能把整份序列化结果常驻内存。
  */
+let lastPushedDigest = "";
 function pushView(): void {
   if (!state) return;
   spillToolImages(state.snapshot.transcript, state.toolOutputDir, spilledImages);
-  send({
-    type: "view",
-    view: project(state.snapshot, state.meta, toolDurations, state.subagents.toView()),
-  });
+  const view = project(state.snapshot, state.meta, toolDurations, state.subagents.toView());
+  const digest = createHash("sha256").update(JSON.stringify(view)).digest("hex");
+  if (digest === lastPushedDigest) return;
+  lastPushedDigest = digest;
+  send({ type: "view", view });
 }
 
 function scheduleFlush(): void {
@@ -310,14 +319,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 不该悄悄发生（见 `docs/SECURITY.md`）。加载失败只记告警，不拦会话。
   const skills = await loadSkillsForSession(executionEnv, skillDirs(cwd, homedir()), context);
   const skillsNotice = describeSkills(skills);
-  if (skillsNotice !== null) send({ type: "notice", message: skillsNotice });
+  if (skillsNotice !== null) send({ type: "notice", message: skillsNotice, kind: "security" });
 
   // 子代理定义（声明式 agents）：`<cwd>/.agents/agents/*.md` 与 `~/.agents/agents/*.md`，
   // 同名时项目级胜出。与技能同一条隐式信任通道——定义决定子代理的系统提示词与工具白名单，
   // 装了什么、哪个文件坏了、被谁遮蔽，都要如实报出来（docs/SECURITY.md）。
   const agents = await loadAgentDefs(agentDirs(cwd, homedir()));
   const agentsNotice = describeAgents(agents);
-  if (agentsNotice !== null) send({ type: "notice", message: agentsNotice });
+  if (agentsNotice !== null) send({ type: "notice", message: agentsNotice, kind: "security" });
 
   // AGENTS.md（agents.md 标准）：人机共同维护的项目约定文档，从 cwd 一路向上
   // 收集父目录。与记忆分工：AGENTS.md 收成文的约定（构建/风格/协作规范），
@@ -327,9 +336,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 发现并读取，中途创建/更新下一次请求立即可见，文件集合变化会通知。
   const agentsMd = await loadAgentsMd(cwd);
   const agentsMdNotice = describeAgentsMd(agentsMd);
-  if (agentsMdNotice !== null) send({ type: "notice", message: agentsMdNotice });
+  if (agentsMdNotice !== null) send({ type: "notice", message: agentsMdNotice, kind: "security" });
   const agentsMdInjector = createAgentsMdInjector(cwd, (message) =>
-    send({ type: "notice", message }),
+    send({ type: "notice", message, kind: "security" }),
   );
 
   // 双级记忆（.colt/memory.md + ~/.colt/memory.md）：助手自己维护的跨会话记忆，
@@ -339,10 +348,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 注意用户级在项目之外：助手写它按 docs/SECURITY.md 属 dangerous、每次单独确认。
   const memory = await loadProjectMemory(cwd);
   const memoryNotice = describeMemory(memory, "project");
-  if (memoryNotice !== null) send({ type: "notice", message: memoryNotice });
+  if (memoryNotice !== null) send({ type: "notice", message: memoryNotice, kind: "security" });
   const userMemory = await readMemoryFile(userMemoryFilePath(homedir()));
   const userMemoryNotice = describeMemory(userMemory, "user");
-  if (userMemoryNotice !== null) send({ type: "notice", message: userMemoryNotice });
+  if (userMemoryNotice !== null) send({ type: "notice", message: userMemoryNotice, kind: "security" });
 
   // 记忆检索索引（L3a）：文件是真源，主进程侧维护派生索引（data/memory.db）。
   // 启动即报快照；此后注入器每请求重读，内容变化才续报（失败不报——没消息 = 维持原状，
@@ -358,13 +367,13 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const memoryInjector = createMemoryInjector({
     filePath: memoryFilePath(cwd),
     scope: "project",
-    onError: (message) => send({ type: "notice", message }),
+    onError: (message) => send({ type: "notice", message, kind: "security" }),
     onLoaded: (content) => reportMemoryIndex("project", content),
   });
   const userMemoryInjector = createMemoryInjector({
     filePath: userMemoryFilePath(homedir()),
     scope: "user",
-    onError: (message) => send({ type: "notice", message }),
+    onError: (message) => send({ type: "notice", message, kind: "security" }),
     onLoaded: (content) => reportMemoryIndex("user", content),
   });
 
@@ -576,31 +585,26 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     return undefined;
   });
 
-  // 用量落库：内核每产生一条 usage 行就上报一次，不做差值推算
-  // 过滤规则（非主 lane、adjustment 行）见 buildUsageUpload
+  // 用量落库：每产生一条 usage 行上报一次；过滤（非主 lane、adjustment 行）与占用写回
+  // 见 handleUsageEvent——占用写回触发 view 推送让进度条实时更新；会话未就绪时跳过副作用。
   harness.events.on("usage", (event) => {
-    // 同步记录最近一轮的上下文占用（prompt tokens）；重启后为空，由主进程用 DB 回填
-    const used = contextUsedFromUsage(event);
-    if (used !== null && state) {
-      state.meta.contextUsed = used;
-      // 触发一次 view 推送，让进度条实时更新；否则要等本轮结束才刷新
-      scheduleFlush();
-    }
-
-    const upload = buildUsageUpload(
-      event,
-      state?.meta.model ?? `${providerConfig.id}/${modelId}`,
-      providerConfig.id,
-      Date.now(),
-    );
+    const upload = handleUsageEvent(event, {
+      modelRef: state?.meta.model ?? `${providerConfig.id}/${modelId}`,
+      fallbackProvider: providerConfig.id,
+      now: Date.now(),
+      onContextUsed: state
+        ? (used) => {
+            state!.meta.contextUsed = used;
+            scheduleFlush();
+          }
+        : undefined,
+    });
     if (upload) send(upload);
   });
 
   // 工具调用落库：配对 tool_start/tool_end 得到耗时与入参，在 end 时上报一条
   const toolTracker = new ToolCallTracker();
-  harness.events.on("tool_start", (event) => {
-    toolTracker.start(event.toolCallId, event.args, Date.now());
-  });
+  harness.events.on("tool_start", (event) => toolTracker.start(event.toolCallId, event.args, Date.now()));
   harness.events.on("tool_end", (event) => {
     const upload = toolTracker.end(event, Date.now());
     if (upload) {

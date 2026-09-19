@@ -478,8 +478,14 @@ export type WorkerMessage =
    */
   | { type: "memoryIndex"; scope: "project" | "user"; content: string | null }
   | { type: "error"; message: string; fatal: boolean }
-  /** 非错误的瞬时通知（如压缩完成）：主进程原样转成 session.notice 推给渲染层 */
-  | { type: "notice"; message: string }
+  /**
+   * 非错误通知：主进程原样转成 session.notice 推给渲染层。
+   * kind 分流（F3）："security" 是 SECURITY.md 承诺「如实告知」的安全事件——技能装载
+   * 告警、同名技能/子代理定义覆盖、AGENTS.md 与记忆读取失败等。它们**另外落库**
+   * （session_events 表），toast 5 秒消失后仍可在「事件」页签回查；缺省 info 是
+   * 瞬时操作反馈（压缩完成等），只走 toast 不留痕。
+   */
+  | { type: "notice"; message: string; kind?: "security" }
   | { type: "log"; message: string };
 
 /** 分支树节点（投影后） */

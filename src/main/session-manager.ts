@@ -9,6 +9,7 @@ import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "el
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type {
   ConversationView,
   ViewFileChange,
@@ -25,7 +26,7 @@ import { getSecret } from "./secrets";
 import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
 import { todoStore } from "./todo-store";
-import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed } from "./db/repo";
+import { getSession, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed, recordSessionEvent, recordApprovalAudit } from "./db/repo";
 import { normalizeRootKey } from "./db/index";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
@@ -369,14 +370,55 @@ export class SessionManager {
       thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
     });
 
-    // 分析期间 worker 可能已被回收/替换，回给已死的进程毫无意义
-    if (this.#workers.get(options.sessionId) !== entry) return;
-
-    // 审计留痕：分析器的每次结论都无条件落日志（含自动放行，也含随后被中断/模式变更丢弃的）。
+    // 审计留痕：分析器的每次结论都无条件落库——含自动放行、含随后被中断/模式变更
+    // 丢弃的，也含 worker 已死、结论根本送不回去的（钱花了、判定做了，就该留痕）。
     // 分析结论可能被入参里的提示注入影响，事后可凭此发现「本不该放行却被放行」。
+    // F9：原先只 console.log 到 stdout，打包应用没有终端、等于没有审计——必须落 colt.db。
+    // 放在「worker 是否已死」的早退**之前**：那条 return 只意味着结论送不回去，
+    // 不意味着这次判定没发生过。
     console.log(
       `[approval:analyze] tool=${toolName} allow=${result.allow} analyzed=${result.analyzed} reason=${result.reason}`,
     );
+    try {
+      recordApprovalAudit({
+        sessionId: options.sessionId,
+        toolCallId,
+        toolName,
+        allow: result.allow,
+        analyzed: result.analyzed,
+        reason: result.reason,
+      });
+    } catch (error) {
+      // 审计失败不阻断审批链路（fail-closed 由分析器本身保证），但 stdout 留痕便于排查
+      console.error("[approval] 审计落盘失败", error);
+    }
+
+    // 分析调用本身**计费**（与会话同一 provider/model，pi-ai 直调不走内核）——按
+    // 「费用藏起来是静默」的原则落库，让会话用量统计里看得到这笔钱（F2 修复）。
+    // kernelUsageId 带 `approval-analyze:` 前缀与内核行区分；uuid 兜底防唯一索引冲突。
+    // 与审计同在「worker 是否已死」的早退之前：结论可以送不回去，钱不会因此没花。
+    // 落库失败同样不阻断审批链路（同审计的处置）：这笔账记不上是损失，卡死工具调用是事故。
+    if (result.usage) {
+      try {
+        recordUsage({
+          sessionId: options.sessionId,
+          kernelUsageId: `approval-analyze:${randomUUID()}`,
+          provider: entry.provider.id,
+          model: entry.modelId,
+          input: result.usage.input,
+          output: result.usage.output,
+          cacheRead: result.usage.cacheRead,
+          cacheWrite: result.usage.cacheWrite,
+          costUsd: result.usage.costUsd,
+          timestamp: Date.now(),
+        });
+      } catch (error) {
+        console.error("[approval] 分析用量落盘失败", error);
+      }
+    }
+
+    // 分析期间 worker 可能已被回收/替换，回给已死的进程毫无意义
+    if (this.#workers.get(options.sessionId) !== entry) return;
 
     // 分析期间用户中断：直接作废这次授权（回一条拒绝让 worker 解除阻塞），不再入队——
     // 否则中断后会凭空出现一张无法解释的待审卡片，且解除阻塞要等到 5 分钟超时
@@ -763,10 +805,17 @@ export class SessionManager {
           break;
         }
         case "notice":
-          // worker 的非错误通知（如压缩完成）：与 error 同一条通路，但渲染层按提示而非错误呈现
+          // worker 的非错误通知（如压缩完成）：与 error 同一条通路，但渲染层按提示而非错误呈现。
+          // 安全类（技能装载告警、同名覆盖、AGENTS.md/记忆读取失败——SECURITY.md 承诺「如实
+          // 告知」的那些）**同时落库**：toast 5 秒即消失、无从回查，session_events 让它们在
+          // 「事件」页签随时可查（F3）。
+          if (message.kind === "security") {
+            recordSessionEvent(options.sessionId, message.message);
+          }
           this.#emit("session.notice", {
             sessionId: options.sessionId,
             message: message.message,
+            kind: message.kind,
           });
           break;
         case "fileChange": {
@@ -842,8 +891,29 @@ export class SessionManager {
               reason: outcome.decision.reason,
             } satisfies WorkerCommand);
           } else if ("analyze" in outcome) {
-            // 自动审批：调用大模型判定，期间 worker 仍阻塞在 before_tool
-            this.#analyzeThenReply(entry, options, message, outcome.analyze);
+            // 自动审批：调用大模型判定，期间 worker 仍阻塞在 before_tool。
+            // 「分析中」是用户可见的状态（F8）：auto 的隐性延迟（最长 15s 模型往返）
+            // 此前没有任何界面解释——开始时推 active=true，借 finally 保证任何出口
+            // （放行/转人工/被中断/模式变更）都推 active=false。
+            this.#emit("approval.analyzing", {
+              sessionId: options.sessionId,
+              toolCallId: message.toolCallId,
+              toolName: message.toolName,
+              active: true,
+            });
+            void this.#analyzeThenReply(entry, options, message, outcome.analyze)
+              // F9：分析链路自身异常不得成为 unhandledRejection（审计见 #analyzeThenReply）
+              .catch((error: unknown) => {
+                console.error("[approval] 分析链路异常", error);
+              })
+              .finally(() => {
+                this.#emit("approval.analyzing", {
+                  sessionId: options.sessionId,
+                  toolCallId: message.toolCallId,
+                  toolName: message.toolName,
+                  active: false,
+                });
+              });
           } else {
             // 与 worker 同步的超时兜底：到点自动拒绝，界面同步转为「已超时」
             this.#armApprovalTimer(entry, options.sessionId, message.toolCallId, message.timeoutMs);
@@ -986,13 +1056,6 @@ export class SessionManager {
     entry.lastActiveAt = Date.now();
   }
 
-  prompt(sessionId: string, text: string, images?: { data: string; mimeType: string }[]): void {
-    const entry = this.#workers.get(sessionId);
-    if (!entry) throw new Error(`会话未运行：${sessionId}`);
-    // 运行中则作为插话，否则作为新一轮提问
-    this.#post(sessionId, { type: entry.running ? "steer" : "prompt", text, images });
-  }
-
   /**
    * 投递一条用户消息；worker 已被回收时先重建再投递。
    *
@@ -1086,7 +1149,7 @@ export class SessionManager {
   ): Promise<void> {
     setSessionModel(sessionId, `${provider.id}/${modelId}`);
     if (!this.#workers.has(sessionId)) {
-      // worker 不在池中：没给 recover（渲染层没传 cwd）就只落库，下次打开自会带上新模型；
+      // worker 不在池中：没给 recover 就只落库，下次打开自会带上新模型；
       // 给了 recover 才尝试当场拉起，以便用户能立即发送消息。
       if (!recover) return;
       await recover().catch((error: unknown) => {
@@ -1096,15 +1159,6 @@ export class SessionManager {
       });
     }
     if (this.#workers.has(sessionId)) this.setModel(sessionId, provider, modelId);
-  }
-
-  compact(sessionId: string): void {
-    this.#post(sessionId, { type: "compact" });
-  }
-
-  /** 显式调用技能；不带 cwd 时无法自愈重建（带 cwd 的路径见 `skillOrReconnect`） */
-  skill(sessionId: string, name: string, instructions: string | undefined): void {
-    this.#post(sessionId, { type: "skill", name, instructions });
   }
 
   /**
@@ -1154,11 +1208,6 @@ export class SessionManager {
     const entry = this.#workers.get(sessionId);
     if (!entry) throw new Error(`会话未运行：${sessionId}`);
     this.#post(sessionId, { type: "skill", name, instructions });
-  }
-
-  /** 显式整理记忆（/memory-tidy）：worker 在独立子 lane 后台跑一轮 */
-  memoryTidy(sessionId: string): void {
-    this.#post(sessionId, { type: "memoryTidy" });
   }
 
   /**

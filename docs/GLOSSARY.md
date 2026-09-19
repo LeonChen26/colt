@@ -127,5 +127,5 @@
 | **baseline（基线）** | 改动前的内容快照，净值就是「基线 → 现在」 |
 | **`kernel_session_id`** | 内核侧的会话标识，与 Colt 自己的会话 id（`externalSessionId`）分开存 |
 | **`modelRef`** | `"providerId/modelId"` 形态的模型引用 |
-| **审批三模式** | `approval`（白名单放行，其余都问）/ `auto`（白名单外普通操作自动放行，仅 dangerous 仍问，**默认**）/ `full-access`（不拦截） |
+| **审批三模式** | `approval`（只读白名单放行，其余都问）/ `auto`（只读直接放行；白名单内 moderate 操作经模型复核后自动执行，dangerous 等其余仍逐条确认，**默认**）/ `full-access`（不拦截） |
 | **审批三风险档** | `safe` / `moderate` / `dangerous`。`dangerous` 免疫「不再询问」记忆 |

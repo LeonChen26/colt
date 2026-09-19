@@ -39,6 +39,7 @@ import {
   MoveHorizontal,
   Plus,
   RotateCw,
+  ShieldAlert,
   ShieldCheck,
   X,
   ZoomOut,
@@ -52,9 +53,10 @@ import { ObserveDrawer } from "./ObserveDrawer";
 import { ChangeDrilldown, type DrillLayer, type DrillRequest } from "./panels/ChangeDrilldown";
 import { RulesPanel } from "./panels/RulesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
+import { EventsPanel } from "./panels/EventsPanel";
 
 /** 视图类型（kind）：决定页签里渲染什么内容 */
-export type DockKind = "follow" | "browser" | "usage" | "rules";
+export type DockKind = "follow" | "browser" | "usage" | "rules" | "events";
 
 /**
  * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「任务摘要」只是默认视图）。
@@ -104,6 +106,9 @@ const DOCK_KIND_META: Record<
   // 合并成了「任务摘要」的下钻（`ChangeDrilldown`），不再是并列页签。
   usage: { label: "统计", Icon: ChartColumn, closable: true, desc: "本次会话的用量、工具调用与失败统计" },
   rules: { label: "规则", Icon: ShieldCheck, closable: true, desc: "本次会话记住的审批规则" },
+  // F3：安全事件流（技能装载告警、同名覆盖、读取失败等）。它们发生时只弹 5 秒 toast、
+  // 无从回查——主进程把它们同时落库（session_events），这个页签是持久记录的回看入口。
+  events: { label: "事件", Icon: ShieldAlert, closable: true, desc: "本次会话的安全事件记录，重启后仍可回看" },
 };
 
 /** 该视图能否关闭（⑦-E：默认视图不可关闭） */
@@ -774,6 +779,8 @@ export function WorkspaceDock({
         <UsagePanel sessionId={sessionId} />
       ) : activeKind === "rules" ? (
         <RulesPanel sessionId={sessionId} />
+      ) : activeKind === "events" ? (
+        <EventsPanel sessionId={sessionId} />
       ) : drillRequest !== null ? (
         /* 下钻中（⑦-G）：清单 → diff → 内容。只在「任务摘要」这一页签内成立 */
         <ChangeDrilldown

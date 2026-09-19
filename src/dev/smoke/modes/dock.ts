@@ -1877,12 +1877,8 @@ export async function runDock(
     // 而这三条断言问的都是「渲染层选了哪条路径」，与真发无关——转发是多余的。
     const compactCalls: string[] = [];
     const promptCalls: string[] = [];
-    const realCompact = sessionManager.compact.bind(sessionManager);
     const realCompactOrReconnect = sessionManager.compactOrReconnect.bind(sessionManager);
     const realPromptOrReconnect = sessionManager.promptOrReconnect.bind(sessionManager);
-    sessionManager.compact = (id: string) => {
-      compactCalls.push(id);
-    };
     sessionManager.compactOrReconnect = async (id: string) => {
       compactCalls.push(id);
     };
@@ -1979,11 +1975,7 @@ export async function runDock(
     // 上打桩才看得见。同样**只记账、不转发**——整理是一次真实模型调用，
     // 转发就破坏了「dock 不打模型、不计费」的约定（v1.41 的教训）。
     const tidyCalls: string[] = [];
-    const realMemoryTidy = sessionManager.memoryTidy.bind(sessionManager);
     const realMemoryTidyOrReconnect = sessionManager.memoryTidyOrReconnect.bind(sessionManager);
-    sessionManager.memoryTidy = (id: string) => {
-      tidyCalls.push(id);
-    };
     sessionManager.memoryTidyOrReconnect = async (id: string) => {
       tidyCalls.push(id);
     };
@@ -2007,7 +1999,6 @@ export async function runDock(
     ]);
 
     // 本段自己的桩立即恢复；promptOrReconnect 的桩还要服务后面的 /skill 段
-    sessionManager.memoryTidy = realMemoryTidy;
     sessionManager.memoryTidyOrReconnect = realMemoryTidyOrReconnect;
     // 与 /compact 段同款：打的是**最终态**——上一条带正文的输入应回落成了普通提问
     log(`  /memory-tidy 打桩：tidy=${tidyCalls.length}，prompt=${promptCalls.length}`);
@@ -2023,11 +2014,7 @@ export async function runDock(
     // 「错误文案里带不带可用技能名」由 tests/skill-error.test.ts 断言——纯字符串逻辑，
     // 不必为它真拉一个 worker 进程起来（与上面 `/compact` 同理：打桩**只记账、不转发**）。
     const skillCalls: { name: string; instructions: string | undefined }[] = [];
-    const realSkill = sessionManager.skill.bind(sessionManager);
     const realSkillOrReconnect = sessionManager.skillOrReconnect.bind(sessionManager);
-    sessionManager.skill = (_id: string, name: string, instructions: string | undefined) => {
-      skillCalls.push({ name, instructions });
-    };
     sessionManager.skillOrReconnect = async (
       _id: string,
       name: string,
@@ -2200,10 +2187,8 @@ export async function runDock(
     );
 
     // 复原打桩，避免影响后续断言（dock 到此也接近尾声）
-    sessionManager.compact = realCompact;
     sessionManager.compactOrReconnect = realCompactOrReconnect;
     sessionManager.promptOrReconnect = realPromptOrReconnect;
-    sessionManager.skill = realSkill;
     sessionManager.skillOrReconnect = realSkillOrReconnect;
 
     // ---- ①「等待授权」必须被看见（v1.39）----

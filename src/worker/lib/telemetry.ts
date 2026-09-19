@@ -100,6 +100,28 @@ export function buildUsageUpload(
   };
 }
 
+/**
+ * 一条内核 usage 事件的完整处理：
+ * 先更新「最近一轮上下文占用」（非主 lane / adjustment 行不计），再构造用量上报。
+ *
+ * 占用写回与 view 推送是 worker 的副作用，由调用方经 `onContextUsed` 注入，
+ * 这里保持纯投影逻辑，便于单测。
+ */
+export function handleUsageEvent(
+  event: KernelUsageEvent,
+  deps: {
+    modelRef: string;
+    fallbackProvider: string;
+    now: number;
+    /** 会话已就绪时注入；占用值只在该回调里消费一次 */
+    onContextUsed?: (used: number) => void;
+  },
+): UsageUpload | null {
+  const used = contextUsedFromUsage(event);
+  if (used !== null) deps.onContextUsed?.(used);
+  return buildUsageUpload(event, deps.modelRef, deps.fallbackProvider, deps.now);
+}
+
 /** 把工具入参序列化；含循环引用等无法序列化的值时回退为 null */
 export function serializeArgs(args: unknown): string | null {
   try {

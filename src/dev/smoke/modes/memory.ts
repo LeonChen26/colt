@@ -85,7 +85,7 @@ export async function runMemory(
 
   try {
     await run(
-      `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: fixtureDir })})`,
+      `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id })})`,
     );
 
     // worker 启动即上报（不等模型发话），落库是异步的：轮询到出现为止

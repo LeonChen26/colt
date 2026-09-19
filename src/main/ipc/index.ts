@@ -24,6 +24,7 @@ import {
   getSession,
   listProjectChanges,
   listProjects,
+  listSessionEvents,
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
@@ -62,15 +63,31 @@ type Handler<C extends IpcChannel> = (
 ) => Promise<IpcInvokeMap[C]["response"]> | IpcInvokeMap[C]["response"];
 
 /**
+ * 解析会话的项目根目录（worker 的 cwd、审批系统登记的项目根）。
+ * 只由主进程从库反查（sessionId → project → rootPath），**绝不接受渲染层传入**——
+ * 渲染层会渲染 agent 生成的 Markdown，是不可信来源；这个根同时决定审批边界
+ * （「项目内 = moderate、项目外 = 高危」），若由渲染层指定，注入内容就能把高危写
+ * 操作降级成 moderate（与 file.read 同一套信任假设，见 F1 修复）。
+ */
+function resolveSessionRoot(sessionId: string): string {
+  const session = getSession(sessionId);
+  if (session === undefined) throw new Error("会话不存在");
+  const project = getProject(session.projectId);
+  if (project === undefined) throw new Error("项目不存在");
+  return project.rootPath;
+}
+
+/**
  * 解析会话应使用的 provider/model（带失效回退）并启动（或复用）worker。
  * session.open 与 session.prompt 的自动重连共用，保证两处模型选择一致。
  * 模型选择规则收敛在 shared/model-ref，渲染层用同一函数判断「能否自动打开」。
+ * 工作目录由 resolveSessionRoot 反查，调用方不传。
  */
 async function openSessionWorker(input: {
   sessionId: string;
-  cwd: string;
   model?: string;
-}): Promise<void> {  const providers = listProviders();
+}): Promise<void> {
+  const providers = listProviders();
   const { providerId, modelId } = resolveSessionModel(
     input.model ?? getSession(input.sessionId)?.modelRef,
     providers,
@@ -79,7 +96,7 @@ async function openSessionWorker(input: {
 
   await sessionManager.ensureWorker({
     sessionId: input.sessionId,
-    cwd: input.cwd,
+    cwd: resolveSessionRoot(input.sessionId),
     model: modelId,
     provider,
   });
@@ -306,7 +323,6 @@ export function registerIpcHandlers(): void {
     if (drafts.has(request.sessionId)) return { ok: true } as const;
     await openSessionWorker({
       sessionId: request.sessionId,
-      cwd: request.cwd,
       model: request.model,
     });
     return { ok: true } as const;
@@ -315,15 +331,11 @@ export function registerIpcHandlers(): void {
   handle("session.prompt", async (request) => {
     // 首次发消息：草稿在此刻落库（此后才是「真实会话」，会出现在 session.list 里）
     materializeDraft(request.sessionId);
-    // 会话可能已被空闲回收（长时间不用）；带 cwd 时自动重建后再投递，避免
-    // 旧行为下直接抛「会话未运行」导致界面静默无响应。
-    if (request.cwd) {
-      await sessionManager.promptOrReconnect(request.sessionId, request.text, request.images, () =>
-        openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
-      );
-    } else {
-      sessionManager.prompt(request.sessionId, request.text, request.images);
-    }
+    // 会话可能已被空闲回收（长时间不用）：由主进程按 sessionId → 项目反查 rootPath
+    // 自动重建后再投递，避免旧行为下直接抛「会话未运行」导致界面静默无响应。
+    await sessionManager.promptOrReconnect(request.sessionId, request.text, request.images, () =>
+      openSessionWorker({ sessionId: request.sessionId }),
+    );
     return { ok: true } as const;
   });
 
@@ -394,6 +406,9 @@ export function registerIpcHandlers(): void {
   handle("changes.list", (request) => listProjectChanges(request.projectId));
 
   handle("usage.list", (request) => listSessionUsage(request.sessionId));
+
+  // 安全事件流（技能装载告警、同名覆盖、读取失败等）：只读、按 sessionId 查
+  handle("session.events.list", (request) => listSessionEvents(request.sessionId));
 
   handle("toolCalls.list", (request) => listSessionToolCalls(request.sessionId));
 
@@ -506,14 +521,8 @@ export function registerIpcHandlers(): void {
       request.sessionId,
       provider,
       request.modelId,
-      // 无 cwd 无法重建（worker 需要工作目录），此时只落库
-      request.cwd
-        ? () =>
-            openSessionWorker({
-              sessionId: request.sessionId,
-              cwd: request.cwd!,
-            })
-        : undefined,
+      // worker 被空闲回收时由主进程反查项目根重建（cwd 不再来自渲染层）
+      () => openSessionWorker({ sessionId: request.sessionId }),
     );
     return { ok: true } as const;
   });
@@ -535,15 +544,11 @@ export function registerIpcHandlers(): void {
     // 与 session.prompt 同理：可能把 worker 拉起来，那就必须先有会话行——
     // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上），下次打开会另起一份历史。
     materializeDraft(request.sessionId);
-    // 会话可能已被空闲回收；带 cwd 时自动重建后再投递（同 session.prompt），
+    // 会话可能已被空闲回收；主进程反查项目根自动重建后再投递，
     // 否则旧行为下会直接抛「会话未运行」——用户看到的只是“点了没反应”。
-    if (request.cwd) {
-      await sessionManager.compactOrReconnect(request.sessionId, () =>
-        openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
-      );
-    } else {
-      sessionManager.compact(request.sessionId);
-    }
+    await sessionManager.compactOrReconnect(request.sessionId, () =>
+      openSessionWorker({ sessionId: request.sessionId }),
+    );
     return { ok: true } as const;
   });
 
@@ -551,16 +556,12 @@ export function registerIpcHandlers(): void {
     // 与 session.compact 同理：可能把 worker 拉起来，那就必须先有会话行，
     // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上），下次打开会另起一份历史。
     materializeDraft(request.sessionId);
-    if (request.cwd) {
-      await sessionManager.skillOrReconnect(
-        request.sessionId,
-        request.name,
-        request.instructions,
-        () => openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
-      );
-    } else {
-      sessionManager.skill(request.sessionId, request.name, request.instructions);
-    }
+    await sessionManager.skillOrReconnect(
+      request.sessionId,
+      request.name,
+      request.instructions,
+      () => openSessionWorker({ sessionId: request.sessionId }),
+    );
     return { ok: true } as const;
   });
 
@@ -568,13 +569,9 @@ export function registerIpcHandlers(): void {
     // 与 session.compact 同理：可能把 worker 拉起来，必须先有会话行，
     // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上）。
     materializeDraft(request.sessionId);
-    if (request.cwd) {
-      await sessionManager.memoryTidyOrReconnect(request.sessionId, () =>
-        openSessionWorker({ sessionId: request.sessionId, cwd: request.cwd! }),
-      );
-    } else {
-      sessionManager.memoryTidy(request.sessionId);
-    }
+    await sessionManager.memoryTidyOrReconnect(request.sessionId, () =>
+      openSessionWorker({ sessionId: request.sessionId }),
+    );
     return { ok: true } as const;
   });
 
@@ -620,11 +617,7 @@ export function registerIpcHandlers(): void {
 
   // 根**只由主进程推导**：渲染层给 sessionId 与相对路径，绝不给根
   handle("file.read", (request) => {
-    const session = getSession(request.sessionId);
-    if (session === undefined) throw new Error("会话不存在");
-    const project = getProject(session.projectId);
-    if (project === undefined) throw new Error("项目不存在");
-    return readFileWithin(project.rootPath, request.path);
+    return readFileWithin(resolveSessionRoot(request.sessionId), request.path);
   });
 
   /**
@@ -632,12 +625,8 @@ export function registerIpcHandlers(): void {
    * 基线与根同样**只由主进程**取（前者来自库、后者由 sessionId → 项目推出）。
    */
   handle("file.netDiff", (request) => {
-    const session = getSession(request.sessionId);
-    if (session === undefined) throw new Error("会话不存在");
-    const project = getProject(session.projectId);
-    if (project === undefined) throw new Error("项目不存在");
     return computeNetChange(
-      project.rootPath,
+      resolveSessionRoot(request.sessionId),
       request.path,
       getFileBaseline(request.sessionId, request.path),
     );

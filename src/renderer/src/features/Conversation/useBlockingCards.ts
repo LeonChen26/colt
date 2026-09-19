@@ -26,6 +26,8 @@ export interface ApprovalResolution {
 export interface BlockingCards {
   approvals: ApprovalRequest[];
   questions: UserQuestionRequest[];
+  /** 自动审批「模型复核中」的调用（F8）：非阻塞、不可交互，只解释「它为什么在等」 */
+  analyzing: { toolCallId: string; toolName: string }[];
   /** 主动重拉两个队列（会话 open 之后调用：那时可能已有堆积的待处理项） */
   refresh: () => Promise<void>;
   resolveApproval: (toolCallId: string, input: ApprovalResolution) => Promise<void>;
@@ -37,6 +39,7 @@ export interface BlockingCards {
 export function useBlockingCards(sessionId: string, onError: (message: string) => void): BlockingCards {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [questions, setQuestions] = useState<UserQuestionRequest[]>([]);
+  const [analyzing, setAnalyzing] = useState<{ toolCallId: string; toolName: string }[]>([]);
   // 会话切走后到达的答复/拉取结果一律丢弃：否则会把上一个会话的待办画到新会话里
   const currentSession = useRef(sessionId);
   currentSession.current = sessionId;
@@ -46,9 +49,18 @@ export function useBlockingCards(sessionId: string, onError: (message: string) =
     // 换会话即清空：旧会话的待办对新会话没有意义（主进程会随后推全量覆盖）
     setApprovals([]);
     setQuestions([]);
+    setAnalyzing([]);
     const offApproval = window.colt.on("approval.pending", (payload) => {
       if (disposed || payload.sessionId !== sessionId) return;
       setApprovals(payload.requests);
+    });
+    const offAnalyzing = window.colt.on("approval.analyzing", (payload) => {
+      if (disposed || payload.sessionId !== sessionId) return;
+      setAnalyzing((list) =>
+        payload.active
+          ? [...list.filter((item) => item.toolCallId !== payload.toolCallId), { toolCallId: payload.toolCallId, toolName: payload.toolName }]
+          : list.filter((item) => item.toolCallId !== payload.toolCallId),
+      );
     });
     const offQuestion = window.colt.on("userquestion.pending", (payload) => {
       if (disposed || payload.sessionId !== sessionId) return;
@@ -57,6 +69,7 @@ export function useBlockingCards(sessionId: string, onError: (message: string) =
     return () => {
       disposed = true;
       offApproval();
+      offAnalyzing();
       offQuestion();
     };
   }, [sessionId]);
@@ -115,5 +128,5 @@ export function useBlockingCards(sessionId: string, onError: (message: string) =
     [sessionId, onError],
   );
 
-  return { approvals, questions, refresh, resolveApproval, answerQuestion, skipQuestion };
+  return { approvals, questions, analyzing, refresh, resolveApproval, answerQuestion, skipQuestion };
 }

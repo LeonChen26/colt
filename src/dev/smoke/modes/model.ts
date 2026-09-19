@@ -788,7 +788,7 @@ export async function runSessionDraft(
     // 首次发消息：到这一步才落库（走的就是生产的 session.prompt 通道）
     draftId = clicked.session;
     const outcome = await run<string>(
-      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: draftId, text: "hi", cwd: emptyDir })})
+      `window.colt.invoke("session.prompt", ${JSON.stringify({ sessionId: draftId, text: "hi" })})
         .then(() => "OK").catch((e) => String((e && e.message) || e))`,
     );
     log(`首次发消息结果：${outcome}`);

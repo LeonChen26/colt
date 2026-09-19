@@ -63,11 +63,10 @@ export async function runApproval(
     `JSON.stringify({ root: document.getElementById("root")?.children.length ?? -1, text: document.body.innerText.slice(0, 120) })`,
   );
   log(`  DOM 自检：${dom}`);
-  // cwd 是 `session.open` 的**必填**项；JSON.stringify 会抹掉 undefined，
-  // 于是漏填时 worker 拿 undefined 去调内核路径解析，报出与现场无关的
-  // `undefined.startsWith`（见 AGENTS.md §五「环境前提必须显式建立」）。
+  // cwd 不再由调用方传入：主进程按 sessionId → 项目反查 rootPath（F1 修复，
+  // 与 file.read 同一套信任假设）。夹具项目根在冒烟入口落库时已登记。
   await run(
-    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd() })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id })})`,
   );
 
   // ---- 场景一：只读命令应当自动放行 ----

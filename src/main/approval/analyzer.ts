@@ -58,6 +58,19 @@ export interface AnalyzeResult {
   reason: string;
   /** 分析是否真正完成（false 表示走了兜底拒绝，界面可标注「已自动拦截」） */
   analyzed: boolean;
+  /**
+   * 这次分析消耗的 token 与费用。分析器走的是**计费**的模型调用（与会话同一
+   * provider/model），用户付了钱——按「费用藏起来是静默」的原则，这笔钱必须能被
+   * 统计到，调用方负责落库（见 session-manager 的 #analyzeThenReply）。
+   * 只有请求真正发出去并拿到回复才有值；装配失败/超时/请求失败都是 undefined。
+   */
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    costUsd: number;
+  };
 }
 
 /** 分析器整体超时：超过即视为「未放行」，不阻塞审批链路 */
@@ -218,10 +231,22 @@ export async function analyzeToolCall(input: AnalyzeInput): Promise<AnalyzeResul
     );
 
     const verdict = parseVerdict(contentText(message.content));
+    const usage = {
+      input: message.usage.input,
+      output: message.usage.output,
+      cacheRead: message.usage.cacheRead,
+      cacheWrite: message.usage.cacheWrite,
+      costUsd: message.usage.cost.total,
+    };
     if (!verdict) {
-      return { allow: false, analyzed: false, reason: "审批分析器未能给出有效结论，转人工确认" };
+      return {
+        allow: false,
+        analyzed: false,
+        reason: "审批分析器未能给出有效结论，转人工确认",
+        usage,
+      };
     }
-    return { allow: verdict.allow, analyzed: true, reason: verdict.reason };
+    return { allow: verdict.allow, analyzed: true, reason: verdict.reason, usage };
   } catch (error) {
     return {
       allow: false,

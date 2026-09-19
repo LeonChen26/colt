@@ -103,6 +103,39 @@ CREATE TABLE IF NOT EXISTS file_changes (
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, created_at DESC);
 
 /**
+ * 会话级**安全事件**流：技能装载告警、同名技能覆盖、AGENTS.md / 记忆读取失败等
+ * SECURITY.md 承诺「如实告知」的事件。notice 通道的 toast 5 秒即消失、无从回查——
+ * 安全类信息必须落库，用户随时能在「事件」页签回看（F3 修复；「费用藏起来是静默」
+ * 的同类原则：告知了但无法回查，等于没告知）。
+ * 只收安全类；瞬时操作反馈（压缩完成等）不进这张表。
+ */
+CREATE TABLE IF NOT EXISTS session_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, created_at DESC);
+
+/**
+ * 审批分析审计（F9）：自动审批分析器的**每次结论**——含自动放行，也含随后被中断/
+ * 模式变更丢弃的。分析结论可能被入参里的提示注入影响，事后要能凭库发现「本不该
+ * 放行却被放行」。原先只 console.log 到 stdout，打包后的应用没有终端，等于没有审计。
+ * 写多读少（事后排查才查），故只有写入与级联删除，不加查询函数。
+ */
+CREATE TABLE IF NOT EXISTS approval_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  tool_call_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  allow INTEGER NOT NULL,
+  analyzed INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_audit_session ON approval_audit(session_id, created_at DESC);
+
+/**
  * 「本次会话首次改动某文件之前」的内容快照：净变化的基线。
  *
  * 键是 (session, path)——**最早的那一份才作数**：worker 被回收重启后会把「当时已经改过」

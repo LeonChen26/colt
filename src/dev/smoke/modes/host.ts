@@ -38,10 +38,9 @@ export async function runHost(
   // 所以把口径写在日志里——没有可用模型时请用 COLT_SMOKE_MODEL 指到已配置的服务。
   const model = process.env.COLT_SMOKE_MODEL ?? "deepseek/deepseek-v4-flash-vision-exp";
   log(`模型：${model}（本机未配置该服务时用 COLT_SMOKE_MODEL=<provider>/<model> 覆盖）`);
-  // cwd 是 `session.open` 的**必填**项；JSON.stringify 会抹掉 undefined，
-  // 于是漏填时 worker 拿 undefined 调内核路径解析，报出 `undefined.startsWith`。
+  // cwd 不再由调用方传入：主进程按 sessionId → 项目反查 rootPath（F1 修复）。
   await run(
-    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd(), model })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: session.id, model })})`,
   );
   const modeInfo = await run<{ mode: string }>(
     `window.colt.invoke("approval.mode.get", ${JSON.stringify({ sessionId: session.id })})`,

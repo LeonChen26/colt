@@ -29,14 +29,11 @@ export async function runAdvanced(
   // 两个会话同时开工，验证 worker 进程池并行
   log("并行发起两个会话…");
   const started = Date.now();
-  // cwd 必须显式给：`session.open` 的契约里它是**必填**，而 JSON.stringify 会把
-  // undefined 直接抹掉——漏了这一步，worker 会拿着 undefined 去调内核的路径解析，
-  // 报出来的是 `undefined.startsWith` 这种与现场毫无关系的 TypeError（实测过一次，
-  // 见 AGENTS.md §五「用例的环境前提必须显式建立」）。与 index.ts / memory.ts 口径一致。
-  const smokeCwd = process.env.COLT_SMOKE_CWD ?? process.cwd();
+  // cwd 不再由调用方传入：主进程按 sessionId → 项目反查 rootPath（F1 修复，
+  // 与 file.read 同一套信任假设）。夹具会话的项目根已在落库时登记（见下方 createSession 前）。
   await run(`Promise.all([
-    window.colt.invoke("session.open", ${JSON.stringify({ sessionId: first.id, cwd: smokeCwd })}),
-    window.colt.invoke("session.open", ${JSON.stringify({ sessionId: second.id, cwd: smokeCwd })})
+    window.colt.invoke("session.open", ${JSON.stringify({ sessionId: first.id })}),
+    window.colt.invoke("session.open", ${JSON.stringify({ sessionId: second.id })})
   ])`);
   log(`两个 worker 就绪，耗时 ${Date.now() - started}ms`);
 

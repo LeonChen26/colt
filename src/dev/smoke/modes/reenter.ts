@@ -32,11 +32,9 @@ export async function runReenter(
 
   // 让 busy 会话真正跑起来（带工具调用，耗时较长），模拟「分析当前项目」
   log("打开长任务会话…");
-  // cwd 是 `session.open` 的**必填**项，JSON.stringify 会抹掉 undefined；
-  // 漏填时 worker 拿 undefined 去调内核路径解析，报出与现场无关的
-  // `undefined.startsWith`（见 AGENTS.md §五「环境前提必须显式建立」）。
+  // cwd 不再由调用方传入：主进程按 sessionId → 项目反查 rootPath（F1 修复）。
   await run(
-    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: busy.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd() })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: busy.id })})`,
   );
   log("让长任务会话开工…");
   await run(
@@ -126,9 +124,8 @@ export async function runReenter(
     }
     return true;
   })()`);
-  const otherCwd = process.env.COLT_SMOKE_CWD ?? process.cwd();
   await run(
-    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: other.id, cwd: otherCwd })})`,
+    `window.colt.invoke("session.open", ${JSON.stringify({ sessionId: other.id })})`,
   );
   await sleep(1200);
   const idleBefore = await run<number>(`window.__coltIdle["${other.id}"] ?? 0`);

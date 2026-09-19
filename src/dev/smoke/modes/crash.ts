@@ -45,7 +45,7 @@ export async function runCrash(
     (async () => {
       const timeout = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 15000));
       const attempt = window.colt
-        .invoke("session.open", ${JSON.stringify({ sessionId: session.id, cwd: process.env.COLT_SMOKE_CWD ?? process.cwd() })})
+        .invoke("session.open", ${JSON.stringify({ sessionId: session.id })})
         .then(() => "OK")
         .catch((e) => "REJECTED: " + e.message);
       return Promise.race([attempt, timeout]);

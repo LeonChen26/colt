@@ -96,6 +96,21 @@ function createWindow(): BrowserWindow {
     return { action: "deny" };
   });
 
+  /**
+   * 同窗口导航拦截（F6）：渲染层 sandbox:false、又无第二道防线的那个缺口。
+   * Markdown 链接有 `target=_blank` + setWindowOpenHandler 兜底（走系统浏览器），
+   * 但 window.location / meta refresh 这类**同窗口**跳转此前没有任何拦截——
+   * 一旦被注入（渲染层会渲染 agent 生成的 Markdown），页面就能整体换成任意内容。
+   * 主窗口是应用本体，除了初始加载与锚点变化，没有任何合理的自导航：
+   * 不是「当前页」的导航一律拒绝。初始加载瞬间 getURL() 为空串，放行那一次。
+   */
+  window.webContents.on("will-navigate", (event, url) => {
+    const current = window.webContents.getURL();
+    if (current === "" || url === current) return;
+    event.preventDefault();
+    console.warn(`[security] 已拦截主窗口的未授权导航：${url}`);
+  });
+
   const devServerUrl = process.env.ELECTRON_RENDERER_URL;
   if (isDev && devServerUrl) {
     void window.loadURL(devServerUrl);

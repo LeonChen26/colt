@@ -100,10 +100,6 @@ export default function App(): React.JSX.Element {
    */
   const [approvalSessions, setApprovalSessions] = useState<Set<string>>(() => new Set());
   const [questionSessions, setQuestionSessions] = useState<Set<string>>(() => new Set());
-  const pendingSessions = useMemo(
-    () => new Set([...approvalSessions, ...questionSessions]),
-    [approvalSessions, questionSessions],
-  );
   /**
    * 当前会话**自己**属于哪个项目——中间区的工作目录（cwd）由此推出，而不是取当前选中的项目。
    *
@@ -643,7 +639,13 @@ export default function App(): React.JSX.Element {
                               active={session.id === activeSession?.id}
                               startedAt={runningSessions.get(session.id)}
                               offlineState={offlineSessions.get(session.id)}
-                              waiting={pendingSessions.has(session.id)}
+                              waiting={
+                                approvalSessions.has(session.id)
+                                  ? "approval"
+                                  : questionSessions.has(session.id)
+                                    ? "question"
+                                    : undefined
+                              }
                               pinned={pinnedSessions.has(session.id)}
                               now={now}
                               onClick={() => {
@@ -869,8 +871,13 @@ function SessionRow({
    * 与 startedAt 正交：停止的会话一定不在运行中。
    */
   offlineState?: "dormant" | "crashed";
-  /** 有待用户处置的授权请求。比「运行中」更该被看见，故显示时优先于它 */
-  waiting: boolean;
+  /**
+   * 有待用户处置的请求，及是哪一类：**授权**（等人给许可）还是**提问**（等人给信息）。
+   * 协议层刻意把两者分成两条通道（approval.pending / userquestion.pending），
+   * 这里也必须分开说——模型提问不是申请授权，混用会稀释用户对真正授权卡的警觉。
+   * undefined = 没有待处置。同一会话两类同时挂起时取「授权」（更该被看见）。
+   */
+  waiting: "approval" | "question" | undefined;
   /** 被钉住的会话不被自动回收。与 offlineState 正交：钉住只是「别收」，不代表进程还活着 */
   pinned: boolean;
   now: number;
@@ -937,7 +944,9 @@ function SessionRow({
             )}
           >
             {waiting
-              ? "等待你的授权"
+              ? waiting === "approval"
+                ? "等待你的授权"
+                : "等待你的回答"
               : running
                 ? `运行中 · ${formatElapsed(startedAt, now)}`
                 : offlineState === "crashed"
