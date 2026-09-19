@@ -15,6 +15,11 @@
  *       点「允许一次」→ 夹具 stdio server 真实往返 → 结果作为工具结果回到模型。
  *       夹具 `out/smoke-mcp-e2e-fixture/.colt/mcp.json` 声明 server `fixture`，
  *       server 进程用 ELECTRON_RUN_AS_NODE 让 electron 按 Node 跑（不依赖 PATH 有 node）
+ * subagent-e2e：子代理链路的**真实模型**端到端（打模型；云端计费，本地 Ollama 免费）——
+ *       模型按名调用 demo 子代理（＝<available_subagents> 清单真进了提示词）→
+ *       subagent 调用免闸、子 lane 的内部 write 照常弹审批卡（带「来自 demo」归属）→
+ *       点「允许一次」→ 子代理结论回主模型；fresh 隔离用「主对话密语缺席于子代理
+ *       transcript」的确定性判据。夹具 `.agents/agents/demo.md` 与生产发现路径同构
  * dock：工作区（右栏）界面行为——折叠/展开、拖拽调宽与上下限、宽度记忆、⑦-F 自动展开、
  *       ⑦-G 的「任务摘要」（进行中的动作 + 底部总账）与它的下钻（清单 → diff → 内容）、
  *       点文件路径 → 下钻内容层（工具卡入口）、页签关闭与「+」新增视图、
@@ -78,6 +83,7 @@ import { runFixture } from "./modes/fixture";
 import { runHost } from "./modes/host";
 import { runMemory, runMemoryE2e } from "./modes/memory";
 import { runMcpE2e } from "./modes/mcp-e2e";
+import { runSubagentE2e } from "./modes/subagent-e2e";
 import { runPerf } from "./modes/perf";
 import {
   runModelFallback,
@@ -205,6 +211,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runAskUserE2e(window, log, run);
     } else if (mode === "mcp-e2e") {
       await runMcpE2e(window, log, run);
+    } else if (mode === "subagent-e2e") {
+      await runSubagentE2e(window, log, run);
     } else if (mode === "reenter") {
       await runReenter(window, project.id, sessionsDir, log, run);
     } else if (mode === "crash") {

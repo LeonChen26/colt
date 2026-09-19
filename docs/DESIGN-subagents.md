@@ -4,7 +4,7 @@
 > **落地位置**：worker 侧 `src/worker/lib/{subagent,agent-defs,subagent-view,lane-ownership,tool-bookkeeping,approval-bridge}.ts`；
 > 界面侧 `SubagentPreview.tsx` / `panels/SubagentStream.tsx` / `FollowPanel.tsx` / `MessageList.tsx` / `ChangeDrilldown.tsx`；
 > 冒烟 `COLT_SMOKE_MODE=subagent`（免模型）；单测 `tests/{subagent,lane-ownership,agent-defs,subagent-view,stable-view,telemetry,project}.test.ts`。
-> **P4 未做**（按计划）：按子代理归属分组统计、`/subagent` 命令；**计费 e2e**（`subagent-e2e`）亦未建（见 §10、§12）。
+> **P4 未做**（按计划）：按子代理归属分组统计、`/subagent` 命令；~~计费 e2e~~ **`subagent-e2e` 已建并已实测**（2026-09-19，qwen3:0.6b，15/15 全绿，见 §10、§12 上方的运行手册与 `NEXT-PHASE.md` §5 3-f）。
 > **一句话**：给模型一个「把一件事整包交给另一个 agent 去做」的工具——子代理跑在**同会话的独立
 > lane** 上（进程内、独立 transcript、独立工具白名单），**开局只有委托方写的那段任务描述**（`fresh`，
 > 刻意不继承主对话历史），产出一段结论回到主对话；界面上它是 ④ 的一张**活卡** + ⑦「任务摘要」
@@ -464,16 +464,19 @@ tools: read, grep, glob, ls, memory_search
 6. 主会话 `abort` → 在跑的子代理状态全部转 `aborted`（打桩计数）；
 7. ⚠️ 断言小目标入口要**命中测试**（`document.elementFromPoint(中心)`），别只查「在不在 DOM 里」。
 
-### 打模型的端到端（可选，**计费**）：`COLT_SMOKE_MODE=subagent-e2e`
+### 打模型的端到端：**已建已实测** `COLT_SMOKE_MODE=subagent-e2e`（2026-09-19，15/15 全绿）
 
 做法同 `ask-user-e2e`：**worker 的生死交给渲染层**（`upsertProject(夹具)` + `window.reload()`
 等它自动打开会话就绪），**不要**直连 `session.open` 去抢 worker（`AGENTS.md` §五末条）。
+运行手册（命令 / 断言清单 / 已实测记录）在 `NEXT-PHASE.md` §5 **3-f**；判据一律取自主进程
+（待审队列 / 视图 / 子代理 transcript），批准确走真实 UI（「允许一次」+ 命中测试）。
 
-- ① 模型**真的调用了 `subagent`**，且 `agent` / `task` 与 prompt 点名的一致；
-- ② **`fresh` 真的隔离**：子代理的结论里**不出现**只有主对话里才有的事实（把它当判据钉住）；
-- ③ 结果作为**工具结果**回到主 lane，模型接着往下做；
-- ④ **递归被拒**（子代理尝试再开一个 → 报错而不是静默）；
-- ⑤ 费用**计进会话**（决策五 D8）。
+上面计划清单的落实情况：① 模型真调用了 `subagent` 且按名命中 demo ✅；② `fresh` 真的隔离
+（主对话随机密语缺席子代理 transcript，判据是「缺席」）✅；③ 结果作为工具结果回主 lane ✅；
+⑤ 费用归属有 stats 字段 ✅（本地 Ollama 不计费，未验计费通道本身）。**④ 递归被拒的
+模型侧 e2e 仍未建**（白名单不含 `subagent` + 提示词明写 + depth 守卫只有单测与代码审查）。
+另实测记录：小模型（0.6b）服从是概率事件——「发 prompt → 等内部 write」整条可重试至多
+3 次，主 lane 绕过委派直接 write 会被拒掉并在理由里指路，断言不放水。
 
 ### 明确不覆盖（写明，免得被当成验过了）
 

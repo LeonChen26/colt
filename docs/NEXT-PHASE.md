@@ -190,7 +190,7 @@
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
   | ③ | MCP | **已实施**（验证性原型，2026-09-19） | 设计 `docs/DESIGN-mcp.md`；worker 侧 `lib/mcp-tools.ts`（官方 SDK 直连 stdio，不装 `pi-mcp-adapter`）；配置 `<cwd>/.colt/mcp.json`；单测 `tests/mcp-tools.test.ts`（14 条，真实 stdio 子进程往返，夹具 `tests/helpers/mcp-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）：装载告知 → 模型真的调用 `mcp__fixture__echo` → 未知工具弹审批卡（risk=moderate）→ 点「允许一次」→ `echo:<nonce>` 真实 stdio 往返回到模型。**仅剩**：worker 被强杀时 MCP 子进程成孤儿（正常 dispose 有 `process.on("exit")` 兜底） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
-  | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**未覆盖（别当成验过了）**：`subagent` 免闸门 / 内部写弹卡的**执行侧**、`fresh` 隔离的**真实效果**、**「模型真的在系统提示词里看得见子代理清单」**——三者都要模型真的调用工具，待 `subagent-e2e`（**打模型、计费**，尚未建）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
+  | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属、`fresh` 隔离真实效果、清单真进提示词）由 `subagent-e2e`（打模型）覆盖，**15/15 全绿**（2026-09-19，qwen3:0.6b 实测，见 §5 3-f）。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e（abort 链路只走了单测与呈现层）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
 
   ①的入口级遗留（别当成验过了）：worker 侧跳过闸门那条守卫与「全权模式下提问仍要弹」已由
@@ -462,7 +462,7 @@
    `fresh` 隔离的**真实效果**，以及**「模型真的在系统提示词里看得见子代理清单」**——最后一条与
    `todo` 同源（§3.2 提到）：免模型冒烟只能验**目录块拼得出来**（`tests/agent-defs.test.ts`
    断言最终字符串里有 `<available_subagents>`），验不了它**真的进了模型那次请求的提示词**。
-   三者都要模型真调用，待 `subagent-e2e`（**尚未建、会打模型**）；
+   三者都由 `subagent-e2e`（打模型）覆盖，见 §5 **3-f**；
    分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖。
 
 > **3-e. MCP 工具真实模型端到端：改 `worker/lib/mcp-tools.ts` 的装载/包装、
@@ -488,6 +488,33 @@
 >   `mcp__fixture__echo` → 未知工具弹审批卡（risk=moderate「未知工具，按需确认」）→
 >   点「允许一次」→ `echo:<nonce>` 经真实 stdio 往返作为工具结果回到模型、模型复述 nonce。
 >   （首次跑时 GLM 账户 429 余额不足未跑成；换成本地 Ollama 后复跑通过——本地模型不计费。）
+
+> **3-f. 子代理真实模型端到端：改 `worker/lib/subagent.ts` 的编排 / 闸门归属
+>   （`request.subagent`）/ `lib/agent-defs.ts` 的清单注入、或 `fresh` 隔离边界时必跑**
+>   （2026-09-19 加，**打模型**，本地 Ollama 不计费）：
+>
+>   ```powershell
+>   $env:COLT_SMOKE=".smoke-subagent-e2e.png"
+>   $env:COLT_SMOKE_MODE="subagent-e2e"
+>   npm run dev
+>   ```
+>
+>   看 `out/.smoke-subagent-e2e.png.log` 末行是否 `通过 15/15`。它验 §3.2 ⑤ 里三个
+>   **只有模型真调用工具才走得到**的执行侧事实：① **清单可见**——模型按名调用
+>   `subagent(agent=demo)`，视图出现 demo 活条目（看不见清单就不会按名调）；
+>   ② **免闸门 / 内部写弹卡**——`subagent` 调用本身不进审批队列，而子 lane 里那次
+>   `write` 照常进闸，且待审项带「来自 demo」归属（`request.subagent`，④ 卡 chip 数据源），
+>   批准确走真实 UI（「允许一次」+ 命中测试）；③ **fresh 隔离**——prompt A 先把随机密语
+>   钉进主 transcript，再断言它绝不出现在子代理 transcript（判据是「缺席」，确定性）。
+>   write 的真实产物（文件落盘 + 内容）从审批请求实际入参验，不猜模型选了什么文件名。
+>   夹具项目 `out/smoke-subagent-e2e-fixture/`（gitignored），`.agents/agents/demo.md`
+>   由用例现写；worker 的生死交给渲染层（同 ask-user-e2e，`window.reload()` 等自动打开）。
+>   **小模型服从是概率事件**（0.6b 实测过三种失败形态：不调工具、子代理假装写了、
+>   绕过委派自己直接 write），故「发 prompt B → 等内部 write」整条可重试至多 3 次：
+>   主 lane 绕过委派的直接 write 会被**拒掉并在理由里指路**，断言一条不放水。
+>   **已实测**（2026-09-19，本地 Ollama qwen3:0.6b，15/15 全绿）：密语进主对话 →
+>   模型按名调 demo → 内部 write 带归属进闸（risk 有值）→ 点「允许一次」→ 文件真实落盘 →
+>   子代理 completed、结论回主模型 → 密语缺席子代理 transcript → 全程无未捕获异常。
 
 4. **模型选择 / 会话生命周期端到端（改 `model-ref` / provider / `session.create` 必跑）**：
    ```powershell
