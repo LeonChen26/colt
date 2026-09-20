@@ -5,7 +5,7 @@
 > 新增条目时：写清「症状 → 根因 → 铁律」，不要只写结论。
 >
 > **配套文档**（本文件只管「已犯过的错」，别的内容各有宿主）：
-> 项目是什么 / 怎么跑 → `README.md`；设计原则 → `docs/PRINCIPLES.md`；
+> 项目是什么 / 怎么跑 → `README.md`；怎么改（环境、命令、测试与冒烟、代码地图）→ `CONTRIBUTING.md`；设计原则 → `docs/PRINCIPLES.md`；
 > 跨进程边界与契约变更 → `docs/ARCHITECTURE.md`；权限模型与安全边界 → `docs/SECURITY.md`；
 > 失败如何呈现 → `docs/ERRORS.md`；编号看不懂（`⑦`/`A3-4`/`N1`/`事 B`）→ `docs/GLOSSARY.md`。
 

@@ -12,8 +12,8 @@
 - **模型可换**：内置 DeepSeek，也可接任意 OpenAI 兼容 endpoint（含本地服务）。
 - **全程本地**：密钥用 Electron `safeStorage` 加密后落盘，明文只在内存与 worker 进程环境变量里；会话数据存在本机 SQLite。
 - **能力有闸门**：写文件、跑命令、开浏览器、控制桌面都要过审批，可记住放行规则。
-- **技能可继承**：按 Agent Skills（agentskills.io）开放标准，从 `<项目>/.agents/skills`（项目级）与 `~/.agents/skills`（用户级）装载 `SKILL.md`，另有一层**内置技能**随应用分发（优先级最低，磁盘上的同名技能可盖它）；同名时**项目级胜出**，装了什么、跳过了什么都如实提示。进系统提示词的是**清单**（名字 / 说明 / 文件位置），正文由模型按需去读那个文件，不占常驻上下文。技能在**新建会话**时装载。技能是**声明式文本、不经审批闸门**——这条边界的理由见 `docs/SECURITY.md`。
-- **MCP 可扩展**：在项目级 `<项目根>/.colt/mcp.json` 或用户级 `~/.colt/mcp.json` 声明 MCP server（本地进程或远程），其工具以普通内核工具进入、**照常过审批闸门**，不是给 agent 开的旁路。也可以直接让 agent 帮你装（见「接入 MCP server」）。
+- **技能可继承**：按 Agent Skills（agentskills.io）开放标准，从项目级 `.agents/skills` 与用户级 `~/.agents/skills` 装载 `SKILL.md`，另有一层**内置技能**随应用分发（优先级最低，磁盘上同名可盖它）。进系统提示词的是**清单**（名字 / 说明 / 文件位置），正文由模型按需去读，不占常驻上下文。技能是**声明式文本、不经审批闸门**——这条边界的理由见 `docs/SECURITY.md`。
+- **MCP 可扩展**：用 `.colt/mcp.json` 声明 MCP server（本地进程或远程），其工具以普通内核工具进入、**照常过审批闸门**，不是给 agent 开的旁路。配置格式见 [`docs/MCP.md`](docs/MCP.md)。
 
 ## 这不是什么
 
@@ -35,140 +35,7 @@ npm install
 npm run dev
 ```
 
-| 命令 | 作用 |
-|---|---|
-| `npm run dev` | 开发模式启动（electron-vite） |
-| `npm run typecheck` | 三个 tsconfig 全量类型检查（node / web / test） |
-| `npm test` | 单测（node:test；**条数以运行输出为准**——不写死：每增删一条用例就变，写下来的当天就过期） |
-| `npm run build` | 类型检查 + 构建产物到 `out/` |
-| `npm run dist` | 打 Windows 安装包（electron-builder，不发布） |
-| `npm run fixture` | 起浏览器测试用夹具站（默认 8787） |
-| `npm run probe` | 运行时环境探针 |
-
-### ⚠️ 两个会拦住你的环境问题
-
-1. **`electron` 被精确 pin 在 `44.2.0`，不要用 `^` 升它。** 本机开着 Windows「智能应用控制」（SAC）时会拦未签名的 `electron.exe`，症状是 `npm run dev` 报 `spawn UNKNOWN`（errno `-4094`），而 `build` / `test` 全绿。官方 Electron **本来就不签名**，SAC 按微软信誉库放行，实测阈值在发布后 **7~11 天**——所以「今天能跑」不代表「过几天能跑」。判据与处置见 `AGENTS.md` §五。
-2. **预览本地 HTML 不能用 `file://`**，浏览器工具只接受 http/https——先 `python -m http.server` 或 `npm run fixture`。
-
-### 冒烟自检
-
-冒烟是主进程里的真实验证装置（`src/dev/smoke/`），能在渲染层**真派发事件**并断言截图看不见的状态（原生视图矩形、页签数、IPC 落点）。**仅开发期存在**：用 `import.meta.env.DEV` 守卫，生产构建会把整段树摇掉。
-
-```powershell
-$env:COLT_SMOKE="dock.png"      # 产物文件名，固定落在 out/
-$env:COLT_SMOKE_MODE="dock"     # 选模式
-npm run dev
-```
-
-| 模式 | 内容 | 断言数 |
-|---|---|---|
-| `basic` | 主界面自检 | 仅日志 |
-| `fixture` | 浏览器能力本体 | **25** |
-| `dock` | 右栏 ⑦ 全家桶（页签 / 拖拽 / 折叠 / 下钻 / 净值 / 观测抽屉 / 前后退刷新 / 逐像素对齐 / 视口标记 / `/compact` / `/memory-tidy` / `/skill` / `/` 候选浮层 / 技能归属（卡不冒充用户）/ 技能工具卡标记 / 等待授权 / 装不下提示 / 适应宽度） | **221** |
-| `skills-reload` | 技能的**设置页可见性 + 热重载 + 启用/禁用**链路（冷启动装载 / **内置技能随包那份真的装上了** / 加技能不重启会话 / 超长正文的全文与告警 / 单个禁用落到项目级 `.colt/skills.json` 且 `/` 候选随之排除·启用后恢复 / `skills.status`·`skills.rescan`·`skills.setDisabled`·`skills.reveal` 的有会话与无会话形状；**不打模型**） | **18** |
-| `model` | 模型解析与降级六段 | **46**（7/6/6/6/1/20） |
-| `memory` | 记忆链路端到端（真实 worker → 索引落库 → 检索 → 项目隔离） | **11** |
-| `memory-e2e` | 记忆**行为**端到端，真实调用（注入可见性 / 沉淀落盘+索引 / `/memory-tidy` 合并删过时+归档+通知 / 冷层检索） | **12** |
-| `ask-user` | 模型提问（`ask_user`）阻塞链路——卡片、选项、载荷、跳过 / 超时收尾、回收不留悬空卡（**不打模型**） | **23** |
-| `ask-user-e2e` | 提问链路**真实模型**端到端（模型真的看见并调用 `ask_user` / 全权模式下不被静默放行 / 答案作为工具结果回到模型并接着往下做） | **11** |
-| `subagent` | 子代理呈现链路（④ 卡特化 + 有界预览 / 卡面「中止」，右栏不再重复列此刻动作 / **不自动展开右栏** / 下钻的「运行中实时 vs 跑完完整流」分层；**不打模型**） | **21** |
-| `subagent-e2e` | 子代理链路**真实模型**端到端（清单可见 / 免闸门但内部写弹卡 / fresh 隔离 / 递归无入口；**打模型**） | **22** |
-| `perf` | 长会话渲染开销（rAF 采样最长帧）+ 消息窗口 / 只看问答折叠 / 目录与搜索（**不打模型**） | **31** |
-| `host` | 宿主能力往返 | 7 |
-| `advanced` / `approval` / `reenter` / `crash` | 长会话 / 审批四场景 / 重入 / 崩溃恢复 | 仅日志 |
-
-> 📌 上表的断言条数**仅作量级参考、会随增删漂移**；验收一律以运行输出为准。
-
-> ⚠️ **计费**：只有 `fixture`、`dock`、`skills-reload`、`memory`、`perf`、`ask-user` 与 `subagent` 这几个模式**不调用模型**；其余模式（含不给
-> `COLT_SMOKE_MODE` 时的 `basic`）都会真实打模型并产生费用。`memory-e2e` 是记忆的
-> **行为**验证，固定打 4 次真实调用——只想验链路别跑它，跑 `memory`。`ask-user-e2e`
-> 同理：`ask-user` 已覆盖入队之后的一切，只有「模型自己发起提问」那一段需要打模型。
-> `dock` 此前不在此列——它的 `/compact` 段把打桩转给了真实现，会真发两句测试 prompt、
-> 计一次费，还把这两句写进用户真实项目的会话历史；v1.41 起该段**只记账、不转发**。
->
-> 📌 **`model` 模式会临时改动你的 provider 配置**：`[model/fallback]` / `[model/keyless]` /
-> `[model/no-usable]` 三段都要造出「这台机器上只有 XX 服务」的环境（默认解析是从整份列表里挑的），
-> 跑完在 `finally` 里原样还回去。做法取**最小副作用**——带密钥的服务**只删密钥、不删条目**
-> （万一硬崩，丢的也只是一个密钥值，重填即可），只有免密钥的条目会被整条挪走。
-> 详因见 `NEXT-PHASE.md` §5 第 4 条。
-
----
-
-## 接入 MCP server
-
-MCP（Model Context Protocol）server 的工具会以**普通内核工具**的身份进入，天然过 `before_tool` 审批闸门——不是给 agent 开的旁路。
-
-配置是 JSON，放两处之一（**项目级同名覆盖用户级**）：
-
-- 项目级 `<项目根>/.colt/mcp.json`——只对当前项目生效；
-- 用户级 `~/.colt/mcp.json`——对全部项目生效（常见 server 只配一次）。
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
-    },
-    "remote": {
-      "url": "https://example.com/mcp",
-      "headers": { "Authorization": "Bearer ${MY_TOKEN}" }
-    }
-  }
-}
-```
-
-- 本地进程用 `command`（+ `args` / `env`），远程用 `url`（+ `headers` / `transport`，缺省 Streamable HTTP，可写 `"sse"`）——**二选一**。
-- 字符串值支持 `${VAR}` 展开成进程环境变量；**缺变量会成告警并跳过该 server，而不是静默留空**。密钥一律用 `${VAR}`，别写明文。
-- stdio 子进程的工作目录就是**项目根**——`args` 里的相对路径（如 `"."`）按它解析。
-- 改完在**设置页**点「重新加载」即生效、**不必重启会话**；设置页同时显示每台 server 的连接状态、工具清单与配置诊断。
-
-**不想手写配置？** 直接让 agent 做：「帮我接一个 X 的 MCP server」。它知道格式与两个位置，会创建文件、告诉你装上了什么工具，并提示点一下重载；写用户级（项目外的 `~/.colt/`）时会先征得你同意。
-
----
-
-## 代码地图
-
-```
-src/
-├─ main/       主进程：窗口、DB、IPC 路由、审批、宿主能力、worker 进程池
-│  ├─ approval/   审批闸门：策略判定 / 待审队列 / 大模型分析器 / 可配置项
-│  ├─ host/       宿主能力：内嵌浏览器（原生 WebContentsView）、电脑控制、观测
-│  ├─ db/         SQLite（schema + 迁移 + DAO）
-│  └─ ipc/        渲染层所有调用的落点
-├─ preload/    contextBridge 白名单桥（按通道名白名单暴露）
-├─ renderer/   React 渲染层
-│  └─ src/
-│     ├─ features/Conversation/   对话面板：消息流、右栏工作区、授权卡、观测抽屉
-│     ├─ components/              通用展示件（Markdown / Diff / 代码 / 终端输出）
-│     └─ lib/                     纯函数（diff 分类、清单分组、统计、语言识别…）
-├─ shared/     跨进程契约与纯逻辑（IPC 协议、worker 协议、只读白名单、思考等级）
-└─ worker/     每会话一个 utilityProcess，持内核 harness/lane
-```
-
-四条**边界**值得先记住（详见 `docs/ARCHITECTURE.md`）：
-
-- **内核在 worker 里**，主进程不直接调模型。
-- **窗口与 OS 权限在主进程里**，worker 只能发命令、等结果（`toolRpc`）。
-- **契约只有一个真源**：`src/shared/protocol.ts` 与 `worker-protocol.ts`。
-- **纯逻辑抽进 `lib/`**，因为它们可单测；碰 electron 的留在原处。
-
----
-
-## 文档怎么读
-
-| 文档 | 什么时候读 |
-|---|---|
-| `docs/PRINCIPLES.md` | **动手前**。设计原则 + 逐条现状，改动是否违背一眼可查 |
-| `docs/ARCHITECTURE.md` | 跨进程改动、加 IPC 通道 / 加工具 / 加表字段之前；**升级 pi 依赖之前**（§四） |
-| `docs/SECURITY.md` | 碰审批、文件读写、浏览器/电脑控制、密钥之前 |
-| `docs/ERRORS.md` | 写任何可能失败的路径之前（失败可见性铁律） |
-| `docs/GLOSSARY.md` | 看不懂某处的编号（`⑦`、`A3-4`、`N1`、`事 B`）时 |
-| `docs/UI-REGIONS.md` | 改界面区域时。**界面现状的真源**（逐区域定义 + 版本表） |
-| `docs/NEXT-PHASE.md` | 想知道现状基线、哪些明确不做、怎么验收 |
-| `docs/DESIGN-todo.md` | 做「任务摘要 / todo」这条线之前（设计草案，**已实施**，含未覆盖项标注） |
-| `docs/archive/` | 已完结的历史文档与概念稿（审查报告 / 交接书 / 早期原型），只在追溯历史时看 |
-| `AGENTS.md` | **已犯过的错误**与铁律。在这个仓库里动手之前必读 |
+常用命令、开发环境的两个坑（`electron` 的 pin 与 SAC、`file://` 预览）、测试与冒烟自检、代码地图——都在 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ---
 
@@ -176,7 +43,26 @@ src/
 
 已经能用：项目管理、会话与分支树、对话流（思考轨 / 工具卡内嵌 diff / 授权卡）、模型与思考等级切换、审批三模式与记忆规则、Live Bar 运行态、右栏四页签 + 下钻（清单 / diff / 文件内容）+ 浏览器观测抽屉、内嵌浏览器（含前进后退刷新、上传下载、视口联调标记）、电脑控制、**净值**（基线 → 现在）、统计与规则面板、主题、设置、**MCP 接入**（本地 / 远程，项目级 + 用户级）。
 
-已知缺口记在 `docs/NEXT-PHASE.md` §1、明确不做记在 §3.2；下一步计划（原 §3.1 的 N1–N4）已删除、暂空。
+已知缺口记在 `docs/NEXT-PHASE.md` §1、明确不做记在 §3.2。
+
+---
+
+## 文档怎么读
+
+| 文档 | 什么时候读 |
+|---|---|
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 要改这个仓库时：环境、命令、测试与冒烟、代码地图、提交前检查 |
+| [`AGENTS.md`](AGENTS.md) | **动手之前必读**。已犯过的错误与铁律，每条都对应一次真实事故 |
+| `docs/PRINCIPLES.md` | **动手前**。设计原则 + 逐条现状，改动是否违背一眼可查 |
+| `docs/ARCHITECTURE.md` | 跨进程改动、加 IPC 通道 / 加工具 / 加表字段之前；**升级 pi 依赖之前**（§四） |
+| `docs/SECURITY.md` | 碰审批、文件读写、浏览器/电脑控制、密钥之前 |
+| `docs/ERRORS.md` | 写任何可能失败的路径之前（失败可见性铁律） |
+| `docs/MCP.md` | 接 MCP server 时（配置格式、两个位置、`${VAR}` 与热重载） |
+| `docs/UI-REGIONS.md` | 改界面区域时。**界面现状的真源**（逐区域定义 + 版本表） |
+| `docs/NEXT-PHASE.md` | 想知道现状基线、哪些明确不做、怎么验收 |
+| `docs/DESIGN-todo.md` · `docs/DESIGN-mcp.md` · `docs/DESIGN-subagents.md` | 动这三条线之前。设计决策记录（**均已实施**，含未覆盖项的如实标注） |
+| `docs/GLOSSARY.md` | 看不懂某处的编号（`⑦`、`A3-4`、`N1`、`事 B`）时 |
+| `docs/archive/` | 已完结的历史文档与概念稿，只在追溯历史时看 |
 
 ---
 
@@ -184,7 +70,4 @@ src/
 
 [MIT](LICENSE) © 2026 Colt
 
-MIT 要求「在软件的所有副本或实质部分中保留版权与许可声明」，所以 `LICENSE` 有三处落点：
-仓库根（本文件的链接）、发布产物的 `app.asar` 内（`electron-builder.yml` 的 `files`）、
-以及 Windows 安装向导的许可页（`nsis.license`）。源码文件顶部标 `SPDX-License-Identifier: MIT`，
-无需读全文即可由工具识别许可。
+`LICENSE` 有三处落点（仓库根、发布产物的 `app.asar` 内、Windows 安装向导的许可页），源码文件顶部标 `SPDX-License-Identifier: MIT`。细节见 [`CONTRIBUTING.md`](CONTRIBUTING.md) §许可证落点。
