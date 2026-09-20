@@ -17,15 +17,16 @@
 >   自己安装**（决策 21）。
 > - `worker/lib/mcp-tools.ts`——连接、包装、runtime（`createMcpRuntime` / `reload` / `status` / `close`），
 >   以及 `capabilityTools`（把 server **声明了的** resources / prompts 也包成内核工具，决策 13）。
-> - `worker/lib/mcp-reload.ts`——MCP 与 harness / 系统提示词 / 设置页的**接线**（三件事一处）：
->   热重载写回（`reloadMcpIntoHarness`）、`instructions` 注入与设置页命令（决策 14）。
+> - `worker/lib/mcp-reload.ts`——MCP 与 harness / 系统提示词 / 设置页的**接线**（四件事一处）：
+>   热重载写回（`reloadMcpIntoHarness`）、**后台补挂**（`armLateMcpAttach`，决策 25）、
+>   `instructions` 注入与设置页命令（决策 14）。
 > - `worker/entry.ts`——接线（`...mcp.tools` 进 tools 数组；两条 MCP 命令已收进上面那个文件）。
 > - `main/session-manager.ts` + `main/ipc`——`mcp.status` / `mcp.reload` 两个 IPC
 >   （配置诊断 `diagnostics` 由主进程自己解析后一并带出，见决策 16）。
 > - `renderer/src/features/Settings.tsx`——`McpSettings`（设置页可见性，含诊断块）。
 > 依赖 **v2 的官方 SDK**：`@modelcontextprotocol/client@2.0.0`（运行期唯一新增依赖）；
 > `@modelcontextprotocol/server` / `node` / `server-legacy` 只被**测试夹具**用（见 §3 决策 12）。
-> **验收**：单测 `tests/mcp-tools.test.ts`（**42 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
+> **验收**：单测 `tests/mcp-tools.test.ts`（**48 条**，全部是真实子进程 / 真实 HTTP / 真实 SSE 往返）。
 > 夹具都与生产方同构（低层 `Server` 类 + 裸 JSON Schema）：
 > `mcp-fixture-server.mjs`（stdio，3 工具）/ `mcp-paged-fixture-server.mjs`（stdio，分页）/
 > `mcp-http-fixture-server.mjs`（Streamable HTTP，含 headers 回显）/
@@ -201,11 +202,13 @@
     - **症状**（收盘审计发现，2026-09-19）：预算原先是 `10_000`，抄自 `branches` /
       `subagentTranscript` 那两条**快**操作。而这条往返最慢的正当耗时有两段都远超它：
       ① 会话还没就绪时命令要等 `ready` 才下发（`#post` 暂存），上限是 `READY_TIMEOUT_MS`；
-      ② 就绪后 `mcpReload` 要**串行**把每台变更 / 上一轮失败的 server 重新连上，每台
+      ② 就绪后 `mcpReload` 要**重新连上**每台变更 / 上一轮失败的 server，每台
       ≤ `MCP_STEP_TIMEOUT_MS`（连接）+ 同样一步（列工具）。于是设置页会弹红字
       「查询 MCP 状态超时」，**而 worker 正在正常连接**——不是报错，是界面在说谎
       （与决策 11 同一条纪律的另一面：宁可不说话，也不说反话）。
-    - **改法**：预算改为 `READY_TIMEOUT_MS + 2 * MCP_STEP_TIMEOUT_MS`，且**单步值进
+      （多台**已经不叠加**了：连接自决策 25 起是并行的，总耗时回到「一台的最坏值」。）
+    - **改法**：预算改为 `READY_TIMEOUT_MS + 2 * MCP_STEP_TIMEOUT_MS`（决策 25 之后抬到
+      `4 *`，理由见本条末「残余」），且**单步值进
       `shared/limits.ts`**——它被两侧各读一次（worker 当 `connect` / `listTools` 的超时，
       主进程拿它算预算），正是 `limits.test.ts` 守的那一类「漂成两份就静默出错」的常量。
       改回一个拍脑袋的数、或在别处再写一份字面量，都会让那条守卫变红。
@@ -213,9 +216,13 @@
       断言「这次重载真的等过了 10s 仍然正常兑现」。实测 **15035ms** 后直接返回该 server 的
       `error` 态（`连接失败：Request timed out`）。判据挂在「等过旧预算」上，所以把预算改回
       10s 这条**立刻红**——这正是它能证伪的地方。
-    - **残余（如实记）**：多台 server 同时需要重连会**叠加**（每台 ≤ 2 步），超过这条线仍以
-      超时收敛——那时是「坏了」而不是「慢」，报错是对的。这条线是兜底、不是 UX 目标：
-      正常路径下 worker 一答完就兑现，用户不会真等这么久。
+    - **残余（如实记，2026-09-19 由决策 25 修订）**：多台**同时重连已不叠加**（并行），
+      剩下的叠加只有一种、而且跨两轮：重载要**先等上一轮后台收尾落定**再跑
+      （`reload()` 里的 `await tail`），收尾一段 + 本轮一段，各 ≤ 2 步——所以这条线是
+      `4 * MCP_STEP_TIMEOUT_MS` 而不是 2 步（2 步盖不住：一台慢连成功 30s 在收尾里，
+      另一台先超时失败、本轮再连一次，就要 45s）。超过这条线仍以超时收敛（那是「坏了」
+      而不是「慢」，报错是对的）。这条线是兜底、不是 UX 目标：正常路径下 worker 一答完就
+      兑现，用户不会真等这么久。
 
 16. **配置诊断走 IPC，两条路都给**（`main/ipc` 的 `declaredMcpServers` 返回值 + 协议字段）。
     - **症状**（收盘审计发现，2026-09-19）：`declaredMcpServers` 只解构 `servers`，把
@@ -250,12 +257,12 @@
     `PendingMcpQuery` + `#drainPendingMcp`）。
     - **症状**（收盘审计 ⑦，2026-09-19）：待决队列原先只有一个兑现口子（`settle`），worker 崩掉 /
       被回收 / init 失败时两条异步路径都只写 `pendingMcp.length = 0`——把等待方**丢掉**，指望
-      「各自的超时会收敛」。这在预算 10s 时只是慢，抬到 `MCP_QUERY_TIMEOUT_MS`（150s，见决策 15）
-      之后就变成设置页挂一条**假的**「重载中…」两分半。三个触发点：
+      「各自的超时会收敛」。这在预算 10s 时只是慢，抬到 `MCP_QUERY_TIMEOUT_MS`（分钟级，见决策 15）
+      之后就变成设置页挂一条**假的**「重载中…」两三分钟。三个触发点：
       ① worker 异常退出；② 用户切走 / 空闲回收（`#disposeWorker`）；③ init 失败（`fatal`，
       此时 worker 收到 mcpStatus 只会回一条 `error`，而按 FIFO 配对那条 error 落不到等待方头上）。
     - **改法**：队列元素带**两条**收场口子（`settle` / `fail`），三处都改调 `#drainPendingMcp`
-      （`splice(0)` 摘空 + 逐个 `fail`，各自掐掉自己的定时器）。于是 150s 那道超时退化成纯兜底
+      （`splice(0)` 摘空 + 逐个 `fail`，各自掐掉自己的定时器）。于是那道分钟级超时退化成纯兜底
       （只对付「worker 活着但卡死」），正常与异常路径都**当场**有结论。
     - **已知未覆盖，如实记下**：这条**没有行为断言**（只有代码与类型）。要覆盖得造出「有活 worker
       且在飞着一份 MCP 查询时它死掉」的场面，而现有注入器 `scripts/crash-worker.cjs` 在 t=0 就
@@ -334,6 +341,63 @@
       `timeout: 60` 下睡 400ms **必须被掐断**，而 `toolTimeouts: { sleep: 8000 }` 覆盖同一调用
       **必须跑完**；只解析配置、不真传给 SDK 就过不了这组差分。
 
+25. **MCP 不出现在会话启动的关键路径上：并行连接 + 启动预算 + 后台补挂**
+    （`MCP_STARTUP_BUDGET_MS` in `shared/limits.ts`；`worker/lib/mcp-tools.ts` 的
+    `connectPass` / `doReload(budget)` / `onSettled`，`worker/lib/mcp-reload.ts` 的
+    `armLateMcpAttach`）。
+    - **症状**（2026-09-19 三功能横向审查 §S1）：`createMcpRuntime` 在
+      `AgentHarness.create` **之前** `await`，而它内部对每台 server **串行**连接——
+      每台最坏 `MCP_STEP_TIMEOUT_MS`（连接）+ 同值（列工具）= 30s，而主进程等 worker
+      ready 只有 `READY_TIMEOUT_MS`（120s）。**4 台连不上就把会话拖成打不开**（用户级配置
+      还是全局生效的），用户看到的却是「会话进程启动超时，请重试」——重试还是 120s，
+      真实原因（某台 server 连不上）此刻根本没机会报出来。决策 15 已承认「多台会叠加」，
+      但**叠加在冷启动这一支从来没被测过**。
+    - **改法**（两件事缺一不可）：
+      ① **并行**：连接与关闭都从逐台 `await` 改成 `Promise.all`，耗时从「N 台叠加」回到
+      「一台的最坏值」；
+      ② **预算**：首次装载最多等 `MCP_STARTUP_BUDGET_MS`（15s），超预算的**转后台**——
+      会话照常 ready、照常可用，连上后通过 `onSettled` → `armLateMcpAttach` 复用
+      `reloadMcpIntoHarness` 把工具补挂进 harness 与主 lane。
+      只做 ① 不解决「一台挂死就占满 30s」，只做 ② 不解决「多台叠加」。
+    - **为什么补挂必须是显式的**：`entry.ts` 里进 harness 的是 `...mcp.tools` 的**一次展开
+      快照**，后台连上的 server 不会自己出现在里面。不做这一步，「会话能开」的代价是
+      「工具要重开会话才有」，等于没修——这也是本次唯一新增的一行接线。
+    - **预算值进 `shared/limits.ts`**（与决策 15 同一条纪律）：它与主进程的
+      `READY_TIMEOUT_MS` 是一对——预算必须显著小于它，否则 worker 还在连、主进程已判超时，
+      「不阻塞启动」就是假的、且报错又指错地方。这层关系由 `session-manager.ts` 启动时
+      的一次 `console.warn` 兜住（只在被 `COLT_READY_TIMEOUT_MS` 改坏时出声）。
+    - **热重载不适用预算**：那是用户显式点的按钮、等待期间按钮禁用，点按钮就是要等到结果。
+      但重载**必须先等上一轮后台收尾落定**（`reload()` 里 `await tail`）——两轮同时改
+      `states` 会把同一台连两遍，正是决策 19 那条互斥要防的事。
+    - **关掉的会话不留残骸**：`close()` 置 `closed`，后台连接落定后由 `connectPass` 就地回收
+      （不写回 `states`）。`close()` **不等**后台收尾——关会话不该被一台连不上的 server 拖住，
+      这一支与启动路径同一条理由。
+    - **判据落在行为上**：新夹具 `mcp-boot-delay-fixture-server.mjs`（接 stdio 前先睡
+      `COLT_MCP_BOOT_MS`）把「并行 / 转后台」变成可观测的：① 一台睡 700ms + 预算 80ms →
+      装载立刻返回且工具为空、通知里有「转后台继续连接」，`onSettled` 之后工具补挂进
+      （假）harness；② 三台各睡 1200ms → 断言**三个进程同时起来**（启动日志里的时间戳
+      错开 < 600ms＝一台耗时的一半；串行会逐台错开至少一整台耗时。阈值不贴墙钟也不贴
+      spawn 抖动，只跟「一台的耗时」比）；③ `close()` 之后 900ms，后台那台**不**出现在
+      `status()` 里。
+    - **这一支自己带来的三个边界（2026-09-20 复核后补，各有一条用例）**：
+      ① **没欠后台就不许补挂**——`entry.ts` 那侧的 `armLateMcpAttach` 是无条件调的，闸门
+      只能落在 `onSettled`（判据 `hasLatePass`）：一切正常时也回调，就等于**每次启动**多跑
+      一次 `reload()`，而重载末尾 `notify(summary)` → 会话开头两条一模一样的「已连接 N 个
+      MCP server」（`security` 类还同时落进「事件」页签）。物证：改前实测两次、改后一次。
+      ② **诊断改在 `connectPass` 里就地记**——超预算那一支拿不到逐台返回值（race 先落在
+      定时器上），靠收集返回值出诊断会把「预算内已经快速失败」的那台整个丢掉：它已在
+      `states` 里，因而既不进「转后台」名单、也不进后台收尾通知，启动摘要从此少一条真告警
+      （串行时代它一定在）。③ **`doReload` 开头挡 `closed`**——补挂走的就是 `reload()`，
+      而 `close()` 把 `states` 清了、`connectPass` 的 `closed` 分支只回收**连上的那台**，
+      不挡这里就会替一个已关掉的会话照着配置**重新 spawn** 子进程（摘掉守卫新用例立刻红，
+      判据是夹具的启动日志计数不涨）。
+    - **一处随之抬高的线**：`MCP_QUERY_TIMEOUT_MS` 从 `2 *` 到 `4 * MCP_STEP_TIMEOUT_MS`
+      （见决策 15「残余」——注释写了要盖两段叠加、常数却只留一段，是这次复核抓出来的）。
+      **判据不用墙钟**：并行那组最初拿「预算内是否全连上」当尺子，而进程启动开销在慢机器上
+      会漂到几百毫秒——实测就假红过一次。改成「是不是同时 spawn」之后与机器快慢无关。
+      平台时序另有坑：stdio server 的 cwd 就是夹具目录（决策 17），Windows 上刚被 kill 的
+      进程会短暂占住它，`rm` 立刻上去就是 `EBUSY`——故新增的清理走 `removeDir`（带重试）。
+
 ## 4. 配置形态
 
 **两级**，与技能 / 记忆同一条「用户目录 + 项目」的心智（决策 20）：
@@ -404,6 +468,12 @@
   SSE 夹具与那条用例会一起消失，等于**把「这一支还能不能用」的证据也删了**，
   而客户端 `SSEClientTransport` 是**包根导出**、删依赖并不会让它消失——于是变成
   「代码里留着一条没人验过的 SSE 分支」。
+
+- **后台连接期间设置页看不到「连接中」**（决策 25 引入的新边界）：超预算转后台的那台在
+  `status()` 里**没有条目**，要等它落定才出现——`McpServerView.status` 只有
+  `connected` / `error` 两态。这一段由那条「已转后台继续连接（会话照常可用）」的 notice 顶上。
+  不新增 `connecting` 态是刻意的：那要动协议与渲染层，而「少了几台 + 一句说明」已经能解释；
+  真出现「用户反复盯着等」再加。
 
 - **设置页那块诊断只讲「配置写没写对」**：它是 `loadMcpConfig` 的**解析级**结论（JSON 合法性、
   必填字段、字段类型），**不预检**「这台 server 起得来吗」——那是运行态的结论（`status` / `error`，

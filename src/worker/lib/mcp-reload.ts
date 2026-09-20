@@ -70,6 +70,35 @@ export function composeMcpInstructions(base: string, mcp: McpRuntime): string {
 }
 
 /**
+ * 首次装载**超预算**那一支的补挂：后台连接落定后，把工具写回 harness 并回报现状。
+ *
+ * 为什么必须有它：会话启动时 harness 拿到的工具数组是**一次展开的快照**
+ * （`entry.ts` 里 `...mcp.tools`），后台连上的 server 不会自己出现在里面。不补挂，
+ * 那些工具就要等「重开会话」才生效——正是「MCP 不阻塞启动」这条要顺手消掉的断头路：
+ * 否则「会话能开」的代价是「工具要重启才有」，等于没修。
+ *
+ * 复用 `reloadMcpIntoHarness`：补挂与设置页「重新加载」是同一件事（换工具定义 + 对齐
+ * 清单），不另写一份——「清单与 harness 一致」这条不变量只有一处实现。
+ *
+ * 入口那侧**无条件**调它没关系：真正的闸门在 `mcp.onSettled` 里——没有后台那一支时它
+ * 不回调。反过来说，这里不能「顺手」在没有补挂时也跑一次 reload：那会让每次会话启动都
+ * 多一条一模一样的「已连接 N 个 MCP server」通知（`security` 类还同时落进事件页签）。
+ */
+export function armLateMcpAttach(
+  state: { mcp: McpRuntime; harness: AgentHarness<ExecutionToolContext>; lane: AgentLane },
+  context: Context,
+  onUpdate?: (servers: McpServerView[]) => void,
+): void {
+  state.mcp.onSettled(() => {
+    void reloadMcpIntoHarness(state.mcp, state.harness, state.lane, context)
+      .then((servers) => onUpdate?.(servers))
+      // 补挂失败也回报现状：设置页那台 server 会显示 error，用户有一条能跟进的线索，
+      // 而不是「工具莫名不见了」。连接失败本身另有 notice 在报，这里不重复。
+      .catch(() => onUpdate?.(state.mcp.status()));
+  });
+}
+
+/**
  * 设置页那两个 MCP 命令的落点：查现状 / 热重载。
  *
  * 与 `reloadMcpIntoHarness` 同属「MCP 与 harness / 设置页的接线」，所以一起住在这里

@@ -22,7 +22,7 @@ import type {
   WorkerMessage,
 } from "@shared/worker-protocol";
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
-import { APPROVAL_TIMEOUT_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
+import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getSecret } from "./secrets";
 import { handleToolRpc } from "./host/tool-rpc";
@@ -57,6 +57,20 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
  * 否则 session.open 永久 pending，界面停在「正在启动会话进程…」。
  */
 const READY_TIMEOUT_MS = Number(process.env.COLT_READY_TIMEOUT_MS ?? 120_000);
+/**
+ * 「MCP 不阻塞会话启动」这条承诺的**边界**（2026-09-19 修）。
+ *
+ * worker 首次装载最多占 `MCP_STARTUP_BUDGET_MS`，超预算的转后台、连上后自动补挂。
+ * 一旦把就绪超时（env 可调）压到预算以内，worker 还在连、这里已经判超时，用户看到的
+ * 又是「会话进程启动超时，请重试」——而真实原因（某台 server 连不上）根本没机会报出来，
+ * 重试多少次都一样。所以这条关系要**有人看着**：只在配置被改坏时出声，正常路径沉默。
+ */
+if (READY_TIMEOUT_MS <= MCP_STARTUP_BUDGET_MS) {
+  console.warn(
+    `[colt] 就绪上限 ${READY_TIMEOUT_MS}ms 不大于 MCP 启动预算 ${MCP_STARTUP_BUDGET_MS}ms：` +
+      `MCP 会重新变成会话启动的瓶颈，请调大 COLT_READY_TIMEOUT_MS。`,
+  );
+}
 /** 空闲回收扫描间隔 */
 const IDLE_SWEEP_MS = 60 * 1000;
 /**
@@ -65,16 +79,19 @@ const IDLE_SWEEP_MS = 60 * 1000;
  * **不能拍一个「看着够快」的数**：这里原先是 10s，抄自分支 / 子代理查询那两条快操作。
  * 而 MCP 这条往返最慢的正当耗时有两段，都远超 10s：
  *  ① 会话还没就绪——命令要等 `ready` 才下发（`#post` 暂存），上限就是 `READY_TIMEOUT_MS`；
- *  ② 就绪后，`mcpReload` 要**串行**把每台变更 / 上一轮失败的 server 重新连上：
+ *  ② 就绪后，`mcpReload` 要**重新连上**每台变更 / 上一轮失败的 server：
  *     每台 ≤ `MCP_STEP_TIMEOUT_MS`（连接）+ ≤ 同样一步（列工具）。
  * 预算短于这个上界时的症状不是报错而是**假失败**：设置页红字「查询 MCP 状态超时」，
  * 而 worker 那边正在正常连接。宁可等，也不谎报。
  *
- * 残余（如实记下）：多台 server 同时需要重连会**叠加**（每台 ≤ 2 步），超过这条线仍以
- * 超时收敛——那是「坏了」而不是「慢」，此时报错是对的。这条线也不是 UX 目标，是兜底：
- * 正常路径下 worker 一答完就兑现，用户不会真等这么久。
+ * **多台已经不叠加了**（2026-09-19 修）：连接改成并行，总耗时回到「一台的最坏值」；
+ * 会话启动那条路径另有 `MCP_STARTUP_BUDGET_MS` 的预算，超预算的转后台、连上后自动补挂，
+ * 所以「N 台慢 server 把会话拖成打不开」这条不再成立。留在这条线上的是 **4 步**而不是 2 步，
+ * 因为叠加还剩一种、而且它跨两轮：重载要**先等上一轮后台收尾落定**再跑（`reload()` 里的
+ * `await tail`），收尾一段 + 本轮一段，各 ≤ 2 步。
+ * 这条线不是 UX 目标，是兜底：正常路径下 worker 一答完就兑现，用户不会真等这么久。
  */
-const MCP_QUERY_TIMEOUT_MS = READY_TIMEOUT_MS + 2 * MCP_STEP_TIMEOUT_MS;
+const MCP_QUERY_TIMEOUT_MS = READY_TIMEOUT_MS + 4 * MCP_STEP_TIMEOUT_MS;
 /**
  * 等技能回话的预算（`skillsStatus` / `skillsRescan` 共用那条往返）。
  * 同 MCP 那条：必须盖住「未就绪时命令暂存」的上限（`READY_TIMEOUT_MS`）。但技能重扫**只扫盘**、
@@ -1084,7 +1101,7 @@ export class SessionManager {
         entry.pendingBranches.length = 0;
         // 完整流同理：没人能再回复，等待方各自的超时会收敛
         entry.pendingTranscripts.length = 0;
-        // MCP 查询**不能**只清空：它的超时预算是 150s（要盖住 worker 侧的连接上限），
+        // MCP 查询**不能**只清空：它的超时预算是分钟级（要盖住 worker 侧的连接上限），
         // 拖着不报等于让设置页显示一条假的「重载中…」，所以当场兑现成失败
         this.#drainPendingQueries(entry, "会话进程已退出，设置页查询已取消。");
         this.#emit("session.error", {
@@ -1394,7 +1411,7 @@ export class SessionManager {
   /**
    * worker 没了（崩溃 / 被回收 / 用户切走）：没人能再回设置页的查询，**当场**把等待方失败掉。
    *
-   * 别只写 `pendingMcp.length = 0`：等待方会被拖到 `MCP_QUERY_TIMEOUT_MS`（150s）才收敛，
+   * 别只写 `pendingMcp.length = 0`：等待方会被拖到 `MCP_QUERY_TIMEOUT_MS`（分钟级）才收敛，
    * 界面上是一条**假的**「重载中…」，比直接报错更糟。`splice(0)` 先摘空队列，再由每个
    * 等待方自己掐掉定时器（`fail` 里做的），不会留下空转的 timer。
    * MCP 与技能两条队列**都要收**——漏掉哪条，那条的等待方就得等满超时才收敛。
@@ -1555,7 +1572,7 @@ export class SessionManager {
     // 无人再能响应分支查询；清空队列，等待方各自的超时会收敛
     entry.pendingBranches.length = 0;
     entry.pendingTranscripts.length = 0;
-    // MCP 查询当场失败（理由见崩溃那条分支：它的超时预算 150s，拖着就是假「重载中…」）
+    // MCP 查询当场失败（理由见崩溃那条分支：它的超时预算是分钟级，拖着就是假「重载中…」）
     this.#drainPendingQueries(entry, "会话已回收，设置页查询已取消。");
     try {
       entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);

@@ -35,7 +35,12 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { APPROVAL_TIMEOUT_MS, MCP_STEP_TIMEOUT_MS, SNIFF_BYTES } from "../src/shared/limits.ts";
+import {
+  APPROVAL_TIMEOUT_MS,
+  MCP_STARTUP_BUDGET_MS,
+  MCP_STEP_TIMEOUT_MS,
+  SNIFF_BYTES,
+} from "../src/shared/limits.ts";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const LIMITS_PATH = join(SRC, "shared", "limits.ts");
@@ -65,6 +70,8 @@ const CONSUMERS: { file: string; symbol: string }[] = [
   { file: join(SRC, "worker", "entry.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
   { file: join(SRC, "worker", "lib", "mcp-tools.ts"), symbol: "MCP_STEP_TIMEOUT_MS" },
   { file: join(SRC, "main", "session-manager.ts"), symbol: "MCP_STEP_TIMEOUT_MS" },
+  { file: join(SRC, "worker", "lib", "mcp-tools.ts"), symbol: "MCP_STARTUP_BUDGET_MS" },
+  { file: join(SRC, "main", "session-manager.ts"), symbol: "MCP_STARTUP_BUDGET_MS" },
 ];
 
 /** 从 `@shared/limits` 的 import 语句里取花括号内容——`[^}]*` 不会跨到别的 import 上 */
@@ -77,11 +84,12 @@ describe("跨进程常量", () => {
     assert.equal(APPROVAL_TIMEOUT_MS, 5 * 60 * 1000);
     assert.equal(SNIFF_BYTES, 8000);
     assert.equal(MCP_STEP_TIMEOUT_MS, 15_000);
+    assert.equal(MCP_STARTUP_BUDGET_MS, 15_000);
   });
 
   test("除 shared/limits.ts 外，src 下不存在同名定义", () => {
     const pattern =
-      /^\s*(?:export\s+)?const\s+(APPROVAL_TIMEOUT_MS|SNIFF_BYTES|MCP_STEP_TIMEOUT_MS)\s*=/m;
+      /^\s*(?:export\s+)?const\s+(APPROVAL_TIMEOUT_MS|SNIFF_BYTES|MCP_STEP_TIMEOUT_MS|MCP_STARTUP_BUDGET_MS)\s*=/m;
     const offenders = sources
       .filter((f) => f.path !== LIMITS_PATH && pattern.test(f.text))
       .map((f) => f.path);
@@ -111,15 +119,16 @@ describe("跨进程常量", () => {
   test("守卫自身非空转：能认出一份写死的第二定义", () => {
     // 拿一段「在本地写死同名常量」的源码喂给同一条正则，它必须命中。
     const probe =
-      "const APPROVAL_TIMEOUT_MS = 1234;\nconst SNIFF_BYTES = 16;\nconst MCP_STEP_TIMEOUT_MS = 15_000;";
+      "const APPROVAL_TIMEOUT_MS = 1234;\nconst SNIFF_BYTES = 16;\n" +
+      "const MCP_STEP_TIMEOUT_MS = 15_000;\nconst MCP_STARTUP_BUDGET_MS = 15_000;";
     assert.match(
       probe,
-      /^\s*(?:export\s+)?const\s+(APPROVAL_TIMEOUT_MS|SNIFF_BYTES|MCP_STEP_TIMEOUT_MS)\s*=/m,
+      /^\s*(?:export\s+)?const\s+(APPROVAL_TIMEOUT_MS|SNIFF_BYTES|MCP_STEP_TIMEOUT_MS|MCP_STARTUP_BUDGET_MS)\s*=/m,
     );
     // 反向对照：import 语句不该被当成定义
     assert.doesNotMatch(
       'import { SNIFF_BYTES } from "@shared/limits";',
-      /^\s*(?:export\s+)?const\s+(APPROVAL_TIMEOUT_MS|SNIFF_BYTES|MCP_STEP_TIMEOUT_MS)\s*=/m,
+      /^\s*(?:export\s+)?const\s+(APPROVAL_TIMEOUT_MS|SNIFF_BYTES|MCP_STEP_TIMEOUT_MS|MCP_STARTUP_BUDGET_MS)\s*=/m,
     );
   });
 });

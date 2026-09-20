@@ -227,6 +227,33 @@ export function createMemoryInjector(options: MemoryInjectorOptions): MemoryInje
   };
 }
 
+/** 索引上报通道：只挑出 `memoryIndex` 这一条消息形状，别让本模块认识整份 worker 协议 */
+export type MemoryIndexSender = (message: {
+  type: "memoryIndex";
+  scope: MemoryScope;
+  content: string | null;
+}) => void;
+
+/**
+ * 记忆检索索引的上报闭包（L3a）：文件是真源，主进程侧维护派生索引（`data/memory.db`），
+ * 这里每读到一次内容就报一次快照。
+ *
+ * 两条纪律**收口在这里**（原来写在 worker 入口里，搬过来时行为未动）：
+ * - **内容没变不重发**：注入器每次模型请求都重读，不去重就是每次请求一条噪声消息；
+ * - **读取失败不发**：没消息 = 维持原状。报错会被索引侧当成「文件没了」而把现行条目归档，
+ *   那是一次读失败换一批条目消失，比不同步糟得多（`MemoryInjectorOptions.onLoaded` 同款）。
+ */
+export function createMemoryIndexReporter(
+  send: MemoryIndexSender,
+): (scope: MemoryScope, content: string | null) => void {
+  const lastIndexed = new Map<MemoryScope, string | null>();
+  return (scope, content) => {
+    if (lastIndexed.get(scope) === content) return;
+    lastIndexed.set(scope, content);
+    send({ type: "memoryIndex", scope, content });
+  };
+}
+
 /**
  * 压缩完成后投给助手的一次性沉淀提醒：压缩是会话记忆的「数据丢失时刻」，
  * 摘要保 prose 不保事实——正好在这个节点提醒助手把值得留的事实写进项目记忆

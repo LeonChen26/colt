@@ -98,6 +98,7 @@ import { skillsUserHome } from "@shared/skills-config";
 import { createSkillsRuntime, dispatchSkills, type SkillsRuntime } from "./lib/skills-command";
 import {
   compactMemoryReminder,
+  createMemoryIndexReporter,
   createMemoryInjector,
   describeMemory,
   loadProjectMemory,
@@ -106,7 +107,7 @@ import {
   userMemoryFilePath,
 } from "./lib/memory";
 import { createMcpRuntime, mcpUserHome, type McpRuntime } from "./lib/mcp-tools";
-import { composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
+import { armLateMcpAttach, composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
 import { systemPrompt } from "./lib/system-prompt";
 import { toImageContent } from "./lib/attachments";
 import {
@@ -350,12 +351,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 记忆检索索引（L3a）：文件是真源，主进程侧维护派生索引（data/memory.db）。
   // 启动即报快照；此后注入器每请求重读，内容变化才续报（失败不报——没消息 = 维持原状，
   // 读取失败不能被误当成「文件被删了」而把现行条目归档）。
-  const lastIndexed = new Map<"project" | "user", string | null>();
-  const reportMemoryIndex = (scope: "project" | "user", content: string | null) => {
-    if (lastIndexed.get(scope) === content) return;
-    lastIndexed.set(scope, content);
-    send({ type: "memoryIndex", scope, content });
-  };
+  const reportMemoryIndex = createMemoryIndexReporter(send);
   if (memory.error === undefined) reportMemoryIndex("project", memory.content);
   if (userMemory.error === undefined) reportMemoryIndex("user", userMemory.content);
   const memoryInjector = createMemoryInjector({
@@ -675,6 +671,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     meta,
     unsubscribe: () => watch.unsubscribe(),
   };
+
+  // 后台补挂：首次装载超预算时转后台的那几台，连上后要把工具写回 harness（启动时那份是快照）
+  armLateMcpAttach(state, context, (servers) => send({ type: "mcpStatus", servers }));
 
   // 必须 start，否则事件会无界缓冲
   watch.start((event) => {

@@ -6,7 +6,7 @@ import type { TSchema } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { McpServerView } from "@shared/worker-protocol";
-import { MCP_STEP_TIMEOUT_MS } from "@shared/limits";
+import { MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { MCP_TOOL_PREFIX, mcpToolLabel } from "@shared/mcp-label";
 import {
   callTimeoutOf,
@@ -415,6 +415,26 @@ interface ServerState {
  */
 const MCP_DROPPED = "连接已断开（server 进程退出或网络中断）";
 
+/** 纯等待。计时器 `unref`：预算只是个上限，不该由它把进程吊住 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+/** 后台收尾那一次的告知文案（连接结果已经拿到了，这里只负责说清） */
+function lateSummary(settled: { name: string; error?: string }[]): string {
+  const ok = settled.filter((entry) => entry.error === undefined).map((entry) => entry.name);
+  const bad = settled.filter((entry) => entry.error !== undefined);
+  const parts: string[] = [];
+  if (ok.length > 0) parts.push(`${ok.join("、")} 已连上，工具已补挂生效`);
+  if (bad.length > 0) {
+    parts.push(bad.map((entry) => `${entry.name}：${entry.error}`).join("；"));
+  }
+  return `MCP 后台连接结束：${parts.join("；")}`;
+}
+
 async function connectServer(
   name: string,
   declared: McpServerConfig,
@@ -499,6 +519,8 @@ export interface McpRuntime {
    * SDK 只提供 `client.getInstructions()` 这个取值口，一处都不会替你调（见该函数注释）。
    */
   instructions(): { server: string; text: string }[];
+  /** 后台连接全部落定后回调；首次装载**没超预算**则不回调（下面实现里记着为什么） */
+  onSettled(cb: () => void): void;
   close(): Promise<void>;
 }
 
@@ -510,11 +532,16 @@ export interface McpRuntime {
  *
  * `home` 传用户主目录即启用**用户级配置**（`~/.colt/mcp.json`，见 `loadMcpConfig`）；
  * 省略则只读项目级——单测默认走这条，结论不随开发者的机器漂移。
+ *
+ * `options.startupBudgetMs` 覆盖**首次装载**的启动预算（默认 `MCP_STARTUP_BUDGET_MS`）：
+ * 会话启动路径不给它配一台慢 server 就能拖死整个会话的能力。传 `Infinity` = 不设预算
+ * （等到全部落定为止），只有单测需要这种确定性。
  */
 export async function createMcpRuntime(
   cwd: string,
   notify: (message: string) => void,
   home?: string,
+  options?: { startupBudgetMs?: number },
 ): Promise<McpRuntime> {
   const states = new Map<string, ServerState>();
   const diagnostics: string[] = [];
@@ -559,42 +586,142 @@ export async function createMcpRuntime(
 
   /** 正在进行中的那一次重载（互斥用，见下面 `reload` 的注释） */
   let reloadInFlight: Promise<McpReloadResult> | undefined;
+  /**
+   * 上一轮**没等完**的收尾（只有首次装载超预算时才会有）。
+   * 新一轮重载先等它落定——两轮同时改 `states` 会把同一台 server 连两遍。
+   */
+  let tail: Promise<unknown> = Promise.resolve();
+  /** `close()` 已发生：后台连接落定后要就地回收，不能再写进 `states` */
+  let closed = false;
+  /** 还在跑的后台连接数（`onSettled` 判「全部落定」用） */
+  let busy = 0;
+  /** 本轮启动是否**真的**欠过一次后台收尾——没欠过就不该有「补挂」这回事（见 `onSettled`） */
+  let hasLatePass = false;
+  const idleWaiters: (() => void)[] = [];
 
-  /** 真身：把配置重读一遍、对齐 `states`。别直接调它——外部一律走 `reload`（要互斥）。 */
-  const doReload = async (): Promise<McpReloadResult> => {
+  /**
+   * 连一批 server：**并行**，且不抛。
+   *
+   * 并行而不是逐台串行：串行时每台的耗时（连接 ≤ `MCP_STEP_TIMEOUT_MS` + 列工具 ≤ 同值）
+   * 会**叠加**成 N×30s，而主进程等 worker ready 只有 `READY_TIMEOUT_MS`——4 台连不上
+   * 就能把会话拖成「打不开」，且报错指向启动超时而不是那台 server（后者此刻根本没机会
+   * 报出来）。并行后总耗时回到「一台的最坏值」，叠加消失。
+   *
+   * 返回每台的结果（失败也返回结果、不抛）：调用方据此决定要不要转后台。
+   * 诊断**在这里就地记**，不等调用方收集——超预算那一支拿不到结果（见 `doReload`），
+   * 若靠返回值出诊断，「预算内已经快速失败」的那几台就会被整批丢弃（症状：设置页启动
+   * 摘要少一条真告警，只剩每台卡片上的红字）。
+   */
+  const connectPass = async (
+    servers: Record<string, McpServerConfig>,
+  ): Promise<{ name: string; error?: string }[]> => {
+    const jobs = Object.entries(servers).map(
+      async ([name, declared]): Promise<{ name: string; error?: string }> => {
+        // 连接：新声明的，以及**上一轮连失败 / 连上后掉线**的——配置没变也重试。
+        // 不重试的话「重新加载」对失败态就是个死按钮：server 只是起晚了（后端刚发布）、
+        // 网络刚恢复、或进程崩了重启，用户点多少次都救不回来——直接推翻设置页那句
+        // 「改完点「重新加载」即可生效」。已连好的不重连（那是浪费，见配置等价键）。
+        const existing = states.get(name);
+        if (existing !== undefined && existing.error === undefined) return { name };
+        if (existing !== undefined) await closeState(existing);
+        const resolved = interpolateConfig(declared, process.env);
+        if (typeof resolved === "string") {
+          const message = `server "${name}" ${resolved}`;
+          diagnostics.push(message);
+          states.set(name, { name, config: declared, tools: [], error: message });
+          return { name, error: message };
+        }
+        try {
+          const state = await connectServer(name, declared, resolved, cwd, notify);
+          // 会话已经在连接途中关掉：就地回收，别留下一个没人管的 client 与子进程
+          if (closed) {
+            await closeState(state);
+            return { name };
+          }
+          states.set(name, state);
+          return { name };
+        } catch (error) {
+          const message = `server "${name}" 连接失败：${describeError(error)}`;
+          diagnostics.push(message);
+          states.set(name, { name, config: declared, tools: [], error: message });
+          return { name, error: message };
+        }
+      },
+    );
+    return Promise.all(jobs);
+  };
+
+  /**
+   * 真身：把配置重读一遍、对齐 `states`。别直接调它——外部一律走 `reload`（要互斥）。
+   *
+   * `budgetMs` 只由**首次装载**传（会话启动路径）：等不到就带着已连上的那部分先返回，
+   * 剩下的转后台（`reload` 的注释里记着为什么这样不会连两遍）。
+   */
+  const doReload = async (budgetMs?: number): Promise<McpReloadResult> => {
+    // 已经关掉的会话不再对齐配置：后台那一支落定后 `onSettled` 会来叫补挂，而 `states`
+    // 已被 `close()` 清空——不挡在这里就会**照着配置再连一遍**，给一个已死的会话重新
+    // spawn 子进程（`connectPass` 里的 `closed` 分支只回收连上的那台，不拦这次装载）。
+    if (closed) return { tools: [], statuses: [], summary: "" };
     const config = await loadMcpConfig(cwd, home);
     diagnostics.length = 0;
     diagnostics.push(...config.diagnostics);
 
-    // 关掉：不再声明的、或配置变了的（含"上次连失败、这次配置仍不同"的必然重试）
-    for (const [name, state] of [...states]) {
-      const next = config.servers[name];
-      if (next === undefined || configKey(next) !== configKey(state.config)) {
-        await closeState(state);
-        states.delete(name);
+    // 关掉：不再声明的、或配置变了的（含"上次连失败、这次配置仍不同"的必然重试）。
+    // 并行也安全——每台各关各的，且这一阶段跑完才进入连接。
+    await Promise.all(
+      [...states].map(async ([name, state]) => {
+        const next = config.servers[name];
+        if (next === undefined || configKey(next) !== configKey(state.config)) {
+          await closeState(state);
+          states.delete(name);
+        }
+      }),
+    );
+
+    const passed = connectPass(config.servers);
+    let late: Promise<{ name: string; error?: string }[]> | undefined;
+    let lateBudget = 0;
+    // `Infinity` = 不设预算（单测要的就是「等到全部落定」这种确定性）：
+    // 直接拿它去 `sleep` 会被 setTimeout 当成 1ms，转手就把连接全判成超时
+    const budget = budgetMs !== undefined && Number.isFinite(budgetMs) ? budgetMs : undefined;
+    if (budget === undefined) {
+      await passed;
+    } else {
+      // 预算到期 = 「先欠着」，不是失败：连接照常在后台跑完。
+      // race 只问「赶上了没有」，不收集逐台结果——诊断已由 `connectPass` 就地记好，
+      // 在这里收集会在超预算那一支被整批丢弃，丢掉的正是「预算内已经失败」的那几台。
+      const inTime = await Promise.race([
+        passed.then(() => true),
+        sleep(budget).then(() => false),
+      ]);
+      if (!inTime) {
+        late = passed;
+        lateBudget = budget;
       }
     }
-    // 连接：新声明的，以及**上一轮连失败 / 连上后掉线**的——配置没变也重试。
-    // 不重试的话「重新加载」对失败态就是个死按钮：server 只是起晚了（后端刚发布）、
-    // 网络刚恢复、或进程崩了重启，用户点多少次都救不回来——直接推翻设置页那句
-    // 「改完点「重新加载」即可生效」。已连好的不重连（那是浪费，见上面的配置等价键）。
-    for (const [name, declared] of Object.entries(config.servers)) {
-      const existing = states.get(name);
-      if (existing !== undefined && existing.error === undefined) continue;
-      if (existing !== undefined) await closeState(existing);
-      const resolved = interpolateConfig(declared, process.env);
-      if (typeof resolved === "string") {
-        const message = `server "${name}" ${resolved}`;
-        diagnostics.push(message);
-        states.set(name, { name, config: declared, tools: [], error: message });
-        continue;
-      }
-      try {
-        states.set(name, await connectServer(name, declared, resolved, cwd, notify));
-      } catch (error) {
-        const message = `server "${name}" 连接失败：${describeError(error)}`;
-        diagnostics.push(message);
-        states.set(name, { name, config: declared, tools: [], error: message });
+
+    if (late !== undefined) {
+      const pending = Object.keys(config.servers).filter((name) => !states.has(name));
+      busy += 1;
+      hasLatePass = true;
+      tail = late
+        .then((settled) => {
+          // 后台那一支的结论**不靠** `diagnostics`：那是本轮摘要的输入，摘要早在预算到期
+          // 时就发出去了，此刻写进去没有人再读（下一次重载开头还会清空）。所以这里自己
+          // 报一次，且**只报后台那几台**——预算内已连上的首轮 summary 刚说过，重复是噪音。
+          const behind = settled.filter((entry) => pending.includes(entry.name));
+          if (!closed && behind.length > 0) notify(lateSummary(behind));
+        })
+        .finally(() => {
+          busy -= 1;
+          if (busy === 0) for (const cb of idleWaiters.splice(0)) cb();
+        });
+      // 会话已经可用了，但要说清还有谁没到：否则用户只看到「少了几台」而不知道它们在路上
+      if (pending.length > 0) {
+        diagnostics.push(
+          `${pending.join("、")} 未在 ${lateBudget / 1000}s 内就绪，已转后台继续连接` +
+            `（会话照常可用，连上后自动生效）`,
+        );
       }
     }
 
@@ -633,13 +760,20 @@ export async function createMcpRuntime(
    */
   const reload = (): Promise<McpReloadResult> => {
     if (reloadInFlight !== undefined) return reloadInFlight;
-    reloadInFlight = doReload().finally(() => {
+    reloadInFlight = (async () => {
+      // 上一轮若因预算提前返回、收尾还在跑，先让它落定——两轮同时跑会把同一台连两遍
+      await tail;
+      return doReload();
+    })().finally(() => {
       reloadInFlight = undefined;
     });
     return reloadInFlight;
   };
 
-  await reload();
+  // 首次装载**走预算**：会话启动不该被任何一台 server 拖住（见 `MCP_STARTUP_BUDGET_MS`）。
+  // 这里直接调 doReload（不是 reload）：此刻 `state` 还不存在，设置页的命令还打不进来，
+  // 用不着互斥那层包装。
+  await doReload(options?.startupBudgetMs ?? MCP_STARTUP_BUDGET_MS);
   return {
     get tools() {
       return buildTools().tools;
@@ -654,7 +788,27 @@ export async function createMcpRuntime(
             : [{ server: state.name, text: state.instructions }],
         )
         .sort((a, b) => a.server.localeCompare(b.server)),
+    /**
+     * 后台连接**全部落定**后回调一次；首次装载**没有**超预算时**不回调**。
+     *
+     * 落定与注册的先后无所谓：已落定则回调排在下一个微任务。
+     * 用途只有一个：把后台连上的工具补挂进 harness（见 `lib/mcp-reload.ts` 的
+     * `armLateMcpAttach`）——会话启动时 harness 的工具数组是一次展开的快照。
+     *
+     * 为什么不是一切正常时也回调：那等于**每次启动**都白跑一次 `reload()`，而重载末尾
+     * 会 `notify(summary)`——用户在会话开头看到两条一模一样的「已连接 N 个 MCP server」
+     * （`kind: "security"` 的那类通知还同时落进「事件」页签，于是重复两行）。补挂只欠在
+     * 「真有几台没赶上」的时候，判据就是 `hasLatePass`。`closed` 同理——会话都关了，
+     * 既没有 harness 值得补挂，也没有用户在看那份现状。
+     */
+    onSettled: (cb: () => void) => {
+      if (!hasLatePass || closed) return;
+      if (busy === 0) queueMicrotask(cb);
+      else idleWaiters.push(cb);
+    },
     close: async () => {
+      // 不等后台收尾：会话该关就关。还在连的那台由 `connectPass` 里的 `closed` 分支就地回收。
+      closed = true;
       const closing = [...states.values()];
       states.clear();
       await Promise.all(closing.map((state) => closeState(state)));

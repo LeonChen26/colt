@@ -38,3 +38,19 @@ export const SNIFF_BYTES = 8000;
  * 正常连接，用户看到的失败是编出来的。
  */
 export const MCP_STEP_TIMEOUT_MS = 15_000;
+
+/**
+ * MCP **首次装载**（会话冷启动）的启动预算：连全部 server 最多等这么久，
+ * 超时的那些**转后台**——连上后自动补挂进 harness，会话照常就绪、照常可用。
+ *
+ * 进这个文件的理由与上一条同源，症状同样是**假失败**：它与主进程的 `READY_TIMEOUT_MS`
+ * （`main/session-manager.ts`，等 worker 报 ready 的上限）是一对——预算必须显著小于它，
+ * 否则 worker 还在连、主进程已经判超时，用户看到的又是「会话进程启动超时，请重试」，
+ * 而真实原因（某台 server 连不上）根本没机会报出来。
+ *
+ * 只约束 worker 侧的**首次装载**（`worker/lib/mcp-tools.ts`）。设置页「重新加载」
+ * 由用户显式触发、按钮在等待期间禁用，点按钮就是要等到结果，不适用预算。
+ *
+ * 主进程那边读它做同一条预算的说明（见 `session-manager.ts` 的 `READY_TIMEOUT_MS` 注释）。
+ */
+export const MCP_STARTUP_BUDGET_MS = 15_000;

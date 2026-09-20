@@ -28,7 +28,14 @@ import { fileURLToPath } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import type {
+  AgentHarness,
+  AgentHarnessTool,
+  AgentLane,
+  Context,
+  ExecutionToolContext,
+} from "@earendil-works/pi-agent-core";
+import type { McpServerView } from "../src/shared/worker-protocol.ts";
 import {
   callTimeoutOf,
   closeMcpTools,
@@ -45,7 +52,7 @@ import {
   type McpServerConfig,
 } from "../src/worker/lib/mcp-tools.ts";
 import { isQuestionTool } from "../src/worker/lib/ask-user-tool.ts";
-import { composeMcpInstructions } from "../src/worker/lib/mcp-reload.ts";
+import { armLateMcpAttach, composeMcpInstructions } from "../src/worker/lib/mcp-reload.ts";
 import { isSubagentTool } from "../src/worker/lib/subagent.ts";
 import { READONLY_TOOLS } from "../src/shared/readonly-tools.ts";
 import { mcpToolLabel } from "../src/shared/mcp-label.ts";
@@ -64,6 +71,9 @@ const CAPS_FIXTURE = fileURLToPath(
   new URL("./helpers/mcp-capabilities-fixture-server.mjs", import.meta.url),
 );
 const CWD_FIXTURE = fileURLToPath(new URL("./helpers/mcp-cwd-fixture-server.mjs", import.meta.url));
+const BOOT_FIXTURE = fileURLToPath(
+  new URL("./helpers/mcp-boot-delay-fixture-server.mjs", import.meta.url),
+);
 const SLOW_FIXTURE = fileURLToPath(new URL("./helpers/mcp-slow-fixture-server.mjs", import.meta.url));
 
 type Tool = AgentHarnessTool<ExecutionToolContext>;
@@ -105,6 +115,26 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error("等待条件成立超时");
     await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
+ * 删掉夹具项目目录（带重试）。
+ *
+ * 为什么不能直调 `rm`：stdio server 的工作目录**就是这个目录**（决策 17：`buildTransport`
+ * 传 `cwd`），而 Windows 上刚被 kill 的子进程会短暂占住它自己的 cwd——`rm` 立刻上去就是
+ * `EBUSY: resource busy or locked`。这是**平台时序**，不是产品缺陷，重试几次即可。
+ * 并行 / 转后台这两组会同时起多个子进程，正中最容易撞上的那一段，故这两组走这里。
+ */
+async function removeDir(dir: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 6) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 }
 
@@ -1084,6 +1114,239 @@ describe("调用超时：按 server / 工具可配（默认仍是 SDK 的 60s）
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * 启动预算：MCP **不该**出现在会话启动的关键路径上。
+ *
+ * 修之前的两条事实（见 `reviews/capability-trio-review-2026-09-19.md` §S1）：
+ * 连接是**逐台串行**的，每台最坏 15s（连）+ 15s（列工具）；而主进程等 worker ready
+ * 只有 120s——4 台连不上就把会话拖成「打不开」，且报错指向启动超时，真实原因
+ * （某台 server 连不上）此刻根本没机会报出来。
+ *
+ * 这里用「起得慢」的夹具（接 stdio 之前先睡）把两件事钉住：多台**并行**、超预算**转后台**；
+ * 再把这一支新引入的三个边界钉住：没欠后台时**不补挂**（否则每次启动两条重复摘要）、
+ * 预算内已失败的 server **错误不许丢**、`close()` 之后 `reload()` **不许再装载**。
+ * 断言尽量落在**结构**上（哪些工具在、有没有转后台说明）而不是绝对时钟上——
+ * 时钟断言在慢机器上会假红，而并行与串行的差别有一台耗时那么多，用预算当尺子足够分辨。
+ */
+describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台）", () => {
+  /** 一台「起得慢」的 server：`bootMs` = 它接 stdio 之前要睡多久 */
+  const bootServer = (bootMs: number, startLog?: string) => ({
+    command: process.execPath,
+    args: [BOOT_FIXTURE],
+    env: {
+      COLT_MCP_BOOT_MS: String(bootMs),
+      ...(startLog === undefined ? {} : { COLT_MCP_START_LOG: startLog }),
+    },
+  });
+
+  /** 假 harness / lane：本组只验「补挂真的发生了 + 传了什么」，不牵扯内核 */
+  function fakeTargets(): {
+    harness: AgentHarness<ExecutionToolContext>;
+    lane: AgentLane;
+    installed: string[][];
+  } {
+    const installed: string[][] = [];
+    const harness = {
+      getTools: async () => [],
+      setTools: async (tools: { name: string }[]) => {
+        installed.push(tools.map((tool) => tool.name));
+      },
+    } as unknown as AgentHarness<ExecutionToolContext>;
+    const lane = {
+      getActiveTools: async () => [],
+      setActiveTools: async () => undefined,
+    } as unknown as AgentLane;
+    return { harness, lane, installed };
+  }
+
+  const testContext = {} as unknown as Context;
+
+  test("超预算：会话不等它，连上后由 armLateMcpAttach 补挂进 harness", async () => {
+    const dir = await fixtureProject({ mcpServers: { late: bootServer(700) } });
+    const notices: string[] = [];
+    const started = Date.now();
+    const runtime = await createMcpRuntime(dir, (message) => notices.push(message), undefined, {
+      startupBudgetMs: 80,
+    });
+    const elapsed = Date.now() - started;
+    const { harness, lane, installed } = fakeTargets();
+    const updates: McpServerView[][] = [];
+    try {
+      // 会话启动不该被这台拖住：700ms 的连接只等到 80ms 的预算
+      assert.ok(elapsed < 600, `首次装载不该等那台慢 server（实测 ${elapsed}ms）`);
+      assert.deepEqual(runtime.tools.map((tool) => tool.name), []);
+      // 归因必须指向「转后台」，而不是让用户在设置页里对着「少了几台」猜
+      assert.ok(
+        notices.some((message) => /转后台继续连接/.test(message)),
+        `未见转后台说明：${notices.join(" | ")}`,
+      );
+      armLateMcpAttach({ mcp: runtime, harness, lane }, testContext, (servers) =>
+        updates.push(servers),
+      );
+      await new Promise<void>((resolve) => runtime.onSettled(resolve));
+      // 补挂在 onSettled 里异步跑：等它落地
+      await waitFor(() => installed.length > 0 && updates.length > 0);
+      assert.deepEqual(installed[0], ["mcp__late__ping"]);
+      assert.deepEqual(
+        updates[0]?.map((server) => [server.name, server.status]),
+        [["late", "connected"]],
+      );
+    } finally {
+      await runtime.close();
+      await removeDir(dir);
+    }
+  });
+
+  test("多台慢 server 并行连接：三个进程同时起来（串行会逐台错开）", async () => {
+    // 判据**不用墙钟**：进程启动开销在慢机器上会漂，拿它当尺子会假红。
+    // 真正能分辨并行 / 串行的是「三个进程是不是同时 spawn 的」——串行时第二台要等
+    // 第一台连完（≥ 它睡的 1200ms），并行时三个 spawn 连着发出，错开是毫秒级。
+    // 阈值取一台耗时的一半（600ms）：并行侧的 spawn 抖动远够不到它，串行侧必然越过它。
+    const dir = await fixtureProject({ mcpServers: {} });
+    // 启动日志放在**目录外**：stdio server 的 cwd 就是这个目录（决策 17），
+    // 放里面会被它占住，删目录时 EBUSY
+    const startLog = `${dir}.starts.log`;
+    await writeFile(
+      join(dir, ".colt", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          a: bootServer(1200, startLog),
+          b: bootServer(1200, startLog),
+          c: bootServer(1200, startLog),
+        },
+      }),
+      "utf8",
+    );
+    const runtime = await createMcpRuntime(dir, () => undefined, undefined, {
+      startupBudgetMs: 8_000,
+    });
+    try {
+      const starts = readFileSync(startLog, "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(Number);
+      assert.equal(starts.length, 3, `应当起了三个进程，实测：${starts.join(",")}`);
+      const spread = Math.max(...starts) - Math.min(...starts);
+      assert.ok(
+        spread < 600,
+        `三台应当同时起来（并行），实测错开 ${spread}ms——错开 ≥ 一台耗时的一半就是串行了`,
+      );
+      assert.deepEqual(
+        runtime.tools.map((tool) => tool.name).sort(),
+        ["mcp__a__ping", "mcp__b__ping", "mcp__c__ping"],
+      );
+    } finally {
+      await runtime.close();
+      await removeDir(dir);
+      await rm(startLog, { force: true });
+    }
+  });
+
+  test("没有后台那一支时不补挂：每次启动只有一条装载摘要", async () => {
+    // 补挂的注册在 `entry.ts` 是**无条件**的，闸门只能落在 runtime 里。若 `onSettled` 在
+    // 一切正常时也回调，就等于是**每次启动**白跑一次 `reload()`——而重载末尾会 `notify`，
+    // 用户在会话开头看到两条一模一样的「已连接 N 个 MCP server」（那类通知还同时落进
+    // 「事件」页签）。这条钉的就是那个重复。
+    const dir = await fixtureProject(fixtureServerConfig());
+    const notices: string[] = [];
+    // 默认预算（15s）：快夹具在预算内连完，没有任何东西欠在后台
+    const runtime = await createMcpRuntime(dir, (message) => notices.push(message));
+    const { harness, lane, installed } = fakeTargets();
+    try {
+      assert.equal(notices.length, 1, `装载摘要本该只有一条：${notices.join(" | ")}`);
+      let settled = false;
+      armLateMcpAttach({ mcp: runtime, harness, lane }, testContext, () => undefined);
+      runtime.onSettled(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(settled, false, "没有后台连接时 onSettled 不该回调");
+      assert.equal(installed.length, 0, "不该为补挂而跑一次 reload（harness.setTools 被调了）");
+      assert.equal(notices.length, 1, `不该多出第二条摘要：${notices.join(" | ")}`);
+    } finally {
+      await runtime.close();
+      await removeDir(dir);
+    }
+  });
+
+  test("预算内就已失败的 server：错误仍在启动摘要里，不被「转后台」一起丢掉", async () => {
+    // 超预算那一支拿不到逐台结果（race 先落在定时器上）。若诊断靠收集返回值，
+    // 「已经快速失败」的那台就会既不进首轮摘要、也不进后台收尾通知（它已经在 `states`
+    // 里，因而不算「还在路上」）——设置页只剩每台卡片上的红字，启动时没有人替他说话。
+    const dir = await fixtureProject({
+      mcpServers: {
+        bad: { command: "definitely-not-a-real-binary-xyz", args: [] },
+        slow: bootServer(3_000),
+      },
+    });
+    const notices: string[] = [];
+    const runtime = await createMcpRuntime(dir, (message) => notices.push(message), undefined, {
+      startupBudgetMs: 800,
+    });
+    try {
+      const first = notices.join(" | ");
+      // 同一条摘要里两件事实都要在：这台坏了 / 那台还在路上
+      assert.match(first, /连接失败/, `首轮摘要没点出已失败的那台：${first}`);
+      assert.match(first, /转后台继续连接/, `首轮摘要没点出还在后台的那台：${first}`);
+      assert.deepEqual(
+        runtime.status().map((server) => [server.name, server.status]),
+        [["bad", "error"]],
+      );
+    } finally {
+      // 等后台那台落定再关：不让子进程活过用例，免得夹具目录被占住
+      // （带上限地等：断言失败走进 `finally` 时不该把整个测试进程吊住）
+      await Promise.race([
+        new Promise<void>((resolve) => runtime.onSettled(resolve)),
+        new Promise<void>((resolve) => setTimeout(resolve, 4_000)),
+      ]);
+      await runtime.close();
+      await removeDir(dir);
+    }
+  });
+
+  test("close 之后的 reload() 不再照配置装载：不给已死会话重连一遍", async () => {
+    // 补挂走的就是 `reload()`。`close()` 不清不等后台收尾，而 `states` 已被清空——
+    // 没有守卫时它会照着配置**再连一遍**，为一个已经关掉的会话重新 spawn 子进程。
+    const dir = await fixtureProject({ mcpServers: {} });
+    const startLog = `${dir}.starts.log`;
+    await writeFile(
+      join(dir, ".colt", "mcp.json"),
+      JSON.stringify({ mcpServers: { late: bootServer(300, startLog) } }),
+      "utf8",
+    );
+    const runtime = await createMcpRuntime(dir, () => undefined, undefined, {
+      startupBudgetMs: 60,
+    });
+    await runtime.close(); // 后台那一支还在飞
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 600)); // 让它落定并被就地回收
+      assert.equal(countStarts(startLog), 1, "后台那一支本该只起一个进程");
+      await runtime.reload();
+      assert.equal(countStarts(startLog), 1, "关掉之后 reload 不该再起进程");
+      assert.deepEqual(runtime.status(), []);
+    } finally {
+      await removeDir(dir);
+      await rm(startLog, { force: true });
+    }
+  });
+
+  test("close 不等后台连接：关掉后不往 states 里写", async () => {
+    const dir = await fixtureProject({ mcpServers: { late: bootServer(700) } });
+    const runtime = await createMcpRuntime(dir, () => undefined, undefined, {
+      startupBudgetMs: 60,
+    });
+    await runtime.close();
+    try {
+      // 让后台那台跑完（它睡 700ms）：关掉之后它不该再冒出来
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      assert.deepEqual(runtime.status(), []);
+      assert.deepEqual(runtime.tools.map((tool) => tool.name), []);
+    } finally {
+      await removeDir(dir);
     }
   });
 });
