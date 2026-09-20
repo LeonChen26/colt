@@ -6,13 +6,14 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
 import { loadMcpConfig, mcpUserHome, targetOf, transportOf } from "@shared/mcp-config";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
+import { isSkillFilePath } from "@shared/skill-path";
 import { runEnvCheck } from "../env-check";
 import { readGitStatus } from "../git";
 import { defaultScratchBase, scratchRootPath } from "../lib/scratch-dir";
@@ -194,20 +195,6 @@ function handleWithSender<C extends IpcChannel>(
 /** 会话的历史目录（真实 JSONL 由内核在其中按「转义后的 cwd + kernelId」生成） */
 function jsonlPathFor(projectId: string): string {
   return join(app.getPath("userData"), "sessions", projectId);
-}
-
-/**
- * 是不是「一个技能的 `SKILL.md`」——即 `<...>/.agents/skills/<名字>/SKILL.md`。
- *
- * 为什么按**形状**判，而不是「问 worker 这个路径对不对」：只是为了在文件管理器里揭开一次
- * 目录，不值得再走一个 IPC 往返；而这最终只调 `shell.showItemInFolder`（不读内容、不写盘），
- * 把形状钉死，危害上界就定住了。用 `basename` / `dirname` 而非字符串前缀比对——Windows 的
- * 分隔符与大小写都不该参与这个判断。
- */
-function isSkillFilePath(filePath: string): boolean {
-  if (basename(filePath) !== "SKILL.md") return false;
-  const skillsDir = dirname(dirname(filePath)); // `<...>/.agents/skills`
-  return basename(skillsDir) === "skills" && basename(dirname(skillsDir)) === ".agents";
 }
 
 /**

@@ -125,6 +125,7 @@ export const MessageBubble = memo(function MessageBubble({
   onHoverFile,
   onOpenFile,
   onOpenSubagent,
+  onAbortSubagent,
   openState,
   onToggleOpen,
 }: {
@@ -140,6 +141,8 @@ export const MessageBubble = memo(function MessageBubble({
   onOpenFile?: (path: string) => void;
   /** 点子代理卡上的「在右栏查看完整过程」→ 下钻到它的完整流 */
   onOpenSubagent?: (id: string) => void;
+  /** 点运行中子代理卡上的「中止」→ 只收掉这一个子代理 */
+  onAbortSubagent?: (id: string) => void;
   /** 工具卡展开状态共享表（键 = 工具调用 id），与流式区共用，完成迁移时不丢展开态 */
   openState: ReadonlyMap<string, boolean>;
   /** 卡片改了展开状态 → 回传容器（唯一真源在 `Conversation`） */
@@ -231,6 +234,7 @@ export const MessageBubble = memo(function MessageBubble({
           onHoverFile={onHoverFile}
           onOpenFile={onOpenFile}
           onOpenSubagent={onOpenSubagent}
+          onAbortSubagent={onAbortSubagent}
         />
       ))}
     </AssistantRow>
@@ -273,6 +277,7 @@ export function MessageWindow({
   onHoverFile,
   onOpenFile,
   onOpenSubagent,
+  onAbortSubagent,
   openState,
   onToggleOpen,
   scrollRef,
@@ -289,6 +294,7 @@ export function MessageWindow({
   onHoverFile?: (path: string | null) => void;
   onOpenFile?: (path: string) => void;
   onOpenSubagent?: (id: string) => void;
+  onAbortSubagent?: (id: string) => void;
   openState: ReadonlyMap<string, boolean>;
   onToggleOpen: (id: string, open: boolean) => void;
   /** 消息流的滚动容器：窗口要知道滚到哪了，补一段/翻页时也要自己摆 `scrollTop` */
@@ -515,6 +521,7 @@ export function MessageWindow({
         onHoverFile={onHoverFile}
         onOpenFile={onOpenFile}
         onOpenSubagent={onOpenSubagent}
+        onAbortSubagent={onAbortSubagent}
         openState={openState}
         onToggleOpen={onToggleOpen}
       />
@@ -686,7 +693,7 @@ function describeTool(
         typeof args.x === "number" && typeof args.y === "number" ? `(${args.x}, ${args.y})` : undefined;
       return { icon: <Monitor {...ICON.sm} />, subtitle: coords ? `${action} ${coords}` : action };
     }
-    // 子代理：副标题给任务（与「任务摘要」此刻段说的是同一件事）。**认领不到那条总账时**
+    // 子代理：副标题给任务（与 ④ 子代理卡的状态说的是同一件事）。**认领不到那条总账时**
     // （被 `MAX_FINISHED_SUBAGENTS` 淘汰了）走的就是这一支，别让它退化成一排空白。
     case "subagent": {
       const title = typeof args.title === "string" ? args.title : undefined;
@@ -728,6 +735,7 @@ export function ToolCard({
   onHoverFile,
   onOpenFile,
   onOpenSubagent,
+  onAbortSubagent,
 }: {
   /** 会话 id（按需读回落盘截图用） */
   sessionId: string;
@@ -761,6 +769,8 @@ export function ToolCard({
   onOpenFile?: (path: string) => void;
   /** 点子代理卡的「在右栏查看完整过程」→ 下钻到它的完整流 */
   onOpenSubagent?: (id: string) => void;
+  /** 点运行中子代理卡上的「中止」→ 只收掉这一个子代理（不动主对话与其它子代理） */
+  onAbortSubagent?: (id: string) => void;
 }): React.JSX.Element {
   /**
    * 展开状态**不放在本组件里**：同一个工具调用在「流式区」与「完成态消息」是两次挂载，
@@ -954,6 +964,20 @@ export function ToolCard({
               </span>
             )
           ) : null}
+          {/* 子代理跑偏时就地收掉它（原在「任务摘要」此刻段，v1.53 挪到卡上）：
+              与卡面自己的展开按钮是**兄弟**（不是嵌套），点它不会顺带开合卡片。
+              只在运行中给——已经结束的卡上放一个点了没反应的按钮就是死控件。 */}
+          {card !== undefined && card.status === "running" && onAbortSubagent !== undefined && (
+            <button
+              type="button"
+              data-subagent-abort={card.id}
+              onClick={() => onAbortSubagent(card.id)}
+              title="中止这个子代理（不影响主对话与其它子代理）"
+              className="shrink-0 rounded-[4px] px-1 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-danger-fg"
+            >
+              中止
+            </button>
+          )}
         </span>
       </div>
 

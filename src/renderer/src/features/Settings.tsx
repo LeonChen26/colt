@@ -21,6 +21,7 @@ import { ICON } from "@/lib/icon";
 import type { McpServerView, ModelOption, Project, ProviderConfig, SkillsStatus } from "@shared/protocol";
 import type { ViewSkillDetail } from "@shared/worker-protocol";
 import { DEFAULT_CONTEXT_WINDOW, LEGACY_MAX_TOKENS } from "@shared/model-option";
+import { contentStats } from "../lib/format";
 import { cn } from "../lib/utils";
 
 export function Settings({ project }: { project: Project | null }): React.JSX.Element {
@@ -494,7 +495,8 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
       <p className="mb-3 text-xs text-text-muted">
         在项目根的 <span className="font-mono">{".agents/skills/<名字>/SKILL.md"}</span> 或用户级的{" "}
         <span className="font-mono">{"~/.agents/skills/<名字>/SKILL.md"}</span> 里放技能（agentskills.io
-        标准），项目级同名覆盖用户级；用 <span className="font-mono">{"/skill <名字>"}</span> 调用。改完点
+        标准），项目级同名覆盖用户级；另有一层随应用分发的<strong>内置</strong>技能排在最后，磁盘上的同名
+        技能同样能盖掉它。用 <span className="font-mono">{"/skill <名字>"}</span> 调用。改完点
         「重新扫描」即可生效、会话不必重启。
       </p>
 
@@ -569,6 +571,13 @@ function SkillNotice({ children }: { children: React.ReactNode }): React.JSX.Ele
   );
 }
 
+/** 来源在卡片上的写法。用 Record 而不是三元链：契约再加一档时 TS 会当场报缺 key */
+const SKILL_SOURCE_LABEL: Record<ViewSkillDetail["source"], string> = {
+  project: "项目级 .agents",
+  user: "用户级 ~/.agents",
+  builtin: "内置",
+};
+
 function SkillCard({
   skill,
   busy,
@@ -586,6 +595,9 @@ function SkillCard({
    * 开关照点也不会有任何变化，那就是「点了没反应」。所以这里不但灰掉，还要说清去哪改。
    */
   const locked = skill.disabledByUser;
+  // 正文规模：只报客观数字（多少行、多少字符），不判断内容——
+  // 「超过上限会被截断」那件事由上面的装载告警负责（单一真源），这里不重复。
+  const { lines, chars } = contentStats(skill.content);
   return (
     <div
       data-skill={skill.name}
@@ -607,7 +619,7 @@ function SkillCard({
               : "bg-surface-overlay text-text-muted",
           )}
         >
-          {skill.source === "project" ? "项目级 .agents" : "用户级 ~/.agents"}
+          {SKILL_SOURCE_LABEL[skill.source]}
         </span>
         {!skill.modelInvocable && (
           <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 text-xs text-text-muted">
@@ -659,14 +671,28 @@ function SkillCard({
           {open ? "收起正文" : "查看正文"}
         </button>
         {/* 不做删除：技能随仓库分发，删不删是用户的决定——产品只把他送到那个文件跟前 */}
-        <button
-          type="button"
-          data-skill-reveal={skill.name}
-          onClick={onReveal}
-          className="text-[11px] text-text-muted transition hover:text-text-primary"
-        >
-          在文件管理器中显示
-        </button>
+        {/*
+          内置技能（`source === "builtin"`）**不给这个入口**：它在 app.asar 里，既没有可打开
+          的资源管理器位置，`skills.reveal` 也只收磁盘上的 `.agents/skills/<名字>/SKILL.md`——
+          点了必然失败。放一个必然失败的按钮比没有它更伤信任（`AGENTS.md` §3.6 的死控件）。
+          **避免的做法是收紧校验**（放开到任意路径 = 把「显示文件」变成任意路径枚举口子，
+          与 `docs/SECURITY.md` §三 冲突）；内置技能是只读产物，用户对它唯一的动作就是
+          「看正文 / 禁用」，所以这里直接不放。
+        */}
+        {skill.source !== "builtin" && (
+          <button
+            type="button"
+            data-skill-reveal={skill.name}
+            onClick={onReveal}
+            className="text-[11px] text-text-muted transition hover:text-text-primary"
+          >
+            在文件管理器中显示
+          </button>
+        )}
+        {/* 规模如实报（P7 剩下的那半）：此前只看得到「超没超上限」，看不到它到底多大 */}
+        <span data-skill-size={skill.name} className="ml-auto shrink-0 text-[11px] text-text-muted">
+          正文 {lines} 行 · {chars} 字符
+        </span>
       </div>
       {open && (
         <pre

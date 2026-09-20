@@ -7,7 +7,6 @@
  *   2. tsconfig paths 里的别名（@shared/*、@/*）——类型专用 import 会被类型擦除、
  *      从不触发本钩子，所以别名过去一直是盲区；一旦被测模块出现「值」导入别名
  *      （如 policy.ts → @shared/readonly-tools），就必须在这里解析。
- * 作者：陕耀云栈WorkMate
  */
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";

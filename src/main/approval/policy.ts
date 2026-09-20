@@ -20,6 +20,7 @@
 
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 import { mcpToolLabel } from "@shared/mcp-label";
+import { isSkillFilePath } from "@shared/skill-path";
 import { isWithinRoot, isWithinRootReal } from "../lib/path-guard";
 
 /** 风险档位 */
@@ -343,7 +344,13 @@ function buildSummary(invocation: ToolInvocation): string {
   }
   const pathKey = WRITE_TOOLS[toolName];
   if (pathKey !== undefined && typeof args[pathKey] === "string") {
-    return `${toolName}: ${args[pathKey] as string}`;
+    const path = args[pathKey] as string;
+    // 写技能文件**不是普通写文件**：它的正文会进系统提示词、改变模型行为，而装载那一步
+    // 没有审批闸门可挂（见 docs/SECURITY.md §技能）。这里标出来，是这条通道上唯一一次
+    // 能被用户看见的机会——与「命中的 read 打『技能 X』徽标」对称，方向相反（那是读、这是写）。
+    return isSkillFilePath(path)
+      ? `${toolName}: ${path}（技能文件：正文将进入系统提示词）`
+      : `${toolName}: ${path}`;
   }
   if (toolName === BROWSER_ACT_TOOL) {
     const action = typeof args.action === "string" ? args.action : "";

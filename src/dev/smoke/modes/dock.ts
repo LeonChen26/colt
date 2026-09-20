@@ -28,7 +28,7 @@ import { sleep, uncaughtErrors } from "../context";
  *   1) 在主进程里用 executeJavaScript 驱动渲染层 DOM，并**真派发鼠标事件**模拟拖拽；
  *   2) 读主进程侧 WebContentsView 的 `getVisible()`——折叠是否真的收起视图，只有它说了算。
  *
- * ⑦-G 的「任务摘要」（进行中的动作 + 底部总账）同样用**真实的事件通道**（`session.view`）推一个
+ * ⑦-G 的「任务摘要」（计划 + 紧跟的一行总账）同样用**真实的事件通道**（`session.view`）推一个
  * **受控视图**来驱动：不跑模型，但走的是产品里一模一样的那条链路（事件 → DOM → 点击 → 落点）。
  * ⑦-G 第四步之后「点文件路径 → 预览」落进「任务摘要」的下钻**内容层**（工具卡是唯一入口），
  * 而「本次改动」成了同一处的下钻**清单层**——原「改动」「文件」两个页签都已取消，
@@ -208,27 +208,28 @@ export async function runDock(
     })()`);
 
   /**
-   * 读「任务摘要」底部的**总账**（⑦-G：由「本次改动」段二降级而来的一行状态）。
+   * 读「任务摘要」里的**总账**（⑦-G：由「本次改动」段二降级而来的一行状态）。
    * `clickable` 按标签判定：有改动时是 `button`（进入清单的出口），没有改动时是 `div`
    * ——「空」时**不给**一个点了没反应的出口（那正是死控件）。
-   * `idle` 读段一的空态标记：面板必须能显示「空」（⑦-E 的安全判断），这条得能验。
+   * `liveSection` 读「进行中的动作」段是否还在：v1.53 起它已移除（此刻动作只在 ④），
+   * 这条得能验「没在上面多加一个重复列表」。
    */
   const ledgerProbe = (): Promise<{
     present: boolean;
     text: string;
     clickable: boolean;
-    idle: boolean;
+    liveSection: boolean;
   }> =>
     run(`(() => {
       const aside = [...document.querySelectorAll("aside")].find((a) =>
         a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
       const el = aside ? aside.querySelector("[data-follow-ledger]") : null;
-      if (!el) return { present: false, text: "", clickable: false, idle: false };
+      if (!el) return { present: false, text: "", clickable: false, liveSection: false };
       return {
         present: true,
         text: (el.textContent ?? "").replace(/\\s+/g, " ").trim(),
         clickable: el.tagName === "BUTTON",
-        idle: aside.querySelector("[data-follow-empty]") !== null,
+        liveSection: (aside.innerText ?? "").includes("进行中的动作"),
       };
     })()`);
 
@@ -799,22 +800,26 @@ export async function runDock(
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
 
-    // ---- ⑦-G：「任务摘要」= 进行中的动作 + 底部总账 ----
+    // ---- ⑦-G：「任务摘要」= 计划 + 紧跟其下的一行总账 ----
     // 受控视图里 runningTools 为空、fileChanges 三条（两条项目内 + 一条越界），
-    // 正好钉住两件事：段一**不再**列已完成文件（于是能显示「空」），总账是**一行**双口径。
-    log("[⑦-G] 「任务摘要」：段一只列进行中的动作，底部常驻一行总账");
+    // 正好钉住两件事：右栏**不再**列此刻动作（v1.53 删去「进行中的动作」段，此刻动作只在 ④），
+    // 总账是**紧跟计划**的**一行**双口径。
+    log("[⑦-G] 「任务摘要」：不再列此刻动作，一行总账紧跟计划");
     await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(300);
     checks.push([
-      "段一不再列已完成文件（旧文件行已移除，⑦-G 硬约束一）",
+      "旧文件行已移除（段一不再列已完成文件，⑦-G 硬约束一）",
       (await clickFileRow(previewRel)) === false,
     ]);
     const ledger0 = await ledgerProbe();
     checks.push([
-      "底部总账写「N 处 · M 文件」双口径（3 条改动 / 3 个路径）",
+      "总账写「N 处 · M 文件」双口径（3 条改动 / 3 个路径）",
       ledger0.present && ledger0.text.includes("3 处 · 3 文件"),
     ]);
-    checks.push(["无进行中的动作时能显示「空」（空闲空态仍在）", ledger0.idle]);
+    checks.push([
+      "右栏不再重复列此刻动作（「进行中的动作」段已移除，v1.53）",
+      !ledger0.liveSection,
+    ]);
     checks.push(["有改动时总账可点（进入清单的出口）", ledger0.clickable]);
     log(`  总账：${ledger0.text}`);
 

@@ -1,7 +1,6 @@
 /**
  * 首启检测测试：验证历史数据识别与清空逻辑。
  * 使用临时目录模拟 userData，不依赖 Electron。
- * 作者：陕耀云栈WorkMate
  */
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";

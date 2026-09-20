@@ -53,10 +53,11 @@ export function userSkillsConfigPath(home: string): string {
 /**
  * 用户级配置所在的「家目录」。默认 `os.homedir()`；`COLT_MCP_HOME` 可覆盖它。
  *
- * 刻意**复用 MCP 那个环境变量、不另起 `COLT_SKILL_HOME`**：两份用户级配置都在
- * `<home>/.colt/` 下，一个隔离口就能覆盖两者——冒烟里的 `isolateUserMcpConfig` 于是顺带
- * 把「用户级技能偏好」这条环境前提也固定住了（`dev/smoke/context.ts`）。两个变量指向同一个
- * 目录却可能被设成不同值，正是我们要避免的那种「看起来一致、实际各说各话」。
+ * 刻意**复用 MCP 那个环境变量、不另起 `COLT_SKILL_HOME`**：用户级的东西都挂在这一个 home 下
+ * ——`.colt/mcp.json`、`.colt/skills.json`，以及**技能目录** `.agents/skills`（这一份不在 `.colt`
+ * 下，所以冒烟那个隔离口是**整个 home 先删后建**，不是只清 `.colt`：见 `dev/smoke/context.ts`
+ * 的 `isolateUserHome`）。两个变量指向同一个目录却可能被设成不同值，正是我们要避免的那种
+ * 「看起来一致、实际各说各话」。
  */
 export function skillsUserHome(): string {
   return process.env.COLT_MCP_HOME ?? homedir();

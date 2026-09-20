@@ -7,9 +7,23 @@ directories:
   output: release
   buildResources: build
 
-# 只打包构建产物与运行时依赖；devDependencies 不会进包
+# 复用 `node_modules` 里已下载的 Electron 二进制，不去 GitHub 再拉一遍。
+# 为什么需要它：本机连不上 GitHub（实测 `connect ETIMEDOUT 20.205.243.166:443`），而
+# electron-builder 默认会去下载 Electron 的 zip——哪怕 `node_modules` 里已经有一份解压好的。
+# 写在这里而不是在命令行传 `--config.electronDist`：那个写法在 PowerShell 下会被拆参数
+# （把 `.electronDist=…` 当成配置文件路径去找，报 ENOENT）。
+# 版本仍由 `package.json` 的 `electron` 依赖决定，这里只是取那份已下载的，不会漂。
+electronDist: node_modules/electron/dist
+
+# 只打包构建产物与运行时依赖；devDependencies 不会进包。
+# 三个产物目录**逐个列出**，不用 `out/**/*`：`out/` 同时是冒烟与探针的落地目录
+# （夹具项目、`npm i` 进来的第三方包、截图与日志），通配会把它们整包扫进安装包——
+# 2026-09-20 实测 `out/` 为 188 MB / 6244 个文件（`out/pi-lens` 2053 个文件带原生二进制、
+# `out/mcp-real` 4062 个），且这个数随「跑过哪些冒烟」而变，故连日期一起记。
 files:
-  - out/**/*
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
   - package.json
   # MIT 要求「所有副本或实质部分中保留版权与许可声明」，故随包分发（进 app.asar 根）
   - LICENSE

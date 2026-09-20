@@ -252,7 +252,6 @@ export function WorkspaceDock({
   browser,
   fileRequest,
   subagentRequest,
-  onAbortSubagent,
   onBrowserNav,
   onResetViewport,
   onBrowserZoom,
@@ -288,8 +287,6 @@ export function WorkspaceDock({
    * 多了一种到子代理流（决策三 D5 / 决策七 D9）。
    */
   subagentRequest: { id: string; seq: number } | null;
-  /** 中止单个子代理（此刻段那一行的「中止」）；不动主对话、不动别的子代理 */
-  onAbortSubagent?: (id: string) => void;
   /** 已打开的视图实例（⑦-B：页签可以很多） */
   instances: DockInstance[];
   /** 当前激活实例的 id */
@@ -357,7 +354,7 @@ export function WorkspaceDock({
     sendDrill({ layer: "content", path: fileRequest.path, token: fileRequest.seq });
   }, [fileRequest, sendDrill]);
 
-  // 「要看某个子代理的完整过程」→ 进下钻的**子代理流层**（④ 卡的按钮 / 此刻段那一行）
+  // 「要看某个子代理的完整过程」→ 进下钻的**子代理流层**（④ 卡上的按钮）
   useEffect(() => {
     if (subagentRequest === null) return;
     sendDrill({ layer: "subagent", subagentId: subagentRequest.id });
@@ -801,13 +798,7 @@ export function WorkspaceDock({
           onExit={() => setDrillRequest(null)}
         />
       ) : (
-        <FollowPanel
-          view={view}
-          highlightPath={highlightPath}
-          onOpenChanges={() => sendDrill({ layer: "list" })}
-          onOpenSubagent={(id) => sendDrill({ layer: "subagent", subagentId: id })}
-          onAbortSubagent={onAbortSubagent}
-        />
+        <FollowPanel view={view} onOpenChanges={() => sendDrill({ layer: "list" })} />
       )}
     </aside>
   );

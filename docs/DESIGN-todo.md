@@ -13,7 +13,7 @@
 > **配套**：动手前读 `docs/ARCHITECTURE.md`（加 IPC 通道 / worker 命令 / 宿主能力的流程）、
 > `docs/PRINCIPLES.md`（#1 #8）、`docs/SECURITY.md`（免审批边界）、`docs/ERRORS.md`（失败怎么讲）、
 > `AGENTS.md` §1.4（体量闸）§3.6（死控件）。
-> **参考实现**：`rpiv-todo@2.10.1`（MIT，源码在 `.workbuddy/pi-ext-review/`）——
+> **参考实现**：`rpiv-todo@2.10.1`（MIT；上游源码可从 npm 取，本仓**未收录**，只留对照结论）——
 > **只抄它的状态机语义与显示口径**；它的扩展宿主层（`promptSnippet` / `renderCall` / `setWidget` /
 > `pi.on`）在本仓**没有对应物**，理由见 `ARCHITECTURE.md` §四「Pi 生态的扩展宿主给了什么、我们为什么不用」。
 

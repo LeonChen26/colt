@@ -158,7 +158,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 | 内核已提供 | 我们的状态 |
 |---|---|
-| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 扫 `.agents/skills`（项目级）与 `~/.agents/skills`（用户级），同名项目级胜出；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**内核这里是两套机制、缺一不可**：`resources.skills` 只管「按名显式调用」（`lane.skill`，界面入口是输入框的 `/skill <名字>`，v1.42），让模型**看见**必须由应用把 `formatSkillsForSystemPrompt` 拼进系统提示词——**内核只导出这个函数、自己从不调用**，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住 |
+| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 按优先级扫**三个**目录：`.agents/skills`（项目级）、`~/.agents/skills`（用户级）、随包分发的内置（`worker/lib/builtin-skills/`，排最后），同名先到者胜出（内置是最底层，磁盘上的同名技能可盖它，口径见 `docs/SECURITY.md`）；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**内核这里是两套机制、缺一不可**：`resources.skills` 只管「按名显式调用」（`lane.skill`，界面入口是输入框的 `/skill <名字>`，v1.42），让模型**看见**必须由应用把 `formatSkillsForSystemPrompt` 拼进系统提示词——**内核只导出这个函数、自己从不调用**，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住 |
 | `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
 | 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
 | 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |
@@ -171,7 +171,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 **Pi 生态的「扩展宿主」给了什么、我们为什么不用**（2026-09 记）
 
-`@juicesharp/rpiv-todo` 一类包（源码解包在 `.workbuddy/pi-ext-review/`）依赖的**不是** `pi-agent-core`，
+`@juicesharp/rpiv-todo` 一类包（npm 上的 MIT 包；本仓只做设计对照，**未收录其源码**）依赖的**不是** `pi-agent-core`，
 而是另一个包 `pi-coding-agent`（+ `pi-tui`）。它把四样权力交给插件，**四样本仓一样都没有**：
 
 | 宿主给的权力 | 扩展怎么用 | 本仓对应 |

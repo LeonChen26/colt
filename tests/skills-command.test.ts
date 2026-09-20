@@ -54,6 +54,7 @@ const loadedOf = (skills: Skill[], disabled: string[] = [], disabledByUser: stri
   diagnostics: [],
   counts: [skills.length],
   sources: skills.map(() => 0),
+  dirSources: ["project"],
   disabled,
   disabledByUser,
 });

@@ -8,8 +8,11 @@
  * 递归遍历、ignore 文件（`.gitignore` / `.ignore` / `.fdignore`）、frontmatter 校验
  * 全部由内核的 `loadSkills` 负责；我们只决定**取哪几个目录**和**同名怎么取舍**。
  *
- * 目录：项目级 `<cwd>/.agents/skills` 在前、用户级 `~/.agents/skills` 在后，
- * 同名时**项目级胜出**（标准里的优先级就是这么定的），被遮蔽的名字如实报出来。
+ * 目录（**顺序即优先级，先到者胜出**）：
+ * 1. 项目级 `<cwd>/.agents/skills`——随仓库分发；
+ * 2. 用户级 `~/.agents/skills`——用户自己的、跨项目；
+ * 3. 内置 `worker/lib/builtin-skills/`——随应用分发，**优先级最低**（磁盘上的同名技能可盖它）。
+ * 被遮蔽的名字如实报出来。
  *
  * 内核的机制是**两套、缺一不可**：
  * 1. 让模型**看见**——`formatSkillsForSystemPrompt` 生成 `<available_skills>` 块，
@@ -17,6 +20,7 @@
  * 2. 让应用**按名调用**——把 skills 放进 `resources.skills`，内核在 `lane.skill(name, …)`
  *    时按名取出整份正文。只做第 2 条的话模型不知道技能存在，整个接入是空转。
  */
+import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   formatSkillsForSystemPrompt,
@@ -29,9 +33,46 @@ import {
 import type { ViewSkill, ViewSkillDetail, ViewSkillInvocation } from "@shared/worker-protocol";
 import { loadSkillsConfig, skillsConfigPath } from "@shared/skills-config";
 
-/** 技能目录（**项目级在前**，同名时它胜出） */
-export function skillDirs(cwd: string, home: string): string[] {
-  return [join(cwd, ".agents", "skills"), join(home, ".agents", "skills")];
+/** 一个技能目录，以及它在界面上的**来源层级** */
+export interface SkillDir {
+  dir: string;
+  source: ViewSkill["source"];
+}
+
+/**
+ * 内置技能目录——随应用分发的技能（`worker/lib/builtin-skills/`，构建时复制到 `out/main/`）。
+ *
+ * 与用户目录的区别：它**不在用户的磁盘管辖范围**内（删不掉、也改不了，安装包里那份是产物），
+ * 所以它只是**兜底**：优先级最低，磁盘上的同名技能可以盖它（与内置子代理同一个口径，
+ * 见 `lib/agent-defs.ts` 里 `builtinAgentDefs()` 排在最后）。
+ *
+ * `COLT_BUILTIN_SKILLS_DIR` 可覆盖它：测试与冒烟靠这个口把内置技能指到受控目录
+ * （与 `skillsUserHome` 同一套路）。不给这个口，任何断言「装了几个技能」的用例都会被
+ * 随包技能污染——而那种污染只在**换机器或加内置技能时**才发作。
+ */
+export function builtinSkillsDir(): string {
+  const override = process.env.COLT_BUILTIN_SKILLS_DIR;
+  if (override !== undefined && override !== "") return override;
+  // 相对**本模块所在目录**定位：构建后它在 `out/main/worker.js`，与 `builtin-skills/` 同级。
+  // 但这有个隐含前提——**这个模块自己待在 worker.js 里，没被 vite 拆进 chunk**。真被拆进
+  // `out/main/chunks/` 时 dirname 就成了 `chunks/`，同级那份根本不存在，而症状是**装了几个
+  // 技能静默少一个**（内核扫不到目录不报错，只交回空清单），正是本项目反复踩的那类失败。
+  // 所以两个布局都认一下，退回上一级。
+  const beside = join(import.meta.dirname, "builtin-skills");
+  return existsSync(beside) ? beside : join(import.meta.dirname, "..", "builtin-skills");
+}
+
+/**
+ * 装载时要扫的全部技能目录——**顺序即优先级，先到者胜出**。
+ *
+ * 内置排最后是刻意的：项目级（随仓库走）要能盖掉它，用户级（用户自己的）也要能盖掉它。
+ */
+export function skillDirSources(cwd: string, home: string): SkillDir[] {
+  return [
+    { dir: join(cwd, ".agents", "skills"), source: "project" },
+    { dir: join(home, ".agents", "skills"), source: "user" },
+    { dir: builtinSkillsDir(), source: "builtin" },
+  ];
 }
 
 /**
@@ -67,6 +108,12 @@ export interface LoadedSkills {
    */
   sources: number[];
   /**
+   * 与 `counts` 一一对应的**目录来源标签**（下标 → 层级）。`sources` 给的是下标，
+   * 而视图要的是「项目级 / 用户级 / 内置」这三个字，故在这里把映射固定下来——
+   * 别在渲染层去猜「路径像不像项目目录」（内置加进来之后，那种猜法必然错）。
+   */
+  dirSources: ViewSkill["source"][];
+  /**
    * **使用者禁用**的技能名（`.colt/skills.json` 与 `~/.colt/skills.json` 的并集，
    * 见 `@shared/skills-config`）。禁用 = **完全不装载**：不进提示词、模型看不见、
    * 显式调用被拒。名字可以**不在** `skills` 里（先禁用、后安装）——故它独立保存。
@@ -74,6 +121,39 @@ export interface LoadedSkills {
   disabled: string[];
   /** `disabled` 里来自**用户级**配置的那部分（设置页据此把开关置灰并说明） */
   disabledByUser: string[];
+}
+
+/** 来源层级的中文说法（告警文案用）。缺一档 TS 会当场报错——别写成三元链 */
+const SOURCE_TEXT: Record<ViewSkill["source"], string> = {
+  project: "项目级",
+  user: "用户级",
+  builtin: "内置",
+};
+
+/**
+ * 来源下标 → 层级。**不猜「路径像不像项目目录」**——内置加进来之后，那种猜法必然错
+ * （`dirSources` 就是装载时按目录顺序定下来的那份映射）。
+ *
+ * 越界时**抛**、不兜底：两者不同源只可能是装载与投影脱了钩（`dirSources` 少给了一项），
+ * 而兜底值会给出一个看着合理、其实**必然为真**的假标签，界面上再没人会对它起疑——
+ * 比一条红断言贵得多（`AGENTS.md` §四）。代价要说清：这条路径在 `init` 上，抛出去会变成
+ * **会话打不开**（`worker/entry.ts` 把 `init` 的失败标成 fatal）。这是**有意**的取舍：
+ * 宁可打不开、也不给假标签；`tests/skills.test.ts` 有一条用例把这个行为钉住。
+ */
+function sourceOf(loaded: LoadedSkills, index: number | undefined): ViewSkill["source"] {
+  const label = index === undefined ? undefined : loaded.dirSources[index];
+  if (label === undefined) {
+    throw new Error(
+      `技能来源下标越界（${String(index)}）：装载结果的 dirSources 有 ${loaded.dirSources.length} 项、` +
+        `sources 有 ${loaded.sources.length} 项，两者不同源`,
+    );
+  }
+  return label;
+}
+
+/** 同上，直接给中文（告警文案用） */
+function sourceText(loaded: LoadedSkills, index: number | undefined): string {
+  return SOURCE_TEXT[sourceOf(loaded, index)];
 }
 
 /**
@@ -111,15 +191,17 @@ export function dedupeByName(groups: Skill[][]): {
   const shadowed: ShadowedSkill[] = [];
   const sources: number[] = [];
   const counts = groups.map(() => 0);
-  const sourceOf = new Map<string, number>();
+  // 别叫 `sourceOf`——模块级那个同名函数干的是「下标 → 层级」，这里记的是「名字 → 谁先占的」，
+  // 遮蔽之后函数里再调 `sourceOf(...)` 会命中这个 Map，抛一个与现场无关的 TypeError
+  const claimedBy = new Map<string, number>();
   groups.forEach((group, index) => {
     for (const skill of group) {
-      const by = sourceOf.get(skill.name);
+      const by = claimedBy.get(skill.name);
       if (by !== undefined) {
         shadowed.push({ name: skill.name, from: index, by });
         continue;
       }
-      sourceOf.set(skill.name, index);
+      claimedBy.set(skill.name, index);
       skills.push(skill);
       sources.push(index);
       counts[index] += 1;
@@ -152,14 +234,14 @@ export function describeDiagnostic(diagnostic: SkillDiagnostic): string {
 /** 装载指定的各个目录；某个目录炸了也算一条告警，不打断会话（会话能用比技能重要） */
 export async function loadSkillsForSession(
   env: ExecutionEnv,
-  dirs: string[],
+  dirs: SkillDir[],
   context: Context,
   disabled: string[] = [],
   disabledByUser: string[] = [],
 ): Promise<LoadedSkills> {
   const groups: Skill[][] = [];
   const diagnostics: SkillDiagnostic[] = [];
-  for (const dir of dirs) {
+  for (const { dir } of dirs) {
     try {
       const result = await loadSkills(env, dir, context);
       groups.push(result.skills);
@@ -175,7 +257,16 @@ export async function loadSkillsForSession(
     }
   }
   const { skills, shadowed, sources, counts } = dedupeByName(groups);
-  return { skills, shadowed, sources, diagnostics, counts, disabled, disabledByUser };
+  return {
+    skills,
+    shadowed,
+    sources,
+    diagnostics,
+    counts,
+    dirSources: dirs.map((item) => item.source),
+    disabled,
+    disabledByUser,
+  };
 }
 
 /**
@@ -194,7 +285,7 @@ export async function loadSkillsForSessionWithConfig(
   const config = await loadSkillsConfig(cwd, home);
   const loaded = await loadSkillsForSession(
     env,
-    skillDirs(cwd, home),
+    skillDirSources(cwd, home),
     context,
     config.disabled,
     config.fromUser,
@@ -313,11 +404,24 @@ export function skillWarningParts(loaded: LoadedSkills): string[] {
   }
   if (loaded.shadowed.length > 0) {
     // 重名有两种，**不能共用一句话**（见 `dedupeByName` / `ShadowedSkill`）：
-    // 跨来源才是「项目级盖用户级」；同目录内重名与「项目级 / 用户级」毫无关系，
-    // 照旧文案说出去就是假话——而这里正是用户唯一能看到「谁被遮蔽了」的地方。
-    const cross = loaded.shadowed.filter((item) => item.from !== item.by).map((item) => item.name);
+    // 跨来源是「谁盖了谁」——三层之后这句也得**按实际层级说**。内置被项目级同名盖掉时
+    // 说成「项目级覆盖了同名用户级技能」是一句假话，而这里正是用户唯一能看到「谁被遮蔽了」
+    // 的地方；同目录内重名则与层级毫无关系，另一句话。
     const same = loaded.shadowed.filter((item) => item.from === item.by).map((item) => item.name);
-    if (cross.length > 0) parts.push(`项目级覆盖了同名用户级技能：${cross.join("、")}`);
+    // 按「谁盖谁」这一对分组：不同层级组合混进一句里，就分不清哪份是真的生效了
+    const cross = new Map<string, { by: number; from: number; names: string[] }>();
+    for (const item of loaded.shadowed) {
+      if (item.from === item.by) continue;
+      const key = `${item.by}<${item.from}`;
+      const group = cross.get(key) ?? { by: item.by, from: item.from, names: [] };
+      group.names.push(item.name);
+      cross.set(key, group);
+    }
+    for (const { by, from, names } of cross.values()) {
+      parts.push(
+        `${sourceText(loaded, by)}覆盖了同名${sourceText(loaded, from)}技能：${names.join("、")}`,
+      );
+    }
     if (same.length > 0) {
       parts.push(`同一目录下有同名技能，只保留了先读到的那份：${same.join("、")}`);
     }
@@ -339,15 +443,16 @@ export function skillWarningParts(loaded: LoadedSkills): string[] {
  * `describeSkillWarnings`）。渲染层拿 `name` 做本地核对，其余字段（来源 / 是否对模型公开 /
  * 路径）是「技能」面板与出处展示的底子。
  *
- * `sources` 与 `skills` **一一对应**（来源目录下标），而目录列表来自 `skillDirs`——
- * 约定**第 0 项是项目级、其余是用户级**。所以这里按下标判层级，不去猜「路径像不像项目目录」。
+ * `sources` 与 `skills` **一一对应**（来源目录下标），目录表则由 `dirSources` 给出——
+ * 「下标 → 项目级 / 用户级 / 内置」这个映射就在那里，别在这里重排一遍。
  */
 export function toViewSkills(loaded: LoadedSkills): ViewSkill[] {
   const off = new Set(loaded.disabled);
   return loaded.skills.map((skill, index) => ({
     name: skill.name,
     description: skill.description,
-    source: loaded.sources[index] === 0 ? "project" : "user",
+    // 下标 → 层级标签；越界的处置见 `sourceOf`（抛，不兜底）
+    source: sourceOf(loaded, loaded.sources[index]),
     modelInvocable: skill.disableModelInvocation !== true,
     filePath: skill.filePath,
     // 被禁用的**仍然列出来**：设置页要靠它把开关画出来、改回去（不列就没处改）

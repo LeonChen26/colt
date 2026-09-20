@@ -16,11 +16,11 @@
 > `AGENTS.md` §1.4（体量闸）§3.5（先读代码）§3.6（死控件）§四（「参数传了、行为却由库决定」）。
 > **兄弟设计**：`docs/DESIGN-todo.md`（它进的是「任务摘要」**第一段**，本设计进**第二段「此刻」**，
 > 两者改的是同一个 `FollowPanel.tsx`——排期时注意别互相踩，见 §10）。
-> **参考实现**：`pi-subagents@0.68.0`（MIT，源码在 `.workbuddy/pi-ext-review/`）——
+> **参考实现**：`pi-subagents@0.68.0`（MIT；上游源码可从 npm 取，本仓**未收录**，只留对照结论）——
 > **只抄两样**：①「fork 是真实会话分叉、不是摘要注入」这个事实认定；②结果回传的**诚实口径**
 > （进程状态 ≠ 任务完成）。
 > ⚠️ **不要抄它的执行模型**：它早期「每个子代理一个 `pi` CLI 子进程」，上游 0.65.0 起已改成
-> **进程内会话**（见 `.workbuddy/pi-ext-review/pi-lens-4.2.0/docs/subagent-compat.md`）。
+> **进程内会话**（见上游 `pi-lens@4.2.0` 包内的 `docs/subagent-compat.md`）。
 > 它的扩展宿主层（`promptSnippet` / `renderCall` / `setWidget`）在本仓**没有对应物**，
 > 理由见 `ARCHITECTURE.md` §四。
 
@@ -68,8 +68,8 @@
 | 遥测**只采主 lane**（4 条单测钉着），子 lane 的用量/工具调用**一律丢弃** | `telemetry.ts:16,25,73,136` + `tests/telemetry.test.ts` |
 | 分支树扫的是**会话级** `session.findEntries`，`projectBranchNodes` **不认 lane** | `entry.ts:252-256`、`project.ts:148-205` |
 | 消息流按 turn 分组**只认 role**（两条 lane 的消息混进来会被错并成一轮） | `renderer/src/lib/turn-groups.ts`（`groupTurns`） |
-| ⑦「任务摘要」**此刻段**的数据源就是 `runningTools`，注释写明「**全应用唯一出处**」 | `FollowPanel.tsx:8`、`:96`、`:135` |
-| 此刻段取摘要的函数**只认 `command` / `path`**——`{agent, task}` 会退化成光秃秃一行 `subagent` | `FollowPanel.tsx:41-50` |
+| ④ 的**运行中工具卡**（含子代理卡的运行态 + 卡上的「中止」）数据源就是 `runningTools`；v1.53 起右栏不再重复列一份 | `Conversation/index.tsx`（流式区）、`MessageList.tsx` 的 `ToolCard` |
+| ④ 子代理卡的副标题走 `describeTool` 的 `subagent` 分支（认 `title` / `task`），**不靠** `command` / `path` | `MessageList.tsx`（`describeTool`） |
 | 审批 / 提问队列键是 `sessionId + toolCallId`，两者**都无 lane 字段** | `shared/protocol.ts`（`ApprovalRequest` / `UserQuestionRequest`） |
 | `READONLY_TOOLS` 是免审批的**唯一真源**；`ask_user` **不在**名单里，故必须在 `before_tool` **显式跳过** | `shared/readonly-tools.ts`、`entry.ts:404-421`、`:459-471` |
 | 有 request/response 型 IPC 的既有范式：`session.branches` 走主进程 `pendingBranches` 队列 + 超时 | `main/session-manager.ts`（`branches()`） |
@@ -118,21 +118,23 @@
 ⚠️ **因此 `lane-ownership.ts` 的过滤算法只写 `fresh` 那一种**（整条链排除），**不要**预先写通用算法——
 那是「为不存在的需求修路」（`worker/lib/memory-tidy.ts:9-10` 正好在骂这类事）。
 
-### 决策三（D5）：呈现 = **④ 活卡 +「任务摘要」此刻段 + 下钻；不新增页签、不自动展开**
+### 决策三（D5）：呈现 = **④ 活卡（含「中止」）+ 下钻；不新增页签、不自动展开**
 
 先说被推翻的版本：本设计的初版是「④ 工具卡 + 右栏**新增『子代理』页签**」——那是**同一件事两个入口**，
 而本仓刚为消除双入口动过三次手术（A3-5 消「改动面板 vs 代码变更视图」、⑦-G 把三处重复的路径列表
 收敛成「总账 + 下钻」、⑦-H「附属视图给结论不给流水」）。故重做。
 
-**关键事实**：子代理调用**本来就会出现在**「任务摘要」此刻段——一次 `subagent` 调用在整个子代理
-运行期都是一个 running tool，而此刻段的数据源就是 `runningTools`（`FollowPanel.tsx:8`、`:96`）。
-**总览已经存在**，我们只需让它显示得对。
+**关键事实**：子代理调用**本来就会出现在** ④——一次 `subagent` 调用在整个子代理运行期都是一个
+running tool，而 ④ 的运行中工具卡（含子代理卡）就是按 `runningTools` 渲染的，`ViewSubagent` 按
+`toolCallId` 认领后把那张卡**特化**。**承载已经存在**，我们只需让它显示得对。
+（v1.53 起右栏「任务摘要」**不再**重复列一份「进行中的动作」——那正是上面要消除的「同一件事两个入口」，
+且它作为 `flex-1` 会吃光右栏剩余高度。卡上的「中止」也一并从右栏挪到 ④。）
 
 | 场景 | 承载 | 数据 |
 |---|---|---|
-| 运行中 | 「任务摘要」**此刻段**一行（名称 + 任务 + 当前动作 + 计时 + 中止） | `view.subagents[]` 中 `status === "running"` |
-| 已结束 | **④ 的卡**（随 transcript 持久） | `view.subagents[]` + 工具卡 |
-| 想看内部过程 | 点此刻段那一行 / 点 ④ 卡 → ⑦ **下钻到子代理流**（面包屑 + ESC，复用既有下钻栈） | 按需拉完整 transcript |
+| 运行中 | **④ 的子代理卡**（有界预览 + 运行态 + 卡面「中止」） | `view.subagents[]` 中 `status === "running"`（按 `toolCallId` 认领那张 `runningTools` 卡） |
+| 已结束 | **④ 的卡**（随 transcript 持久，运行态转完成、中止消失） | `view.subagents[]` + 工具卡 |
+| 想看内部过程 | 点 ④ 卡上的「在右栏查看完整过程」→ ⑦ **下钻到子代理流**（面包屑 + ESC，复用既有下钻栈） | 按需拉完整 transcript |
 | ④ 卡展开 | **有界预览**（最近 N 步） | `ViewSubagent.tail` |
 | 审批 / 提问 | **仍在 ④ 主流**，加「来自 X」chip | 队列键不变（`toolCallId` 天然唯一） |
 
@@ -213,11 +215,11 @@
 export interface ViewSubagent {
   /** lane 名 = 稳定持久身份（决策八 D4） */
   id: string;
-  /** 主对话里那次 subagent 调用；④ 工具卡与此刻段那一行的锚点 */
+  /** 主对话里那次 subagent 调用；④ 子代理卡的锚点 */
   toolCallId: string;
   /** agent 定义名（显示用） */
   name: string;
-  /** 一句话任务摘要（④ 卡与此刻段显示） */
+  /** 一句话任务摘要（④ 卡显示） */
   title: string;
   status: "running" | "completed" | "failed" | "aborted";
   startedAt: number;
@@ -302,7 +304,7 @@ export interface ConversationView {
           lane = await harness.lane(name, { createAt: null }, context)   // fresh
        ④ lane.setActiveTools(agentTools)      // 硬白名单，按 lane 持久化
        ⑤ watch = await lane.watch(context); watch.start(e => { reduce; scheduleFlush() })
-       ⑥ 注册进 subagents 表 + pushView()      // ④ 卡与此刻段立刻可见
+       ⑥ 注册进 subagents 表 + pushView()      // ④ 卡立刻可见
        ⑦ r = await lane.prompt(task, undefined, context)
        ⑧ 终态 → pushView(); 退订 watch; 返回工具结果（结论文本 + 诚实 details）
 ```
@@ -384,7 +386,7 @@ tools: read, grep, glob, ls, memory_search
 
 - **命名** `subagent`（与 `memory_search` / `ask_user` 同风格）。
 - **入参**（typebox，照 `memory-tool.ts` 的写法）：
-  `agent: string`（必填）、`task: string`（必填）、`title?: string`（④ 卡与此刻段显示用；缺省取 `task` 首行）。
+  `agent: string`（必填）、`task: string`（必填）、`title?: string`（④ 卡显示用；缺省取 `task` 首行）。
   **v1 不暴露 `context`**（决策二 D3）。
 - **`description` 是本仓唯一的引导落点**（内核 `AgentTool` **没有** `promptSnippet` / `promptGuidelines`，
   见 `ARCHITECTURE.md` §四）。**两件事必须教**：
@@ -405,8 +407,8 @@ tools: read, grep, glob, ls, memory_search
 
 | 位置 | 内容 | 复用 |
 |---|---|---|
-| ④ | `subagent` 工具卡**特化**：`子代理 · <name>` + 任务一行 + 状态点 + 耗时；展开 = **有界预览**（最近 N 步）；「在右栏查看完整过程」 | 工具卡骨架 |
-| ⑦「任务摘要」**此刻段** | 运行中的子代理作为一行（名称 + 任务 + 当前动作 + 计时 + **中止**） | `FollowPanel.tsx` 既有段一；**必须先让 `parseToolArgs` 认得 `{agent, task}`** |
+| ④ | `subagent` 工具卡**特化**：`子代理 · <name>` + 任务一行 + 状态点 + 耗时 + **运行中时的「中止」**；展开 = **有界预览**（最近 N 步）；「在右栏查看完整过程」 | 工具卡骨架 |
+| ~~⑦「任务摘要」此刻段~~ | **v1.53 已移除**（与 ④ 的运行中工具卡重复列；「中止」随之挪到 ④ 卡上） | — |
 | ⑦ 下钻 | 子代理的**完整流**（面包屑 + ESC，复用下钻栈；下钻目标从「文件内容」多一种到「子代理流」） | 既有下钻语言 |
 | 阻塞卡 | 标题加「来自 `<子代理名>`」chip | `ApprovalCard` / `QuestionCard` |
 
@@ -428,7 +430,7 @@ tools: read, grep, glob, ls, memory_search
 |---|---|---|
 | **P0 地基** | ① **只读探针**验证分支树 lane 污染（含 TIDY）；② `lane-ownership.ts` + `projectBranches` 排除 + `navigate` 守卫；③ 契约加 `subagents` / `ViewSubagent`；④ `telemetry.ts` 拆两个判据（+ 改 4 条既有断言与 `SECURITY.md` 措辞） | 不先修分支树，子代理一落地就把左栏搞乱；契约与计量是后面所有阶段的地基 |
 | **P1 能力** | `agent-defs.ts` + `subagent.ts`（lane / watch / abort / timeout / depth）+ 目录块注入（**无 UI**） | 这条链路最贵的失败模式是**静默**，先在没有界面干扰时把「工具 → lane → 视图」验掉（同 `ask-user` 的排期理由） |
-| **P2 呈现** | ④ 卡特化（含 `parseToolArgs` 认得子代理）+ 此刻段 + 下钻 + 阻塞卡来源 + 单子代理中止 | 用户看得见（§3.6 / `PRINCIPLES` #1） |
+| **P2 呈现** | ④ 卡特化（含 `describeTool` 认得 `{agent, task}`）+ 卡面「中止」+ 下钻 + 阻塞卡来源 | 用户看得见（§3.6 / `PRINCIPLES` #1） |
 | **P3 总览收口** | `session.subagentTranscript` 按需拉 + 下钻内容层 + `subagent` 冒烟模式 | 与 P2 可合，但分两批更好定位 |
 | **P4 可选** | 子代理消耗落库按归属分组、用户手动 `/subagent`、**（不排期）**`fork` 上下文模式 | 复杂度高、收益边际 |
 
@@ -456,8 +458,8 @@ tools: read, grep, glob, ls, memory_search
 优先新开，不往 `dock.ts` 里塞（它已经很大）。范式抄 `ask-user.ts`（推受控视图 + 主进程打桩计数）：
 
 1. 受控视图带 `subagents` → ④ 出现子代理卡、展开看到有界预览；
-2. 「任务摘要」**此刻段**出现该子代理行；**已结束的从此刻段消失、但 ④ 的卡仍在**；
-3. 点此刻段那一行 / 点 ④ 卡 → 下钻到子代理流（面包屑 + ESC 逐层回退）；
+2. **此刻动作只在 ④**（右栏不再重复列）；**「中止」在 ④ 的卡面上**且**真的落在可视区**；**已结束后不再给「中止」、但 ④ 的卡仍在**；
+3. 点 ④ 卡上的出口 → 下钻到子代理流（面包屑 + ESC 逐层回退）；
 4. **分支树里没有子代理条目**；**导航到子代理条目被拒**（决策六 D10 的硬判据）；
 5. `subagent` 调用**不弹卡**、子代理内部的 `write` **弹卡**（决策四 D6 的安全语义——
    在 `sessionManager` 上**打桩计数**，只记账、不转发）；
@@ -498,7 +500,7 @@ tools: read, grep, glob, ls, memory_search
 - **递归子代理（depth > 1）**——决策八 D7：自我复制 + 费用失控
 - **扩展宿主层 / `promptSnippet` / `renderCall` / TUI overlay**——本仓没有对应物，
   见 `ARCHITECTURE.md` §四 与 `NEXT-PHASE.md` §3.2
-- **新增右栏「子代理」页签**——决策三：与「任务摘要」此刻段重复列同一批运行中动作（双入口）
+- **新增右栏「子代理」页签**——决策三：与 ④ 重复列同一批运行中动作（双入口）
 - **子代理启动自动展开 / 自动切右栏**——决策三：违反 ⑦-D 不抢焦；「被看到」已由 ④ 卡保证
 - **子代理的流混进主 `messages`**——会把两条 lane 的消息错并成同一轮（`groupTurns` 只认 role）
 - **子代理内联完整流到 ④**——决策三：④ 是叙述，嵌套叙述会淹没主线，且要另写一套渲染
@@ -516,7 +518,7 @@ tools: read, grep, glob, ls, memory_search
 | D2 | 执行模型 = 同会话多 lane（进程内），不用 `repo.fork` | ✅ |
 | D3 | **只有 `fresh`；`fork` 否决**，v1 不暴露 `context` 参数 | ✅ |
 | D4 | 身份 = lane 名 `sub:${agent}:${shortId}` | ✅ |
-| D5 | 呈现 = ④ 活卡 +「任务摘要」此刻段 + 下钻；无新页签、不自动展开 | ✅ |
+| D5 | 呈现 = ④ 活卡（含卡面「中止」）+ 下钻；无新页签、不自动展开 | ✅ |
 | D6 | `subagent` 自身豁免闸门、内部工具照拦（无绕过路径） | ✅ |
 | D7 | 禁止递归（depth = 1） | ✅ |
 | D8 | 费用计入（带归属）、上下文占用只算主 lane | ✅ |

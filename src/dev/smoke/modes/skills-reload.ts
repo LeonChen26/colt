@@ -27,7 +27,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createSession, upsertProject } from "../../../main/db/repo";
 import { sessionManager } from "../../../main/session-manager";
-import { sleep, uncaughtErrors } from "../context";
+import { isolateUserHome, sleep, uncaughtErrors } from "../context";
 
 /**
  * `big` 技能的正文长度：刻意远大于任何合理上限，用来验「超长正文只把前半段交给模型」。
@@ -105,6 +105,16 @@ export async function runSkillsReload(
   rmSync(join(fixtureDir, ".agents"), { recursive: true, force: true });
   rmSync(join(fixtureDir, ".colt"), { recursive: true, force: true });
   writeSkill("alpha", ALPHA_BODY);
+  // 用户级那份也要显式置空：本模式断言的是「初始只有 alpha（+ 内置）」，而用户级
+  // `~/.agents/skills` 与 `~/.colt/skills.json` 对本机所有项目生效——开发机上装过技能时，
+  // 清单会多出几条、甚至出现被用户级禁用的名字（`AGENTS.md` §五⑬：前提要自己建立）。
+  isolateUserHome("skills-reload", log);
+  // 本模式是**唯一**要验「内置技能真的随包带上了」的地方，所以要把 `runSmoke` 装的那个
+  // 「内置目录指向空目录」的隔离口**撤掉**，让 worker 去解析**真实的**随包目录
+  // （`out/main/builtin-skills`）。必须在会话 fork 之前删——worker 继承的是 fork 那一刻的
+  // 环境（`session-manager` 的 `...process.env`），晚一步就只能验到那个空目录了。
+  delete process.env.COLT_BUILTIN_SKILLS_DIR;
+  log("内置技能目录：撤掉冒烟的隔离口，验随包那份（out/main/builtin-skills）");
   mkdirSync(otherDir, { recursive: true });
   const otherProject = upsertProject(otherDir);
 
@@ -148,6 +158,22 @@ export async function runSkillsReload(
         alpha.modelInvocable === true &&
         alpha.content === ALPHA_BODY &&
         alpha.filePath.length > 0,
+    ]);
+
+    // ①b 内置技能：随应用分发，任何会话都会装上它，来源标成 builtin。
+    // 这条钉的是**构建时真的把它复制进 out/ 了**——漏掉那一步它只会静默消失，
+    // 而装载、告警、计数、设置页全都照常绿（`AGENTS.md` §四 那类「只有定义、没有调用」）。
+    // 所以判据要落在**路径**上：它得来自产物目录里的 `builtin-skills/`，而不是仓库里的
+    // `src/worker/lib/builtin-skills/`——只看「名字出现」的话，直接读源码树也能满足。
+    const builtin = initial.skills.find((item) => item.name === "skill-creator");
+    const builtinFromBuild =
+      builtin !== undefined &&
+      /[\\/]builtin-skills[\\/]/.test(builtin.filePath) &&
+      !/[\\/]src[\\/]/.test(builtin.filePath);
+    log(`内置技能：${builtin ? builtin.filePath : "（没装上）"}`);
+    checks.push([
+      "内置技能随包装载：skill-creator 在清单里、来源=内置、对模型公开、且**来自 out/ 那份产物**",
+      builtinFromBuild && builtin.source === "builtin" && builtin.modelInvocable === true,
     ]);
 
     // ② 热重载：新增 beta —— 不重启会话就能用（报告 A2）

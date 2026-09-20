@@ -136,7 +136,7 @@ export interface ViewSubagent {
    * 界面上用它取完整流（`session.subagentTranscript`）、中止单个子代理。
    */
   id: string;
-  /** 主对话里那次 `subagent` 调用——④ 工具卡与「任务摘要」此刻段那一行的锚点 */
+  /** 主对话里那次 `subagent` 调用——④ 子代理卡的锚点 */
   toolCallId: string;
   /** agent 定义名（显示用） */
   name: string;
@@ -225,8 +225,14 @@ export interface ViewSkill {
   name: string;
   /** 技能自述的用途（来自 SKILL.md frontmatter），模型看到的就是它 */
   description: string;
-  /** 来源层级：项目级 `<项目根>/.agents/skills` vs 用户级 `~/.agents/skills`（同名时前者胜出） */
-  source: "project" | "user";
+  /**
+   * 来源层级（**顺序即优先级，同名时先到者胜出**）：
+   * - `project`：`<项目根>/.agents/skills`——随仓库分发（clone 一个仓库就带上它的技能）；
+   * - `user`：`~/.agents/skills`——你自己的，跨项目；
+   * - `builtin`：随应用分发的内置技能（`worker/lib/builtin-skills/`）——优先级**最低**，
+   *   磁盘上的同名技能可以覆盖它。它不在用户的磁盘管辖范围内（删不掉），要停用就关开关。
+   */
+  source: "project" | "user" | "builtin";
   /**
    * 是否**对模型公开**（`disable-model-invocation: true` 时为 false）。
    * false 不代表坏了：模型不会自己选它，但 `/skill <名字>` 仍可显式调用。
@@ -349,7 +355,7 @@ export interface ConversationView {
   /**
    * 本次会话里的子代理实例（`subagent` 工具委派的那些），按开始时间排列。
    *
-   * 它是「任务摘要」此刻段与 ④ 子代理卡的**唯一**数据源（零新事件，搭 `session.view` 顺风车）。
+   * 它是 ④ 子代理卡的**唯一**数据源（零新事件，搭 `session.view` 顺风车）。
    * `tail` 有界（见 `ViewSubagent`）；完整流按需拉。
    */
   subagents: ViewSubagent[];
@@ -485,7 +491,8 @@ export type WorkerCommand =
    */
   | { type: "skillsStatus" }
   /**
-   * 重新扫描技能目录：重扫项目级与用户级 `.agents/skills`，把新清单写回 harness
+   * 重新扫描技能目录：按优先级重扫项目级 `.agents/skills`、用户级 `~/.agents/skills` 与内置
+   * 目录，把新清单写回 harness
    * （`setResources`）并让**下一次请求**的系统提示词立即反映它——不必重启会话
    * （技能装载原本是 create-time 一次，见报告 A2）。同样以 `skillsStatus` 消息回复。
    */

@@ -8,6 +8,7 @@ import hljs from "highlight.js/lib/common";
 import { parseAnsi } from "../src/renderer/src/lib/ansi.ts";
 import { classifyDiffLine } from "../src/renderer/src/lib/diff.ts";
 import {
+  contentStats,
   formatAgo,
   formatArgs,
   formatSessionStamp,
@@ -1527,5 +1528,29 @@ describe("turnAt（可见消息属于第几轮——点链的「当前点」靠�
 
   test("空目录 → 0（调用方把它当「没有当前点」）", () => {
     assert.equal(turnAt([], 5), 0);
+  });
+});
+
+describe("contentStats（技能正文的规模）", () => {
+  // 只报客观数字：多少行、多少字符。界面上不判断「长不长」——那条上限
+  // （`MAX_SKILL_BODY_CHARS`）由 worker 的装载告警负责，这里**绝不复制那个阈值**。
+  test("行数按 \\n 数，末尾换行不额外算一行（文件以换行收尾是常态）", () => {
+    assert.deepEqual(contentStats("一\n二\n三\n"), { lines: 3, chars: 6 });
+  });
+
+  test("没有末尾换行时同样三行", () => {
+    assert.deepEqual(contentStats("一\n二\n三"), { lines: 3, chars: 5 });
+  });
+
+  test("空正文是 0 行（别把空文件说成一行）", () => {
+    assert.deepEqual(contentStats(""), { lines: 0, chars: 0 });
+  });
+
+  test("只有换行的正文也是 0 行，但字符数照实报", () => {
+    assert.deepEqual(contentStats("\n\n"), { lines: 0, chars: 2 });
+  });
+
+  test("单行正文", () => {
+    assert.deepEqual(contentStats("就一行"), { lines: 1, chars: 3 });
   });
 });

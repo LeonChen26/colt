@@ -4,19 +4,22 @@
 /**
  * 右栏工作区的「任务摘要」视图（默认视图，规则 ⑦-E；v1.48 由「正在处理」更名）。
  *
- * 规则 ⑦-G：本视图**只由三段构成，三个时态、互不重复**（顺序即阅读顺序，v1.48 定）——
+ * 规则 ⑦-G：本视图**只由两段构成，两个时态、互不重复**（顺序即阅读顺序）——
  *   1. 计划（将来）：待办清单，`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做；
  *      **已完成折成一行**，点开才铺开。没有清单时**整段不渲染**（不占位）——
  *      「没有清单」与「有清单但此刻空闲」是两件事，前者不该在界面上留一个空壳。
- *   2. 进行中的动作（此刻）：`runningTools` 逐条，**全应用唯一出处**。
- *      已完成的文件改动**不在这里重复列一遍**——它们的去处是总账 → 清单。
- *      理由：面板必须能显示「空」。若把已完成内容也常驻在此，它永远有内容，
- *      ⑦-E 那句「它是活的吗」就再也答不出来，而这是自用场景判断安全性的第一依据。
- *   3. 本次改动（过去 / 累计）：底部**一行常驻总账**「N 处 · M 文件」，点它进入清单。
+ *      清单**不设自己的滚动上限**：它多长就多长，超出面板高度由**本视图整体**滚动，
+ *      绝不在半截处截断（曾写死 `max-h-[45%]`，清单略多就只在自己那一小块里滚）。
+ *   2. 本次改动（过去 / 累计）：**紧跟计划**的一行常驻总账「N 处 · M 文件」，点它进入清单。
  *      `+a −b` 是**净值**（基线 → 现在，与清单层同源）：改完又退回原样就是 0，
  *      故这里不给「干了多少下」的错觉——「处 / 文件」两个数说明干过活，净值说明结果。
- *      它不是可折叠区段（没有 caret / 展开态 / 空态），也不固定在右栏底部——
- *      它属于本视图，跟着出现、随切页签消失。
+ *      它不是可折叠区段（没有 caret / 展开态 / 空态）。
+ *
+ * 「此刻在跑什么」**不在本视图**（v1.53 删去「进行中的动作」段）：④ 消息流里已有运行中
+ * 工具卡（含输出 / diff / 截图）与子代理卡，那是叙事的真源；本视图再列一遍只是把同一批
+ * `runningTools` 画第二遍，还因为它当时是 `flex-1`，会把剩余高度全吃掉——清单被挤进
+ * `max-h`、总账被顶到面板最下沿。「它是活的吗」由 ⑥ 状态栏（运行中 / 已中断 / 已失败 /
+ * 空闲）回答，不必在本视图再占一块；子代理的「中止」挪到 ④ 子代理卡（`ToolCard`）上。
  *
  * 由 WorkspaceDock 提供页签与边框，本组件只负责内容，故根节点是撑满的 div 而非 aside。
  * 数据全部来自 ConversationView，无需额外 IPC（清单也是——它就在 `view.todos` 里）。
@@ -25,49 +28,16 @@
  * ②（段一不再列已完成文件）、③（改动 / 文件页签合并为下钻）、④（清单层）均已落地，
  * 总账的出口是下钻的**清单层**（`ChangeDrilldown`）；
  * ⑤（越界过滤扩到所有可点入口）由 `lib/change-list.ts` 的 `isProjectRelative` 统一保证，
- * 故本文件里的**文件行**不再各自可点——可点入口只剩一处：底部总账那一行
+ * 故本文件里的**文件行**不再各自可点——可点入口只剩一处：总账那一行
  * （`onOpenChanges` → 下钻的清单层）。路径的越界过滤仍在 `buildChangeList` 里统一做。
- *
- * hover 工具卡片时通过 highlightPath 跟随高亮**正在跑的那个动作**（⑦-A 的现场联动）。
- * 注：它原先高亮的是段一里的文件行，文件行按 ⑦-G 移除后，能对上的只剩「正在跑的同路径工具」；
- * 清单层里的文件行另有 `samePath` 高亮（见 `ChangeDrilldown`），两条联动各管各的层。
  */
 import { useState, type ReactNode } from "react";
-import { Bot, Check, ChevronDown, ChevronRight, Circle, Clock, FileDiff } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Circle, FileDiff } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { buildChangeList } from "@/lib/change-list";
-import { formatAgo, samePath } from "@/lib/format";
 import { blockedTodoIds, summarizeTodoProgress, type ViewTodo } from "@shared/todo";
-import type { ConversationView, ViewSubagent } from "@shared/worker-protocol";
+import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
-
-/** 从工具入参里取「它在干什么」的摘要（命令 / 路径 / 子代理任务），以及其中的路径（供跟随高亮用） */
-function parseToolArgs(argsJson: string): { summary: string; path: string } {
-  try {
-    const parsed = JSON.parse(argsJson) as Record<string, unknown>;
-    const command = typeof parsed.command === "string" ? parsed.command : undefined;
-    const path = typeof parsed.path === "string" ? parsed.path : undefined;
-    // 子代理调用没有 command / path，它的入参是 `{ agent, task, title? }`：
-    // 不认这两个字段的话，此刻段会退化成光秃秃一行 `subagent`——用户看不出它要去干什么。
-    const title = typeof parsed.title === "string" ? parsed.title.trim() : undefined;
-    const task = typeof parsed.task === "string" ? parsed.task.split("\n")[0]!.trim() : undefined;
-    return { summary: command ?? path ?? title ?? task ?? "", path: path ?? "" };
-  } catch {
-    return { summary: "", path: "" };
-  }
-}
-
-/** 子代理此刻在做的动作：优先给正在跑的那个工具，否则说它在输出还是在想 */
-function currentActionOf(subagent: ViewSubagent): string {
-  const tool = subagent.tail.runningTools[subagent.tail.runningTools.length - 1];
-  if (tool !== undefined) {
-    const { summary } = parseToolArgs(tool.args);
-    return summary === "" ? tool.name : `${tool.name} ${summary}`;
-  }
-  if (subagent.tail.streamingText !== null && subagent.tail.streamingText !== "") return "正在输出结论…";
-  if (subagent.tail.thought !== null) return "正在思考…";
-  return "启动中…";
-}
 
 /** 可折叠分段头：caret + 标题 + 右侧元信息（对齐 .fsec-head） */
 function SectionHead({
@@ -103,37 +73,16 @@ function SectionHead({
 
 export function FollowPanel({
   view,
-  highlightPath,
   onOpenChanges,
-  onOpenSubagent,
-  onAbortSubagent,
 }: {
   view: ConversationView | null;
-  highlightPath?: string | null;
   /** 点总账 → 进入下钻的**清单层**（⑦-G） */
   onOpenChanges: () => void;
-  /** 点运行中的子代理那一行 → 下钻看它的**完整流**（⑦-G 同款下钻语言） */
-  onOpenSubagent?: (id: string) => void;
-  /** 收掉一个跑偏的子代理（不动主对话，也不动别的子代理） */
-  onAbortSubagent?: (id: string) => void;
 }): React.JSX.Element {
-  const [stepsCollapsed, setStepsCollapsed] = useState(false);
   const [planCollapsed, setPlanCollapsed] = useState(false);
   /** 「已完成」默认折成一行，点开才铺开（⑦-H：给结论不给流水） */
   const [doneOpen, setDoneOpen] = useState(false);
   const changes = view?.fileChanges ?? [];
-  const runningTools = view?.runningTools ?? [];
-  /**
-   * 运行中的子代理 + 其余运行中的工具，**是同一批「此刻」**。
-   *
-   * 子代理调用本身就是一条 running tool，若既画子代理那一行、又画那条 `subagent` 工具行，
-   * 同一件事就会出现两次（本仓刚为消除双入口动过三次手术）。故按 `toolCallId` 认领：
-   * 已变成子代理行的，就从普通工具列表里去掉。
-   */
-  const runningSubagents = (view?.subagents ?? []).filter((item) => item.status === "running");
-  const subagentCallIds = new Set(runningSubagents.map((item) => item.toolCallId));
-  const otherRunningTools = runningTools.filter((tool) => !subagentCallIds.has(tool.id));
-  const liveCount = runningSubagents.length + otherRunningTools.length;
   const todos = view?.todos ?? [];
   const plan = summarizeTodoProgress(todos);
   // 依赖未满足的条目要**看得出来**：它是在等，不是被忘了（判据与注入块同源）
@@ -195,14 +144,13 @@ export function FollowPanel({
   const hasDiff = net.netAddedLines > 0 || net.netRemovedLines > 0;
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col">
+    // 本视图整体滚动（而不是给清单一个自己的滚动盒）：清单必须能完整铺开，
+    // 总账**紧跟**在它下面（不再被一个吃高度的中间段顶到面板最下沿）。
+    <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
       {/* 段一：计划（将来）——v1.48 新增。**没有清单时整段不渲染**（不占位）：
           那是「模型还没拆解」，不是「有清单但空着」，留个空壳只会让人以为坏了。 */}
       {todos.length > 0 && (
-        <section
-          data-todo-section=""
-          className="flex shrink-0 flex-col border-b border-line"
-        >
+        <section data-todo-section="" className="flex shrink-0 flex-col border-b border-line">
           <SectionHead
             title="计划"
             meta={<span data-todo-progress="">{`${plan.done}/${plan.total}`}</span>}
@@ -210,7 +158,7 @@ export function FollowPanel({
             onToggle={() => setPlanCollapsed((value) => !value)}
           />
           {!planCollapsed && (
-            <div className="max-h-[45%] overflow-y-auto px-2 pb-1.5">
+            <div className="px-2 pb-1.5">
               {activeTodos.map(renderTodo)}
               {doneTodos.length > 0 && (
                 <button
@@ -232,143 +180,12 @@ export function FollowPanel({
         </section>
       )}
 
-      {/* 段二：进行中的动作（此刻）——只放「此刻在跑」的，已完成的下沉到总账 → 清单 */}
-      <section className="flex min-h-0 flex-1 flex-col">
-        <SectionHead
-          title="进行中的动作"
-          meta={liveCount > 0 ? `${liveCount} 个动作进行中` : "空闲"}
-          collapsed={stepsCollapsed}
-          onToggle={() => setStepsCollapsed((value) => !value)}
-        />
-        {!stepsCollapsed &&
-          (liveCount === 0 ? (
-            /* 空态是⑦-E 的安全判断依据（「它是活的吗」），故它比内容更值得画清楚 */
-            <div
-              data-follow-empty=""
-              className="flex min-h-0 flex-1 flex-col items-center gap-1 px-5 py-8 text-center"
-            >
-              <span className="mb-2 flex h-[34px] w-[34px] items-center justify-center rounded-full bg-surface-overlay text-text-muted">
-                <Clock {...ICON.sm} />
-              </span>
-              <p className="text-[12.5px] text-text-secondary">会话空闲</p>
-              <p className="max-w-[250px] text-[11.5px] leading-relaxed text-text-muted">
-                Agent 没有正在进行的操作。它不再碰你的代码，可以放心离开。
-              </p>
-            </div>
-          ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-1.5">
-              {/* 子代理：一行说清「谁在干、干什么、干了多久」，点开看完整过程，
-                  右侧就地能收掉它（跑偏时不用中断整个会话）。 */}
-              {runningSubagents.map((subagent) => (
-                <div
-                  key={subagent.id}
-                  data-subagent-row={subagent.id}
-                  data-subagent-status={subagent.status}
-                  role={onOpenSubagent === undefined ? undefined : "button"}
-                  tabIndex={onOpenSubagent === undefined ? undefined : 0}
-                  onClick={onOpenSubagent === undefined ? undefined : () => onOpenSubagent(subagent.id)}
-                  onKeyDown={
-                    onOpenSubagent === undefined
-                      ? undefined
-                      : (event) => {
-                          // 只认「行自己」的按键：焦点在行内的「中止」按钮上时，Enter 的
-                          // keydown 会**先**冒泡到这里，若在这里 preventDefault，按钮的
-                          // 激活就被吞掉——表现为「想中止却打开了下钻」。
-                          if (event.target !== event.currentTarget) return;
-                          if (event.key !== "Enter" && event.key !== " ") return;
-                          event.preventDefault();
-                          onOpenSubagent(subagent.id);
-                        }
-                  }
-                  title={onOpenSubagent === undefined ? undefined : "点开看这个子代理的完整过程"}
-                  className={cn(
-                    "rounded-[6px] px-2 py-1.5",
-                    onOpenSubagent !== undefined && "cursor-pointer transition hover:bg-surface-overlay",
-                  )}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="live-dot shrink-0" />
-                    <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
-                    <span className="shrink-0 font-mono text-[11px] font-semibold text-text-secondary">
-                      {subagent.name}
-                    </span>
-                    <span
-                      data-subagent-steps={subagent.tail.stepCount}
-                      className="shrink-0 text-[10.5px] text-text-muted"
-                    >
-                      {subagent.tail.stepCount} 步
-                    </span>
-                    <span className="ml-auto shrink-0 text-[10.5px] text-text-muted">
-                      {formatAgo(subagent.startedAt)}
-                    </span>
-                    {onAbortSubagent !== undefined && (
-                      <button
-                        type="button"
-                        data-subagent-abort={subagent.id}
-                        onClick={(event) => {
-                          // 行本身可点（进下钻）——中止是**另一件事**，不能顺带触发它
-                          event.stopPropagation();
-                          onAbortSubagent(subagent.id);
-                        }}
-                        title="中止这个子代理（不影响主对话与其它子代理）"
-                        className="shrink-0 rounded-[4px] px-1 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-danger-fg"
-                      >
-                        中止
-                      </button>
-                    )}
-                  </div>
-                  <div
-                    data-subagent-title={subagent.id}
-                    title={subagent.title}
-                    className="truncate pl-3.5 text-[11px] text-text-secondary"
-                  >
-                    {subagent.title}
-                  </div>
-                  <div className="truncate pl-3.5 font-mono text-[10.5px] text-text-muted">
-                    {currentActionOf(subagent)}
-                  </div>
-                </div>
-              ))}
-              {otherRunningTools.map((tool) => {
-                const { summary, path } = parseToolArgs(tool.args);
-                return (
-                  <div
-                    key={tool.id}
-                    className={cn(
-                      "rounded-[6px] px-2 py-1.5",
-                      samePath(path, highlightPath ?? null) && "bg-surface-overlay",
-                    )}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span className="live-dot shrink-0" />
-                      <span className="truncate font-mono text-[11px] text-text-secondary">
-                        {tool.name}
-                      </span>
-                      <span className="ml-auto shrink-0 text-[10.5px] text-text-muted">
-                        {formatAgo(tool.startedAt)}
-                      </span>
-                    </div>
-                    {summary.length > 0 && (
-                      <div
-                        title={summary}
-                        className="truncate pl-3.5 font-mono text-[10.5px] text-text-muted"
-                      >
-                        {summary}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-      </section>
-
-      {/* 总账（⑦-G）：一行常驻状态，不是区段（没有 caret / 展开态 / 空态）。
+      {/* 总账（⑦-G）：一行常驻状态，**紧跟计划**、不是区段（没有 caret / 展开态 / 空态）。
           「空」时它仍在，只是数字为 0 且**不给出口**——一个点了没反应的按钮就是死控件。 */}
       {places === 0 ? (
         <div
           data-follow-ledger=""
-          className="flex w-full shrink-0 items-center gap-2 border-t border-line bg-surface px-3 py-2"
+          className="flex w-full shrink-0 items-center gap-2 bg-surface px-3 py-2"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
           <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[.4px] text-text-muted">
@@ -382,7 +199,7 @@ export function FollowPanel({
           data-follow-ledger=""
           onClick={onOpenChanges}
           title="本次会话的文件改动（+a −b 为净值：改动前 → 现在）"
-          className="group flex w-full shrink-0 items-center gap-2 border-t border-line bg-surface px-3 py-2 text-left transition hover:bg-surface-overlay"
+          className="group flex w-full shrink-0 items-center gap-2 bg-surface px-3 py-2 text-left transition hover:bg-surface-overlay"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
           <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[.4px] text-text-muted">

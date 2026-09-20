@@ -6,7 +6,6 @@
  * 无需改动 src 的 import 风格。
  *
  * 用法：node --import ./tests/ts-resolve.mjs --test
- * 作者：陕耀云栈WorkMate
  */
 import { register } from "node:module";
 

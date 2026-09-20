@@ -1,5 +1,4 @@
 // Colt 运行时探针：确认 Electron 内置 Node 版本与 node:sqlite 可用性
-// 作者：陕耀云栈WorkMate
 const { app } = require("electron");
 
 function tryRequire(id) {

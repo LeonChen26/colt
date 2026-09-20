@@ -31,7 +31,7 @@ import { sessionManager } from "../../../main/session-manager";
 import { listProviders } from "../../../main/providers";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { ConversationView } from "@shared/worker-protocol";
-import { isolateUserMcpConfig, sleep, uncaughtErrors } from "../context";
+import { isolateUserHome, sleep, uncaughtErrors } from "../context";
 
 /** MCP 工具名：server 名（mcp.json 里声明的键）+ 夹具工具名，与 mcpToolName 同源 */
 const MCP_TOOL = "mcp__fixture__echo";
@@ -43,8 +43,8 @@ export async function runMcpE2e(
 ): Promise<void> {
   const fixtureDir = join(process.cwd(), "out", "smoke-mcp-e2e-fixture");
   // 先把用户级（全局）MCP 配置置空：本模式断言「模型看得见 mcp__fixture__…」，本机若
-  // 还配了全局 server，工具面就不是自己造的那份了（见 `isolateUserMcpConfig`）。
-  isolateUserMcpConfig("mcp-e2e", log);
+  // 还配了全局 server，工具面就不是自己造的那份了（见 `isolateUserHome`）。
+  isolateUserHome("mcp-e2e", log);
   mkdirSync(join(fixtureDir, ".colt"), { recursive: true });
   // ELECTRON_RUN_AS_NODE：electron 按 Node 解释器跑夹具 server——不依赖 PATH 里有 node。
   writeFileSync(

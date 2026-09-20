@@ -293,7 +293,7 @@
     - **`home` 省略则不读用户级**：单测据此保持**项目级**的确定性——结论只取决于自己造的夹具
       目录，不随开发者的 `~/.colt/mcp.json` 漂移。生产调用方（worker `entry.ts`、`main/ipc`）
       传 `mcpUserHome()`（`os.homedir()`，可被 `COLT_MCP_HOME` 覆盖——**冒烟专用**的测试缝，
-      用来把「本机没有全局配置」这条前提显式固定，见 `isolateUserMcpConfig`）。
+      用来把「本机没有全局配置」这条前提显式固定，见 `isolateUserHome`）。
     - **判据**：`tests/mcp-tools.test.ts` 三条——合并 / 覆盖 / 不传 home 只读项目级；诊断带文件
       名；把 home 交给 runtime 时用户级 server **真的连上并出工具**。
 

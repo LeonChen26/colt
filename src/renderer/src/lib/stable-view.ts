@@ -176,7 +176,7 @@ function sameRunningTools(a: ViewRunningTool[], b: ViewRunningTool[]): boolean {
 /**
  * 一个子代理总账是否等价。
  *
- * 尾部与统计都要逐项比：它们**都会显示出来**（此刻段那一行、④ 卡里的预览与耗时/花费）。
+ * 尾部与统计都要逐项比：它们**都会显示出来**（④ 卡里的预览与耗时/花费）。
  * 只比 status 的话，运行中的文本流与工具进度就永远刷不出来——界面看着像卡住了。
  */
 export function sameViewSubagent(a: ViewSubagent, b: ViewSubagent): boolean {

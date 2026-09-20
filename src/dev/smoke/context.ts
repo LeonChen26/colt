@@ -19,18 +19,25 @@ export type Log = (message: string) => void;
 export type Run = <T>(expression: string) => Promise<T>;
 
 /**
- * 把「用户级（全局）MCP 配置」这条环境前提**显式固定**成一个空目录（设 `COLT_MCP_HOME`）。
+ * 把「用户级配置家目录」这条环境前提**显式固定**成一个空目录（设 `COLT_MCP_HOME`）。
  *
- * 用户级 `~/.colt/mcp.json` 对全部项目生效——本机若配过一台，冒烟里那些「只有 N 台
- * server」的精确断言就会随机器而变（假红）。每个真实跑 MCP 的冒烟都先调它，前提才是
- * **自己建立**的，而不是「碰巧这台机器上没配」（`AGENTS.md` §五⑬）。
+ * 挂在它下面、且**都**对全部项目生效的有两族配置，两族都得清：
+ * - `<home>/.colt/mcp.json`——MCP server 清单（`docs/DESIGN-mcp.md`）；
+ * - `<home>/.agents/skills` 与 `<home>/.colt/skills.json`——用户级技能（`docs/SECURITY.md`）。
+ *
+ * 本机若配过一台 server、或装过一个技能，冒烟里那些「只有 N 台 / 只有这几个技能」的精确断言
+ * 就会随机器而变（假红）。真实跑 MCP / 技能的冒烟都先调它，前提才是**自己建立**的，而不是
+ * 「碰巧这台机器上没配」（`AGENTS.md` §五⑬）。
+ *
+ * 做法是**整个 home 先删后建**，不是只清 `.colt`：用户级技能的目录是 `.agents`，只清前者会
+ * 漏掉它——那正是「同一类前提写了两遍、漏了一段」的形态（技能冒烟就踩在这一段上）。
  */
-export function isolateUserMcpConfig(name: string, log?: Log): string {
+export function isolateUserHome(name: string, log?: Log): string {
   const home = join(process.cwd(), "out", `smoke-${name}-home`);
+  rmSync(home, { recursive: true, force: true });
   mkdirSync(home, { recursive: true });
-  rmSync(join(home, ".colt"), { recursive: true, force: true });
   process.env.COLT_MCP_HOME = home;
-  log?.(`用户级 MCP 配置目录（显式置空，避免被本机全局配置污染）：${home}`);
+  log?.(`用户级配置家目录（MCP 配置 + 用户级技能，整体清空重建）：${home}`);
   return home;
 }
 

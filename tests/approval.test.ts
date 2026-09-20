@@ -771,3 +771,50 @@ describe("MCP 工具的审批摘要", () => {
     assert.equal(evaluateTool({ toolName: "mcp__alpha__echo", args: {} }, config()).decision, "ask");
   });
 });
+
+describe("技能文件的审批摘要", () => {
+  // 技能**不进审批闸门**（装载发生在会话开始前，没有一次工具调用可供拦截），于是「写技能
+  // 文件」这一步是这条通道上唯一能被用户看见的地方（见 docs/SECURITY.md §技能）。摘要里标出。
+  const skillPath = "E:/proj/.agents/skills/pdf/SKILL.md";
+
+  test("命中 .agents/skills/<名字>/SKILL.md 时标出正文的去向", () => {
+    assert.equal(
+      evaluateTool({ toolName: "write", args: { path: skillPath } }, config()).summary,
+      `write: ${skillPath}（技能文件：正文将进入系统提示词）`,
+    );
+    assert.equal(
+      evaluateTool({ toolName: "edit", args: { path: skillPath } }, config()).summary,
+      `edit: ${skillPath}（技能文件：正文将进入系统提示词）`,
+    );
+  });
+
+  test("技能目录里的其它文件不标（引用文件不改模型行为）", () => {
+    const path = "E:/proj/.agents/skills/pdf/references/api.md";
+    assert.equal(
+      evaluateTool({ toolName: "write", args: { path } }, config()).summary,
+      `write: ${path}`,
+    );
+  });
+
+  test("本产品**不读**的目录（.claude / .openclaw 等）也不标", () => {
+    const path = "E:/proj/.claude/skills/pdf/SKILL.md";
+    assert.equal(
+      evaluateTool({ toolName: "write", args: { path } }, config()).summary,
+      `write: ${path}`,
+    );
+  });
+
+  test("标注不等于抬档：项目内写技能文件仍是 moderate（宁可标、不拿确认框当安全）", () => {
+    assert.equal(
+      evaluateTool({ toolName: "write", args: { path: skillPath } }, config()).risk,
+      "moderate",
+    );
+  });
+
+  test("项目**外**写技能文件仍按越界判 dangerous（标注没把这条盖掉）", () => {
+    const path = "E:/elsewhere/.agents/skills/pdf/SKILL.md";
+    const verdict = evaluateTool({ toolName: "write", args: { path } }, config());
+    assert.equal(verdict.risk, "dangerous");
+    assert.equal(verdict.summary, `write: ${path}（技能文件：正文将进入系统提示词）`);
+  });
+});

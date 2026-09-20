@@ -301,8 +301,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot });
   const session = await openSession(repo, command.kernelSessionId, cwd);
 
-  // 技能（Agent Skills，agentskills.io 标准）：项目级 `.agents/skills` 与用户级 `~/.agents/skills`
-  // 各扫一遍，同名时项目级胜出；每请求拼进系统提示词 + 进 `resources.skills` + 随视图下发。
+  // 技能（Agent Skills，agentskills.io 标准）：按优先级扫三个目录——项目级 `.agents/skills`、
+  // 用户级 `~/.agents/skills`、内置 `builtin-skills`（随包分发，排最后），同名时先到者胜出；
+  // 每请求拼进系统提示词 + 进 `resources.skills` + 随视图下发。
   // 装载 / 告警 / 设置页「重新扫描」的热更新都在 lib/skills-command.ts。技能来自磁盘且会改模型
   // 行为，是隐式信任通道，跳过了什么必须可见（`docs/SECURITY.md`）。
   const skills = await createSkillsRuntime({

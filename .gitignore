@@ -2,6 +2,8 @@ node_modules/
 out/
 dist/
 release/
+# 打包试验目录（electron-builder 换 output 时的产物，正式产物仍在 release/）
+release-*/
 *.log
 .DS_Store
 .vite/
@@ -10,7 +12,8 @@ release/
 .smoke-*.png
 
 # 助手私有记忆（会话级沉淀，不进版本库；项目约定在 AGENTS.md，那个要提交）
-# 目录已由 .colt/ 改名为 .workbuddy/（规则没跟着改，曾静默失效）
+# `.colt/` 与更早的 `.workbuddy/` **两个名字都用过**，两条规则都留着——
+# 改名时漏掉一条，旧目录就会静默进版本库，这正是这行注释存在的理由。
 .workbuddy/
 .colt/
 

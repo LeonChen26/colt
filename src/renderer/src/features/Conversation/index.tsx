@@ -343,7 +343,7 @@ export function Conversation({
   );
 
   /**
-   * 中止**单个**子代理（「任务摘要」此刻段那一行的「中止」）。
+   * 中止**单个**子代理（④ 子代理卡上的「中止」）。
    * 与「停止」分开：那个中断整个会话，这个只收掉跑偏的某一个子代理；worker 已回收时
    * 是空操作（子代理随 worker 同寿命）。
    */
@@ -1133,6 +1133,7 @@ export function Conversation({
               onHoverFile={setHoveredFile}
               onOpenFile={openFile}
               onOpenSubagent={openSubagent}
+              onAbortSubagent={abortSubagent}
               openState={toolOpenState}
               onToggleOpen={toggleToolOpen}
               scrollRef={scrollRef}
@@ -1166,6 +1167,7 @@ export function Conversation({
                     subagent={subagents.get(tool.id)}
                     onOpenFile={openFile}
                     onOpenSubagent={openSubagent}
+                    onAbortSubagent={abortSubagent}
                   />
                 ))}
               </AssistantRow>
@@ -1595,7 +1597,6 @@ export function Conversation({
           onBrowserZoom={browserZoom}
           fileRequest={dockFile}
           subagentRequest={dockSubagent}
-          onAbortSubagent={abortSubagent}
           instances={dockInstances}
           activeId={dockActiveId}
           onActivate={activateDockInstance}

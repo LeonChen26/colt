@@ -1,5 +1,4 @@
 """把生成的图标外围白边抠成透明，并输出 electron-builder 需要的尺寸。
-作者：陕耀云栈WorkMate
 """
 
 import sys

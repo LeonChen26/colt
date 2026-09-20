@@ -33,7 +33,7 @@
  *       点「允许一次」→ 子代理结论回主模型；fresh 隔离用「主对话密语缺席于子代理
  *       transcript」的确定性判据。夹具 `.agents/agents/demo.md` 与生产发现路径同构
  * dock：工作区（右栏）界面行为——折叠/展开、拖拽调宽与上下限、宽度记忆、⑦-F 自动展开、
- *       ⑦-G 的「任务摘要」（进行中的动作 + 底部总账）与它的下钻（清单 → diff → 内容）、
+ *       ⑦-G 的「任务摘要」（计划 + 紧跟的一行总账）与它的下钻（清单 → diff → 内容）、
  *       点文件路径 → 下钻内容层（工具卡入口）、页签关闭与「+」新增视图、
  *       面板迁入页签（A3-5 / ⑦-H / ⑦-G：「工具」「改动」「文件」三个视图都取消后只剩统计与规则）、
  *       观测抽屉（B2）与它的**条目详情**（N1：点行展开完整字段 + 复制到剪贴板）、
@@ -66,9 +66,9 @@
  *        且跳过去之后**挂载数仍是一个窗口**（尾行不等于末尾）——
  *        跳转若沿用「一直挂到末尾」就把几千条一次挂出来，等于把窗口作废
  * subagent：子代理的呈现链路（不调模型、不计费）——推受控视图驱动：④ 卡**特化** + 有界预览
- *        （如实说「最近 12 / 共 20 步」）、「任务摘要」此刻段一行（名称 / 任务 / 步数 / 中止，
- *        且**不重复列**那条 subagent 工具）、**不自动展开右栏**（决策三）、
- *        已结束后此刻段消失而 ④ 卡保留、点 ④ 卡「在右栏查看完整过程」→ **下钻到子代理流**
+ *        （如实说「最近 12 / 共 20 步」）、**此刻动作只在 ④**（右栏不再重复列，v1.53）、
+ *        「中止」在 **④ 子代理卡**上（命中测试）、**不自动展开右栏**（决策三）、
+ *        已结束后不再给「中止」而 ④ 卡保留、点 ④ 卡「在右栏查看完整过程」→ **下钻到子代理流**
  *        （面包屑 + ESC 逐层回退；完整流按需拉、拉不到如实说）、不存在的子代理回空而非报错；
  *        分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖
  *
@@ -79,7 +79,7 @@
  * 且能随手 import 主进程内部——搬出来之后这层越界在物理上就不成立了。
  */
 import { app, BrowserWindow } from "electron";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { upsertProject } from "../../main/db/repo";
 import { dirname, join } from "node:path";
@@ -121,6 +121,19 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
   // 去重，跑一百次也只留一行项目，不会攒出一串只在冒烟里存在的目录（AGENTS.md §五⑩）。
   // 调用方自己设了就用它（`??=`）——那是有意为之，别覆盖。
   process.env.COLT_WORKSPACE_ROOT ??= join(dirname(outputPath), "smoke-workspace");
+  // 内置技能目录（随包分发的那份 `out/main/builtin-skills`）同样要**显式置空**：它就躺在
+  // worker 旁边的产物目录里，不指开的话「这台机器上装了几个技能」取决于**当前包里带了什么**，
+  // 于是加一个内置技能就会让别的模式的技能清单悄悄多一条。要真验随包那份的模式自己删掉这个
+  // 变量（见 `modes/skills-reload.ts` 的 ①b）。前提要自己建立，别指望它恰好为空（AGENTS.md §五⑬）。
+  //
+  // 默认那个目录**先删后建**：上一轮往里写过技能的话，「空目录」就是假的，别的模式会带着
+  // 上一轮的名字开跑。只清我们自己定的那个——调用方显式设的**不动**，清它等于删人家的东西。
+  if (process.env.COLT_BUILTIN_SKILLS_DIR === undefined) {
+    const dir = join(dirname(outputPath), "smoke-builtin-skills");
+    rmSync(dir, { recursive: true, force: true });
+    process.env.COLT_BUILTIN_SKILLS_DIR = dir;
+  }
+  mkdirSync(process.env.COLT_BUILTIN_SKILLS_DIR, { recursive: true });
   // 同时落盘：Windows 上 Electron 主进程 stdout 不接父终端，只看控制台会丢日志。
   // 每行立即追加，保证卡死时也能看到「卡在哪一步」，而不是等 finally 才写出。
   const lines: string[] = [];

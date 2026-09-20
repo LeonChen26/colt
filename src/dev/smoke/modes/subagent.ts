@@ -11,10 +11,11 @@
  *
  * 覆盖（决策三 D5 / 决策七 D9 / 决策四 D6 的界面侧）：
  *   1. ④ 的卡**特化**：`子代理 · <名字>` + 状态；展开是**有界预览**（如实说「最近 N / 共 M 步」）；
- *   2. 「任务摘要」**此刻段**出现一行（名称 + 任务 + 当前动作 + 计时 + 中止），
- *      且 **不重复列**那条 `subagent` 工具行（判据用产品自己算的「N 个动作进行中」）；
+ *   2. **此刻动作只在 ④**：右栏「任务摘要」不再列它（v1.53 删去「进行中的动作」段），
+ *      且「中止」也在 ④ 的卡面上（不再重复一个「N 个动作进行中」的列表）；
  *   3. **不自动展开右栏**（决策三：子代理是模型自己发起的，routine 起来会反复撑开右栏）；
- *   4. 已结束的子代理**从此刻段消失、但 ④ 的卡仍在**（卡的寿命跟着 transcript）；
+ *   4. 已结束的子代理**不再给「中止」**（已结束的卡上不放点了没反应的按钮）、④ 的卡仍在
+ *      （卡的寿命跟着 transcript）；
  *   5. 点 ④ 卡上的「在右栏查看完整过程」→ **下钻到子代理流**（面包屑 + ESC 逐层回退）；
  *      完整流**按需拉**（`session.subagentTranscript`），拉不到时**如实说**而不是白屏；
  *   6. 中止按钮**真的落在可视区**（小目标入口要做命中测试，别只查「在不在 DOM 里」）。
@@ -39,7 +40,7 @@ import type {
 import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
 import { sleep, uncaughtErrors } from "../context";
 
-/** 造一条「运行中的工具」（子代理尾部里会出现它，此刻段那一行也用它说「在干什么」） */
+/** 造一条「运行中的工具」（子代理尾部里会出现它，④ 卡的预览也靠它说「在干什么」） */
 const runningTool = (): ViewRunningTool => ({
   id: "smoke-sub-tool",
   name: "read",
@@ -135,7 +136,8 @@ export async function runSubagent(
     fileChanges: [],
     streamingText: null,
     thought: null,
-    // 把那条 `subagent` 工具也放进 runningTools：此刻段必须**认领**它、不重复列
+    // 把那条 `subagent` 工具也放进 runningTools：④ 里那张子代理卡就是由它渲染的
+    // （流式区按 runningTools 出卡），少了它这条断言就没有被测对象。
     runningTools: [
       {
         id: runningCallId,
@@ -165,24 +167,15 @@ export async function runSubagent(
     window.webContents.send("session.view", smokeView(over));
   };
 
-  /** 右栏（⑦）的状态：折叠与否、文本、此刻段的子代理行 */
+  /** 右栏（⑦）的状态：折叠与否、文本 */
   const dockProbe = `(() => {
     const aside = [...document.querySelectorAll("aside")].find((a) =>
       a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
-    if (!aside) return { present: false, collapsed: null, text: "", rows: [], aborts: [] };
-    const rowAttr = (name) => [...aside.querySelectorAll("[data-subagent-row]")]
-      .map((el) => [el.getAttribute("data-subagent-row"), el.getAttribute(name)]);
+    if (!aside) return { present: false, collapsed: null, text: "" };
     return {
       present: true,
       collapsed: aside.querySelector('button[aria-label="展开工作区"]') !== null,
       text: aside.innerText ?? "",
-      rows: rowAttr("data-subagent-status"),
-      steps: [...aside.querySelectorAll("[data-subagent-steps]")].map((el) =>
-        Number(el.getAttribute("data-subagent-steps"))),
-      titles: [...aside.querySelectorAll("[data-subagent-title]")].map((el) =>
-        (el.textContent ?? "").trim()),
-      aborts: [...aside.querySelectorAll("[data-subagent-abort]")].map((el) =>
-        el.getAttribute("data-subagent-abort")),
     };
   })()`;
 
@@ -258,6 +251,14 @@ export async function runSubagent(
       return null;
     })()`);
 
+  /** 同上：把 ④ 卡面上的「中止」滚进视口，命中测试才有意义 */
+  const scrollToAbort = (id: string): Promise<unknown> =>
+    run(`(() => {
+      const el = document.querySelector('[data-subagent-abort="${id}"]');
+      if (el) el.scrollIntoView({ block: "center" });
+      return null;
+    })()`);
+
   try {
     window.reload();
     await sleep(4000);
@@ -312,34 +313,22 @@ export async function runSubagent(
       (preview.preview ?? "").includes("第 1 步"),
     ]);
 
-    // ---- 3. 此刻段那一行 + 不重复列 ----
-    log("[⑦] 「任务摘要」此刻段：一行子代理，且不重复列那条 subagent 工具");
+    // ---- 3. 此刻动作只在 ④；「中止」也搬到了 ④ 的卡面上（v1.53）----
+    log("[④/⑦] 此刻动作只在 ④ 的卡上；右栏不再重复列，「中止」也在卡上");
     await clickDockTab("任务摘要");
     await sleep(400);
-    const dock = await run<{
-      rows: [string, string][];
-      steps: number[];
-      titles: string[];
-      aborts: string[];
-      text: string;
-    }>(dockProbe);
+    const dock = await run<{ text: string }>(dockProbe);
     checks.push([
-      `此刻段出现该子代理这一行（状态 ${dock.rows[0]?.[1]}）`,
-      dock.rows.length === 1 && dock.rows[0]?.[0] === runningId && dock.rows[0]?.[1] === "running",
+      "右栏不再重复列此刻动作（「进行中的动作」段已移除，v1.53）",
+      !dock.text.includes("进行中的动作"),
     ]);
-    checks.push([`这一行给出真实步数（${dock.steps[0]}）`, dock.steps[0] === 20]);
+    // 「中止」现在长在 ④ 的卡面上。中栏是一列可滚的卡片，先把它滚进视口——
+    // 否则命中测试验的是「用例忘了滚」，不是产品（AGENTS.md §五⑬）。
+    await scrollToAbort(runningId);
+    await sleep(200);
     checks.push([
-      "这一行给出任务摘要",
-      dock.titles[0] === "查一下 read 工具在哪注册",
-    ]);
-    // 判据用**产品自己算的数**：子代理与它的 `subagent` 工具调用是同一件事，只该算一个动作
-    checks.push([
-      "那条 subagent 工具**没有**被重复列（产品自报「1 个动作进行中」）",
-      dock.text.includes("1 个动作进行中"),
-    ]);
-    checks.push([
-      "行上给了「中止」入口，且它**真的落在可视区**",
-      dock.aborts[0] === runningId && (await hitTest(`[data-subagent-abort="${runningId}"]`)),
+      "④ 子代理卡上给了「中止」入口，且它**真的落在可视区**",
+      await hitTest(`[data-subagent-abort="${runningId}"]`),
     ]);
     // 点一次中止：worker 侧对一个不存在的 lane 是空操作，只要求不抛、不崩
     const abortedClick = await clickBySelector(`[data-subagent-abort="${runningId}"]`);
@@ -369,21 +358,24 @@ export async function runSubagent(
       "并**如实说明**这一层是实时但有界的（不假装完整）",
       live.text.includes("实时刷新") && live.text.includes("最近几步"),
     ]);
-    await escape(); // 退出下钻，免得挡住下面「此刻段」的断言
+    await escape(); // 退出下钻，免得挡住下面 ④ 卡的断言
     await sleep(400);
 
-    // ---- 4. 已结束：此刻段消失，但 ④ 的卡仍在 ----
-    log("[已结束] 子代理跑完后：此刻段不再列它，④ 的卡保留");
+    // ---- 4. 已结束：④ 的卡保留、状态转完成，且不再给「中止」 ----
+    log("[已结束] 子代理跑完后：④ 的卡保留、状态转完成，中止入口消失");
     push({
       subagents: [makeSubagent(runningId, runningCallId, "completed", 20)],
       running: false,
       runningTools: [],
     });
     await sleep(600);
-    const afterDone = await run<{ rows: unknown[]; text: string }>(dockProbe);
+    const afterDone = await run<{ abort: string | null }>(
+      `(() => { const el = document.querySelector("[data-subagent-abort]");
+        return { abort: el ? el.getAttribute("data-subagent-abort") : null }; })()`,
+    );
     checks.push([
-      "已结束的子代理从此刻段消失（此刻段又能显示「空闲」）",
-      afterDone.rows.length === 0 && afterDone.text.includes("会话空闲"),
+      "已结束的子代理不再给「中止」（已结束的卡上不放点了没反应的按钮）",
+      afterDone.abort === null,
     ]);
     const doneCard = await run<{ status: string | null; cardText: string }>(cardProbe);
     checks.push([

@@ -63,7 +63,7 @@ export async function runTodo(
     rows: { id: string; status: string; text: string; waiting: boolean }[];
     doneToggle: string | null;
     doneShown: number;
-    idle: boolean;
+    hasLiveSection: boolean;
     activeLabel: string;
   }
   const planProbe = (): Promise<PlanProbe> =>
@@ -83,7 +83,7 @@ export async function runTodo(
         rows,
         doneToggle: toggle ? (toggle.textContent ?? "").trim() : null,
         doneShown: rows.filter((r) => r.status === "completed").length,
-        idle: document.querySelector("[data-follow-empty]") !== null,
+        hasLiveSection: (aside?.innerText ?? "").includes("进行中的动作"),
         activeLabel: (
           aside?.querySelector('[data-dock-tab][aria-pressed="true"]')?.textContent ?? ""
         ).trim(),
@@ -237,10 +237,14 @@ export async function runTodo(
       refused.includes("还在等"),
     ]);
 
-    // ---- 5. 空态两层：没有清单 → 整段不渲染；有清单但空闲 → 计划段在、② 段说空闲 ----
+    // ---- 5. 空态两层：没有清单 → 整段不渲染；有清单但此刻空闲 → 计划段在 ----
+    // （v1.53 起右栏不再有「进行中的动作」段：此刻动作只在 ④，空闲判据在 ⑥）
     const idleWithPlan = await planProbe();
     checks.push(["有清单但此刻空闲：计划段照常显示", idleWithPlan.section]);
-    checks.push(["有清单但此刻空闲：② 段显示「空闲」空态", idleWithPlan.idle]);
+    checks.push([
+      "右栏不再重复列此刻动作（「进行中的动作」段已移除，v1.53）",
+      !idleWithPlan.hasLiveSection,
+    ]);
     await call("clear");
     const cleared = await waitPlan((probe) => !probe.section);
     checks.push(["清空后「没有清单」→ 计划段整段不渲染（不占位）", !cleared.section]);

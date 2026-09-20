@@ -22,6 +22,23 @@ export function formatBytes(value: number): string {
   return `${value} B`;
 }
 
+/**
+ * 技能正文的**规模**：行数与字符数。
+ *
+ * 为什么要把这件事摆到界面上（P7 剩下的那半）：正文整段进上下文，而此前界面上只看得到
+ * 「超没超上限」这一条线（在装载告警里），看不到它到底多大——一个几百行的 `SKILL.md`
+ * 与一个两百字的小技能，在「查看正文」按钮上长得一模一样。
+ *
+ * 只报**客观规模**，不判断内容：多少行就是多少行。「超过上限会被截断」那件事由装载告警
+ * 负责（`skillWarningParts`，单一真源），卡上不重复——重复就会漂成两种说法。
+ *
+ * 行数按 `\n` 数、并去掉**末尾空行**：文件以换行收尾是常态，把它算成多一行是假话。
+ */
+export function contentStats(content: string): { lines: number; chars: number } {
+  const body = content.replace(/\n+$/, "");
+  return { lines: body === "" ? 0 : body.split("\n").length, chars: content.length };
+}
+
 /** 解析工具入参 JSON；失败或非对象时返回空对象 */
 export function parseArgsJson(raw: string): Record<string, unknown> {
   try {

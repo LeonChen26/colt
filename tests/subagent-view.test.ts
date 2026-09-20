@@ -91,7 +91,7 @@ describe("projectSubagent：尾部有界且截断如实", () => {
     assert.equal(idle.tail.thought, null);
   });
 
-  test("运行中的工具进尾部（此刻段那一行靠它说「在干什么」）", () => {
+  test("运行中的工具进尾部（④ 卡的预览靠它说「在干什么」）", () => {
     const view = projectSubagent({
       ...base,
       snapshot: snapshot({

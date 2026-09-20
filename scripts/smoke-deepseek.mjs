@@ -1,5 +1,4 @@
 // M1 前置冒烟：直连验证 DeepSeek + JsonlSessionRepo + AgentHarness 全链路
-// 作者：陕耀云栈WorkMate
 import { readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

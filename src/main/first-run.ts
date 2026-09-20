@@ -10,8 +10,6 @@
  *
  * 设计：核心逻辑为接收路径参数的纯函数（inspectUserData / clearUserData），
  * 便于单测；electron 的 app 依赖只保留在 checkFirstRun / resolveFirstRun 两个薄封装里。
- *
- * 作者：陕耀云栈WorkMate
  */
 import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

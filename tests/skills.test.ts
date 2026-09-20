@@ -16,6 +16,7 @@ import { BACKGROUND_CONTEXT, formatSkillInvocation, type Skill } from "@earendil
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import {
   MAX_SKILL_BODY_CHARS,
+  builtinSkillsDir,
   capSkillBodies,
   composeSystemPrompt,
   dedupeByName,
@@ -25,14 +26,16 @@ import {
   loadSkillsForSession,
   modelSkills,
   parseSkillInvocation,
-  skillDirs,
+  skillDirSources,
   skillPathMatcher,
   skillWarningParts,
   toSkillDetails,
   toViewSkills,
   type LoadedSkills,
+  type SkillDir,
 } from "../src/worker/lib/skills.ts";
 import type { ViewSkill } from "../src/shared/worker-protocol.ts";
+import { systemPrompt } from "../src/worker/lib/system-prompt.ts";
 
 const skill = (name: string): Skill => ({
   name,
@@ -41,12 +44,23 @@ const skill = (name: string): Skill => ({
   filePath: `${name}/SKILL.md`,
 });
 
-describe("skillDirs", () => {
-  test("取标准约定 .agents/skills，且项目级在前（同名时它胜出）", () => {
-    assert.deepEqual(skillDirs("/proj", "/home/u"), [
+describe("skillDirSources", () => {
+  test("两个用户位置项目级在前（同名时它胜出），内置目录排在**最后**", () => {
+    const dirs = skillDirSources("/proj", "/home/u").map((item) => item.dir);
+    assert.deepEqual(dirs.slice(0, 2), [
       join("/proj", ".agents", "skills"),
       join("/home/u", ".agents", "skills"),
     ]);
+    // 内置目录由 `import.meta.dirname` 推出（跑测试时那是源码目录），故只认末段——
+    // 写死绝对路径会让这条用例绑死在「测试从哪个目录跑」上
+    assert.ok(dirs[2]?.endsWith("builtin-skills"), `内置目录压在最后：${dirs[2] ?? "缺失"}`);
+  });
+
+  test("来源标签与目录一一对应，顺序即优先级", () => {
+    assert.deepEqual(
+      skillDirSources("/proj", "/home/u").map((item) => item.source),
+      ["project", "user", "builtin"],
+    );
   });
 });
 
@@ -112,6 +126,7 @@ describe("describeSkillWarnings", () => {
     sources: [],
     diagnostics: [],
     counts: [0, 0],
+    dirSources: ["project", "user"],
   };
 
   test("什么都没有时返回 null（不制造噪音）", () => {
@@ -130,6 +145,7 @@ describe("describeSkillWarnings", () => {
       sources: [0, 1],
       diagnostics: [],
       counts: [1, 1],
+      dirSources: ["project", "user"],
     };
     assert.equal(describeSkillWarnings(loaded), null);
   });
@@ -143,9 +159,62 @@ describe("describeSkillWarnings", () => {
       sources: [0, 0, 1],
       diagnostics: [],
       counts: [2, 1],
+      dirSources: ["project", "user"],
     };
     const notice = describeSkillWarnings(loaded);
     assert.ok(notice?.includes("项目级覆盖了同名用户级技能：b"), notice ?? "");
+  });
+
+  test("覆盖内置时如实报「内置」（三层之后不能照抄「用户级」那句）", () => {
+    // 这条钉的是一个真实会发生的场景：内置发的是 `skill-creator`，用户在项目里写一个同名技能
+    // 就会盖掉它。旧文案对**所有**跨来源覆盖都写「项目级覆盖了同名用户级技能」——这里盖的是内置，
+    // 那句话是假的，而告警正是用户唯一能看到「谁被遮蔽了」的地方。
+    const byProject: LoadedSkills = {
+      skills: [skill("skill-creator")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [{ name: "skill-creator", from: 2, by: 0 }],
+      sources: [0],
+      diagnostics: [],
+      counts: [1, 0, 0],
+      dirSources: ["project", "user", "builtin"],
+    };
+    const projectNotice = describeSkillWarnings(byProject);
+    assert.ok(
+      projectNotice?.includes("项目级覆盖了同名内置技能：skill-creator"),
+      projectNotice ?? "",
+    );
+    assert.ok(!projectNotice?.includes("用户级技能："), "盖的不是用户级，别那么说");
+
+    const byUser: LoadedSkills = {
+      ...byProject,
+      shadowed: [{ name: "skill-creator", from: 2, by: 1 }],
+      counts: [0, 1, 0],
+      dirSources: ["project", "user", "builtin"],
+    };
+    assert.ok(
+      describeSkillWarnings(byUser)?.includes("用户级覆盖了同名内置技能：skill-creator"),
+      describeSkillWarnings(byUser) ?? "",
+    );
+  });
+
+  test("同一份装载里两种「谁盖谁」分两句说（混一句就分不清谁生效）", () => {
+    const loaded: LoadedSkills = {
+      skills: [skill("a"), skill("b")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [
+        { name: "a", from: 1, by: 0 },
+        { name: "b", from: 2, by: 0 },
+      ],
+      sources: [0, 0],
+      diagnostics: [],
+      counts: [2, 0, 0],
+      dirSources: ["project", "user", "builtin"],
+    };
+    const parts = skillWarningParts(loaded);
+    assert.ok(parts.includes("项目级覆盖了同名用户级技能：a"), parts.join(" | "));
+    assert.ok(parts.includes("项目级覆盖了同名内置技能：b"), parts.join(" | "));
   });
 
   test("同一目录内重名：按「同目录」口径说（不是「项目级盖用户级」）", () => {
@@ -160,6 +229,7 @@ describe("describeSkillWarnings", () => {
       sources: [0],
       diagnostics: [],
       counts: [1, 0],
+      dirSources: ["project", "user"],
     };
     const notice = describeSkillWarnings(loaded);
     assert.ok(notice?.includes("同一目录下有同名技能"), notice ?? "");
@@ -174,6 +244,7 @@ describe("describeSkillWarnings", () => {
       shadowed: [],
       sources: [],
       counts: [0, 0],
+      dirSources: ["project", "user"],
       diagnostics: Array.from({ length: 5 }, (_, index) => ({
         type: "warning" as const,
         code: "parse_failed" as const,
@@ -197,6 +268,7 @@ describe("describeSkillWarnings", () => {
       sources: [0],
       diagnostics: [],
       counts: [1, 1],
+      dirSources: ["project", "user"],
     };
     const notice = describeSkillWarnings(loaded);
     // 状态那句（「已加载 2 个技能」）已经不发了，这条**原因**必须自己站得住
@@ -217,6 +289,7 @@ describe("describeSkillWarnings", () => {
       sources: [0],
       diagnostics: [],
       counts: [1, 0],
+      dirSources: ["project", "user"],
     };
     // 没有 `disableModelInvocation`、也没有别的告警时整条通知都不该存在
     // （状态已改由 `ConversationView.skills` 承载，见上一条用例）
@@ -235,6 +308,7 @@ describe("toViewSkills", () => {
       sources: [0, 0, 1],
       diagnostics: [],
       counts: [2, 1],
+      dirSources: ["project", "user"],
     };
     assert.deepEqual(toViewSkills(loaded), [
       {
@@ -327,6 +401,7 @@ describe("capSkillBodies（P7：正文超限截断 + 指回文件）", () => {
     diagnostics: [],
     counts: [skills.length],
     sources: skills.map(() => 0),
+    dirSources: ["project"],
     disabled,
     disabledByUser: [],
   });
@@ -375,6 +450,7 @@ describe("toSkillDetails（P6：设置页看全文）", () => {
       sources: [0],
       diagnostics: [],
       counts: [1],
+      dirSources: ["project"],
     };
     const [detail] = toSkillDetails(loaded);
     assert.ok(detail !== undefined);
@@ -395,6 +471,7 @@ describe("toSkillDetails（P6：设置页看全文）", () => {
       sources: [0, 0],
       diagnostics: [],
       counts: [2],
+      dirSources: ["project"],
     };
     const details = toSkillDetails(loaded);
     assert.deepEqual(
@@ -417,6 +494,7 @@ describe("enabledSkills / modelSkills（P6：禁用 = 完全不装载）", () =>
       sources: [0, 0],
       diagnostics: [],
       counts: [2],
+      dirSources: ["project"],
     };
     assert.deepEqual(
       enabledSkills(loaded).map((item) => item.name),
@@ -439,6 +517,7 @@ describe("enabledSkills / modelSkills（P6：禁用 = 完全不装载）", () =>
       sources: [0, 0],
       diagnostics: [],
       counts: [2],
+      dirSources: ["project"],
     };
     // big 被禁用 → 连截断都不必做（它压根不进模型上下文）
     assert.deepEqual(
@@ -465,6 +544,7 @@ describe("enabledSkills / modelSkills（P6：禁用 = 完全不装载）", () =>
       sources: [0],
       diagnostics: [],
       counts: [1],
+      dirSources: ["project"],
     };
     assert.deepEqual(
       enabledSkills(loaded).map((item) => item.name),
@@ -583,7 +663,10 @@ describe("真装载（内核 loader + 真目录）", () => {
     const env = new NodeExecutionEnv({ cwd: base });
     const loaded = await loadSkillsForSession(
       env,
-      [join(base, ".agents", "skills"), join(outside, ".agents", "skills")],
+      [
+        { dir: join(base, ".agents", "skills"), source: "project" },
+        { dir: join(outside, ".agents", "skills"), source: "user" },
+      ],
       BACKGROUND_CONTEXT,
     );
     assert.deepEqual(loaded.skills.map((item) => item.name).sort(), ["processing-pdfs", "user-level"]);
@@ -598,7 +681,11 @@ describe("真装载（内核 loader + 真目录）", () => {
 
   test("真装载的技能进了系统提示词，且给模型的位置是**绝对路径**（否则用户级技能读不到）", async () => {
     const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(env, [join(base, ".agents", "skills")], BACKGROUND_CONTEXT);
+    const loaded = await loadSkillsForSession(
+      env,
+      [{ dir: join(base, ".agents", "skills"), source: "project" }],
+      BACKGROUND_CONTEXT,
+    );
     const prompt = composeSystemPrompt("基础提示词", loaded.skills);
     assert.ok(prompt.includes("<name>processing-pdfs</name>"), prompt);
     // 块里那句「读技能文件」要求模型直接 read 这个路径；相对路径会被解析到 cwd 下，
@@ -610,7 +697,11 @@ describe("真装载（内核 loader + 真目录）", () => {
 
   test("缺 description 的技能被内核丢掉，并留下可读告警", async () => {
     const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(env, [join(base, ".agents", "skills")], BACKGROUND_CONTEXT);
+    const loaded = await loadSkillsForSession(
+      env,
+      [{ dir: join(base, ".agents", "skills"), source: "project" }],
+      BACKGROUND_CONTEXT,
+    );
     assert.deepEqual(loaded.skills.map((item) => item.name), ["processing-pdfs"]);
     assert.ok(loaded.diagnostics.some((item) => item.code === "invalid_metadata"));
     assert.ok(describeSkillWarnings(loaded)?.includes("元数据不合法"));
@@ -618,7 +709,11 @@ describe("真装载（内核 loader + 真目录）", () => {
 
   test("目录不存在时静默跳过（不报错、不产生噪音）", async () => {
     const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(env, [join(base, "nope", "skills")], BACKGROUND_CONTEXT);
+    const loaded = await loadSkillsForSession(
+      env,
+      [{ dir: join(base, "nope", "skills"), source: "project" }],
+      BACKGROUND_CONTEXT,
+    );
     assert.deepEqual(loaded.skills, []);
     assert.deepEqual(loaded.diagnostics, []);
     assert.equal(describeSkillWarnings(loaded), null);
@@ -628,7 +723,7 @@ describe("真装载（内核 loader + 真目录）", () => {
     const env = new NodeExecutionEnv({ cwd: dup });
     const loaded = await loadSkillsForSession(
       env,
-      [join(dup, ".agents", "skills")],
+      [{ dir: join(dup, ".agents", "skills"), source: "project" }],
       BACKGROUND_CONTEXT,
     );
     // 去重后只剩一条，且被遮蔽的那条 `from === by`（同目录），**不是**「项目级盖用户级」
@@ -639,5 +734,116 @@ describe("真装载（内核 loader + 真目录）", () => {
     const notice = describeSkillWarnings(loaded);
     assert.ok(notice?.includes("同一目录下有同名技能"), notice ?? "");
     assert.ok(!notice?.includes("项目级覆盖了同名用户级技能"), notice ?? "");
+  });
+});
+
+describe("基础系统提示词里的技能段", () => {
+  // 这一段防的是一件实测发生过的事：第三方安装文档教的目录（`~/.claude/skills`、
+  // `~/.openclaw/workspace/skills`、`~/.workbuddy/skills`……）本产品**一律不读**，
+  // 照它装完零效果，而人还以为装上了。提示词里给的目录必须与 `skillDirSources` 的真源同源。
+  test("给出的目录是 .agents/skills，且不出现本产品不读的那些位置", () => {
+    const prompt = systemPrompt("E:/proj");
+    assert.ok(prompt.includes(".agents/skills"), "提示词必须给出 .agents/skills");
+    for (const wrong of [".claude/skills", ".openclaw", ".workbuddy", ".codex/skills"]) {
+      assert.ok(!prompt.includes(wrong), `提示词不该出现本产品不读的目录：${wrong}`);
+    }
+  });
+
+  test("三件必说的事都在：放进去即装 / 重新扫描生效 / 装前通读的纪律", () => {
+    const prompt = systemPrompt("E:/proj");
+    assert.ok(prompt.includes("放进去即装"), "要说清装的方式就是一个目录一个 SKILL.md");
+    assert.ok(prompt.includes("重新扫描"), "要说清改完在设置页重新扫描即生效");
+    // 「装第三方技能前先通读全文」——这次实测里，唯一挡住那个包的就是逐段把它读完了
+    assert.ok(prompt.includes("通读"), "必须要求落地前通读 SKILL.md 全文");
+    // 没有安装接口这件事也要说出来，否则模型会去找一个不存在的 skills.install
+    assert.ok(prompt.includes("没有技能的下载"), "要说明本产品不提供下载 / 安装接口");
+  });
+});
+
+describe("内置技能（随应用分发）", () => {
+  const builtinDir = (): SkillDir => ({ dir: builtinSkillsDir(), source: "builtin" });
+
+  test("内置目录里装得出 skill-creator，来源标成 builtin", async () => {
+    const env = new NodeExecutionEnv({ cwd: process.cwd() });
+    const loaded = await loadSkillsForSession(env, [builtinDir()], BACKGROUND_CONTEXT);
+    const names = loaded.skills.map((item) => item.name);
+    assert.ok(
+      names.includes("skill-creator"),
+      `内置目录应当装出 skill-creator，实得：${names.join("、") || "（空）"}`,
+    );
+    assert.deepEqual(loaded.dirSources, ["builtin"]);
+    assert.deepEqual(
+      toViewSkills(loaded).map((item) => item.source),
+      ["builtin"],
+    );
+  });
+
+  test("内置压在最底层：磁盘上的同名技能可以盖掉它（与内置子代理同一口径）", async () => {
+    const projectRoot = await makeTempDirAsync("colt-skill-shadow");
+    try {
+      const dir = join(projectRoot, ".agents", "skills", "skill-creator");
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, "SKILL.md"),
+        "---\nname: skill-creator\ndescription: 项目自带的同名技能\n---\n\n正文\n",
+        "utf8",
+      );
+      const env = new NodeExecutionEnv({ cwd: projectRoot });
+      const loaded = await loadSkillsForSession(
+        env,
+        [{ dir: join(projectRoot, ".agents", "skills"), source: "project" }, builtinDir()],
+        BACKGROUND_CONTEXT,
+      );
+      const target = toViewSkills(loaded).find((item) => item.name === "skill-creator");
+      assert.equal(target?.source, "project", "同名的项目级技能应当胜出");
+      assert.equal(target?.description, "项目自带的同名技能");
+      // 被遮蔽的那份也要如实报出来：内置被项目级盖掉，用户有权知道——而且**得说对是谁盖的**
+      // （这句文案在真实装载链上再钉一次，防止 `skillWarningParts` 里那套按层级生成的说法
+      // 只在手工夹具上成立）
+      assert.ok(loaded.shadowed.some((item) => item.name === "skill-creator"));
+      const notice = describeSkillWarnings(loaded);
+      assert.ok(
+        notice?.includes("项目级覆盖了同名内置技能：skill-creator"),
+        notice ?? "（没有告警）",
+      );
+    } finally {
+      await removeTempDirAsync(projectRoot);
+    }
+  });
+
+  test("内置技能的正文没超它自己讲的那条上限（否则自相矛盾）", async () => {
+    const env = new NodeExecutionEnv({ cwd: process.cwd() });
+    const loaded = await loadSkillsForSession(env, [builtinDir()], BACKGROUND_CONTEXT);
+    const skill = loaded.skills.find((item) => item.name === "skill-creator");
+    assert.ok(skill !== undefined, "先确保装出来了，否则下面这条是假绿");
+    assert.ok(
+      skill.content.length <= MAX_SKILL_BODY_CHARS,
+      `正文 ${skill.content.length} 字符，超过模型侧上限 ${MAX_SKILL_BODY_CHARS}——` +
+        "而这个技能自己讲的就是「超了只收到前半」",
+    );
+    // 上面那条只保证「没超」，不保证「文里说的数字是对的」：正文是散文，写死一个数
+    // （「正文超过 8000 字符时…」）而常量改了它不会红——正是这个技能自己讲的那类自相矛盾
+    // （同一手法见 `tests/limits.test.ts`：两侧不许各写一份）。
+    assert.ok(
+      skill.content.includes(String(MAX_SKILL_BODY_CHARS)),
+      `SKILL.md 正文里要出现实际上限 ${MAX_SKILL_BODY_CHARS}（改了常量就得改这段散文）`,
+    );
+  });
+
+  test("装载结果与投影不同源时**当场抛**，不给一个看着合理的假标签", () => {
+    // 兜底（如 `?? "user"`）会给出「必然为真」的标签：界面上每条都标成用户级，没人会去查。
+    // 抛出去会沿 `init` 变成 fatal（会话打不开）——这是有意的取舍，故在这里钉住行为本身。
+    const broken: LoadedSkills = {
+      skills: [skill("a")],
+      disabled: [],
+      disabledByUser: [],
+      shadowed: [],
+      sources: [2],
+      diagnostics: [],
+      counts: [1],
+      dirSources: ["project"],
+    };
+    assert.throws(() => toViewSkills(broken), /来源下标越界/);
+    assert.throws(() => skillWarningParts({ ...broken, shadowed: [{ name: "a", from: 9, by: 0 }] }), /来源下标越界/);
   });
 });

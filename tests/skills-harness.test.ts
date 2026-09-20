@@ -140,7 +140,7 @@ describe("技能接线：resources.skills → lane.skill", () => {
     const env = new NodeExecutionEnv({ cwd: root });
     const loaded = await loadSkillsForSession(
       env,
-      [join(skillsRoot, ".agents", "skills")],
+      [{ dir: join(skillsRoot, ".agents", "skills"), source: "project" }],
       BACKGROUND_CONTEXT,
     );
     // 前置：装载本身要成立，否则下面的红是假红（先怀疑接入，别先怀疑被测对象）
