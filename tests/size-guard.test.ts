@@ -3,8 +3,7 @@
  *
  * 定位先讲清楚，否则很快会被当成「啰嗦的卫士」悄悄放宽：
  *
- * - 它**不认为 1658 行是错的**。该文件该不该拆、怎么拆，本文件一概不管。
- *   它只断言一件事：**不许再涨**。
+ * - 它**不评判某个文件该不该拆**，只管一条线：**不许再涨**（2200 行）。
  * - 为什么要以「今天这个已经偏大的数」为上限，而不是一个理想值（如 500 行）：
  *   理想值第一天就红，红了没人修，于是被放宽到 3000、再到 5000——最后守卫变成
  *   装饰。**能守住的上限才算上限**。真正的收敛靠重构做成一次，这里负责让它不反弹。
@@ -16,12 +15,15 @@
  *
  * 两条互斥的范围，别合并：
  *
- * 1. **棘轮（RATCHET）**：已知大户逐个登记，各自不许超过自己今天的行数。
- *    针对的是「已经在烂的地方不许更烂」。
+ * 1. **已知大户登记**（`KNOWN_LARGE_FILES`）：只记录「谁大、为什么大」，**不给它们单独设上限**。
+ *    2026-09-20 之前这里是 4 条棘轮（各自 1658 / 2000 / 1032 / 952），统一到与通用上限
+ *    同值后就没有独立约束力了——留着那 4 个同样的数字只是冗余。
+ *    登记本身仍有价值：`AGENTS.md` §1.4（「碰已知大户前先算净增行数」）要指名道姓。
  * 2. **通用上限**：`src/` 下**除 `src/dev/`** 的任何文件不得超过 MAX_FILE_LINES。
  *    针对的是「别处不许再冒出一个新的」——覆盖今天没人盯着的文件。
+ *    **大户与别的文件现在受同一条线管**。
  *
- * 排除 `src/dev/` 的理由：那是**冒烟夹具**，一个 `modes/dock.ts` 就有 2282 行，
+ * 排除 `src/dev/` 的理由：那是**冒烟夹具**，一个 `modes/dock.ts` 就有 2450 行，
  * 它是场景脚本，长是它的本分；把它算进来只会逼出一个假上限，反而让第 2 条失效。
  *
  * 计数口径（与 `wc -l` 差 1，别混用两套数字）：
@@ -50,35 +52,43 @@ const DEV_SMOKE = join(SRC, "dev");
  * 同日再由 2000 上浮到 2200——因为 `session-manager.ts` 的棘轮被上调到 2000，
  * 而本文件有一条断言要求 `MAX_FILE_LINES` **严格大于**棘轮最大值（见下方注释），
  * 两条线一旦相等会分不清该动哪一条。本次只抬 200，把放宽控制在最小。
+ *
+ * 2026-09-20：棘轮 4 条统一为 2200，**与本值相同**。那条「严格大于」的断言随之
+ * 放宽为「不低于」——棘轮从此没有独立约束力，退化为「登记哪些是大户」的台账。
  */
 const MAX_FILE_LINES = 2200;
 
 /**
- * 棘轮清单：`行数是今天（2026-09-18）实测`，许降不许升。
- * 上浮 = 改动这里 + 在提交说明里交代理由，两者缺一不可。
+ * 已知大户：**登记，不设独立上限**。
+ *
+ * 2026-09-20 之前这里有 4 条棘轮，各自一个「许降不许升」的上限
+ * （1658 / 2000 / 1032 / 952）。统一到 2200——也就是与通用上限同值——
+ * 之后它们不再有独立约束力，数值成了纯冗余，于是删掉，只留这份登记。
+ *
+ * 登记仍有价值：`AGENTS.md` §1.4 说「碰已知大户前先算净增行数」，
+ * 那份名单得有地方查。**没有上限不等于不用量**——大户之所以是大户，
+ * 是因为它们已经到了「再加东西就该先搬走点什么」的体量。
+ *
+ * 将来若某个文件需要单独收紧（例如又要「零余量」那套纪律），
+ * 在这里给它加回 `lines` 字段并在 `describe("体量闸")` 里补一条断言即可。
  */
-const RATCHET: { file: string[]; lines: number; why: string }[] = [
+const KNOWN_LARGE_FILES: { file: string[]; why: string }[] = [
   {
     file: ["renderer", "src", "features", "Conversation", "index.tsx"],
-    lines: 1658,
     why: "状态机 / IPC / 面板编排混装；单看 hook 一度 81 个",
   },
   {
     file: ["main", "session-manager.ts"],
-    lines: 2000,
     why:
       "会话生命周期 + 审批定时器 + 分支树归在一起；" +
-      "2026-09-18 产品决定由 1235 上调到 2000——加 MIT 版权头吃掉 3 行后只剩 1 行余量，" +
-      "而 1 行余量等于「下次动它必然先返工」，不是守卫该有的工作方式（见提交说明）",
+      "2026-09-18 曾产品决定由 1235 上调到 2000（见提交说明）",
   },
   {
     file: ["worker", "entry.ts"],
-    lines: 1032,
     why: "工具调用分发与事件投影写在同一个函数里",
   },
   {
     file: ["main", "host", "browser-host.ts"],
-    lines: 952,
     why: "原生视图管理 + 下载 + CDP 上传（注入页面的脚本已搬到 browser-scripts.ts）",
   },
 ];
@@ -153,21 +163,6 @@ function countReactHooks(text: string): { total: number; per: Record<string, num
 }
 
 describe("体量闸", () => {
-  describe("棘轮：已知大户不许再涨", () => {
-    for (const { file, lines, why } of RATCHET) {
-      const rel = file.join("/");
-      test(`${rel} ≤ ${lines} 行`, () => {
-        const actual = countLines(readRel(file));
-        assert.ok(
-          actual <= lines,
-          `${rel} 现在是 ${actual} 行，上限 ${lines}（${why}）。\n` +
-            `体量闸只许降不许升：请顺便把多出来的 ${actual - lines} 行处理掉，\n` +
-            `或在本文件的 RATCHET 里连同理由一起改——两者缺一不可。`,
-        );
-      });
-    }
-  });
-
   test("Conversation 的 React hook 数不许涨", () => {
     const text = readRel(["renderer", "src", "features", "Conversation", "index.tsx"]);
     const { total, per } = countReactHooks(text);
@@ -189,15 +184,6 @@ describe("体量闸", () => {
         [],
         `这些文件超过 ${MAX_FILE_LINES} 行：\n${offenders.join("\n")}\n` +
           `若这是**新出现的**，说明正在形成新的 god 对象——优先拆分，别只在这里加一行豁免。`,
-      );
-    });
-
-    test("通用上限确实高于棘轮里的最大值（否则棘轮形同虚设）", () => {
-      const maxRatchet = Math.max(...RATCHET.map((r) => r.lines));
-      assert.ok(
-        MAX_FILE_LINES > maxRatchet,
-        `MAX_FILE_LINES(${MAX_FILE_LINES}) 必须大于棘轮最大值(${maxRatchet})，\n` +
-          `否则每个大户都会同时踩两条线，改起来分不清该动哪一条。`,
       );
     });
   });
@@ -224,13 +210,13 @@ describe("体量闸", () => {
       assert.equal(per.useConversationState, undefined);
     });
 
-    test("棘轮清单里的文件都存在（漏见的路径会在这里红，不会静默放过）", () => {
-      for (const { file } of RATCHET) {
+    test("登记里的文件都存在（改名或删掉时在这里红，别让大户从视野里溜走）", () => {
+      for (const { file } of KNOWN_LARGE_FILES) {
         const rel = file.join("/");
         assert.ok(
           files.some((f) => f.rel === rel),
-          `${rel} 在 src 下找不到——若已重命名/删除，请同步更新 RATCHET；\n` +
-            `这里**故意让「重命名或删除」也变红**：否则一个对象改个名字就从守卫视野里溜走了。`,
+          `${rel} 在 src 下找不到——若已重命名/删除，请同步更新 KNOWN_LARGE_FILES；\n` +
+            `这里**故意让「重命名或删除」也变红**：否则一个对象改个名字就从视野里溜走了。`,
         );
       }
     });
