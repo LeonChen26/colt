@@ -1231,14 +1231,15 @@ export function Conversation({
       </div>
 
       {/*
-        输入列。正常态贴底（`conv-center`）；起手态拿到第 3 行的整块高度，把起手提示块
-        与输入卡片**一起**居中——用户要的就是「草稿会话里输入框别再贴着底」。
+        输入列。两种态都挂 `conv-center`（窄栏的容器查询降级靠这个容器，起手态也不能少）；
+        正常态贴底，起手态拿到第 3 行的整块高度，把起手提示块与输入卡片**一起**居中——
+        用户要的就是「草稿会话里输入框别再贴着底」。
         `overflow-y-auto` 兜住窗口过矮时（居中内容比这一格还高）不至于顶出可视区。
       */}
       <div
         className={cn(
-          "col-start-1 row-start-3 min-w-0 shrink-0",
-          empty ? "flex flex-col justify-center overflow-y-auto py-4" : "conv-center",
+          "conv-center col-start-1 row-start-3 min-w-0 shrink-0",
+          empty && "flex flex-col justify-center overflow-y-auto py-4",
         )}
       >
         {empty && (
@@ -1249,7 +1250,12 @@ export function Conversation({
             onSuggestion={setInput}
           />
         )}
-        <div className={cn("mx-auto max-w-[796px] px-[18px] pb-3.5", empty && "mt-3")}>
+        <div
+          className={cn(
+            "mx-auto w-full max-w-[796px] px-[18px] pb-3.5",
+            empty && "mt-5",
+          )}
+        >
           {/*
             输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行）。
             `data-conv-session` 标出「输入框此刻属于哪条会话」——草稿会话不进侧栏，
@@ -1258,7 +1264,10 @@ export function Conversation({
           <div
             data-conv-card
             data-conv-session={sessionId}
-            className="rounded-[12px] border border-line bg-surface-raised px-3 pb-2 pt-2.5 transition focus-within:border-line-strong"
+            className={cn(
+              "rounded-[12px] border border-line bg-surface-raised px-3 pb-2 pt-2.5 transition focus-within:border-line-strong",
+              empty && "border-line-strong px-4 pb-3 pt-3",
+            )}
             onDragOver={(e) => {
               if (e.dataTransfer.types.includes("Files")) e.preventDefault();
             }}
@@ -1370,7 +1379,10 @@ export function Conversation({
                     ? "运行中：Enter 发送插话，按钮停止"
                     : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
                 }
-                className="max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted"
+                className={cn(
+                  "max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted",
+                  empty && "min-h-[104px] py-1.5 text-[13px]",
+                )}
               />
               {slashOpen && (
                 <div

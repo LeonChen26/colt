@@ -15,7 +15,7 @@
  * 本组件管「上方提示」，`index.tsx` 的输入列管输入卡片，「一起居中」由外面那层
  * `justify-center` 负责。所以这里**不再有** `children`。
  */
-import { Folder } from "lucide-react";
+import { Folder, FolderOpen, FolderPlus } from "lucide-react";
 import { ICON } from "@/lib/icon";
 
 /** 起手建议：点一下写进输入框（不发出去）——给「不知道从哪说起」的人一个台阶 */
@@ -35,23 +35,23 @@ export function StartPanel({
   onSuggestion: (text: string) => void;
 }): React.JSX.Element {
   return (
-    <div data-conv-start className="flex w-full flex-col items-center gap-2.5">
-      <div className="mb-1 text-[10px] uppercase tracking-[2px] text-text-muted">
+    <div data-conv-start className="flex w-full flex-col items-center gap-2">
+      <div className="text-[10px] uppercase tracking-[2.5px] text-text-muted">
         Colt · 本地编码 Agent
       </div>
-      <h2 className="m-0 text-[22px] font-semibold tracking-[-.3px] text-text-primary">
+      <h2 className="m-0 mt-1.5 text-[24px] font-semibold tracking-[-.4px] text-text-primary">
         今天要修哪个 bug？
       </h2>
       <p className="m-0 text-[12.5px] text-text-secondary">
         描述你想做的事，Colt 会先给你一份计划。
       </p>
-      <div className="mt-3 flex max-w-[560px] flex-wrap justify-center gap-2">
+      <div className="mt-4 flex max-w-[560px] flex-wrap justify-center gap-2">
         {SUGGESTIONS.map((suggestion) => (
           <button
             key={suggestion}
             type="button"
             onClick={() => onSuggestion(suggestion)}
-            className="rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+            className="rounded-[6px] border border-line px-3 py-1.5 text-[12px] text-text-secondary transition hover:border-line-strong hover:bg-surface-overlay hover:text-text-primary"
           >
             {suggestion}
           </button>
@@ -74,18 +74,21 @@ export function StartPanel({
         <button
           type="button"
           onClick={onPickDirectory}
-          className="shrink-0 rounded-[6px] border border-line px-2 py-0.5 transition hover:border-line-strong hover:text-text-primary"
+          aria-label="换一个目录"
+          title="换一个目录：选一个已存在的目录并切过去"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border border-line transition hover:border-line-strong hover:text-text-primary"
         >
-          换一个目录…
+          <FolderOpen {...ICON.sm} />
         </button>
         <button
           type="button"
           onClick={onNewWorkspace}
           data-conv-newdir
+          aria-label="新建工作目录"
           title="不用自己挑：在家目录的 ~/.colt 下按时间建一个空目录并切过去"
-          className="shrink-0 rounded-[6px] border border-line px-2 py-0.5 transition hover:border-line-strong hover:text-text-primary"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border border-line transition hover:border-line-strong hover:text-text-primary"
         >
-          新建工作目录
+          <FolderPlus {...ICON.sm} />
         </button>
       </div>
     </div>

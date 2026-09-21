@@ -658,6 +658,91 @@ export async function runSessionDraft(
     workdir: string | null;
   }
 
+  /**
+   * 起手态的**横向不变量**：把右栏拉到上限（中栏被压到 360px 下限）时，起手态的两块内容
+   * 不许被裁、不许跑偏，也不许「按内容收缩」。
+   *
+   * 为什么值得单验：固定 1440×900 的窗口里中栏有 600 多 px，容器查询的四个断点一个都碰不到；
+   * 而中栏一窄，提示块（`max-w-[560px]`）与输入卡片（`max-w-[796px]`）就全靠那条降级链撑住
+   * ——它此前在起手态**整条不生效**（输入列漏挂 `conv-center`，v1.60 才补上）。
+   *
+   * ⚠️ 中栏要**自己算**，不能拿外层网格当它：外层网格是 `minmax(0,1fr) ${dockWidth}px` 的
+   * 容器，宽度**恒等于可用空间**（拖右栏它不变），拿它当「会话区」会让「中栏变窄」这条
+   * 永远为假。中栏 = `[网格左, 右栏左]`——右栏左缘就是那条 1fr 的分界线（无 gap）。
+   *
+   * 一次读全所有矩形与两个溢出量：判据要按**逐像素**比（居中、越界、宽度），
+   * 不能分两次 executeJavaScript 各自读一半。
+   */
+  const startWidthProbe = `(() => {
+    const rect = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        left: Math.round(r.left),
+        right: Math.round(r.right),
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        width: Math.round(r.width),
+      };
+    };
+    const card = document.querySelector("[data-conv-card]");
+    const root = card ? card.closest('[class*="grid-rows-"]') : null;
+    const tools = card ? card.querySelector(".comp-tools") : null;
+    const aside = [...document.querySelectorAll("aside")].find((a) =>
+      a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+    const box = rect(root);
+    const dock = rect(aside);
+    const mid = box && dock
+      ? { left: box.left, right: dock.left, top: box.top, bottom: box.bottom, width: dock.left - box.left }
+      : null;
+    return {
+      card: rect(card),
+      start: rect(document.querySelector("[data-conv-start]")),
+      root: box,
+      tools: rect(tools),
+      aside: dock,
+      mid,
+      cardOverflow: card ? card.scrollWidth - card.clientWidth : -1,
+      toolsOverflow: tools ? tools.scrollWidth - tools.clientWidth : -1,
+    };
+  })()`;
+  interface BoxRect {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+  }
+  interface StartWidthProbe {
+    card: BoxRect | null;
+    start: BoxRect | null;
+    /** 外层两列网格：宽度 = 可用空间，**不随右栏变** */
+    root: BoxRect | null;
+    tools: BoxRect | null;
+    aside: BoxRect | null;
+    /** 中栏（1fr 那一列）：拖右栏时它才是会变的那一个 */
+    mid: BoxRect | null;
+    cardOverflow: number;
+    toolsOverflow: number;
+  }
+  /**
+   * 与 `Conversation/index.tsx` 的输入列保持同步：卡片外层 `max-w` 与它的左右内边距
+   * （`px-[18px]`）。卡片宽度应当是 `min(上限, 中栏宽) − 两侧留白`——**不是**内容宽。
+   * 这条正是「起手态卡片按内容收缩」那个缺陷的哨兵：靠内容撑时它会远小于该值。
+   */
+  const CARD_MAX_WIDTH = 796;
+  const CARD_GUTTER = 18;
+  /** 卡片应有的宽度（px）；缺读数时给 NaN——比较必然为假，不会静默变 0 */
+  const expectedCardWidth = (probe: StartWidthProbe): number =>
+    probe.mid === null
+      ? NaN
+      : Math.min(CARD_MAX_WIDTH, probe.mid.width) - CARD_GUTTER * 2;
+  /** 卡片中心相对**中栏**中心的偏心（px） */
+  const centerOffset = (probe: StartWidthProbe): number =>
+    probe.card !== null && probe.mid !== null
+      ? Math.abs((probe.card.left + probe.card.right) / 2 - (probe.mid.left + probe.mid.right) / 2)
+      : NaN;
+
   /** 该项目行里的「+」。按 data-project-row 认项目，不按 DOM 顺序猜（多项目时顺序会变） */
   const newButton = (projectRowId: string): string =>
     `document.querySelector('[data-project-row="${projectRowId}"]')?.querySelector('button[title="新建会话"]')`;
@@ -734,6 +819,93 @@ export async function runSessionDraft(
       return at && (at === btn || btn.contains(at)) ? "ok" : "blocked";
     })()`);
     checks.push([`「新建工作目录」按钮落在可视区且命中它自己（${newdirHit}）`, newdirHit === "ok"]);
+
+    // ---- 拉伸右栏：中栏压到下限时起手态不许被裁、也不许跑偏 ----
+    const wide0 = await run<StartWidthProbe>(startWidthProbe);
+    log(
+      `拉伸前：右栏 ${wide0.aside?.width ?? -1}｜中栏 ${wide0.mid?.width ?? -1}｜` +
+        `卡片宽 ${wide0.card?.width ?? -1}（应为 ${expectedCardWidth(wide0)}）｜` +
+        `工具行 ${JSON.stringify(wide0.tools)}｜溢出 卡片=${wide0.cardOverflow} 工具行=${wide0.toolsOverflow}`,
+    );
+
+    // 拖拽必须拆成「按下」与「移动+抬起」两次 executeJavaScript：按下之后 React 才在 window 上
+    // 挂监听，同一个同步块里紧接着派发 move 会丢事件（`dock` 模式同一个坑，见 AGENTS.md §五①）。
+    // 位移刻意给到远超上限：钳到哪一格由产品自己算（AGENTS.md §五②：断言别写死像素）。
+    await run(`(() => {
+      const grip = document.querySelector(".dock-grip");
+      if (!grip) return false;
+      grip.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 1000 }));
+      return true;
+    })()`);
+    await sleep(150);
+    await run(`(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: -4000 }));
+      window.dispatchEvent(new MouseEvent("mouseup", {}));
+      return true;
+    })()`);
+    await sleep(300);
+
+    const wide1 = await run<StartWidthProbe>(startWidthProbe);
+    log(
+      `拉伸后：右栏 ${wide1.aside?.width ?? -1}｜中栏 ${wide1.mid?.width ?? -1}｜` +
+        `卡片 ${JSON.stringify(wide1.card)}｜提示块 ${JSON.stringify(wide1.start)}｜` +
+        `工具行 ${JSON.stringify(wide1.tools)}｜溢出 卡片=${wide1.cardOverflow} 工具行=${wide1.toolsOverflow}`,
+    );
+    checks.push([
+      `拖拽真的把右栏拉宽、把中栏压窄了（中栏 ${wide0.mid?.width ?? -1} → ${wide1.mid?.width ?? -1}）`,
+      wide0.mid !== null && wide1.mid !== null && wide1.mid.width <= wide0.mid.width - 50,
+    ]);
+    checks.push([
+      "中栏被压到下限后起手态照旧（提示块 + 输入卡片都还在）",
+      wide1.start !== null && wide1.card !== null,
+    ]);
+    checks.push([
+      "拉伸后输入卡片仍完整落在中栏内（左右都不越界）",
+      wide1.card !== null &&
+        wide1.mid !== null &&
+        wide1.card.left >= wide1.mid.left &&
+        wide1.card.right <= wide1.mid.right,
+    ]);
+    checks.push([
+      `拉伸后输入卡片仍在中栏中央（偏心 ${centerOffset(wide1).toFixed(1)}px）`,
+      centerOffset(wide1) <= 2,
+    ]);
+    // 这条是本组的重点：卡片宽度由**可用宽度**决定，而不是由内容撑出来。
+    // 靠内容撑时它会缩到工具行的固有宽（实测 445，而中栏有 966）——那正是「输入框有点小」。
+    checks.push([
+      `拉伸后输入卡片吃满可用宽度（实得 ${wide1.card?.width ?? -1}，应为 ${expectedCardWidth(wide1)}）`,
+      wide1.card !== null && Math.abs(wide1.card.width - expectedCardWidth(wide1)) <= 2,
+    ]);
+    checks.push(["拉伸后输入卡片自身没有被横向裁掉", wide1.cardOverflow <= 1]);
+    checks.push(["拉伸后工具行没有被横向裁掉（可换行，但不许溢出）", wide1.toolsOverflow <= 1]);
+    checks.push([
+      "拉伸后提示块仍在输入卡片上方（两块仍是一个整块）",
+      wide1.start !== null && wide1.card !== null && wide1.start.bottom <= wide1.card.top,
+    ]);
+
+    // 复位：宽度写进了 localStorage，留着会让后面的用例（以及下一次运行）从「被拉宽的右栏」
+    // 起步。顺带把「双击把手 → 回统一默认宽度」在起手态也验一次（544 = WorkspaceDock 的
+    // DOCK_DEFAULT_WIDTH，与 `dock` 模式里的 DEFAULT_DOCK 同源）。
+    await run(`(() => {
+      const grip = document.querySelector(".dock-grip");
+      if (!grip) return false;
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      return true;
+    })()`);
+    await sleep(300);
+    const wide2 = await run<StartWidthProbe>(startWidthProbe);
+    log(
+      `复位后：右栏 ${wide2.aside?.width ?? -1}｜中栏 ${wide2.mid?.width ?? -1}｜` +
+        `卡片宽 ${wide2.card?.width ?? -1}（应为 ${expectedCardWidth(wide2)}）`,
+    );
+    checks.push([
+      "双击把手复位后右栏回到统一默认宽度（起手态的宽度变化可逆）",
+      wide2.aside !== null && Math.abs(wide2.aside.width - 544) <= 2,
+    ]);
+    checks.push([
+      "复位后卡片照旧吃满可用宽度（宽度变化全程不改变「宽度由谁决定」）",
+      wide2.card !== null && Math.abs(wide2.card.width - expectedCardWidth(wide2)) <= 2,
+    ]);
 
     // 什么都不选时的一键出口：点它 → 主进程建目录 + 登记项目 → 界面切过去。
     // 落点由 harness 指到 out/ 下且**固定**，所以这里既不碰真实家目录，也不会攒目录/项目行。
