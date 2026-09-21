@@ -1381,7 +1381,7 @@ export function Conversation({
                 }
                 className={cn(
                   "max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted",
-                  empty && "min-h-[104px] py-1.5 text-[13px]",
+                  empty && "min-h-[73px] py-1.5",
                 )}
               />
               {slashOpen && (

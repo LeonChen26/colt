@@ -683,6 +683,7 @@ export async function runSessionDraft(
         top: Math.round(r.top),
         bottom: Math.round(r.bottom),
         width: Math.round(r.width),
+        height: Math.round(r.height),
       };
     };
     const card = document.querySelector("[data-conv-card]");
@@ -695,6 +696,17 @@ export async function runSessionDraft(
     const mid = box && dock
       ? { left: box.left, right: dock.left, top: box.top, bottom: box.bottom, width: dock.left - box.left }
       : null;
+    // 输入框「占几行」按它自己的行高与上下内边距现算——不写死像素，字级 / 行高改了也跟着走。
+    // 两个分量一并带出去：断言红了时日志要能自己说明「是行高变了还是盒子高了」。
+    const ta = card ? card.querySelector("textarea") : null;
+    const taStyle = ta ? getComputedStyle(ta) : null;
+    const taPad = taStyle
+      ? parseFloat(taStyle.paddingTop) + parseFloat(taStyle.paddingBottom)
+      : -1;
+    const taLh = taStyle ? parseFloat(taStyle.lineHeight) : -1;
+    const taSize = taStyle ? parseFloat(taStyle.fontSize) : -1;
+    const taHeight = ta ? ta.getBoundingClientRect().height : -1;
+    const taLines = ta ? (taHeight - taPad) / taLh : -1;
     return {
       card: rect(card),
       start: rect(document.querySelector("[data-conv-start]")),
@@ -702,6 +714,12 @@ export async function runSessionDraft(
       tools: rect(tools),
       aside: dock,
       mid,
+      ta: rect(ta),
+      taHeight: Math.round(taHeight * 100) / 100,
+      taLines: Math.round(taLines * 100) / 100,
+      taPad,
+      taLh,
+      taSize,
       cardOverflow: card ? card.scrollWidth - card.clientWidth : -1,
       toolsOverflow: tools ? tools.scrollWidth - tools.clientWidth : -1,
     };
@@ -712,6 +730,7 @@ export async function runSessionDraft(
     top: number;
     bottom: number;
     width: number;
+    height: number;
   }
   interface StartWidthProbe {
     card: BoxRect | null;
@@ -722,6 +741,13 @@ export async function runSessionDraft(
     aside: BoxRect | null;
     /** 中栏（1fr 那一列）：拖右栏时它才是会变的那一个 */
     mid: BoxRect | null;
+    /** 起手态输入框（`textarea`）的矩形，以及它「占几行」的算法分量 */
+    ta: BoxRect | null;
+    taHeight: number;
+    taLines: number;
+    taPad: number;
+    taLh: number;
+    taSize: number;
     cardOverflow: number;
     toolsOverflow: number;
   }
@@ -742,6 +768,23 @@ export async function runSessionDraft(
     probe.card !== null && probe.mid !== null
       ? Math.abs((probe.card.left + probe.card.right) / 2 - (probe.mid.left + probe.mid.right) / 2)
       : NaN;
+
+  /**
+   * 双击把手 → 回统一默认宽度（与 `WorkspaceDock` 的 dblclick 同一条路径）。
+   *
+   * 起手也要调一次：右栏宽度写进 localStorage，上一次运行（或上一次拖拽）留下的值会带进来
+   * ——不显式建立基线，「拉伸前」那条读数就只是「上次结束时是多少」，跨运行不可比
+   * （实测两次运行分别是 220 与 544，差的就是这个）。跑完再调一次把它还回去。
+   */
+  const resetDockWidth = async (): Promise<void> => {
+    await run(`(() => {
+      const grip = document.querySelector(".dock-grip");
+      if (!grip) return false;
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      return true;
+    })()`);
+    await sleep(300);
+  };
 
   /** 该项目行里的「+」。按 data-project-row 认项目，不按 DOM 顺序猜（多项目时顺序会变） */
   const newButton = (projectRowId: string): string =>
@@ -821,12 +864,31 @@ export async function runSessionDraft(
     checks.push([`「新建工作目录」按钮落在可视区且命中它自己（${newdirHit}）`, newdirHit === "ok"]);
 
     // ---- 拉伸右栏：中栏压到下限时起手态不许被裁、也不许跑偏 ----
+    // 先把宽度拉回统一默认值，**显式**建立基线：否则「拉伸前」读到的只是上一次运行留下的宽度。
+    await resetDockWidth();
     const wide0 = await run<StartWidthProbe>(startWidthProbe);
     log(
       `拉伸前：右栏 ${wide0.aside?.width ?? -1}｜中栏 ${wide0.mid?.width ?? -1}｜` +
         `卡片宽 ${wide0.card?.width ?? -1}（应为 ${expectedCardWidth(wide0)}）｜` +
+        `输入框高 ${wide0.taHeight}px ＝ ${wide0.taLines} 行（${wide0.taSize}px 字 / 行高 ${wide0.taLh} / 内边距 ${wide0.taPad}）｜` +
         `工具行 ${JSON.stringify(wide0.tools)}｜溢出 卡片=${wide0.cardOverflow} 工具行=${wide0.toolsOverflow}`,
     );
+    // 起手态的空输入框应恰好 3 行高：矮了装不下一句话，高了就是用户说的「有点太高」。
+    // 行数由探针按输入框**自己的**行高与内边距现算，所以这条不随字级 / 行高漂移。
+    checks.push([
+      `起手态输入框占 3 行高（实测 ${wide0.taLines} 行 / ${wide0.taHeight}px）`,
+      Math.abs(wide0.taLines - 3) <= 0.15,
+    ]);
+    // 行高必须真的来自 `leading-relaxed`（1.625×字号）。这条是防一类**静默失效**：
+    // 起手态曾因为多挂一个 `text-[13px]` 被 tailwind-merge 判成「与 leading 冲突」，
+    // 于是 `leading-relaxed` 被从合并结果里**删掉**，行高退回继承来的 1.5——字号看着没变，
+    // 行距变了，而「盒子里能装几行」也随之差出一截（当时正是它让 3 行怎么算都不对）。
+    checks.push([
+      `起手态输入框的行高来自 leading-relaxed（${wide0.taLh} / ${wide0.taSize}px = ${
+        Math.round((wide0.taLh / wide0.taSize) * 1000) / 1000
+      }）`,
+      Math.abs(wide0.taLh / wide0.taSize - 1.625) <= 0.01,
+    ]);
 
     // 拖拽必须拆成「按下」与「移动+抬起」两次 executeJavaScript：按下之后 React 才在 window 上
     // 挂监听，同一个同步块里紧接着派发 move 会丢事件（`dock` 模式同一个坑，见 AGENTS.md §五①）。
@@ -883,16 +945,9 @@ export async function runSessionDraft(
       wide1.start !== null && wide1.card !== null && wide1.start.bottom <= wide1.card.top,
     ]);
 
-    // 复位：宽度写进了 localStorage，留着会让后面的用例（以及下一次运行）从「被拉宽的右栏」
-    // 起步。顺带把「双击把手 → 回统一默认宽度」在起手态也验一次（544 = WorkspaceDock 的
-    // DOCK_DEFAULT_WIDTH，与 `dock` 模式里的 DEFAULT_DOCK 同源）。
-    await run(`(() => {
-      const grip = document.querySelector(".dock-grip");
-      if (!grip) return false;
-      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-      return true;
-    })()`);
-    await sleep(300);
+    // 复位：把宽度还回去——它写进了 localStorage，留着会让后面的用例（以及下一次运行）从
+    // 「被拉宽的右栏」起步。顺带把「双击把手 → 回统一默认宽度」在起手态也验一次。
+    await resetDockWidth();
     const wide2 = await run<StartWidthProbe>(startWidthProbe);
     log(
       `复位后：右栏 ${wide2.aside?.width ?? -1}｜中栏 ${wide2.mid?.width ?? -1}｜` +
