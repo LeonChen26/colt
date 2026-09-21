@@ -773,14 +773,20 @@ export function ToolCard({
   onAbortSubagent?: (id: string) => void;
 }): React.JSX.Element {
   /**
+   * 子代理卡：`subagent` 这次调用**且**它在视图总账里（按 toolCallId 认领）。
+   * 认领不到时按普通工具卡渲染——宁可退化成一张普通卡，也不要凭空造一张卡。
+   */
+  const card = name === "subagent" ? subagent : undefined;
+  /**
    * 展开状态**不放在本组件里**：同一个工具调用在「流式区」与「完成态消息」是两次挂载，
    * 本地 state 会让两个实例各持一份开合（改一个另一个不动），
    * 且完成迁移时新建的实例只会「挂载时取一次初值」，等于把挂载时机当成真源。
    *
-   * 未记录过时按运行状态给初值：运行中默认展开（用户在看实时输出），
-   * 已完成默认收起（结果已定，不必占屏）。
+   * 未记录过时给初值：普通工具调用「运行中默认展开（用户在看实时输出）、已完成默认收起」；
+   * 子代理卡则**一律默认收起**——它的展开区是有界预览 + 深看出口，跑起来时默认摊开会
+   * 把主对话顶得很长，用户需要时自己点开即可（卡面的状态徽标仍在，收起不丢信息）。
    */
-  const open = openState.get(openId) ?? Boolean(running);
+  const open = openState.get(openId) ?? (card === undefined && Boolean(running));
   const setOpen = (value: boolean): void => {
     onToggleOpen(openId, value);
   };
@@ -824,11 +830,6 @@ export function ToolCard({
         : undefined;
   const parsed = useMemo(() => parseArgsJson(args), [args]);
   const base = describeTool(name, parsed);
-  /**
-   * 子代理卡：`subagent` 这次调用**且**它在视图总账里（按 toolCallId 认领）。
-   * 认领不到时按普通工具卡渲染——宁可退化成一张普通卡，也不要凭空造一张卡。
-   */
-  const card = name === "subagent" ? subagent : undefined;
   const icon = card === undefined ? base.icon : <Bot {...ICON.sm} />;
   // 子代理没有路径/命令可言，副标题用任务摘要
   const subtitle = card === undefined ? base.subtitle : card.title;
