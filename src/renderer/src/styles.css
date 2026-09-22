@@ -435,6 +435,9 @@ body.resizing * {
   color: var(--color-text-secondary);
   font-size: 13px;
   font-style: italic;
+  /* 模型写的原样文本：含无空格长串（路径 / URL / hash）时按任意位置断行，
+     否则它会把会话区顶出一条横向滚动条（`.md` 用的是同族的 `word-break`）。 */
+  overflow-wrap: anywhere;
 }
 
 /* ============================================================

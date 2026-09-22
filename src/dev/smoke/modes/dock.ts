@@ -872,6 +872,202 @@ export async function runDock(
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
 
+    // ---- ④ 工具卡：不许比它那一列还宽，更不许把会话区撑出横向滚动条 ----
+    // 为什么非得用一条**真长**的路径：卡片是 `self-start`（按内容收缩），副标题又带
+    // `truncate`（`white-space: nowrap`）——卡片的**固有宽度就等于整条未截断的路径**。
+    // 路径短时（夹具里那条 `tsconfig.json`）两支一样、量不出差别，长路径才会顶出列宽，
+    // 再把会话区（`overflow-y-auto` ⇒ 横向也算 `auto`）撑出一条横条。回归就发生在
+    // v1.63/v1.64 把副标题从 `w-[320px]`（定宽 → 卡片固有宽度有界）改成 `flex-1` 那次。
+    // 判据取**渲染后的几何量**（卡片右缘 / 会话区 `scrollWidth`），不是 class：
+    // 这类回归在 class 上完全看不出来（`AGENTS.md` §四「改了约束 ≠ 约束在起作用」）。
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        messages: [
+          { id: "smoke-card-u", role: "user", text: "长路径工具卡", toolCalls: [] },
+          {
+            id: "smoke-card-a",
+            role: "assistant",
+            text: "",
+            toolCalls: [
+              {
+                id: "smoke-card-c1",
+                name: "read",
+                args: JSON.stringify({
+                  path: `${toolAbsPath}/deeply/nested/component/directory/ChangeDrilldown.tsx`,
+                }),
+                durationMs: 42,
+              },
+            ],
+          },
+        ],
+        toolResults: [{ id: "smoke-card-c1", output: "export function x() {}", isError: false }],
+      }),
+    );
+    await sleep(350);
+    const cardGeom = await run<{
+      cardW: number;
+      colW: number;
+      scrollW: number;
+      clientW: number;
+      nameRight: number;
+      subLeft: number;
+    } | null>(
+      `(() => {
+        const scroll = document.querySelector("[data-conv-scroll]");
+        const card = document.querySelector("[data-tool-card]");
+        if (!scroll || !card) return null;
+        const row = card.firstElementChild;
+        const name = row.children[0].children[2];
+        const sub = row.children[1];
+        return {
+          cardW: card.getBoundingClientRect().width,
+          colW: card.parentElement.getBoundingClientRect().width,
+          scrollW: scroll.scrollWidth,
+          clientW: scroll.clientWidth,
+          nameRight: name ? name.getBoundingClientRect().right : -1,
+          subLeft: sub ? sub.getBoundingClientRect().left : -1,
+        };
+      })()`,
+    );
+    log(
+      `  长路径工具卡：卡片 ${Math.round(cardGeom?.cardW ?? -1)} / 列 ${Math.round(
+        cardGeom?.colW ?? -1,
+      )}，会话区 ${cardGeom?.scrollW} / ${cardGeom?.clientW}，` +
+        `名称右缘→路径左缘 ${Math.round((cardGeom?.subLeft ?? 0) - (cardGeom?.nameRight ?? 0))}px`,
+    );
+    checks.push([
+      "长路径工具卡不宽过它那一列",
+      cardGeom !== null && cardGeom.cardW <= cardGeom.colW + 1,
+    ]);
+    checks.push([
+      "会话区没被工具卡撑出横向滚动条",
+      cardGeom !== null && cardGeom.scrollW <= cardGeom.clientW + 1,
+    ]);
+    // 路径要**紧接**工具名，不能被展开按钮的空白顶到行中间去（坏态里按钮与副标题各占一半、
+    // 两者之间隔着小半行；修好后实测 8px = 行内 gap-2），所以量的是「名称右缘 → 路径左缘」。
+    checks.push([
+      "路径紧接工具名（没被顶到行中间）",
+      cardGeom !== null && cardGeom.subLeft - cardGeom.nameRight <= 12,
+    ]);
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
+
+    // ---- ④ 举一反三：会话区不该被**任何**长内容撑出横条 ----
+    // 工具卡只是这类缺陷的**一个实例**：会话区是 `overflow-y-auto`（按规范横向也算 `auto`），
+    // 于是**任何一个装不下的东西**都会变成一条横条。所以这里不逐组件读 class，而是把
+    // **最容易装不下的那种内容**（没有空格的长串：路径 / URL / base64）喂进各文本容器，
+    // 量同一个不变量。判据取 `scrollWidth`——它对 `overflow: visible` 的元素同样算上溢出的
+    // 内容宽度，所以「这个盒子自己装不下」当场量得出来（§四：判据落在渲染后的几何量上）。
+    const longToken = `${toolAbsPath}/deeply/nested/component/directory/ChangeDrilldown.tsx`;
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        messages: [
+          // 用户气泡：`whitespace-pre-wrap` 保留换行但**不折长词**，一串没有空格的文本会顶出 `max-w-[72%]`
+          { id: "smoke-wide-u", role: "user", text: `${longToken}${longToken}`, toolCalls: [] },
+          // 技能卡：`instructions` 同样是 `whitespace-pre-wrap` 的一段话（`max-w-[86%]`）
+          {
+            id: "smoke-wide-s",
+            role: "user",
+            text: '<skill name="smoke-long" location="…">…</skill>',
+            skill: { name: "smoke-long", instructions: `${longToken}${longToken}` },
+            toolCalls: [],
+          },
+          // 思考块（`.thought`）：模型自己写的一段原样文本，默认**收起**，要展开才量得到
+          {
+            id: "smoke-wide-t",
+            role: "assistant",
+            text: "看了一段长路径。",
+            thought: `${longToken}${longToken}`,
+            toolCalls: [],
+          },
+        ],
+      }),
+    );
+    await sleep(350);
+    // 「文本真的落在盒子里」要**朝两边各量一次**：气泡是右对齐的，装不下时文本是从
+    // **左边**溢出去的，而左溢不进 `scrollWidth`（滚动区不含起点之前的内容）——只看
+    // `scrollWidth` 会把这类「被左边裁掉、连横条都没有」的坏态判成绿的（必然为真的假绿灯，
+    // `AGENTS.md` §五⑫）。所以用 `Range` 取文本自身的矩形，与盒子的内容区比：
+    // 左缘不越界、右缘不越界，两个方向同时成立才算过。
+    const wideGeom = await run<{
+      scrollW: number;
+      clientW: number;
+      bubbleOk: boolean;
+      bubbleTextW: number;
+      bubbleBoxW: number;
+      skillTextW: number;
+      skillBoxW: number;
+    } | null>(
+      `(() => {
+        const scroll = document.querySelector("[data-conv-scroll]");
+        const bubble = document.querySelector("[data-conv-user-bubble]");
+        const skillText = document.querySelector("[data-conv-skill-text]");
+        if (!scroll || !bubble || !skillText) return null;
+        const fit = (el) => {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const text = range.getBoundingClientRect();
+          const box = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          const left = box.left + parseFloat(cs.paddingLeft);
+          const right = box.right - parseFloat(cs.paddingRight);
+          return { ok: text.left >= left - 1 && text.right <= right + 1, textW: text.width, boxW: right - left };
+        };
+        const b = fit(bubble);
+        const s = fit(skillText);
+        return {
+          scrollW: scroll.scrollWidth,
+          clientW: scroll.clientWidth,
+          bubbleOk: b.ok,
+          bubbleTextW: b.textW,
+          bubbleBoxW: b.boxW,
+          skillTextW: s.textW,
+          skillBoxW: s.boxW,
+        };
+      })()`,
+    );
+    log(
+      `  长串文本：会话区 ${wideGeom?.scrollW} / ${wideGeom?.clientW}，` +
+        `用户气泡文本 ${Math.round(wideGeom?.bubbleTextW ?? -1)} / 内容区 ${Math.round(
+          wideGeom?.bubbleBoxW ?? -1,
+        )}，技能正文 ${Math.round(wideGeom?.skillTextW ?? -1)} / 内容区 ${Math.round(
+          wideGeom?.skillBoxW ?? -1,
+        )}`,
+    );
+    checks.push([
+      "会话区没被长串文本撑出横向滚动条",
+      wideGeom !== null && wideGeom.scrollW <= wideGeom.clientW + 1,
+    ]);
+    checks.push([
+      "长串用户消息整条落在气泡内（没从左边被裁掉）",
+      wideGeom !== null && wideGeom.bubbleOk && wideGeom.bubbleTextW <= wideGeom.bubbleBoxW + 1,
+    ]);
+    checks.push([
+      "长串技能指示整条落在卡内",
+      wideGeom !== null && wideGeom.skillTextW <= wideGeom.skillBoxW + 1,
+    ]);
+    // 思考块（`.thought`）同理，但它**默认收起**——必须**先点开再量**，否则量到的是
+    // 「没渲染的东西」，断言必然为真（§五⑫：必然为真的断言比红断言贵得多）。
+    const thoughtGeom = await run<{ w: number; c: number; opened: boolean }>(
+      `(async () => {
+        const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("已思考"));
+        if (btn) btn.click();
+        await new Promise((r) => setTimeout(r, 250));
+        const scroll = document.querySelector("[data-conv-scroll]");
+        const block = document.querySelector("[data-conv-scroll] .thought");
+        return { w: scroll.scrollWidth, c: scroll.clientWidth, opened: block !== null };
+      })()`,
+    );
+    log(`  长思考：展开=${thoughtGeom?.opened}，会话区 ${thoughtGeom?.w} / ${thoughtGeom?.c}`);
+    checks.push([
+      "长思考展开后没撑出会话区横向滚动条",
+      thoughtGeom !== null && thoughtGeom.opened && thoughtGeom.w <= thoughtGeom.c + 1,
+    ]);
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
+
     // ---- ⑦-G：「任务摘要」= 本次用量 + 计划 + 紧跟其下的一行总账（顺序见 v1.67）----
     // 受控视图里 runningTools 为空、fileChanges 三条（两条项目内 + 一条越界），
     // 正好钉住两件事：右栏**不再**列此刻动作（v1.53 删去「进行中的动作」段，此刻动作只在 ④），

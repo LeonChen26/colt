@@ -195,7 +195,13 @@ export const MessageBubble = memo(function MessageBubble({
               <span className="text-text-muted">· 本会话装载，非你的发言</span>
             </div>
             {instructions !== undefined && (
-              <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-text-primary">
+              // `[overflow-wrap:anywhere]` 而不是 `break-words`：后者只在**排版**时断词，
+              // 不改固有尺寸——盒子照样按一个超长词长出去（见 ④ 工具卡/气泡那两条）。
+              // `anywhere` 的断行机会**计入 min-content**，盒子才会真的收窄。
+              <p
+                data-conv-skill-text=""
+                className="text-[13px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
+              >
                 {instructions}
               </p>
             )}
@@ -222,7 +228,10 @@ export const MessageBubble = memo(function MessageBubble({
     }
     return (
       <div className="flex justify-end" data-conv-user={message.id}>
-        <div className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-md border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-text-primary">
+        <div
+          data-conv-user-bubble=""
+          className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-md border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
+        >
           {message.image && (
             <img
               src={`data:${message.image.mimeType};base64,${message.image.data}`}
@@ -966,7 +975,11 @@ export function ToolCard({
     <div
       data-tool-card=""
       className={cn(
-        "self-start overflow-hidden rounded-md border bg-surface-raised",
+        // `max-w-full`：卡片是 `self-start`（按内容收缩），而副标题带 `truncate`（nowrap），
+        // 于是卡片的**固有宽度 = 整条未截断的路径**——长路径卡会比它那一列还宽、顶出去，
+        // 把会话区（`overflow-y-auto` ⇒ 横向也算 `auto`）撑出横向滚动条。
+        // 钳到列宽即可：短卡仍按内容收缩，长卡最多与列等宽。
+        "self-start max-w-full overflow-hidden rounded-md border bg-surface-raised",
         isError ? "border-danger/50" : "border-line",
       )}
       onMouseEnter={() => onHoverFile?.(path ?? null)}
@@ -974,11 +987,14 @@ export function ToolCard({
     >
       {/* 行容器用 div：路径要成为**独立**可点目标，而 <button> 里嵌 <button> 是非法结构 */}
       <div className="flex w-full items-center gap-2 px-3 py-2 transition hover:bg-surface-overlay/50">
+        {/* 展开按钮**不伸缩**（早先写了 `flex-1`）：它与副标题都是伸缩项时，两个
+            `flex-basis: 0%` 会**均分行内余量**，于是按钮吃掉半行空白、把路径推到行中间去，
+            长路径还没用上右边的空位就被 `truncate` 截了。改成按内容收缩，余量全归副标题。 */}
         <button
           type="button"
           onClick={() => setOpen(!open)}
           title={open ? "收起" : "展开"}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 items-center gap-2 text-left"
         >
           <ChevronRight
             {...ICON.sm}

@@ -54,7 +54,7 @@ export function SubagentPreview({
             </div>
           )}
           {step.text !== "" && (
-            <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary">
+            <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
               {step.text}
             </div>
           )}
@@ -71,7 +71,7 @@ export function SubagentPreview({
           <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
             子代理（正在输出）
           </div>
-          <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary">
+          <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
             {streamingText}
           </div>
         </div>
