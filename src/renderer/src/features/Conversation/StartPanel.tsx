@@ -36,13 +36,13 @@ export function StartPanel({
 }): React.JSX.Element {
   return (
     <div data-conv-start className="flex w-full flex-col items-center gap-2">
-      <div className="text-[10px] uppercase tracking-[2.5px] text-text-muted">
+      <div className="text-[10.5px] uppercase tracking-[1.5px] text-text-muted">
         Colt · 本地编码 Agent
       </div>
       <h2 className="m-0 mt-1.5 text-[24px] font-semibold tracking-[-.4px] text-text-primary">
         今天要修哪个 bug？
       </h2>
-      <p className="m-0 text-[12.5px] text-text-secondary">
+      <p className="m-0 text-[13px] text-text-secondary">
         描述你想做的事，Colt 会先给你一份计划。
       </p>
       <div className="mt-4 flex max-w-[560px] flex-wrap justify-center gap-2">
@@ -51,7 +51,7 @@ export function StartPanel({
             key={suggestion}
             type="button"
             onClick={() => onSuggestion(suggestion)}
-            className="rounded-[6px] border border-line px-3 py-1.5 text-[12px] text-text-secondary transition hover:border-line-strong hover:bg-surface-overlay hover:text-text-primary"
+            className="rounded-sm border border-line px-3 py-1.5 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:bg-surface-overlay hover:text-text-primary"
           >
             {suggestion}
           </button>
@@ -76,7 +76,7 @@ export function StartPanel({
           onClick={onPickDirectory}
           aria-label="换一个目录"
           title="换一个目录：选一个已存在的目录并切过去"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border border-line transition hover:border-line-strong hover:text-text-primary"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-line transition hover:border-line-strong hover:text-text-primary"
         >
           <FolderOpen {...ICON.sm} />
         </button>
@@ -86,7 +86,7 @@ export function StartPanel({
           data-conv-newdir
           aria-label="新建工作目录"
           title="不用自己挑：在家目录的 ~/.colt 下按时间建一个空目录并切过去"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border border-line transition hover:border-line-strong hover:text-text-primary"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-line transition hover:border-line-strong hover:text-text-primary"
         >
           <FolderPlus {...ICON.sm} />
         </button>

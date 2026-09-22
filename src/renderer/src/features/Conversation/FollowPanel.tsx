@@ -4,7 +4,7 @@
 /**
  * 右栏工作区的「任务摘要」视图（默认视图，规则 ⑦-E；v1.48 由「正在处理」更名）。
  *
- * 规则 ⑦-G：本视图**只由两段构成，两个时态、互不重复**（顺序即阅读顺序）——
+ * 规则 ⑦-G：本视图构成**几段互不重复的结论**（顺序即阅读顺序）——
  *   1. 计划（将来）：待办清单，`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做；
  *      **已完成折成一行**，点开才铺开。没有清单时**整段不渲染**（不占位）——
  *      「没有清单」与「有清单但此刻空闲」是两件事，前者不该在界面上留一个空壳。
@@ -14,6 +14,12 @@
  *      `+a −b` 是**净值**（基线 → 现在，与清单层同源）：改完又退回原样就是 0，
  *      故这里不给「干了多少下」的错觉——「处 / 文件」两个数说明干过活，净值说明结果。
  *      它不是可折叠区段（没有 caret / 展开态 / 空态）。
+ *   3. 本次用量（过去 / 累计，v1.61 新增）：费用 + 输入 / 输出 tokens 的**结论**，
+ *      数据直接取 `view.stats`（**零 IPC、随会话实时**）；**没有用量时整段不渲染**
+ *      （同计划段的规矩——摆一个「$0.0000」的空壳与摆一个空清单一样没有意义）。
+ *      它只给结论，**流水仍在「统计」页签**（按模型 / 工具排行 / 可筛明细）——
+ *      ⑦-H：附属视图给结论不给流水；这里那行「查看完整统计」就是去流水层的唯一出口。
+ *      加这一段是因为前两段**都可能为空**，只剩一行「0 处 · 0 文件」的面板太空。
  *
  * 「此刻在跑什么」**不在本视图**（v1.53 删去「进行中的动作」段）：④ 消息流里已有运行中
  * 工具卡（含输出 / diff / 截图）与子代理卡，那是叙事的真源；本视图再列一遍只是把同一批
@@ -35,6 +41,7 @@ import { useState, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, Circle, FileDiff } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { buildChangeList } from "@/lib/change-list";
+import { formatTokenCount } from "@/lib/session-stats";
 import { blockedTodoIds, summarizeTodoProgress, type ViewTodo } from "@shared/todo";
 import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
@@ -55,7 +62,7 @@ function SectionHead({
     <button
       type="button"
       onClick={onToggle}
-      className="flex w-full shrink-0 items-center gap-1.5 px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[.6px] text-text-muted transition hover:text-text-secondary"
+      className="flex h-[var(--h-panel-head)] w-full shrink-0 items-center gap-1.5 px-3.5 text-left text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted transition hover:text-text-secondary"
     >
       <ChevronDown
         {...ICON.xs}
@@ -71,17 +78,32 @@ function SectionHead({
   );
 }
 
+/** 用量格：小标签 + 等宽数值（比 `UsagePanel` 的 Kpi 小一号——它只占任务摘要里的一段） */
+function UsageStat({ label, value }: { label: string; value: string }): React.JSX.Element {
+  return (
+    <div className="rounded-sm border border-line bg-surface px-2 py-1.5">
+      <div className="text-[10.5px] text-text-muted">{label}</div>
+      <div className="mt-0.5 font-mono text-[13px] font-semibold text-text-primary">{value}</div>
+    </div>
+  );
+}
+
 export function FollowPanel({
   view,
   onOpenChanges,
+  onOpenStats,
 }: {
   view: ConversationView | null;
   /** 点总账 → 进入下钻的**清单层**（⑦-G） */
   onOpenChanges: () => void;
+  /** 点「本次用量」的出口 → 打开**「统计」页签**（流水在那边，⑦-H） */
+  onOpenStats: () => void;
 }): React.JSX.Element {
   const [planCollapsed, setPlanCollapsed] = useState(false);
   /** 「已完成」默认折成一行，点开才铺开（⑦-H：给结论不给流水） */
   const [doneOpen, setDoneOpen] = useState(false);
+  /** 用量段同样可折；默认展开——这段本来就是用来补「面板太空」的 */
+  const [usageCollapsed, setUsageCollapsed] = useState(false);
   const changes = view?.fileChanges ?? [];
   const todos = view?.todos ?? [];
   const plan = summarizeTodoProgress(todos);
@@ -98,7 +120,7 @@ export function FollowPanel({
       key={todo.id}
       data-todo-id={todo.id}
       data-todo-status={todo.status}
-      className="rounded-[6px] px-2 py-1"
+      className="rounded-sm px-2 py-1"
     >
       <div className="flex items-start gap-1.5">
         <span data-todo-glyph={todo.status} className="mt-[3px] flex shrink-0 items-center">
@@ -114,7 +136,7 @@ export function FollowPanel({
           data-todo-subject=""
           title={todo.subject}
           className={cn(
-            "min-w-0 flex-1 truncate text-[12px]",
+            "min-w-0 flex-1 truncate text-[11.5px]",
             todo.status === "completed" ? "text-text-muted" : "text-text-secondary",
           )}
         >
@@ -142,6 +164,12 @@ export function FollowPanel({
   // 逐次相加会把「改了又退回去」读成实打实的改动，那正是总账最不该给的错觉。
   const net = buildChangeList(changes);
   const hasDiff = net.netAddedLines > 0 || net.netRemovedLines > 0;
+  /**
+   * 用量（v1.61）：数据来自 `view.stats`——视图自带、**零 IPC**、随会话实时。
+   * **没有任何消耗时整段不渲染**：一段全是 0 的用量块和一个空清单一样，是纯噪声。
+   */
+  const usage = view?.stats;
+  const hasUsage = usage !== undefined && (usage.costUsd > 0 || usage.totalTokens > 0);
 
   return (
     // 本视图整体滚动（而不是给清单一个自己的滚动盒）：清单必须能完整铺开，
@@ -165,7 +193,7 @@ export function FollowPanel({
                   type="button"
                   data-todo-done-toggle=""
                   onClick={() => setDoneOpen((value) => !value)}
-                  className="flex w-full items-center gap-1.5 rounded-[6px] px-2 py-1 text-left text-[11px] text-text-muted transition hover:text-text-secondary"
+                  className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[11.5px] text-text-muted transition hover:text-text-secondary"
                 >
                   <ChevronRight
                     {...ICON.xs}
@@ -188,10 +216,10 @@ export function FollowPanel({
           className="flex w-full shrink-0 items-center gap-2 bg-surface px-3 py-2"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
-          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[.4px] text-text-muted">
+          <span className="shrink-0 text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
             本次改动
           </span>
-          <span className="min-w-0 flex-1 truncate text-[12px] text-text-muted">0 处 · 0 文件</span>
+          <span className="min-w-0 flex-1 truncate text-[11.5px] text-text-muted">0 处 · 0 文件</span>
         </div>
       ) : (
         <button
@@ -202,10 +230,10 @@ export function FollowPanel({
           className="group flex w-full shrink-0 items-center gap-2 bg-surface px-3 py-2 text-left transition hover:bg-surface-overlay"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
-          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[.4px] text-text-muted">
+          <span className="shrink-0 text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
             本次改动
           </span>
-          <span className="min-w-0 flex-1 truncate text-[12px] text-text-secondary">
+          <span className="min-w-0 flex-1 truncate text-[11.5px] text-text-secondary">
             <span className="font-semibold text-text-primary">{places}</span> 处 ·{" "}
             <span className="font-semibold text-text-primary">{fileCount}</span> 文件
             {hasDiff && (
@@ -221,6 +249,37 @@ export function FollowPanel({
             <ChevronRight {...ICON.xs} />
           </span>
         </button>
+      )}
+
+      {/* 段三：本次用量（v1.61）——结论（费用 / tokens）留在这里，流水留在「统计」页签。
+          没有消耗时整段不渲染（`hasUsage`）。 */}
+      {usage !== undefined && hasUsage && (
+        <section data-usage-section="" className="flex shrink-0 flex-col border-t border-line">
+          <SectionHead
+            title="本次用量"
+            meta={<span data-usage-cost="">${usage.costUsd.toFixed(4)}</span>}
+            collapsed={usageCollapsed}
+            onToggle={() => setUsageCollapsed((value) => !value)}
+          />
+          {!usageCollapsed && (
+            <div className="px-3.5 pb-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <UsageStat label="输入" value={formatTokenCount(usage.inputTokens)} />
+                <UsageStat label="输出" value={formatTokenCount(usage.outputTokens)} />
+              </div>
+              <button
+                type="button"
+                data-usage-open=""
+                onClick={onOpenStats}
+                title="打开「统计」页签：按模型 / 工具排行 / 可筛明细"
+                className="mt-2 flex items-center gap-1 text-[11.5px] text-text-muted transition hover:text-text-primary"
+              >
+                查看完整统计
+                <ChevronRight {...ICON.xs} />
+              </button>
+            </div>
+          )}
+        </section>
       )}
     </div>
   );

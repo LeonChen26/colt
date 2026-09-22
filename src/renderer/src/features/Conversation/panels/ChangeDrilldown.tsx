@@ -122,7 +122,7 @@ function CrumbButton({
       type="button"
       data-drill-crumb={marker}
       onClick={onClick}
-      className="flex shrink-0 items-center gap-1 rounded-[4px] px-1 py-0.5 text-[11px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+      className="flex shrink-0 items-center gap-1 rounded-xs px-1 py-0.5 text-[11.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
     >
       <ChevronLeft {...ICON.xs} />
       {label}
@@ -149,7 +149,7 @@ function BackRow({
     >
       <Undo2 {...ICON.sm} className="shrink-0 text-text-muted" />
       <span className="text-[11.5px] text-text-secondary">{label}</span>
-      <span className="ml-auto shrink-0 text-[11px] text-text-muted transition group-hover:text-text-primary">
+      <span className="ml-auto shrink-0 text-[11.5px] text-text-muted transition group-hover:text-text-primary">
         {hint ?? "ESC"}
       </span>
     </button>
@@ -380,14 +380,14 @@ export function ChangeDrilldown({
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col" data-drill={layer}>
       {/* 面包屑：只列**真实存在**的层（没被改过的文件没有「本次改动」这一层） */}
-      <nav className="flex h-[30px] shrink-0 items-center gap-0.5 border-b border-line px-1.5">
+      <nav className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-0.5 border-b border-line px-1.5">
         <CrumbButton marker="follow" label="任务摘要" onClick={onExit} />
         {inSubagent && (
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             <span
               data-drill-crumb="subagent"
-              className="flex min-w-0 items-center gap-1 px-1 text-[11px] font-medium text-text-primary"
+              className="flex min-w-0 items-center gap-1 px-1 text-[11.5px] font-medium text-text-primary"
               title={subagent?.title}
             >
               <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
@@ -399,7 +399,7 @@ export function ChangeDrilldown({
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             {inList ? (
-              <span className="shrink-0 px-1 text-[11px] font-medium text-text-primary">
+              <span className="shrink-0 px-1 text-[11.5px] font-medium text-text-primary">
                 本次改动
               </span>
             ) : (
@@ -407,7 +407,7 @@ export function ChangeDrilldown({
                 type="button"
                 data-drill-crumb="list"
                 onClick={goList}
-                className="shrink-0 rounded-[4px] px-1 py-0.5 text-[11px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+                className="shrink-0 rounded-xs px-1 py-0.5 text-[11.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
               >
                 本次改动
               </button>
@@ -419,7 +419,7 @@ export function ChangeDrilldown({
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             <span
               data-drill-crumb="current"
-              className="min-w-0 truncate px-1 font-mono text-[11px] text-text-primary"
+              className="min-w-0 truncate px-1 font-mono text-[11.5px] text-text-primary"
               title={path}
             >
               {path}
@@ -486,7 +486,7 @@ export function ChangeDrilldown({
                         }
                         title={many ? `展开 / 收起 ${file.path} 的历史` : `查看 ${file.path} 的 diff`}
                         className={cn(
-                          "group flex w-full items-center gap-1.5 rounded-[6px] px-1.5 py-1.5 text-left transition hover:bg-surface-overlay",
+                          "group flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1.5 text-left transition hover:bg-surface-overlay",
                           samePath(file.path, highlightPath ?? null) && "bg-surface-overlay",
                         )}
                       >
@@ -535,7 +535,7 @@ export function ChangeDrilldown({
                             data-clist-net={file.path}
                             onClick={() => goDiff(file.path, NET_REVISION)}
                             title="本次会话的累计改动（改动前 → 现在）"
-                            className="flex w-full items-center gap-2 rounded-[5px] px-1.5 py-1 text-left transition hover:bg-surface-overlay"
+                            className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay"
                           >
                             <span className="min-w-0 flex-1 truncate text-[10.5px] text-text-secondary">
                               全部改动（累计）
@@ -560,7 +560,7 @@ export function ChangeDrilldown({
                               type="button"
                               data-clist-rev={rev.id}
                               onClick={() => goDiff(file.path, rev.id)}
-                              className="flex w-full items-center gap-2 rounded-[5px] px-1.5 py-1 text-left transition hover:bg-surface-overlay"
+                              className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay"
                             >
                               <span className="shrink-0 font-mono text-[10.5px] text-text-secondary">
                                 #{file.history.length - index}
@@ -624,21 +624,21 @@ export function ChangeDrilldown({
         </div>
       ) : layer === "diff" ? (
         <div className="flex min-h-0 flex-1 flex-col" data-drill-diff="">
-          <div className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line px-2.5">
-            <span className="truncate font-mono text-[11px] text-text-secondary" title={path ?? ""}>
+          <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
+            <span className="truncate font-mono text-[11.5px] text-text-secondary" title={path ?? ""}>
               {path}
             </span>
             {/* 同一文件改过多次时给历史切换；只有一次就不给（一个选项的开关是噪声）。
                 「累计」与 `#N` 并列：前者说「加起来的结果」，后者说「第几次」。 */}
             {current !== undefined && current.history.length > 1 && (
-              <span className="ml-auto flex shrink-0 items-center gap-0.5 rounded-[5px] border border-line p-0.5">
+              <span className="ml-auto flex shrink-0 items-center gap-0.5 rounded-sm border border-line p-0.5">
                 <button
                   type="button"
                   data-drill-rev={NET_REVISION}
                   onClick={() => setRevisionId(NET_REVISION)}
                   title="本次会话的累计改动（改动前 → 现在）"
                   className={cn(
-                    "rounded-[4px] px-1.5 py-0.5 text-[10.5px] transition",
+                    "rounded-xs px-1.5 py-0.5 text-[10.5px] transition",
                     netSelected
                       ? "bg-accent-soft font-semibold text-text-primary"
                       : "text-text-muted hover:text-text-primary",
@@ -654,7 +654,7 @@ export function ChangeDrilldown({
                     onClick={() => setRevisionId(rev.id)}
                     title={formatAgo(rev.timestamp)}
                     className={cn(
-                      "rounded-[4px] px-1.5 py-0.5 text-[10.5px] transition",
+                      "rounded-xs px-1.5 py-0.5 text-[10.5px] transition",
                       !netSelected && rev.id === revision?.id
                         ? "bg-accent-soft font-semibold text-text-primary"
                         : "text-text-muted hover:text-text-primary",
@@ -671,7 +671,7 @@ export function ChangeDrilldown({
               data-drill-content=""
               onClick={() => path !== null && goContent(path)}
               className={cn(
-                "flex shrink-0 items-center gap-1 rounded-[5px] border border-line px-1.5 py-1 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
+                "flex shrink-0 items-center gap-1 rounded-sm border border-line px-1.5 py-1 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
                 !(current !== undefined && current.history.length > 1) && "ml-auto",
               )}
             >

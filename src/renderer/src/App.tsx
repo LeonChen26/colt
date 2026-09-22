@@ -584,9 +584,9 @@ export default function App(): React.JSX.Element {
           }}
         />
       )}
-      <header className="flex h-[42px] shrink-0 items-center justify-between border-b border-line bg-surface-raised px-3.5">
+      <header className="flex h-[var(--h-topbar)] shrink-0 items-center justify-between border-b border-line bg-surface-raised px-3.5">
         <div className="flex items-center gap-2">
-          <span className="text-[13.5px] font-semibold tracking-[.2px] text-text-primary">
+          <span className="text-[13px] font-semibold tracking-[.2px] text-text-primary">
             Colt
           </span>
         </div>
@@ -596,7 +596,7 @@ export default function App(): React.JSX.Element {
           {env !== null && !env.bashPath ? (
             <span className="text-[11.5px] text-danger">未找到 bash，命令工具不可用</span>
           ) : null}
-          <div className="flex items-center gap-0.5 rounded-[6px] border border-line p-0.5">
+          <div className="flex items-center gap-0.5 rounded-sm border border-line p-0.5">
             {THEME_OPTIONS.map((item) => (
               <button
                 key={item.value}
@@ -606,10 +606,10 @@ export default function App(): React.JSX.Element {
                 aria-label={`主题：${item.label}`}
                 aria-pressed={theme === item.value}
                 className={cn(
-                  "flex h-6 w-6 items-center justify-center rounded-[5px] transition",
+                  "flex h-6 w-6 items-center justify-center rounded-xs transition",
                   theme === item.value
                     ? "bg-surface-overlay text-text-primary"
-                    : "text-text-muted hover:text-text-secondary",
+                    : "text-text-muted hover:bg-surface-overlay/60 hover:text-text-secondary",
                 )}
               >
                 <item.Icon {...ICON.xs} />
@@ -622,7 +622,7 @@ export default function App(): React.JSX.Element {
             title={activeProject ? "项目改动汇总" : "打开项目后可查看改动"}
             disabled={!activeProject}
             className={cn(
-              "flex items-center gap-1.5 rounded-[6px] border px-2 py-1 text-[11.5px] transition disabled:cursor-not-allowed disabled:opacity-40",
+              "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] transition disabled:cursor-not-allowed disabled:opacity-40",
               mainView === "changes"
                 ? "border-accent bg-accent-soft text-text-primary"
                 : "border-line text-text-secondary hover:border-line-strong hover:text-text-primary",
@@ -636,7 +636,7 @@ export default function App(): React.JSX.Element {
             onClick={() => setMainView((value) => (value === "settings" ? "chat" : "settings"))}
             title="设置"
             className={cn(
-              "flex items-center gap-1.5 rounded-[6px] border px-2 py-1 text-[11.5px] transition",
+              "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] transition",
               mainView === "settings"
                 ? "border-accent bg-accent-soft text-text-primary"
                 : "border-line text-text-secondary hover:border-line-strong hover:text-text-primary",
@@ -691,7 +691,7 @@ export default function App(): React.JSX.Element {
                           {project.rootPath}
                         </div>
                         {list.length === 0 ? (
-                          <div className="px-2 py-1.5 text-[11px] text-text-muted">还没有会话</div>
+                          <div className="px-2 py-1.5 text-[11.5px] text-text-muted">还没有会话</div>
                         ) : (
                           list.map((session) => (
                             <SessionRow
@@ -744,13 +744,13 @@ export default function App(): React.JSX.Element {
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
-            <div className="m-3.5 shrink-0 rounded-[8px] border border-danger/50 bg-danger-soft px-3.5 py-3 text-[12.5px] text-danger-fg">
+            <div className="m-3.5 shrink-0 rounded-md border border-line border-l-2 border-l-danger bg-danger-soft px-3.5 py-3 text-[13px] text-danger-fg">
               {error}
             </div>
           )}
 
           {modelServiceReady === false && (
-            <div className="m-3.5 shrink-0 rounded-[8px] border border-warning/50 bg-warning-soft px-3.5 py-3 text-[12.5px] text-warning">
+            <div className="m-3.5 shrink-0 rounded-md border border-line border-l-2 border-l-warning bg-warning-soft px-3.5 py-3 text-[13px] text-warning">
               尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
               DeepSeek 或自建的 OpenAI 兼容服务均可）。
             </div>
@@ -791,7 +791,7 @@ export default function App(): React.JSX.Element {
                 {/* 走到这里只有两种情形：还没选中项目（让用户先去打开一个），
                     或项目在跟前但会话列表还在路上——后者马上会由自动草稿补上输入框，
                     所以不再说「新建一个会话开始对话」（那会把用户支使去点侧栏的「+」）。 */}
-                <p className="text-[12.5px] text-text-muted">
+                <p className="text-[13px] text-text-muted">
                   {activeProject ? "正在准备会话…" : "打开一个项目目录开始"}
                 </p>
               </div>
@@ -832,7 +832,7 @@ function SidebarSection({
               )}
             />
           )}
-          <span className="truncate text-[11px] font-semibold uppercase tracking-[.6px] text-text-muted">
+          <span className="truncate text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
             {title}
           </span>
         </button>
@@ -840,7 +840,7 @@ function SidebarSection({
           <button
             type="button"
             onClick={action.onClick}
-            className="flex shrink-0 items-center gap-1 rounded-[6px] px-1.5 py-1 text-[11.5px] text-text-secondary opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
+            className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-[11.5px] text-text-secondary opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
           >
             {action.icon}
             {action.label}
@@ -883,7 +883,7 @@ function ProjectRow({
     <div
       data-project-row={project.id}
       className={cn(
-        "group flex items-center gap-1 rounded-[7px] border-l-2 py-1.5 pl-1.5 pr-1.5 transition",
+        "group flex items-center gap-1 rounded-sm border-l-2 py-1.5 pl-1.5 pr-1.5 transition",
         active
           ? "border-accent bg-surface-overlay"
           : "border-transparent hover:bg-surface-overlay/60",
@@ -902,13 +902,13 @@ function ProjectRow({
       </button>
       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-muted" />
       <button type="button" onClick={onActivate} className="min-w-0 flex-1 text-left">
-        <div className="truncate text-[12.5px] text-text-primary">{project.name}</div>
+        <div className="truncate text-[13px] text-text-primary">{project.name}</div>
       </button>
       <button
         type="button"
         onClick={onNewSession}
         title="新建会话"
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-raised hover:text-text-primary focus:opacity-100"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-text-primary focus:opacity-100"
       >
         <Plus {...ICON.xs} />
       </button>
@@ -918,7 +918,7 @@ function ProjectRow({
         disabled={busy}
         data-project-remove
         title={busy ? "有会话正在运行，不可移除工作区" : "移除工作区（不影响磁盘上的文件）"}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-raised hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
       >
         <Trash2 {...ICON.xs} />
       </button>
@@ -979,8 +979,8 @@ function SessionRow({
     <div
       data-session-row={session.id}
       className={cn(
-        "group/session flex w-full items-center gap-2 rounded-[6px] px-1.5 py-1.5 transition",
-        active ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",
+        "group/session flex w-full items-center gap-2 rounded-sm border-l-2 px-1.5 py-1.5 transition",
+        active ? "border-l-accent bg-surface-overlay" : "border-l-transparent hover:bg-surface-overlay/60",
       )}
     >
       <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
@@ -1003,7 +1003,7 @@ function SessionRow({
         <span className="min-w-0 flex-1">
           <span
             className={cn(
-              "block truncate text-[12.5px]",
+              "block truncate text-[13px] leading-tight",
               active ? "text-text-primary" : "text-text-secondary",
             )}
           >
@@ -1011,7 +1011,7 @@ function SessionRow({
           </span>
           <span
             className={cn(
-              "block truncate text-[10.5px]",
+              "block truncate text-[10.5px] leading-tight tabular-nums",
               waiting
                 ? "text-warning"
                 : offlineState === "crashed"
@@ -1040,7 +1040,7 @@ function SessionRow({
         aria-label={pinned ? "取消钉住" : "钉住会话"}
         aria-pressed={pinned}
         className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] transition hover:bg-surface-raised focus:opacity-100",
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-xs transition hover:bg-line-soft focus:opacity-100",
           pinned
             ? "text-accent opacity-100"
             : "text-text-muted opacity-0 group-hover/session:opacity-100 hover:text-text-primary",
@@ -1053,7 +1053,7 @@ function SessionRow({
         onClick={copyId}
         title={copied ? "已复制" : "复制会话 ID"}
         className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted transition hover:bg-surface-raised hover:text-text-primary focus:opacity-100",
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-line-soft hover:text-text-primary focus:opacity-100",
           copied ? "text-success-fg opacity-100" : "opacity-0 group-hover/session:opacity-100",
         )}
       >
@@ -1064,7 +1064,7 @@ function SessionRow({
         onClick={onDelete}
         disabled={running}
         title={running ? "运行中的会话不可删除" : "删除会话"}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover/session:opacity-100 hover:bg-surface-raised hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover/session:opacity-100 hover:bg-line-soft hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
       >
         <Trash2 {...ICON.xs} />
       </button>

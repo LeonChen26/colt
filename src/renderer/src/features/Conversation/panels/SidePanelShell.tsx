@@ -42,8 +42,8 @@ export function SidePanelShell({
 }): React.JSX.Element {
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-line px-3 py-2">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
+      <div className="flex h-[var(--h-panel-head)] shrink-0 items-center justify-between border-b border-line px-3">
+        <span className="flex items-center gap-1.5 text-[11.5px] font-medium text-text-secondary">
           {icon}
           {title}
           {meta}
@@ -51,7 +51,7 @@ export function SidePanelShell({
         <button
           type="button"
           onClick={onRefresh}
-          className="text-text-muted transition hover:text-text-primary"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-line-soft hover:text-text-primary"
           title="刷新"
         >
           <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
@@ -59,7 +59,7 @@ export function SidePanelShell({
       </div>
 
       {error && (
-        <div className="m-2 rounded-md border border-danger/50 bg-danger/10 px-2 py-1.5 text-xs text-danger">
+        <div className="m-2 rounded-md border border-line border-l-2 border-l-danger bg-danger-soft px-2 py-1.5 text-[11.5px] text-danger-fg">
           {error}
         </div>
       )}
@@ -68,9 +68,9 @@ export function SidePanelShell({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading && isEmpty ? (
-          <p className="px-2 py-6 text-center text-xs text-text-muted">加载中…</p>
+          <p className="px-3 py-10 text-center text-[11.5px] text-text-muted">加载中…</p>
         ) : isEmpty ? (
-          <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
+          <p className="px-3 py-10 text-center text-[11.5px] leading-relaxed text-text-muted">
             {empty}
           </p>
         ) : (

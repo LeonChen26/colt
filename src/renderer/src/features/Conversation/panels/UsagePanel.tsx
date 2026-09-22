@@ -51,9 +51,9 @@ function percent(share: number): string {
 /** 排行行的横条：宽度即占比，让「谁贵 / 谁多」一眼可见 */
 function Bar({ share, tone }: { share: number; tone?: "danger" }): React.JSX.Element {
   return (
-    <span className="h-[5px] min-w-0 flex-1 overflow-hidden rounded-[3px] bg-line">
+    <span className="h-[5px] min-w-0 flex-1 overflow-hidden rounded-xs bg-line">
       <span
-        className={cn("block h-full rounded-[3px]", tone === "danger" ? "bg-danger" : "bg-accent-dim")}
+        className={cn("block h-full rounded-xs", tone === "danger" ? "bg-danger" : "bg-accent-dim")}
         style={{ width: `${Math.max(2, share * 100)}%` }}
       />
     </span>
@@ -74,7 +74,7 @@ function SectionHead({ title, note }: { title: string; note?: string }): React.J
 /** KPI 卡片：值用等宽字体，量级才好在几块之间横向比较 */
 function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }): React.JSX.Element {
   return (
-    <div className="rounded-[6px] border border-line bg-surface px-2.5 py-2">
+    <div className="rounded-sm border border-line bg-surface px-2.5 py-2">
       <div className="text-[10.5px] text-text-muted">{label}</div>
       <div className="mt-0.5 font-mono text-[15px] font-semibold text-text-primary">{value}</div>
       {sub !== undefined && <div className="mt-0.5 text-[10.5px] text-text-muted">{sub}</div>}
@@ -145,7 +145,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
 
   const chip = (active: boolean, danger = false): string =>
     cn(
-      "rounded-full border px-1.5 py-[2px] text-[10px] transition",
+      "rounded-full border px-1.5 py-[2px] text-[10.5px] transition",
       active
         ? danger
           ? "border-danger bg-danger-soft font-semibold text-danger-fg"
@@ -185,7 +185,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         {models.map((stat) => (
           <div key={stat.model} className="flex items-center gap-2 px-1.5 py-1">
             <span
-              className="w-[82px] shrink-0 truncate font-mono text-[11px] text-text-primary"
+              className="min-w-0 w-[82px] truncate font-mono text-[11.5px] text-text-primary"
               title={stat.model === UNKNOWN_MODEL ? "记录里没有模型名" : stat.model}
             >
               {stat.model}
@@ -194,7 +194,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             <span className="w-[74px] shrink-0 text-right font-mono text-[10.5px] text-text-secondary">
               ${stat.costUsd.toFixed(4)}
             </span>
-            <span className="w-[34px] shrink-0 text-right text-[10px] text-text-muted">
+            <span className="w-[34px] shrink-0 text-right text-[10.5px] text-text-muted">
               {percent(stat.costShare)}
             </span>
           </div>
@@ -215,21 +215,21 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             onClick={() => drillInto(stat.toolName)}
             title={`只看 ${stat.toolName} 的调用明细`}
             className={cn(
-              "group flex w-full items-center gap-2 rounded-[6px] px-1.5 py-1 text-left transition hover:bg-surface-overlay",
+              "group flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay",
               filter.kind === "tool" && filter.toolName === stat.toolName && "bg-accent-soft",
             )}
           >
             <span className="shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100">
               <ChevronRight {...ICON.xs} />
             </span>
-            <span className="w-[82px] shrink-0 truncate font-mono text-[11px] text-text-primary">
+            <span className="min-w-0 w-[82px] truncate font-mono text-[11.5px] text-text-primary">
               {stat.toolName}
             </span>
             <Bar share={stat.share} tone={stat.failed > 0 ? "danger" : undefined} />
             <span className="w-[74px] shrink-0 text-right font-mono text-[10.5px] text-text-secondary">
               {stat.calls} 次
             </span>
-            <span className="w-[34px] shrink-0 text-right text-[10px] text-text-muted">
+            <span className="w-[34px] shrink-0 text-right text-[10.5px] text-text-muted">
               {percent(stat.share)}
             </span>
           </button>
@@ -258,21 +258,21 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             onClick={() => drillInto(stat.toolName)}
             title={`只看 ${stat.toolName} 的调用明细`}
             className={cn(
-              "group flex w-full items-center gap-2 rounded-[6px] px-1.5 py-1 text-left transition hover:bg-surface-overlay",
+              "group flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay",
               filter.kind === "tool" && filter.toolName === stat.toolName && "bg-accent-soft",
             )}
           >
             <span className="shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100">
               <ChevronRight {...ICON.xs} />
             </span>
-            <span className="w-[82px] shrink-0 truncate font-mono text-[11px] text-text-primary">
+            <span className="min-w-0 w-[82px] truncate font-mono text-[11.5px] text-text-primary">
               {stat.toolName}
             </span>
             <Bar share={stat.share} />
             <span className="w-[74px] shrink-0 text-right font-mono text-[10.5px] text-text-secondary">
               {formatToolDuration(stat.totalMs)}
             </span>
-            <span className="w-[34px] shrink-0 text-right text-[10px] text-text-muted">
+            <span className="w-[34px] shrink-0 text-right text-[10.5px] text-text-muted">
               {percent(stat.share)}
             </span>
           </button>
@@ -284,7 +284,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         type="button"
         data-stats-detail-toggle=""
         onClick={() => setDetailOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 px-1.5 py-1.5 text-left text-[11px] text-text-muted transition hover:text-text-primary"
+        className="flex w-full items-center gap-1.5 px-1.5 py-1.5 text-left text-[11.5px] text-text-muted transition hover:text-text-primary"
       >
         <ChevronRight
           {...ICON.xs}
@@ -333,7 +333,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             return (
               <div
                 key={call.id}
-                className="flex items-center gap-2 rounded-[4px] px-1.5 py-1 font-mono text-[10.5px] text-text-muted"
+                className="flex items-center gap-2 rounded-xs px-1.5 py-1 font-mono text-[10.5px] text-text-muted"
               >
                 <span
                   className={cn("shrink-0", call.isError ? "text-danger-fg" : "text-text-secondary")}

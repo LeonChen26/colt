@@ -131,7 +131,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
       data-observe=""
       className="flex shrink-0 flex-col border-t border-line bg-surface-raised"
     >
-      <div className="flex h-[30px] shrink-0 items-center gap-0.5 px-1.5">
+      <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-0.5 px-1.5">
         {TABS.map(({ id, label, Icon }) => {
           const active = tab === id;
           const count = problemCounts[id];
@@ -153,7 +153,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
                 }
               }}
               className={cn(
-                "flex h-6 shrink-0 items-center gap-1.5 rounded-[5px] px-2 text-[11.5px] transition",
+                "flex h-6 shrink-0 items-center gap-1.5 rounded-sm px-2 text-[11.5px] transition",
                 active
                   ? "bg-surface-overlay text-text-primary"
                   : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary",
@@ -164,7 +164,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
               {count > 0 && (
                 <span
                   className={cn(
-                    "rounded-[3px] px-1 text-[10px]",
+                    "rounded-xs px-1 text-[10.5px]",
                     id === "downloads"
                       ? "bg-surface-raised text-text-secondary"
                       : "bg-danger-soft text-danger-fg",
@@ -182,7 +182,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
           onClick={() => setCollapsed((value) => !value)}
           title={collapsed ? "展开观测" : "收起观测"}
           aria-label={collapsed ? "展开观测" : "收起观测"}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
         >
           {collapsed ? <ChevronUp {...ICON.sm} /> : <ChevronDown {...ICON.sm} />}
         </button>
@@ -212,7 +212,7 @@ interface RowsProps<T> {
 }
 
 function Empty({ text }: { text: string }): React.JSX.Element {
-  return <p className="px-1 py-3 text-[11px] text-text-muted">{text}</p>;
+  return <p className="px-1 py-3 text-[11.5px] text-text-muted">{text}</p>;
 }
 
 /** 级别 → 圆点颜色；未知级别按普通处理 */
@@ -248,7 +248,7 @@ function ObsRow({
       aria-expanded={open}
       title={open ? "收起详情" : "展开详情"}
       onClick={() => onToggle(rowKey)}
-      className="-mx-1 flex w-[calc(100%+8px)] items-start gap-2 rounded-[4px] px-1 py-[3px] text-left text-[11px] leading-relaxed transition hover:bg-surface-overlay"
+      className="-mx-1 flex w-[calc(100%+8px)] items-start gap-2 rounded-xs px-1 py-[3px] text-left text-[11.5px] leading-relaxed transition hover:bg-surface-overlay"
     >
       {children}
       <ChevronRight
@@ -289,10 +289,10 @@ function Detail({ fields }: { fields: ObsField[] }): React.JSX.Element {
     <div
       ref={ref}
       data-obs-detail=""
-      className="mb-1 ml-4 rounded-[5px] border border-line bg-surface-overlay/50 px-2 py-1.5"
+      className="mb-1 ml-4 rounded-sm border border-line bg-surface-overlay/50 px-2 py-1.5"
     >
       {fields.map((item) => (
-        <div key={item.label} className="flex items-start gap-2 text-[11px] leading-relaxed">
+        <div key={item.label} className="flex items-start gap-2 text-[11.5px] leading-relaxed">
           <span className="w-[46px] shrink-0 text-text-muted">{item.label}</span>
           {/* 值一律换行、**不截断**：这就是本功能的全部意义（长 URL / 绝对路径要看得全） */}
           <span
@@ -312,7 +312,7 @@ function Detail({ fields }: { fields: ObsField[] }): React.JSX.Element {
           data-obs-copy=""
           onClick={copy}
           title="复制这条观测的完整字段"
-          className="flex h-5 items-center gap-1 rounded-[4px] px-1.5 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          className="flex h-5 items-center gap-1 rounded-xs px-1.5 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
         >
           {copied ? <Check {...ICON.xs} /> : <Copy {...ICON.xs} />}
           {copied ? "已复制" : "复制"}
@@ -372,7 +372,7 @@ function NetworkRows({ entries, expandedKey, onToggle }: RowsProps<NetworkEntry>
             <ObsRow tab="network" rowKey={rowKey} open={open} onToggle={onToggle}>
               <span
                 className={cn(
-                  "shrink-0 rounded-[3px] px-1 font-mono text-[10px]",
+                  "shrink-0 rounded-xs px-1 font-mono text-[10.5px]",
                   problem ? "bg-danger-soft text-danger-fg" : "bg-surface-overlay text-text-muted",
                 )}
               >

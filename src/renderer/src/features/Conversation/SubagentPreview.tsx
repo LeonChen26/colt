@@ -12,6 +12,7 @@
  */
 import { Brain } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { cn } from "@/lib/utils";
 import type { ViewSubagent } from "@shared/worker-protocol";
 
 export function SubagentPreview({
@@ -24,18 +25,24 @@ export function SubagentPreview({
   return (
     <div data-subagent-preview={subagent.id} className="flex flex-col gap-1.5">
       {subagent.error !== undefined && (
-        <p className="rounded-[6px] bg-danger-soft px-2 py-1.5 text-[11.5px] leading-relaxed text-danger-fg">
+        <p className="rounded-sm border border-line border-l-2 border-l-danger bg-danger-soft px-2 py-1.5 text-[11.5px] leading-relaxed text-danger-fg">
           {subagent.error}
         </p>
       )}
       {hidden > 0 && (
-        <p className="text-[10.5px] text-text-muted">
+        <p className="rounded-xs bg-surface-overlay/60 px-2 py-1 text-[10.5px] text-text-muted">
           只列出最近 {recentSteps.length} 步（共 {stepCount} 步）——完整过程在右上「在右栏查看完整过程」
         </p>
       )}
       {recentSteps.map((step) => (
-        <div key={step.id} className="rounded-[6px] bg-surface-code px-2 py-1.5">
-          <div className="mb-0.5 text-[10.5px] text-text-muted">
+        <div
+          key={step.id}
+          className={cn(
+            "rounded-sm border border-line-soft border-l-2 bg-surface-code px-2 py-1.5",
+            step.role === "assistant" ? "border-l-accent-dim" : "border-l-line-strong",
+          )}
+        >
+          <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
             {step.role === "user" ? "任务 / 用户" : step.role === "assistant" ? "子代理" : step.role}
           </div>
           {step.thought !== undefined && (
@@ -60,8 +67,10 @@ export function SubagentPreview({
       ))}
       {/* 流式中的尾巴（还没进 recentSteps）——运行中才可能出现 */}
       {streamingText !== null && streamingText !== "" && (
-        <div className="rounded-[6px] bg-surface-code px-2 py-1.5">
-          <div className="mb-0.5 text-[10.5px] text-text-muted">子代理（正在输出）</div>
+        <div className="rounded-sm border border-line-soft border-l-2 border-l-accent-dim bg-surface-code px-2 py-1.5">
+          <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
+            子代理（正在输出）
+          </div>
           <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary">
             {streamingText}
           </div>
@@ -80,7 +89,7 @@ export function SubagentPreview({
         </div>
       ))}
       {recentSteps.length === 0 && streamingText === null && runningTools.length === 0 && (
-        <p className="px-1 text-[11px] text-text-muted">（还没有内容）</p>
+        <p className="px-1 text-[11.5px] text-text-muted">（还没有内容）</p>
       )}
       {(subagent.stats.inputTokens > 0 || subagent.stats.outputTokens > 0) && (
         <p className="text-[10.5px] text-text-muted">

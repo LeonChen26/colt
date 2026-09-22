@@ -58,17 +58,17 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-2">
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-[13px]">
           <FileDiff {...ICON.md} />
           项目改动汇总
-          <span className="text-xs text-text-muted">
+          <span className="text-[11.5px] text-text-muted">
             {changes.length} 次改动 · {byFile.length} 个文件
           </span>
         </div>
         <button
           type="button"
           onClick={() => void load()}
-          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary"
+          className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:text-text-primary"
         >
           <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
           刷新
@@ -76,26 +76,26 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
       </div>
 
       {error && (
-        <div className="m-3 rounded-[8px] border border-danger/50 bg-danger/10 px-3 py-2 text-[12.5px] text-danger">
+        <div className="m-3 rounded-md border border-line border-l-2 border-l-danger bg-danger-soft px-3 py-2 text-[13px] text-danger-fg">
           {error}
         </div>
       )}
 
       {changes.length === 0 ? (
-        <p className="mt-20 text-center text-sm text-text-muted">
+        <p className="mt-20 text-center text-[13px] text-text-muted">
           {loading ? "加载中…" : error !== null ? "加载失败，请重试" : "该项目还没有任何文件改动"}
         </p>
       ) : (
         <div className="flex min-h-0 flex-1">
           <div className="w-[380px] shrink-0 overflow-y-auto border-r border-line p-2">
-            <div className="mb-2 px-2 py-1 text-xs text-text-muted">按文件聚合</div>
+            <div className="mb-2 px-2 py-1 text-[11.5px] text-text-muted">按文件聚合</div>
             {byFile.map(([path, stat]) => (
               <div
                 key={path}
                 className="mb-1 rounded-md bg-surface-raised px-2 py-1.5"
               >
-                <div className="truncate font-mono text-xs">{path}</div>
-                <div className="flex items-center gap-2 text-xs text-text-muted">
+                <div className="truncate font-mono text-[11.5px]">{path}</div>
+                <div className="flex items-center gap-2 text-[11.5px] text-text-muted">
                   <span>{stat.count} 次</span>
                   {stat.added > 0 && <span className="text-success-fg">+{stat.added}</span>}
                   {stat.removed > 0 && <span className="text-danger-fg">-{stat.removed}</span>}
@@ -103,7 +103,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
               </div>
             ))}
 
-            <div className="mt-3 mb-2 px-2 py-1 text-xs text-text-muted">按时间</div>
+            <div className="mt-3 mb-2 px-2 py-1 text-[11.5px] text-text-muted">按时间</div>
             {changes.map((change) => (
               <button
                 key={change.id}
@@ -116,8 +116,8 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
                     : "hover:bg-surface-overlay/60",
                 )}
               >
-                <div className="truncate font-mono text-xs">{change.path}</div>
-                <div className="flex items-center gap-2 text-xs text-text-muted">
+                <div className="truncate font-mono text-[11.5px]">{change.path}</div>
+                <div className="flex items-center gap-2 text-[11.5px] text-text-muted">
                   <span className="truncate">{change.sessionTitle}</span>
                   <span className="shrink-0">
                     {new Date(change.createdAt).toLocaleTimeString("zh-CN")}
@@ -131,7 +131,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
             {current?.patch ? (
               <DiffView patch={current.patch} />
             ) : (
-              <p className="mt-16 text-center text-xs text-text-muted">
+              <p className="mt-16 text-center text-[11.5px] text-text-muted">
                 {current ? "该改动由 write 工具整文件写入，内核未提供 diff。" : "选择一条改动查看"}
               </p>
             )}

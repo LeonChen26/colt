@@ -60,7 +60,7 @@ export function SubagentStream({
 function LiveStream({ subagent }: { subagent: ViewSubagent }): React.JSX.Element {
   return (
     <div data-subagent-live={subagent.id} className="flex flex-col gap-2 p-3">
-      <p className="rounded-[5px] border border-line bg-surface-raised px-2 py-1.5 text-[11px] leading-relaxed text-text-muted">
+      <p className="rounded-sm border border-line bg-surface-raised px-2 py-1.5 text-[11.5px] leading-relaxed text-text-muted">
         还在跑：这一层**跟着实时刷新**，但只画视图里带的**最近几步**——完整过程要等它跑完
         （那时会自动换成整份）。
       </p>

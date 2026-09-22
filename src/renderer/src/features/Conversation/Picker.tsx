@@ -55,7 +55,7 @@ export function Picker({
         disabled={disabled}
         title={title}
         className={cn(
-          "cbtn flex h-7 items-center gap-1.5 rounded-[6px] border px-2 text-[12px] text-text-secondary transition",
+          "cbtn flex h-7 items-center gap-1.5 rounded-sm border px-2 text-[11.5px] text-text-secondary transition",
           plain
             ? "border-transparent hover:border-transparent hover:bg-surface-overlay hover:text-text-primary"
             : "border-line hover:border-line-strong hover:text-text-primary",
@@ -68,7 +68,7 @@ export function Picker({
         <ChevronDown {...ICON.xs} className="shrink-0 text-text-muted" />
       </button>
       {open && options.length > 0 && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[160px] rounded-[6px] border border-line bg-surface-overlay py-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[160px] rounded-sm border border-line bg-surface-overlay py-1 shadow-lg">
           {options.map((option) => (
             <button
               key={option.value}

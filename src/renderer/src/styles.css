@@ -14,9 +14,10 @@
   --color-surface-input: #0e1116;
   --color-surface-code: #07090c;
 
-  /* 描边 */
+  /* 描边：solid 用于结构边；soft 是「同性淡化线」，可安全叠在任意表面上做分隔 */
   --color-line: #20262f;
   --color-line-strong: #2c333d;
+  --color-line-soft: rgba(255, 255, 255, 0.06);
 
   /* 文字 */
   --color-text-primary: #e8ebf0;
@@ -52,11 +53,31 @@
   --font-sans: "Inter", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
 
+  /* 高度（elevation）：低透明度黑 + 收紧的扩散，暗色下才有「抬起来」而不是「糊一团」的观感。
+     三档对应：sm = 贴边的小浮件；md = 下拉 / 菜单；lg = 抽屉 / 模态这类大浮层。
+     xl / 2xl 一并接管：组件里既有的 `shadow-xl` / `shadow-2xl` 用的是亮色向的默认值，
+     在暗色里只是一团黑——改令牌即可让这些调用点自动换成合手的一套。 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 16px -4px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-lg: 0 16px 40px -12px rgba(0, 0, 0, 0.7), 0 4px 12px -4px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-xl: 0 22px 52px -16px rgba(0, 0, 0, 0.75), 0 6px 16px -6px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-2xl: 0 34px 68px -22px rgba(0, 0, 0, 0.8), 0 10px 26px -8px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
   /* 布局量 */
   --h-topbar: 42px;
+  --h-panel-head: 34px;
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+
+  /* 动效节奏：所有裸 `transition` 共用这一对值，微交互手感全局一致 */
+  --default-transition-duration: 140ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* ---------- 亮色主题：覆盖令牌值 ---------- */
@@ -69,6 +90,11 @@
 
   --color-line: #e3e6ea;
   --color-line-strong: #cdd2d9;
+  --color-line-soft: rgba(16, 24, 40, 0.07);
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 6px 16px -4px rgba(16, 24, 40, 0.12), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 16px 40px -12px rgba(16, 24, 40, 0.18), 0 4px 12px -4px rgba(16, 24, 40, 0.1);
 
   --color-text-primary: #1a1d21;
   --color-text-secondary: #565f6b;
@@ -107,6 +133,10 @@
     --color-surface-code: #f4f5f7;
     --color-line: #e3e6ea;
     --color-line-strong: #cdd2d9;
+    --color-line-soft: rgba(16, 24, 40, 0.07);
+    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+    --shadow-md: 0 6px 16px -4px rgba(16, 24, 40, 0.12), 0 1px 3px rgba(16, 24, 40, 0.08);
+    --shadow-lg: 0 16px 40px -12px rgba(16, 24, 40, 0.18), 0 4px 12px -4px rgba(16, 24, 40, 0.1);
     --color-text-primary: #1a1d21;
     --color-text-secondary: #565f6b;
     --color-text-muted: #8b929c;
@@ -148,6 +178,21 @@ body {
   overflow: hidden;
 }
 
+/* 选区：跟随主题。系统默认的蓝在暗色里格外刺眼，而选区又是高频出现的东西 */
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  color: var(--color-text-primary);
+}
+
+/* 键盘焦点环：只在键盘导航时出现（鼠标点击不闪）。
+   放在 base 层，好让组件自己的 `outline-none` / 边框式焦点（设置页输入框等）继续生效。 */
+@layer base {
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+    outline-offset: 2px;
+  }
+}
+
 /* 滚动条贴合主题 */
 ::-webkit-scrollbar {
   width: 10px;
@@ -165,6 +210,9 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
   background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* 隐藏滚动条但保留滚动（点链这类细窄滚动视口用） */
@@ -385,7 +433,7 @@ body.resizing * {
   border-radius: var(--radius-md);
   padding: 10px 14px;
   color: var(--color-text-secondary);
-  font-size: 12.5px;
+  font-size: 13px;
   font-style: italic;
 }
 
@@ -394,7 +442,7 @@ body.resizing * {
    颜色全部引用代码高亮令牌，随主题联动。
    ============================================================ */
 .md {
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.7;
   color: var(--color-text-primary);
   word-break: break-word;
@@ -458,7 +506,7 @@ body.resizing * {
   padding: 10px 12px;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.6;
   color: var(--color-text-primary);
 }
@@ -495,7 +543,7 @@ body.resizing * {
 .md h4,
 .md h5,
 .md h6 {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 650;
   margin: 14px 0 8px;
   color: var(--color-text-primary);
@@ -530,7 +578,7 @@ body.resizing * {
 .md table {
   border-collapse: collapse;
   margin: 0 0 10px;
-  font-size: 12px;
+  font-size: 11.5px;
 }
 .md th,
 .md td {

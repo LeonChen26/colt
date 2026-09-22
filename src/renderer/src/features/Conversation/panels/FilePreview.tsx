@@ -43,7 +43,7 @@ function Placeholder({
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
       {icon}
-      <p className="mt-2 text-[12.5px] text-text-secondary">{title}</p>
+      <p className="mt-2 text-[13px] text-text-secondary">{title}</p>
       <p className="max-w-[260px] text-[11.5px] leading-relaxed text-text-muted">{body}</p>
     </div>
   );
@@ -95,8 +95,8 @@ export function FilePreview({
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col" data-file-view={path}>
       {/* 文件头：路径 + 语言 + 体积 + 重读 */}
-      <div className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line px-2.5">
-        <span className="truncate font-mono text-[11px] text-text-secondary" title={path}>
+      <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
+        <span className="truncate font-mono text-[11.5px] text-text-secondary" title={path}>
           {path}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -113,7 +113,7 @@ export function FilePreview({
             onClick={onReload}
             title="重新读取"
             aria-label="重新读取"
-            className="rounded-[4px] p-1 text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+            className="rounded-xs p-1 text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
           >
             <RotateCw {...ICON.xs} />
           </button>
@@ -121,7 +121,7 @@ export function FilePreview({
       </div>
 
       {loading ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-[12px] text-text-muted">
+        <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-[11.5px] text-text-muted">
           <Loader2 {...ICON.sm} className="animate-spin" />
           正在读取…
         </div>
@@ -145,7 +145,7 @@ export function FilePreview({
             src={result.dataUrl}
             alt={path}
             data-file-image
-            className="max-w-full rounded-[6px] border border-line"
+            className="max-w-full rounded-sm border border-line"
           />
         </div>
       ) : result.kind === "too-large" ? (

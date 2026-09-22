@@ -86,7 +86,7 @@ export function EventsPanel({ sessionId }: { sessionId: string }): React.JSX.Ele
           <ShieldAlert {...ICON.sm} className="mt-0.5 shrink-0 text-warning" />
           <div className="min-w-0 flex-1">
             <div className="text-[11.5px] leading-relaxed text-text-primary">{event.message}</div>
-            <div className="mt-0.5 text-[10px] text-text-muted">{formatTime(event.createdAt)}</div>
+            <div className="mt-0.5 text-[10.5px] text-text-muted">{formatTime(event.createdAt)}</div>
           </div>
         </div>
       ))}

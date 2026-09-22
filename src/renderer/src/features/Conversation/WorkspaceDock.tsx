@@ -187,7 +187,7 @@ function DockTab({
         onClick={onActivate}
         aria-pressed={active}
         className={cn(
-          "flex h-full items-center gap-1.5 pl-2 text-[12px] whitespace-nowrap transition",
+          "flex h-full items-center gap-1.5 pl-2 text-[11.5px] whitespace-nowrap transition",
           onClose === undefined ? "pr-2" : "pr-1",
           active ? "font-medium text-text-primary" : "text-text-muted hover:text-text-secondary",
         )}
@@ -202,7 +202,7 @@ function DockTab({
           onClick={onClose}
           title={`关闭${label}`}
           aria-label={`关闭${label}`}
-          className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] text-text-muted opacity-0 transition hover:bg-line-strong hover:text-text-primary focus:opacity-100 group-hover:opacity-100"
+          className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition hover:bg-line-soft hover:text-text-primary focus:opacity-100 group-hover:opacity-100"
         >
           <X {...ICON.xs} />
         </button>
@@ -233,7 +233,7 @@ function RailTab({
       aria-label={label}
       aria-pressed={active}
       className={cn(
-        "relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] transition",
+        "relative flex h-9 w-9 shrink-0 items-center justify-center rounded-sm transition",
         active
           ? "bg-accent-soft text-text-primary"
           : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary",
@@ -502,7 +502,7 @@ export function WorkspaceDock({
             onClick={onToggleCollapse}
             title="展开工作区"
             aria-label="展开工作区"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
           >
             <ChevronLeft {...ICON.sm} />
           </button>
@@ -532,7 +532,7 @@ export function WorkspaceDock({
           onClick={onToggleCollapse}
           title="折叠工作区"
           aria-label="折叠工作区"
-          className="sticky left-0 flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-surface-raised text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          className="sticky left-0 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm bg-surface-raised text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
         >
           <ChevronRight {...ICON.sm} />
         </button>
@@ -559,7 +559,7 @@ export function WorkspaceDock({
           aria-label="新增视图"
           aria-expanded={menuOpen}
           className={cn(
-            "sticky right-0 flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-surface-raised text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
+            "sticky right-0 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm bg-surface-raised text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
             menuOpen && "bg-surface-overlay text-text-primary",
           )}
         >
@@ -571,7 +571,7 @@ export function WorkspaceDock({
       {menuOpen && (
         <div
           data-dock-menu-root=""
-          className="absolute top-[38px] right-2 z-50 min-w-[196px] rounded-[8px] border border-line-strong bg-surface-overlay p-1 shadow-lg"
+          className="absolute top-[calc(var(--h-panel-head)+4px)] right-2 z-50 min-w-[196px] rounded-md border border-line-strong bg-surface-overlay p-1 shadow-lg"
         >
           {DOCK_MENU_KINDS.map((kind) => {
             const meta = DOCK_KIND_META[kind];
@@ -585,7 +585,7 @@ export function WorkspaceDock({
                   onOpenKind(kind);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2.5 rounded-[6px] px-2 py-[7px] text-left text-[12.5px] text-text-secondary transition hover:bg-surface-raised hover:text-text-primary"
+                className="flex w-full items-center gap-2.5 rounded-sm px-2 py-[7px] text-left text-[13px] text-text-secondary transition hover:bg-surface-raised hover:text-text-primary"
               >
                 <span className="shrink-0 text-text-muted">
                   <meta.Icon {...ICON.sm} />
@@ -593,7 +593,7 @@ export function WorkspaceDock({
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span>{meta.label}</span>
                   {meta.desc !== undefined && (
-                    <span className="truncate text-[11px] text-text-muted">{meta.desc}</span>
+                    <span className="truncate text-[11.5px] text-text-muted">{meta.desc}</span>
                   )}
                 </span>
                 {opened && <span className="shrink-0 text-[10.5px] text-text-muted">已打开</span>}
@@ -606,7 +606,7 @@ export function WorkspaceDock({
       {showBrowser ? (
         <div className="flex min-h-0 flex-1 flex-col">
           {/* 顶部信息条：原生视图压在下方，「页面区域」之外的东西由渲染层画 */}
-          <div className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line px-2.5">
+          <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
             {/* 用户自己的浏览控制（B1）。与 agent 的 browser_act 是两条链路：那条走审批，
                 这条是用户在直接操作这个浏览器、没有可审批的对象；但页面被换掉后 agent
                 手里那份判断会过期，故主进程会顺带把这件事告知正在跑的 agent。 */}
@@ -618,7 +618,7 @@ export function WorkspaceDock({
                 disabled={!canGoBack}
                 title="后退"
                 aria-label="后退"
-                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-35"
+                className="flex h-5 w-5 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-35"
               >
                 <ChevronLeft {...ICON.xs} />
               </button>
@@ -629,7 +629,7 @@ export function WorkspaceDock({
                 disabled={!canGoForward}
                 title="前进"
                 aria-label="前进"
-                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-35"
+                className="flex h-5 w-5 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-35"
               >
                 <ChevronRight {...ICON.xs} />
               </button>
@@ -640,7 +640,7 @@ export function WorkspaceDock({
                 disabled={!loaded}
                 title="刷新"
                 aria-label="刷新"
-                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-35"
+                className="flex h-5 w-5 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-35"
               >
                 <RotateCw {...ICON.xs} />
               </button>
@@ -649,7 +649,7 @@ export function WorkspaceDock({
             {/* min-w-0 + flex-1：让地址先被截断，把位置留给右侧的联调标记——
                 否则地址会把标记挤出可视区，那就成了「看不见的出口」（等于没有）。 */}
             <span
-              className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-secondary"
+              className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-text-secondary"
               title={browser?.title || url || undefined}
             >
               {loaded ? url || "about:blank" : "尚未加载"}
@@ -670,7 +670,7 @@ export function WorkspaceDock({
               <span
                 data-browser-viewport={`${override.width}x${override.height}`}
                 title={`响应式联调视口 ${override.width}×${override.height}（agent 设置）：页面按这个尺寸重排，超出停靠区的部分看不到。点「恢复」交还给按停靠区尺寸的自适应布局。`}
-                className="flex min-w-0 items-center gap-1.5 rounded-[6px] border border-warning bg-warning-soft px-2 py-1 text-[11.5px] font-medium leading-none text-warning"
+                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-warning bg-warning-soft px-2 py-1 text-[11.5px] font-medium leading-none text-warning"
               >
                 <MonitorSmartphone {...ICON.sm} className="shrink-0" />
                 <span className="min-w-0 truncate">
@@ -684,7 +684,7 @@ export function WorkspaceDock({
                   data-browser-viewport-reset=""
                   onClick={onResetViewport}
                   title="恢复自适应视口，交还给按停靠区尺寸的布局"
-                  className="shrink-0 rounded-[4px] bg-warning px-1.5 py-[3px] text-[11px] font-semibold text-accent-fg transition hover:opacity-90"
+                  className="shrink-0 rounded-xs bg-warning px-1.5 py-[3px] text-[11.5px] font-semibold text-accent-fg transition hover:opacity-90"
                 >
                   恢复
                 </button>
@@ -700,7 +700,7 @@ export function WorkspaceDock({
               <span
                 data-browser-zoom={Math.round(zoom * 100)}
                 title={`已按「适应宽度」等比缩到 ${Math.round(zoom * 100)}%，整页宽度都能看见；点「还原」回到 100%（页面会重新按停靠区尺寸重排）。`}
-                className="flex min-w-0 items-center gap-1.5 rounded-[6px] border border-line bg-surface-overlay px-2 py-1 text-[11.5px] font-medium leading-none text-text-secondary"
+                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-line bg-surface-overlay px-2 py-1 text-[11.5px] font-medium leading-none text-text-secondary"
               >
                 <ZoomOut {...ICON.sm} className="shrink-0" />
                 <span className="min-w-0 truncate font-mono">{Math.round(zoom * 100)}%</span>
@@ -709,7 +709,7 @@ export function WorkspaceDock({
                   data-browser-zoom-reset=""
                   onClick={() => onBrowserZoom(false)}
                   title="回到 100%"
-                  className="shrink-0 rounded-[4px] bg-surface-raised px-1.5 py-[3px] text-[11px] font-semibold text-text-primary transition hover:bg-line"
+                  className="shrink-0 rounded-xs bg-surface-raised px-1.5 py-[3px] text-[11.5px] font-semibold text-text-primary transition hover:bg-line"
                 >
                   还原
                 </button>
@@ -748,7 +748,7 @@ export function WorkspaceDock({
                   data-browser-fit=""
                   onClick={() => onBrowserZoom(true)}
                   title="把整页等比缩小到能看见全部宽度；页面会变小，可随时在工具条上「还原」回 100%"
-                  className="shrink-0 self-center rounded-[4px] bg-warning px-1.5 py-[3px] text-[11px] font-semibold text-accent-fg transition hover:opacity-90"
+                  className="shrink-0 self-center rounded-xs bg-warning px-1.5 py-[3px] text-[11.5px] font-semibold text-accent-fg transition hover:opacity-90"
                 >
                   适应宽度
                 </button>
@@ -773,7 +773,7 @@ export function WorkspaceDock({
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
               <Globe className="text-text-muted" style={{ width: 26, height: 26 }} />
-              <p className="mt-2 text-[12.5px] text-text-secondary">浏览器尚未加载</p>
+              <p className="mt-2 text-[13px] text-text-secondary">浏览器尚未加载</p>
               <p className="max-w-[240px] text-[11.5px] leading-relaxed text-text-muted">
                 agent 使用浏览器时会自动打开；在此之前不占用资源。
               </p>
@@ -798,7 +798,11 @@ export function WorkspaceDock({
           onExit={() => setDrillRequest(null)}
         />
       ) : (
-        <FollowPanel view={view} onOpenChanges={() => sendDrill({ layer: "list" })} />
+        <FollowPanel
+          view={view}
+          onOpenChanges={() => sendDrill({ layer: "list" })}
+          onOpenStats={() => onOpenKind("usage")}
+        />
       )}
     </aside>
   );

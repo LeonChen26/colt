@@ -136,14 +136,14 @@ export function BranchTree({
               collapsed && "-rotate-90",
             )}
           />
-          <span className="truncate text-[11px] font-semibold uppercase tracking-[.6px] text-text-muted">
+          <span className="truncate text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
             会话分支
           </span>
         </button>
         <button
           type="button"
           onClick={() => void load()}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
           title="刷新"
         >
           <RefreshCw {...ICON.xs} className={cn(loading && "animate-spin")} />
@@ -151,7 +151,7 @@ export function BranchTree({
       </div>
 
       {error && (
-        <div className="mx-2 mb-1 rounded-[6px] border border-danger/50 bg-danger-soft px-2 py-1.5 text-[11px] text-danger-fg">
+        <div className="mx-2 mb-1 rounded-sm border border-line border-l-2 border-l-danger bg-danger-soft px-2 py-1.5 text-[11.5px] text-danger-fg">
           {error}
         </div>
       )}
@@ -208,7 +208,7 @@ export function BranchTree({
                 onClick={() => void navigate(node.id)}
                 title={node.isTip ? "当前所在位置" : "跳转到此处（之后的对话会形成新分支）"}
                 className={cn(
-                  "absolute flex items-center rounded-[5px] px-1.5 py-1 text-left transition",
+                  "absolute flex items-center rounded-sm px-1.5 py-1 text-left transition",
                   node.isTip ? "cursor-default" : "hover:bg-surface-overlay",
                   node.onActivePath ? "text-text-primary" : "text-text-muted",
                 )}
@@ -219,7 +219,7 @@ export function BranchTree({
                   height: ROW_HEIGHT - 8,
                 }}
               >
-                <span className="w-10 shrink-0 text-[10px] text-text-muted">
+                <span className="w-10 shrink-0 text-[10.5px] text-text-muted">
                   {labelOf(node.kind)}
                 </span>
                 <span className="truncate text-[11.5px]">{node.summary}</span>

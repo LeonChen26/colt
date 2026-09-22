@@ -15,7 +15,6 @@ import {
   ArrowDown,
   ArrowUp,
   ChartColumn,
-  ChevronDown,
   Folder,
   GitBranch,
   ImagePlus,
@@ -982,7 +981,7 @@ export function Conversation({
       )}
       style={{ gridTemplateColumns: `minmax(0, 1fr) ${dockWidth}px` }}
     >
-      <div className="conv-head col-start-1 row-start-1 flex shrink-0 items-center justify-between gap-2 border-b border-line px-3.5 py-2">
+      <div className="conv-head col-start-1 row-start-1 flex shrink-0 items-center justify-between gap-2 border-b border-line px-4 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className="ch-ctx flex min-w-0 items-center gap-1.5 text-[11.5px] text-text-muted"
@@ -992,14 +991,11 @@ export function Conversation({
             <span className="c truncate font-mono text-text-secondary">{cwd}</span>
           </span>
           {git?.isRepo && (git.branch || git.detached) && (
-            <button
-              type="button"
+            <span
               title={git.detached ? "游离 HEAD：当前不在任何分支上" : "当前 git 分支"}
               className={cn(
-                "ch-ctx branch flex h-[22px] shrink-0 items-center gap-1.5 rounded-[6px] border px-1.5 text-[11.5px] transition",
-                git.detached
-                  ? "border-warning/50 text-warning"
-                  : "border-line text-text-muted hover:border-line-strong hover:text-text-primary",
+                "ch-ctx branch flex h-[22px] shrink-0 items-center gap-1.5 rounded-sm border px-1.5 text-[11.5px]",
+                git.detached ? "border-warning/50 text-warning" : "border-line text-text-muted",
               )}
             >
               <GitBranch {...ICON.xs} className="shrink-0" />
@@ -1011,8 +1007,7 @@ export function Conversation({
               >
                 {git.detached ? "游离 HEAD" : git.branch}
               </span>
-              {!git.detached && <ChevronDown {...ICON.xs} className="shrink-0" />}
-            </button>
+            </span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -1020,7 +1015,7 @@ export function Conversation({
             <button
               type="button"
               onClick={() => void compact()}
-              className="flex items-center gap-1.5 rounded-[6px] border border-warning/50 px-2 py-1 text-[11.5px] text-warning transition hover:bg-warning-soft"
+              className="flex items-center gap-1.5 rounded-sm border border-warning/50 px-2 py-1 text-[11.5px] text-warning transition hover:bg-warning-soft"
               title="上下文已较满，压缩可释放空间"
             >
               <Shrink {...ICON.sm} />
@@ -1066,7 +1061,7 @@ export function Conversation({
       >
         <div ref={scrollRef} onScroll={onScroll} data-conv-scroll="" className="flex-1 overflow-y-auto px-4 py-4">
           {opening && (
-            <div className="flex items-center gap-2 text-[12.5px] text-text-muted">
+            <div className="flex items-center gap-2 text-[13px] text-text-muted">
               <Loader2 {...ICON.md} className="animate-spin" />
               正在启动会话进程…
             </div>
@@ -1075,7 +1070,7 @@ export function Conversation({
           {error && (
             <div
               data-conv-error
-              className="mb-3 rounded-[8px] border border-danger/50 bg-danger-soft px-3 py-2 text-[12.5px] text-danger-fg"
+              className="mb-3 rounded-md border border-line border-l-2 border-l-danger bg-danger-soft px-3 py-2 text-[13px] text-danger-fg"
             >
               {error}
             </div>
@@ -1084,7 +1079,7 @@ export function Conversation({
           {notice && (
             <div
               data-conv-notice
-              className="mb-3 rounded-[8px] border border-warning/50 bg-warning-soft px-3 py-2 text-[12.5px] text-warning"
+              className="mb-3 rounded-md border border-line border-l-2 border-l-warning bg-warning-soft px-3 py-2 text-[13px] text-warning"
             >
               {notice}
             </div>
@@ -1096,10 +1091,10 @@ export function Conversation({
                 ? { "data-conv-security-notice": "" }
                 : { "data-conv-compact-notice": "" })}
               className={cn(
-                "mb-3 rounded-[8px] border px-3 py-2 text-[12.5px]",
+                "mb-3 rounded-md border border-line border-l-2 px-3 py-2 text-[13px]",
                 compactNotice.kind === "security"
-                  ? "border-warning/50 bg-warning-soft text-warning"
-                  : "border-success/50 bg-success-soft text-success-fg",
+                  ? "border-l-warning bg-warning-soft text-warning"
+                  : "border-l-success bg-success-soft text-success-fg",
               )}
             >
               {compactNotice.message}
@@ -1113,7 +1108,7 @@ export function Conversation({
           {display.driftedFrom && (
             <div
               data-conv-drift
-              className="mb-3 rounded-[8px] border border-warning/50 bg-warning-soft px-3 py-2 text-[12.5px] text-warning"
+              className="mb-3 rounded-md border border-line border-l-2 border-l-warning bg-warning-soft px-3 py-2 text-[13px] text-warning"
             >
               原选定模型 {display.driftedFrom} 已不可用（服务或模型已被删除），本会话实际使用{" "}
               {selectedModelRef}。可在上方切换其他模型。
@@ -1180,7 +1175,7 @@ export function Conversation({
               <div
                 key={item.toolCallId}
                 data-approval-analyzing=""
-                className="flex items-center gap-2 rounded-[8px] border border-warning/50 bg-warning-soft px-3.5 py-2.5 text-[12px] text-warning"
+                className="flex items-center gap-2 rounded-md border border-line border-l-2 border-l-warning bg-warning-soft px-3.5 py-2.5 text-[11.5px] text-warning"
               >
                 <span className="pulse-dot inline-block h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px] border-warning bg-warning" />
                 <span className="min-w-0 truncate">
@@ -1221,7 +1216,7 @@ export function Conversation({
                 history.bumpFollow();
                 jumpToBottom();
               }}
-              className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-[6px] border border-line bg-surface-overlay px-2.5 py-1 text-[11.5px] text-text-secondary shadow-lg transition hover:border-line-strong hover:text-text-primary"
+              className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-sm border border-line bg-surface-overlay px-2.5 py-1 text-[11.5px] text-text-secondary shadow-lg transition hover:border-line-strong hover:text-text-primary"
             >
               <ArrowDown {...ICON.sm} />
               回到底部
@@ -1265,8 +1260,8 @@ export function Conversation({
             data-conv-card
             data-conv-session={sessionId}
             className={cn(
-              "rounded-[12px] border border-line bg-surface-raised px-3 pb-2 pt-2.5 transition focus-within:border-line-strong",
-              empty && "border-line-strong px-4 pb-3 pt-3",
+              "rounded-lg border border-line bg-surface-raised px-4 pb-3 pt-3 transition focus-within:border-line-strong",
+              empty && "border-line-strong",
             )}
             onDragOver={(e) => {
               if (e.dataTransfer.types.includes("Files")) e.preventDefault();
@@ -1283,14 +1278,14 @@ export function Conversation({
                 {attachments.map((item, index) => (
                   <span
                     key={`${item.name}-${index}`}
-                    className="inline-flex items-center gap-2 rounded-[8px] border border-line bg-surface-overlay py-1 pl-1 pr-2"
+                    className="inline-flex items-center gap-2 rounded-md border border-line bg-surface-overlay py-1 pl-1 pr-2"
                   >
                     <img
                       src={`data:${item.mimeType};base64,${item.data}`}
                       alt={item.name}
-                      className="h-10 w-10 rounded-[5px] border border-line object-cover"
+                      className="h-10 w-10 rounded-sm border border-line object-cover"
                     />
-                    <span className="max-w-[140px] truncate text-[11px] text-text-secondary">
+                    <span className="max-w-[140px] truncate text-[11.5px] text-text-secondary">
                       {item.name}
                     </span>
                     <button
@@ -1306,13 +1301,16 @@ export function Conversation({
               </div>
             )}
             {attachments.length > 0 && view && !view.imageInput && (
-              <p className="mb-1.5 text-[11px] text-warning">
+              <p className="mb-1.5 rounded-xs border border-line border-l-2 border-l-warning bg-warning-soft px-2 py-1 text-[11.5px] text-warning">
                 当前模型不支持图片输入，发送前请切换到支持视觉的模型（如
                 deepseek-v4-flash-vision-exp）
               </p>
             )}
             {attachNotice && (
-              <p data-conv-attach-notice className="mb-1.5 text-[11px] text-warning">
+              <p
+                data-conv-attach-notice
+                className="mb-1.5 rounded-xs border border-line border-l-2 border-l-warning bg-warning-soft px-2 py-1 text-[11.5px] text-warning"
+              >
                 {attachNotice}
               </p>
             )}
@@ -1380,14 +1378,14 @@ export function Conversation({
                     : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
                 }
                 className={cn(
-                  "max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[12.5px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted",
+                  "max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-[13px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted",
                   empty && "min-h-[73px] py-1.5",
                 )}
               />
               {slashOpen && (
                 <div
                   data-slash-menu
-                  className="absolute bottom-full left-0 right-0 z-20 mb-1 max-h-[220px] overflow-y-auto rounded-[6px] border border-line bg-surface-overlay py-1 shadow-lg"
+                  className="absolute bottom-full left-0 right-0 z-20 mb-1 max-h-[220px] overflow-y-auto rounded-sm border border-line bg-surface-overlay py-1 shadow-lg"
                 >
                   {candidates.map((item, index) => (
                     <button
@@ -1420,7 +1418,7 @@ export function Conversation({
             <div className="comp-tools mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
               <label
                 title="添加图片（也可直接粘贴或拖入输入框）"
-                className="flex h-7 shrink-0 cursor-pointer items-center rounded-[6px] px-2 text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary"
+                className="flex h-7 shrink-0 cursor-pointer items-center rounded-sm px-2 text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary"
               >
                 <ImagePlus {...ICON.sm} />
                 <input
@@ -1460,7 +1458,7 @@ export function Conversation({
                     ? "运行中无法压缩上下文（压缩会重写会话记录）"
                     : "压缩上下文（也可在输入框敲 /compact 回车）"
                 }
-                className="flex h-7 shrink-0 items-center gap-1 rounded-[6px] px-2 font-mono text-[11.5px] text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-7 shrink-0 items-center gap-1 rounded-sm px-2 font-mono text-[11.5px] text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Shrink {...ICON.sm} className="shrink-0" />
                 /compact
@@ -1517,7 +1515,7 @@ export function Conversation({
           </div>
 
           {view && view.queuedCount > 0 && (
-            <p className="mt-1.5 text-[11px] text-text-muted">
+            <p className="mt-1.5 text-[11.5px] text-text-muted">
               队列中还有 {view.queuedCount} 条待处理
             </p>
           )}
@@ -1525,7 +1523,7 @@ export function Conversation({
           {/* 现场状态栏（Live Bar）：置于输入框下方，只留运行态观测（⑥-A 只读区不放操作） */}
           <div
             className={cn(
-              "flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 pt-[7px] text-[11.5px] text-text-secondary",
+              "flex flex-wrap items-center justify-start gap-x-2.5 gap-y-1.5 pt-[7px] text-[11.5px] text-text-secondary",
               stale && "stale",
             )}
           >
@@ -1584,7 +1582,7 @@ export function Conversation({
                   {/* 失败原因就地可读，不必去消息流里翻；窄栏按容器查询收紧，悬停看全文 */}
                   {runState === "failed" && runError !== null && (
                     <span
-                      className="lb-err truncate font-mono text-[11px] text-danger-fg"
+                      className="lb-err truncate font-mono text-[11.5px] text-danger-fg"
                       title={runError}
                     >
                       {runError}

@@ -95,7 +95,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         <div className="mb-1.5 flex items-center justify-between">
           <span
             className={cn(
-              "text-[10px] uppercase tracking-[1.5px]",
+              "text-[10.5px] uppercase tracking-[.5px]",
               kind === "deny" ? "text-danger" : "text-text-muted",
             )}
           >
