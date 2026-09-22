@@ -872,6 +872,58 @@ export async function runDock(
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
 
+    // ---- ⑥ Live Bar：**居中**（高保真稿 `.live-bar { justify-content: center }`）----
+    // 这处是 v1.64 那次「对齐与节奏」扫街**自作主张**改成 `justify-start` 的：当时的理由是
+    // 「与左对齐的输入卡同一条基线」，但两者同在那个 `max-w-[796px] px-[18px]` 容器里，
+    // 左对齐对齐的是**卡片外沿**、比卡片里的文字还左 16px——既没居中、也没真对齐（v1.70 改回）。
+    // 判据取**各项自身的矩形并集**与这一行的矩形：`flex` 的行本身恒等于容器宽，量它什么都
+    // 量不出来（`AGENTS.md` §五⑫「探针要量的量必须跟着被测对象一起变」）。
+    // ⚠️ 断言里**带一次对照**：把这行临时按 `justify-start` 排一遍量同一个量——只断言
+    // 「中心相等」而不证明它**能**不相等，就是一条必然为真的假绿灯。
+    const liveGeom = await run<{
+      barW: number;
+      barCenter: number;
+      naturalCenter: number;
+      naturalW: number;
+      forcedCenter: number;
+    } | null>(
+      `(() => {
+        const bar = document.querySelector("[data-live-bar]");
+        if (!bar) return null;
+        const group = () => {
+          const rs = [...bar.children].map((c) => c.getBoundingClientRect()).filter((r) => r.width > 0);
+          if (rs.length === 0) return null;
+          const left = Math.min(...rs.map((r) => r.left));
+          const right = Math.max(...rs.map((r) => r.right));
+          return { w: right - left, center: (left + right) / 2 };
+        };
+        const rect = bar.getBoundingClientRect();
+        const natural = group();
+        bar.style.justifyContent = "flex-start";
+        const forced = group();
+        bar.style.justifyContent = "";
+        if (!natural || !forced) return null;
+        return {
+          barW: rect.width,
+          barCenter: (rect.left + rect.right) / 2,
+          naturalCenter: natural.center,
+          naturalW: natural.w,
+          forcedCenter: forced.center,
+        };
+      })()`,
+    );
+    const liveNatural = liveGeom === null ? -1 : Math.abs(liveGeom.naturalCenter - liveGeom.barCenter);
+    const liveForced = liveGeom === null ? -1 : Math.abs(liveGeom.forcedCenter - liveGeom.barCenter);
+    log(
+      `  Live Bar：项中心离行中心 ${Math.round(liveNatural)}px（项宽 ${Math.round(
+        liveGeom?.naturalW ?? -1,
+      )} / 行宽 ${Math.round(liveGeom?.barW ?? -1)}）；对照（左对齐）${Math.round(liveForced)}px`,
+    );
+    checks.push([
+      "Live Bar 居中（对照：左对齐时确实偏出去，不是怎么排都相等）",
+      liveGeom !== null && liveNatural <= 8 && liveGeom.naturalW < liveGeom.barW - 40 && liveForced >= 40,
+    ]);
+
     // ---- ④ 工具卡：不许比它那一列还宽，更不许把会话区撑出横向滚动条 ----
     // 为什么非得用一条**真长**的路径：卡片是 `self-start`（按内容收缩），副标题又带
     // `truncate`（`white-space: nowrap`）——卡片的**固有宽度就等于整条未截断的路径**。

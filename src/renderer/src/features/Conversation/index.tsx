@@ -1540,10 +1540,16 @@ export function Conversation({
             </p>
           )}
 
-          {/* 现场状态栏（Live Bar）：置于输入框下方，只留运行态观测（⑥-A 只读区不放操作） */}
+          {/* 现场状态栏（Live Bar）：置于输入框下方，只留运行态观测（⑥-A 只读区不放操作）。
+              对齐取**居中**——高保真稿的 `.live-bar { justify-content: center }`，⑥ 的规则里
+              （⑥-A~⑥-E）没有一条要求左对齐。v1.64 那次「对齐与节奏」扫街曾把它改成
+              `justify-start`（理由写的是「与输入卡同一条基线」），但状态条与卡片同在那个
+              `max-w-[796px] px-[18px]` 容器里，左对齐对齐的是**卡片外沿**、比卡片里的文字
+              还左 16px——既没居中也没真对齐，v1.70 改回。 */}
           <div
+            data-live-bar=""
             className={cn(
-              "flex flex-wrap items-center justify-start gap-x-2.5 gap-y-1.5 pt-[7px] text-[11.5px] text-text-secondary",
+              "flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 pt-[7px] text-[11.5px] text-text-secondary",
               stale && "stale",
             )}
           >
