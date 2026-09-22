@@ -27,6 +27,7 @@ import {
   Eye,
   FileEdit,
   FilePlus,
+  GitBranch,
   Globe,
   Monitor,
   PanelRight,
@@ -57,7 +58,13 @@ import {
   windowStart,
   WINDOW_CHUNK,
 } from "../../lib/message-window";
-import { describeSteps, groupTurns, summarizeSteps, turnOfMessage } from "../../lib/turn-groups";
+import {
+  describeSteps,
+  groupTurns,
+  summarizeSteps,
+  turnOfMessage,
+  type TurnGroup,
+} from "../../lib/turn-groups";
 import { cn } from "../../lib/utils";
 
 /**
@@ -93,10 +100,27 @@ function describeMissingImage(status: "missing" | "too-large" | "unreadable"): s
  * 流式态与完成态共用它，保证同一轮助手内容在不同生命周期下左边缘与宽度一致，
  * 避免“流式时没对齐、结束后才对齐”的跳动。
  */
-export function AssistantRow({ children }: { children: ReactNode }): React.JSX.Element {
+export function AssistantRow({
+  children,
+  label = "Agent",
+  anchor,
+}: {
+  children: ReactNode;
+  /**
+   * 角色列的文字。**给 `null` = 这一行不是 agent 的内容**（如「从这里分叉」这种界面控件）——
+   * 控件顶着「Agent」署名，读起来像 agent 在提议分叉。列宽照留，左缘仍与正文列对齐。
+   */
+  label?: string | null;
+  /**
+   * 给这一行一个**自己的标记**（`data-assistant-row`）。冒烟要认「是哪一行」时按它认，
+   * 别去数 `parentElement`（`AGENTS.md` §五 ⑫：改了祖先链，靠层级认人的探针会静默量到别处）。
+   * 不传就没有这个属性——别的调用方一个字不用改。
+   */
+  anchor?: string;
+}): React.JSX.Element {
   return (
-    <div className="flex gap-2.5">
-      <span className="w-[46px] shrink-0 pt-[3px] text-[11.5px] text-text-muted">Agent</span>
+    <div className="flex gap-2.5" data-assistant-row={anchor}>
+      <span className="w-[46px] shrink-0 pt-[3px] text-[11.5px] text-text-muted">{label}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">{children}</div>
     </div>
   );
@@ -278,12 +302,14 @@ export function MessageWindow({
   onOpenFile,
   onOpenSubagent,
   onAbortSubagent,
+  onBranchTurn,
   openState,
   onToggleOpen,
   scrollRef,
   folded,
   jump,
   followNonce,
+  running,
 }: {
   sessionId: string;
   messages: ViewMessage[];
@@ -295,6 +321,12 @@ export function MessageWindow({
   onOpenFile?: (path: string) => void;
   onOpenSubagent?: (id: string) => void;
   onAbortSubagent?: (id: string) => void;
+  /**
+   * 从某一轮的**最终回复之后分叉**（④ 每条回复下面那一行按钮）。
+   * 传的是**那条最终回复的消息 id** = 内核条目 id，worker 拿它 `navigateTree`——
+   * 指针移回此处，**之后的提问落成新分支**、原有记录不动。
+   */
+  onBranchTurn?: (targetId: string) => void;
   openState: ReadonlyMap<string, boolean>;
   onToggleOpen: (id: string, open: boolean) => void;
   /** 消息流的滚动容器：窗口要知道滚到哪了，补一段/翻页时也要自己摆 `scrollTop` */
@@ -305,6 +337,14 @@ export function MessageWindow({
   jump: { index: number; nonce: number } | null;
   /** 每次自增表示「回到底部」被按了一次——窗口据此从浮动段交回「跟随底部」 */
   followNonce: number;
+  /**
+   * 会话是否正在跑一轮——取的就是 ⑤ 输入区那份 `view.running`（**不另算一套**，免得两处判据漂）。
+   * 跑着的时候「从这里分叉」**置灰**：worker 的消息循环是 `void handle(command)`，**不排队**，
+   * 而 `navigate` 要挪历史指针 + 重拍快照 + 推一次视图；跟正在跑的那一轮交叠，指针与视图会被
+   * 那一轮边跑边覆盖。置灰而不是藏起来——藏了会让这一行在每次运行时跳进跳出（版式抖），
+   * 而它其实只是**暂时**不可用（原因写在标题里）。
+   */
+  running: boolean;
 }): React.JSX.Element {
   /**
    * 窗口起点，**每种单位各记一份**。
@@ -328,6 +368,19 @@ export function MessageWindow({
 
   /** 整份消息的轮分组：折叠态要按轮切窗口，换算起点也要靠它 */
   const turns = useMemo(() => groupTurns(messages), [messages]);
+  /**
+   * 会话**尖端**那条消息的 id。给「从这里分叉」用的判据只有这一条：
+   * **落点若是尖端，点了指针不动、视图不变——那就是个假入口，不给。**
+   *
+   * 为什么不是「末轮的 key」：`visibleTurns` 是窗口**切片**后重新分组的，而 `groupTurns`
+   * 遇到「切片从助手消息开始」会以**那条助手消息**开一轮（见 `turn-groups.ts`）。
+   * 末轮只要比窗口高（> `WINDOW_CHUNK` 条），切片就会从它中间开始，于是「轮 key === 末轮 key」
+   * 必然为假——末轮的按钮照样冒出来，而它点的正是尖端。按「落点是不是尖端」判，
+   * 两种切法、两种单位都给同一个答案。
+   *
+   * 取的是**整份** `messages` 的末条（不是窗口的末行）：窗口只决定挂多少，不决定谁在尖端。
+   */
+  const tipId = messages.length > 0 ? messages[messages.length - 1]!.id : null;
   /** 当前单位。**由折叠开关决定**，不另存一份，免得又多一处可能不一致的状态 */
   const unit: WindowUnit = folded ? "turn" : "message";
   /** 当前单位下的总量：折叠时是**轮数**，否则是条数 */
@@ -528,6 +581,49 @@ export function MessageWindow({
     </div>
   );
 
+  /**
+   * 「从这里分叉」：挂在一轮**最终回复下面一行**（`turn.final` 之后，与 `row()` 平级）。
+   *
+   * 两条语义都在这里定：① **落点是尖端就不给**——指针已经在尖端，从尖端分叉等于原地不动；
+   * ② 交给 `onBranchTurn` 的是**最终回复的消息 id**（= 内核条目 id），不是轮的 key、
+   * 也不是那一轮的用户消息——用户看到按钮贴在最终回复下面，就得从最终回复之后长出新枝。
+   *
+   * 为什么做成 `row()` 的**兄弟**而不是塞进 `MessageBubble`：那会让每条消息都随这个按钮重渲染，
+   * 而 `MessageBubble` 是 `memo` 的（流式期间每 50ms 整份重推，见上文）；也免得给气泡多加一个
+   * 与它无关的 prop。与 ④-E 的收起入口同一形态。
+   */
+  const branchRow = (turn: TurnGroup): React.JSX.Element | null => {
+    if (onBranchTurn === undefined || turn.final === null) return null;
+    if (turn.final.id === tipId) return null;
+    const targetId = turn.final.id;
+    // 跑着的时候不给点：`navigate` 会挪指针 + 重拍快照 + 推视图，而 worker 的消息循环
+    // 不排队，正跑的那一轮会把指针和视图边跑边覆盖（详见 props 里 `running` 那段）。
+    const blocked = running;
+    return (
+      // `label={null}`：这一行是个**界面控件**，不是 agent 说的话——不署名「Agent」，
+      // 但角色列照留，左缘与正文列对齐（同 ④-E 收起入口那一行）。`anchor` 供冒烟认这一行。
+      <AssistantRow label={null} anchor="branch">
+        <button
+          type="button"
+          data-conv-branch={targetId}
+          disabled={blocked}
+          onClick={() => onBranchTurn(targetId)}
+          title={
+            blocked
+              ? "这一轮还在跑——等它结束，再从这里分叉"
+              : "从这一轮之后分叉：之后的提问会形成新分支"
+          }
+          className={`flex items-center gap-1.5 self-start rounded-sm border border-line px-2.5 py-1 text-[11.5px] text-text-muted ${
+            blocked ? "cursor-not-allowed opacity-50" : "transition hover:border-line-strong hover:text-text-primary"
+          }`}
+        >
+          <GitBranch {...ICON.sm} className="shrink-0" />
+          从这里分叉
+        </button>
+      </AssistantRow>
+    );
+  };
+
   return (
     <>
       {(start > 0 || below > 0 || floating) && (
@@ -604,6 +700,7 @@ export function MessageWindow({
             </>
           )}
           {turn.final !== null && row(turn.final)}
+          {branchRow(turn)}
         </Fragment>
       ))}
     </>

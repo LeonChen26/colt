@@ -7,9 +7,10 @@
  * 为什么需要它：持久化里 lane **就是命名分支**，而 `session.findEntries` 扫的是
  * **会话级**全部条目（内核 `EntryQuery` 上没有任何 lane 维度；`Entry` 本体也不带 lane
  * 字段——lane 身份只存在分支指针上）。于是子 lane（记忆整理、子代理）产生的条目会
- * 混进主对话的分支树：`fresh` 子 lane 的起点是 `null`，它的链**自成一条根**，
- * 在左栏表现为一个凭空多出来的对话根节点，且**可点**——一点就把主 lane 的历史指针
- * 挪到子 lane 的节点上。
+ * 混进主对话的分支树投影：`fresh` 子 lane 的起点是 `null`，它的链**自成一条根**，
+ * 于是投影里凭空多出一个对话根节点。v1.66 之前它会显示在**左栏那棵树**里、且**可点**
+ * ——一点就把主 lane 的历史指针挪到子 lane 的节点上（那棵树连同 `features/BranchTree.tsx`
+ * 已删，但 `projectBranches` 这条能力保留着，本判据仍是它与导航守卫的共同真源）。
  *
  * ⚠️ **只处理 `fresh`（`createAt: null`）这一种**：它的链与主对话**没有共享祖先**，
  * 所以「从 tip 沿 `parentId` 上溯到根」收集到的条目**整条**都是它的。
@@ -32,7 +33,7 @@ export interface OwnershipEntry {
  * 防御两件事：
  * - **未知 tip**（`null` / 找不到）直接跳过——会话刚建、lane 还没有内容时是常态；
  * - **环**：持久化一旦被写坏（或将来有人手工造出循环 parentId），上溯必须能停，
- *   否则这里会死循环、整条分支树查询永远不返回（界面上表现为「左栏一直转圈」）。
+ *   否则这里会死循环、整条分支树查询永远不返回（调用方一直等不到答复，直到超时）。
  */
 export function ownedEntries(
   tips: readonly (string | null | undefined)[],

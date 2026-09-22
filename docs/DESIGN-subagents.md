@@ -180,7 +180,7 @@ running tool，而 ④ 的运行中工具卡（含子代理卡）就是按 `runn
 起点是 `null` ⇒ 它的条目**自成一条根链**。
 
 ⚠️ **这条是读代码推断的（未实测），且它可能今天就已存在**：`TIDY_LANE` 同样不传 `createAt`。
-若成立，整理 lane 的条目会作为**独立根节点**出现在左栏分支树里，且可点——一点就 `navigate`
+若成立，整理 lane 的条目会作为**独立根节点**出现在**分支树投影**里（`projectBranchNodes`；⚠️ **v1.66 起这条投影已无界面消费者**——左栏那棵树连同 `features/BranchTree.tsx` 已删、分支入口改到 ④ 的「从这里分叉」，规则见 `UI-REGIONS.md` ④-K；但 `session.navigate` 这条路**仍然连通**，所以下面这个风险**没有消失**，只是少了「用户从树上点它」这个触发面；决策本身（拒绝子 lane 节点、先挪指针后重拍快照、异常不吞）v1.66 起落在 `worker/lib/navigate.ts` 的 `applyNavigate`，由 `tests/navigate.test.ts` 覆盖），且可点——一点就 `navigate`
 **把主 lane 的指针挪到整理 lane 的节点上**。**P0 的第一件事是验证它**（只读探针，别先改代码）。
 
 **修法**（纯函数，`lane-ownership.ts`）：子 lane 的条目 = 从 `tip_sub` 沿 `parentId` 上溯的那条链

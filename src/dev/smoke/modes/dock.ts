@@ -19,7 +19,7 @@ import { hostBridge } from "../../../main/host";
 import { sessionManager } from "../../../main/session-manager";
 import { toolOutputDir } from "../../../main/tool-output";
 import { dirname, join, resolve } from "node:path";
-import type { ConversationView, ViewFileChange, ViewSkill } from "@shared/worker-protocol";
+import type { ConversationView, ViewFileChange, ViewMessage, ViewSkill } from "@shared/worker-protocol";
 import type { ApprovalRequest } from "@shared/protocol";
 import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
 import { createFixtureServer } from "../../../../scripts/fixture-server.mjs";
@@ -2584,6 +2584,194 @@ export async function runDock(
     ]);
     // 断言都取完再清场：那个「代码目录」留着只是垃圾（它已经证明过自己没被删）
     rmSync(doomedRoot, { recursive: true, force: true });
+
+    // ---- ④ 每条回复下面「从这里分叉」（v1.66）----
+    // 分支能力从左栏树面板**迁进会话区**（`UI-REGIONS` 规则 ④-K）：左栏那个面板连同
+    // `features/BranchTree.tsx` 已删，本按钮是分支的**唯一界面入口**。四件事必须钉住：
+    //   ① **落点是尖端就不给**——指针已在尖端，点它指针不动、视图不变，那是**假入口**。
+    //      这条要验**两种切法**：正常两轮（末轮不给），**以及**末轮比窗口还高、被窗口切在半截时
+    //      ——第二种是「判据写成『末轮的 key』」会误判的地方（见下面 tallTurn 那段）。
+    //   ② 送出的是**这一轮最终回复的 id**（= 内核条目 id），不是轮的 key、更不是用户消息；
+    //   ③ 「始终可见」：不靠 hover 才浮现——所以要看它真在可视区里、且那一层就是它
+    //      （`AGENTS.md` §五 ⑥：「在 DOM 里」不等于「用户点得到」）；
+    //   ④ 这一行是**界面控件**，不署名「Agent」（按它自己的标记 `data-assistant-row="branch"` 认）。
+    // 受控视图推 **2 轮**（用户/助手各两条）就够分辨「落点是尖端」与「不是尖端」。
+    log("[④ 分叉] 每轮最终输出下面一行按钮；落点是尖端就没有；点了送出的是该轮最终回复的 id");
+    const forkMessages: ViewMessage[] = [
+      { id: "smoke-u1", role: "user", text: "第一问", toolCalls: [] },
+      { id: "smoke-a1", role: "assistant", text: "第一答", toolCalls: [] },
+      { id: "smoke-u2", role: "user", text: "第二问", toolCalls: [] },
+      { id: "smoke-a2", role: "assistant", text: "第二答", toolCalls: [] },
+    ];
+    window.webContents.send("session.view", smokeView({ messages: forkMessages }));
+    await sleep(400);
+
+    // 打桩**只记账、不转发**（`AGENTS.md` §五 ⑩）：转发给真实现会去 navigate 一个真会话、
+    // 往用户真实数据里改历史；而这里要验的只是「渲染层交给主进程的是哪个 id」。
+    // 桩的存活窗口**收到最小**：只包住下面那一次点击，并在 `finally` 里恢复。
+    const realNavigate = sessionManager.navigate.bind(sessionManager);
+    const branchTargets: string[] = [];
+    sessionManager.navigate = (_id: string, targetId: string): void => {
+      branchTargets.push(targetId);
+    };
+
+    const forkProbe = await run<{
+      count: number;
+      target: string | null;
+      label: string;
+      afterFinal: boolean;
+      beforeNextTurn: boolean;
+      visible: boolean;
+      hittable: boolean;
+      rowText: string | null;
+    }>(`(() => {
+      const buttons = [...document.querySelectorAll("[data-conv-branch]")];
+      const btn = buttons[0] ?? null;
+      const rowA1 = document.querySelector('[data-msg-row="smoke-a1"]');
+      const rowU2 = document.querySelector('[data-msg-row="smoke-u2"]');
+      let hittable = false;
+      if (btn) {
+        const r = btn.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        hittable = !!hit && (hit === btn || btn.contains(hit));
+      }
+      const style = btn ? getComputedStyle(btn) : null;
+      // 按**这一行自己的标记**认它（不去数 parentElement）：整行文本必须**只有**按钮文案，
+      // 多出一个「Agent」就说明控件又被署上了角色名。
+      const row = document.querySelector('[data-assistant-row="branch"]');
+      return {
+        count: buttons.length,
+        target: btn ? btn.getAttribute("data-conv-branch") : null,
+        label: btn ? btn.textContent.trim() : "",
+        afterFinal: !!(btn && rowA1 && (rowA1.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        beforeNextTurn: !!(btn && rowU2 && (btn.compareDocumentPosition(rowU2) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        visible: !!(btn && btn.getClientRects().length > 0 && style.opacity !== "0" && style.visibility !== "hidden"),
+        hittable,
+        rowText: row ? row.textContent.replace(/\\s+/g, "") : null,
+      };
+    })()`);
+    log(`  按钮：count=${forkProbe.count} target=${forkProbe.target} 文案「${forkProbe.label}」整行「${forkProbe.rowText}」`);
+
+    checks.push([
+      "两轮里有且仅有一条「从这里分叉」，且它对着第一轮的最终回复（末轮是尖端，不给）",
+      forkProbe.count === 1 && forkProbe.target === "smoke-a1",
+    ]);
+    checks.push([
+      "按钮排在**该轮最终回复之后、下一轮提问之前**（「最终输出下面一行」）",
+      forkProbe.afterFinal && forkProbe.beforeNextTurn,
+    ]);
+    checks.push([
+      "按钮**始终可见**（不靠 hover 浮现，且那一层真的是它）",
+      forkProbe.visible && forkProbe.hittable,
+    ]);
+    checks.push([
+      "这一行**不署名「Agent」**（整行文本就是按钮文案，控件不是 agent 说的话）",
+      forkProbe.rowText === "从这里分叉",
+    ]);
+
+    const clickBranch = (id: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const btn = document.querySelector('[data-conv-branch="${id}"]');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })()`);
+    let beforeClick = 0;
+    let clicked = false;
+    try {
+      beforeClick = branchTargets.length;
+      clicked = await clickBranch("smoke-a1");
+      await sleep(150);
+    } finally {
+      sessionManager.navigate = realNavigate;
+    }
+    checks.push([
+      "点了才发出分叉：把**该轮最终回复的 id** 交给 session.navigate（不是轮的 key）",
+      beforeClick === 0 && clicked && branchTargets.join(",") === "smoke-a1",
+    ]);
+
+    // 「落点是尖端就不给」是个**跟着尖端走**的规则，不是「第几轮不给」：把视图换成只剩一轮，
+    // 那一轮就成了尖端，按钮必须消失。少了这条，规则写死成「最后一条消息之前」也照样过。
+    window.webContents.send("session.view", smokeView({ messages: forkMessages.slice(0, 2) }));
+    await sleep(400);
+    checks.push([
+      "只剩一轮时按钮消失（规则跟着尖端走，不是写死的轮号）",
+      (await run<number>(`document.querySelectorAll("[data-conv-branch]").length`)) === 0,
+    ]);
+
+    // 运行中**必须点不动**：worker 的消息循环是 `void handle(command)`——**不排队**，
+    // 而 `navigate` 要挪历史指针 + 重拍快照 + 推视图；与在飞的那一轮交叠，指针和视图会被
+    // 那一轮边跑边覆盖。判据**不能只看按钮在不在**（那是另一种坏法：按钮冒出来却是死的），
+    // 所以两个状态都先证「按钮在」，再证 disabled 真的翻过来、且原因写出来了。
+    const branchState = (): Promise<{ present: boolean; disabled: boolean; title: string }> =>
+      run<{ present: boolean; disabled: boolean; title: string }>(`(() => {
+        const btn = document.querySelector("[data-conv-branch]");
+        return {
+          present: btn !== null,
+          disabled: btn ? btn.disabled === true : false,
+          title: btn ? (btn.getAttribute("title") ?? "") : "",
+        };
+      })()`);
+    window.webContents.send("session.view", smokeView({ messages: forkMessages, running: true }));
+    await sleep(400);
+    const busyProbe = await branchState();
+    window.webContents.send("session.view", smokeView({ messages: forkMessages, running: false }));
+    await sleep(400);
+    const idleProbe = await branchState();
+    checks.push([
+      "运行中「从这里分叉」还在、但点不动（置灰，不是消失）",
+      busyProbe.present && busyProbe.disabled,
+    ]);
+    checks.push([
+      "跑完恢复可点（同一条会话、同一个按钮，只是状态翻过来）",
+      idleProbe.present && !idleProbe.disabled,
+    ]);
+    checks.push([
+      "置灰时把原因写在标题里（不是照抄可点时的提示）",
+      busyProbe.title.length > 0 && busyProbe.title !== idleProbe.title,
+    ]);
+
+    // 第二种切法——**末轮比窗口还高**。首屏窗口只挂 `WINDOW_CHUNK`(50) 条，末轮若比它还长，
+    // 切片就从**末轮中间**开始，而 `groupTurns` 遇到「切片首条是助手消息」会以**那条助手消息**开轮
+    // （`turn-groups.ts` 的 `current === null` 分支）。于是一旦判据写成「轮 key === 末轮 key」，
+    // 这里必然误判成「可以分叉」——末轮的按钮冒出来，而它点的正是尖端（点了不动）。
+    // 夹具：第 2 轮 61 条助手消息，总数 64 > 50 ⇒ 窗口必然从末轮中间开始。
+    const tallTurn: ViewMessage[] = [
+      { id: "smoke-tu0", role: "user", text: "热身", toolCalls: [] },
+      { id: "smoke-ta0", role: "assistant", text: "好", toolCalls: [] },
+      { id: "smoke-tu1", role: "user", text: "长任务", toolCalls: [] },
+      ...Array.from(
+        { length: 61 },
+        (_, i): ViewMessage => ({
+          id: `smoke-tlab${i + 1}`,
+          role: "assistant",
+          text: `第 ${i + 1} 步`,
+          toolCalls: [],
+        }),
+      ),
+    ];
+    window.webContents.send("session.view", smokeView({ messages: tallTurn }));
+    await sleep(500);
+    const tallProbe = await run<{ u1Mounted: boolean; tipMounted: boolean; branches: number }>(
+      `(() => ({
+        u1Mounted: !!document.querySelector('[data-msg-row="smoke-tu1"]'),
+        tipMounted: !!document.querySelector('[data-msg-row="smoke-tlab61"]'),
+        branches: document.querySelectorAll("[data-conv-branch]").length,
+      }))()`,
+    );
+    // 先证**前提**：末轮确实被切在半截（提问行没挂载、尖端已挂载）。少了这一条，
+    // 下面那条否定断言会在「窗口其实装下了整轮」时**必然为真**（`AGENTS.md` §五 ⑫）。
+    checks.push([
+      "（前提）末轮真被窗口切在半截：它的提问行没挂载、尖端已挂载",
+      !tallProbe.u1Mounted && tallProbe.tipMounted,
+    ]);
+    checks.push([
+      "末轮被切半截时也不给按钮（判据是「落点是不是尖端」，不是「末轮的 key」）",
+      tallProbe.branches === 0,
+    ]);
+
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   } finally {

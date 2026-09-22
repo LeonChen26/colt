@@ -38,7 +38,7 @@
   **2026-09 全库缺陷审计**：按用户指令重新审读代码找 bug，确认并批量修复一批
   （工具卡展开态丢失 / 自动滚底抢滚动 / newSession 闭包 / 导航清缓冲时机等，清单见 `UI-REGIONS` v1.35）；
   3 处上报经核实不修（Esc 已有守卫 / 全量授权不清队列是刻意设计 / 并发投递常规路径不可达）。
-  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1152**） + `build` + `fixture` **25/25** + `dock` **235/235** + `model` **61 条（7/6/6/6/3/33）**。
+  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1158**） + `build` + `fixture` **25/25** + `dock` **246/246** + `model` **61 条（7/6/6/6/3/33）**。
 - **下一步做什么**：暂无排期——原 §3.1 的 **N1–N4 已按用户指令删除**（2026-09），
   新计划确定后再写回 §3.1。
 - **别重开**：§2 的「已定调」条目（尤其 ⑦ 的宽度是**全局统一值**、⑥ 的**四态**语义）。
@@ -53,7 +53,7 @@
 
 | 区域 | 现状 |
 |---|---|
-| ③ 左栏 | 项目 → 会话列表 → 会话分支树（`features/BranchTree.tsx`）；运行中会话带绿点与计时——**绿点与计时挂在会话行上**（`App.tsx` 的 `SessionRow`），**不在 `BranchTree` 里** |
+| ③ 左栏 | 项目 → 会话列表（**只有这两层**，v1.66 起）；运行中会话带绿点与计时——**绿点与计时挂在会话行上**（`App.tsx` 的 `SessionRow`）。⚠️ **「会话分支树」面板已删**（`features/BranchTree.tsx`，v1.66）：分支的唯一界面入口改在 ④（每条回复下面一行「从这里分叉」，规则 ④-K），`session.branches` 保留但无消费者 |
 | ② 会话头 | cwd + git 分支 chip（游离 HEAD 转琥珀色、窗口获焦刷新）；**统计 / 规则两个入口**（⑦-H 把原来的「改动 / 用量 / 工具 / 规则」四个收敛成两个：「改动」改由「任务摘要」底部的总账进入下钻（⑦-G，v1.32 连页签一起取消）、「工具」整体并入了「统计」，v1.30） |
 | ④ 会话流 | 思考轨、工具卡（**内嵌 diff**）、授权卡；工具卡默认折叠为一行。⚠️ 注意**没有「变更卡」**：`ProjectChanges` 是**主区整页**（项目级跨会话汇总，由 ① 的「改动」打开），不在 ④——④ 禁止跨会话信息 |
 | ⑤ 输入区 | 模型选择、附件（图片 / 文件）、审批模式、**思考等级**（v1.38，默认「高」）、**`/compact` 手动压缩入口**（v1.34）、**`/skill <名字>` 技能调用**（v1.42）、**敲 `/` 弹候选浮层**（v1.44：技能与 `/compact` 的可发现入口，选中即写入输入框）、发送 / 停止；Enter 发送或插话 |
@@ -175,7 +175,7 @@
   ② **绕过审批闸门**——扩展是**代码**，在 worker 内以完整权限运行，其副作用不是工具调用，
   天然躲开 `before_tool`；技能那条隐式信任通道之所以可接受，靠的是「只是文本、不改盘」
   （`SECURITY.md` §技能节），代码扩展连这个辩护都没有，会在 §零「这不是沙箱」上开口子。
-  ③ **验收手段失效**——全部单测 + `dock` 235 条冒烟都是对**自己代码**的断言，
+  ③ **验收手段失效**——全部单测 + `dock` 246 条冒烟都是对**自己代码**的断言，
   对第三方扩展内容无效，而冒烟仅开发期存在，生产侧无兜底。
   **替代路径（已选定）**：能力**内建**（像 `browser` / `computer` / `memory` 一样进
   `AgentHarness.create({ tools: [...] })` 数组，每个都过审批闸门）；可编程的行为交给
@@ -190,7 +190,7 @@
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
   | ③ | MCP | **已实施**（2026-09-19） | 设计 `docs/DESIGN-mcp.md`；配置的**纯解析层** `shared/mcp-config.ts`（worker 与主进程共用）；worker 侧 `lib/mcp-tools.ts`（官方 SDK **v2** 直连）+ `lib/mcp-reload.ts`（热重载写回）；配置 `<cwd>/.colt/mcp.json`。**原型边界已补齐**：传输 stdio + 远程（Streamable HTTP / SSE）、`listTools` 分页、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重（内核见重名会 `TypeError`，必须在包装层挡）、设置页可见性（`McpSettings`）。单测 `tests/mcp-tools.test.ts`（**42 条**，真实 stdio / 真实 HTTP / 真实 SSE 往返，夹具 `helpers/mcp-fixture-server.mjs` / `mcp-paged-fixture-server.mjs` / `mcp-http-fixture-server.mjs` / `mcp-sse-fixture-server.mjs` / `mcp-crash-fixture-server.mjs` / `mcp-capabilities-fixture-server.mjs` / `mcp-cwd-fixture-server.mjs` 刻意用裸 JSON Schema 与生产方同构）；**连接生命周期**另有 3 条钉住「连失败的 server 热重载会重试」「连上后掉线 `status` 如实转 error 且可重载救回」「`transport: sse` 的成功路径」（此前 SSE 只验过失败分支——`reload` 原先**永不重试**失败态，等于设置页那个「重新加载」按钮对失败是死的）。**SDK 已迁 v2**（`@modelcontextprotocol/*@2.0.0`，官方 codemod 迁移，2026-09-19）：v2 **没有砍**旧式 SSE——`SSEClientTransport` 只是从 `client/sse.js` 子路径挪到了**包根导出**，服务端 `SSEServerTransport` 走 `@modelcontextprotocol/server-legacy/sse`（v1 冻结副本，仅夹具用），所以 `transport: "sse"` 能力**原样保留**（上条那条 SSE 用例在 v2 上仍绿）。工具名 `mcp__<server>__<tool>`，不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**，一行审批代码未改。**能力面也已接**（2026-09-19）：server 声明了 `resources` / `prompts` 就多出 `list_resources` / `read_resource` / `list_prompts` / `get_prompt`（**未声明就不加**，别放死入口；命名同款 ⇒ 同样天然过闸），二进制资源不展开成 base64、提示词交给**服务端**按参数渲染（设计 §3 决策 13）。**同轮修两处真缺陷**：① `ServerState.config` 改存**声明值**——原先连上的 server 存的是 `${VAR}` **解析后**的值，于是 `status().target` 把真实密钥画在设置页上、且每次「重新加载」都被判成「配置变了」白重连一次（决策 7 明说不该重连）；② v2 下 `listTools()` 不传 cursor 会**自己翻完所有页**，v1 时代那段按 `nextCursor` 的手工循环是**死代码**（`MAX_TOOL_PAGES` 从未被读到），已删，页数上限改钉 `ClientOptions.listMaxPages` 并由单测直接钉 SDK 契约。**再一补**（同日）：接 **server 自报的 `instructions`**——`composeMcpInstructions` 每请求拼进系统提示词（SDK 只给 `getInstructions()` 这个取值口、**一处都不替你调**，与技能清单同一个坑；决策 14）；并顺手把设置页那两条命令收进 `lib/mcp-reload.ts`，worker 入口**净减 2 行**（当时棘轮余量只剩 1 行，见 `AGENTS.md` §1.4）。冒烟 `COLT_SMOKE_MODE=mcp-e2e`（打模型；本地 Ollama 下不计费）**9/9 全绿**（2026-09-19，qwen3:0.6b 实测）；`mcp-real` 用**真实第三方 server**（官方 filesystem / pi-lens）跑同一条链路；热重载 + 设置页可见性的**接线**由**免费**冒烟 `COLT_SMOKE_MODE=mcp-reload`（9 条）覆盖（见 §5 3-g）。**收盘审计又修两处假信号**（2026-09-19）：① 主进程「等 MCP 回话」的预算原先是 **10s**（抄自 `branches` / 子代理那两条**快**操作），而 worker 侧光「连接」一步的上限就是 15s、会话没就绪时还要等 `ready`（上限 `READY_TIMEOUT_MS` 120s）——于是设置页会**假报**「查询 MCP 状态超时」，而 server 正在正常连接。现在预算按 `READY_TIMEOUT_MS + 2×MCP_STEP_TIMEOUT_MS` 推导，单步值进 `shared/limits.ts`（由 `limits.test.ts` 守「两侧不许各写一份」——这正是那条守卫针对的症状），并在免费冒烟里用一个**不说话的 server**（实测重载 **15035ms** 仍正常兑现）把这条判据钉住；② `declaredMcpServers` 原先把 `loadMcpConfig` 的 `diagnostics` **整包丢掉**，于是语法错的 `mcp.json` 被设置页渲染成「本项目未声明 MCP server」——把「你写错了」说成了「你没配」，恰好是反的；现在两条路都随响应带出诊断、设置页在列表**上方**单独画一块（不替换列表）。冒烟 `mcp-reload` 因此 9 条 → **12 条**。**同一轮还补了一处缺口**：server 连上后**掉线原先只是静默翻状态**（工具仍留在清单里、调用会失败，但用户只有自己点开设置页才知道）——现在 `onclose` 里同时发一条 security 类 notice（toast 之外**落 `session_events`**、可在「事件」里回查），并**只报一次**（HTTP 传输会重复触发 `onclose`）、**我们主动关的不报**；由真实自杀夹具 `mcp-crash-fixture-server.mjs` 钉住（断言通知恰好一条、点名 server、且重载救回后不再冒第二条；把 `notify` 摘掉这条立刻红）。**再往下还修了两处**（同日）：⑧ **stdio 子进程的工作目录**原先是**应用进程**的 cwd（worker 由 `utilityProcess.fork` 起、没带 `cwd`），于是 `args: ["."]` / `["src"]` 这类**最主流的相对写法**会静默指错、或直接 `Cannot find module`——现在传**会话的项目根**；物证是「把冒烟夹具的 `args` 改成**故意相对项目根**的路径」：修前 ① 组红、worker 打出 `Cannot find module 'E:\code\tests\helpers\…'`（从仓库根退两级），修后 12/12，另有一条单测逐字断言 `cwd === 项目目录`（摘掉 `cwd` 立刻红，实得 `E:\code\opensource\colt`）。⑦ **「答不回来的 MCP 查询」**原先只清空队列、指望「各自的超时会收敛」——预算抬到 150s 之后那就是设置页挂一条**假的**「重载中…」两分半；现在 `PendingMcpQuery` 带 `settle` / `fail` 两条口子，三处触发点（崩溃 / 回收 / init 失败）都调 `#drainPendingMcp` 当场失败。**⑦ 没有行为断言**（要造「有活 worker 且在飞查询时它死掉」，而现有注入器 t=0 就退出、落不进那个窗口），已如实记在设计决策 18。⑤ **并发重载**原先没有互斥——worker 命令入口 `void handle` **不排队**，两条 `mcpReload` 交错时同一台 server 会被连**两遍**（多出的 client 连带子进程只留在 `liveClients` 里，从工具清单 / 状态上都看不出来）；现在 `reload` 有在飞的就返回它（`reloadInFlight` + `doReload`）——重载幂等，复用同一次的结果对两个调用方都成立；判据是「并发两次只**起一个**进程」（夹具挂 `COLT_MCP_START_LOG`，见设计决策 19）。**产品评审后的五件事**（2026-09-19，决策 20–24）：⑤ **用户级配置** `~/.colt/mcp.json` 与项目级**合并**（同名项目级覆盖；诊断分别点名来源文件，`COLT_MCP_HOME` 作测试缝）；① **让 agent 自己安装 MCP**——配置格式与「密钥只写 `${VAR}` / 写完让用户点『重新加载』」两条纪律写进**基础系统提示词**（不新增会话级块，避开 `worker/entry.ts` 棘轮），写项目外的 `~/.colt/` 照常弹危险审批；② **展示名** `shared/mcp-label.ts` 把 `mcp__srv__tool` 翻成「MCP srv: tool」，接进审批摘要（`policy.buildSummary`）、审批卡 tooltip、工具卡、分析行（原先前端一律画原始注册名，`label` 定义了没人用）；③ **notice 按 `kind` 分流**——security 类走 warning 色、12s 才消，与普通成功提示（绿、5s）分开；⑥ **调用超时按 server / 工具可配**——配置 `timeout` / `toolTimeouts`（默认仍 60s），`timeout` 计入 `configKey` 故「重新加载」会重连生效。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（正常 dispose 走 `runtime.close()`） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `COLT_SMOKE_MODE=todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
-  | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属、`fresh` 隔离真实效果、清单真进提示词）由 `subagent-e2e`（打模型）覆盖，**15/15 全绿**（2026-09-19，qwen3:0.6b 实测，见 §5 3-f）。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e（abort 链路只走了单测与呈现层）；分支树排除与导航守卫的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖，未走真实 `session.branches` |
+  | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` + `tests/agent-defs.test.ts` + `tests/subagent-view.test.ts`；冒烟 `COLT_SMOKE_MODE=subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属、`fresh` 隔离真实效果、清单真进提示词）由 `subagent-e2e`（打模型）覆盖，**15/15 全绿**（2026-09-19，qwen3:0.6b 实测，见 §5 3-f）。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e（abort 链路只走了单测与呈现层）；分支树排除的**会话级数据**由 `tests/lane-ownership.test.ts` 的纯函数覆盖（v1.66 起「列出全部分支」在应用里已无调用点，见 `UI-REGIONS` §四 第 3 条）。**导航守卫**（`session.navigate` 拒绝子 lane 节点、先挪指针后重拍快照、异常不吞）v1.66 起由 `tests/navigate.test.ts` 覆盖——原先它是 `worker/entry.ts` 里没法单测的一小段，现抽成 `worker/lib/navigate.ts` 的 `applyNavigate`；仍未走**真实** `session.branches` / 真实内核 `navigateTree` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
 
   ①的入口级遗留（别当成验过了）：worker 侧跳过闸门那条守卫与「全权模式下提问仍要弹」已由
@@ -473,7 +473,8 @@
    `todo` 同源（§3.2 提到）：免模型冒烟只能验**目录块拼得出来**（`tests/agent-defs.test.ts`
    断言最终字符串里有 `<available_subagents>`），验不了它**真的进了模型那次请求的提示词**。
    三者都由 `subagent-e2e`（打模型）覆盖，见 §5 **3-f**；
-   分支树排除与导航守卫属 worker 侧会话数据，由 `tests/lane-ownership.test.ts` 覆盖。
+   分支树排除与导航守卫的**判据**同源自 `lib/lane-ownership.ts` 与 `worker/lib/navigate.ts`（都有单测）；
+v1.66 起左栏那棵树已删，导航决策由 `tests/navigate.test.ts` 覆盖，仍**未**走真实内核 `navigateTree`。
 
 > **3-e. MCP 工具真实模型端到端：改 `shared/mcp-config.ts` 的配置解析、
 >   `worker/lib/mcp-tools.ts` / `mcp-reload.ts` 的装载/包装/热重载、

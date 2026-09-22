@@ -31,7 +31,6 @@ import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } from "@shared/protocol";
 import type { ThinkingLevel } from "@shared/thinking-level";
-import { BranchTree } from "./features/BranchTree";
 import { Conversation } from "./features/Conversation";
 import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
@@ -727,19 +726,6 @@ export default function App(): React.JSX.Element {
               })
             )}
           </SidebarSection>
-
-          <div className="h-px shrink-0 bg-line" />
-
-          {/* 会话分支：git graph 风格，标注当前会话在树中的位置 */}
-          <div className="flex min-h-0 flex-1 flex-col">
-            {activeSession ? (
-              <BranchTree key={activeSession.id} sessionId={activeSession.id} />
-            ) : (
-              <SidebarSection title="会话分支">
-                <Empty>选择一个会话查看分支</Empty>
-              </SidebarSection>
-            )}
-          </div>
         </aside>
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">

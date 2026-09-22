@@ -48,6 +48,7 @@ import {
   type BranchEntry,
 } from "./lib/project";
 import { foreignLaneTips, ownedEntries, visibleEntries } from "./lib/lane-ownership";
+import { applyNavigate } from "./lib/navigate";
 import { healLaneTools } from "./lib/lane-heal";
 import { spillToolImages } from "./lib/tool-image-spill";
 import { HostBridge } from "./lib/host-bridge";
@@ -971,21 +972,28 @@ async function handle(command: WorkerCommand): Promise<void> {
 
     case "navigate": {
       if (!state) throw new Error("会话尚未初始化");
-      // 纵深防御：分支树里已经排除了子 lane 的条目（`projectBranches`），但**能拒绝就要拒绝**——
-      // 「树里看不到、却能导航过去」的幽灵节点会把主对话的历史指针挪到子代理的链上，
-      // 而界面上没有任何东西能解释这次跳转。判据与分支树排除**共用同一个集合**。
-      if ((await foreignLaneEntryIds(state)).has(command.targetId)) {
-        send({
-          type: "error",
-          message: "这个节点属于子代理（或记忆整理）的运行记录，不属于主对话，不能切过去。",
-          fatal: false,
-        });
+      const current = state;
+      // 决策与顺序都在 `lib/navigate`（那个模块**有自己的单测**；本文件是 worker 入口，
+      // 一 import 就起进程，测不了）。两条不变量：拒绝子 lane 的节点时**一次都不碰**
+      // navigateTree / resnapshot；放行时**先挪指针、后重拍快照**。
+      const outcome = await applyNavigate(command.targetId, {
+        foreignLaneEntryIds: () => foreignLaneEntryIds(current),
+        // summarize: false —— 直接跳转，不花额外 token 生成分支摘要
+        // （内核那侧返回 `NavigationResult`，这里只关心「跳完了」，结果显式丢弃）
+        navigateTree: async (targetId) => {
+          await current.lane.navigateTree(targetId, { summarize: false }, context);
+        },
+        resnapshot: () => current.resnapshot(),
+      });
+      if (!outcome.ok) {
+        // 纵深防御：分支树里已经排除了子 lane 的条目（`projectBranches`），但**能拒绝就要拒绝**——
+        // 「树里看不到、却能导航过去」的幽灵节点会把主对话的历史指针挪到子代理的链上，
+        // 而界面上没有任何东西能解释这次跳转。判据与分支树排除**共用同一个集合**。
+        send({ type: "error", message: outcome.message, fatal: false });
         return;
       }
-      // summarize: false —— 直接跳转，不花额外 token 生成分支摘要
-      await state.lane.navigateTree(command.targetId, { summarize: false }, context);
-      // 跳转换了整条分支，transcript 需要整体重建
-      state.snapshot = await state.resnapshot();
+      // 跳转换了整条分支，transcript 需要整体重建（新快照由 `applyNavigate` 在指针挪动**之后**拍）
+      state.snapshot = outcome.snapshot;
       pushView();
       send({ type: "branches", nodes: await projectBranches(state) });
       return;

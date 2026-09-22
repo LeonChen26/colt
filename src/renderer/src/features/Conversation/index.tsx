@@ -3,7 +3,7 @@
 
 /**
  * 对话面板：消息流 + 流式文本 + 工具实时输出 + 状态栏（Live Bar）+ 右侧面板编排。
- * 具体的改动 / 统计 / 工具 / 分支面板已拆到 panels/ 与 BranchTree。
+ * 具体的改动 / 统计 / 工具已拆到 panels/。
  * 会话头（②）的入口：统计 / 规则（按 ⑦-H 收敛成这两个），外加两个**会话级显示**入口——
  * 「搜索」（搜历史，浮层，见 HistoryPanel）与「只看问答」（整轮折叠，见 ④-E）；
  * 按轮次跳转收在 ④ 左缘的点链（见 TurnRail），目录不再是浮层里的一半。
@@ -354,6 +354,24 @@ export function Conversation({
     },
     [sessionId],
   );
+
+  /**
+   * ④ 每条回复下面那行「从这里分叉」的落点（规则 ④-K）。
+   *
+   * 走 `session.navigate`：内核把历史指针移回这条最终回复，**之后的提问落成新分支**，
+   * 已走过的那条留在内核（与 JSONL）里不动——本版**没有**回看旧分支的界面入口，
+   * 所以按钮上必须写清「之后的提问会形成新分支」而不是「回到这里」。
+   *
+   * 为什么不抽 `useCallback`：本文件的内建 hook 数被 `tests/size-guard.test.ts` 卡在 50
+   * （今天正好 50），而 `MessageWindow` 没包 `memo`——父组件重渲染时它本来就要重渲染，
+   * 这个函数引用稳不稳定不改变任何行为。worker 没开着时主进程 `#post` 会抛「会话未运行」，
+   * 交给 `setError` 显示，不静默吞掉（失败必须可见）。
+   */
+  function branchFrom(targetId: string): void {
+    void window.colt.invoke("session.navigate", { sessionId, targetId }).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e));
+    });
+  }
 
   /**
    * 用户操作内嵌浏览器（B1：后退 / 前进 / 刷新）。
@@ -1129,12 +1147,14 @@ export function Conversation({
               onOpenFile={openFile}
               onOpenSubagent={openSubagent}
               onAbortSubagent={abortSubagent}
+              onBranchTurn={branchFrom}
               openState={toolOpenState}
               onToggleOpen={toggleToolOpen}
               scrollRef={scrollRef}
               folded={foldSteps}
               jump={history.jump}
               followNonce={history.followNonce}
+              running={view?.running ?? false}
             />
 
             {/* 流式中的助手内容：思考轨 + 流式文本 + 运行中工具，

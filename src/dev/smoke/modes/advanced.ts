@@ -101,18 +101,4 @@ export async function runAdvanced(
     log(`活跃路径节点数：${after.filter((node) => node.onActivePath).length}`);
     log(`离线分支节点数：${after.filter((node) => !node.onActivePath).length}`);
   }
-
-  // 切到会话 A 并打开分支面板，让验收截图能看到分叉结构
-  await run(`(() => {
-    const items = [...document.querySelectorAll("button")];
-    items.find((b) => b.textContent.includes("说出数字 1"))?.click();
-    return true;
-  })()`);
-  await sleep(2500);
-  await run(`(() => {
-    const buttons = [...document.querySelectorAll("button")];
-    buttons.find((b) => b.textContent.trim() === "分支")?.click();
-    return true;
-  })()`);
-  await sleep(1500);
 }
