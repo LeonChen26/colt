@@ -76,7 +76,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
       </div>
 
       {error && (
-        <div className="m-3 rounded-md border border-line border-l-2 border-l-danger bg-danger-soft px-3 py-2 text-[13px] text-danger-fg">
+        <div className="m-3 rounded-md border border-line bg-danger-soft px-3 py-2 text-[13px] text-danger-fg">
           {error}
         </div>
       )}

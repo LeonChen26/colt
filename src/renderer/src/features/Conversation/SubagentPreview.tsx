@@ -12,7 +12,6 @@
  */
 import { Brain } from "lucide-react";
 import { ICON } from "@/lib/icon";
-import { cn } from "@/lib/utils";
 import type { ViewSubagent } from "@shared/worker-protocol";
 
 export function SubagentPreview({
@@ -25,7 +24,7 @@ export function SubagentPreview({
   return (
     <div data-subagent-preview={subagent.id} className="flex flex-col gap-1.5">
       {subagent.error !== undefined && (
-        <p className="rounded-sm border border-line border-l-2 border-l-danger bg-danger-soft px-2 py-1.5 text-[11.5px] leading-relaxed text-danger-fg">
+        <p className="rounded-sm border border-line bg-danger-soft px-2 py-1.5 text-[11.5px] leading-relaxed text-danger-fg">
           {subagent.error}
         </p>
       )}
@@ -37,10 +36,7 @@ export function SubagentPreview({
       {recentSteps.map((step) => (
         <div
           key={step.id}
-          className={cn(
-            "rounded-sm border border-line-soft border-l-2 bg-surface-code px-2 py-1.5",
-            step.role === "assistant" ? "border-l-accent-dim" : "border-l-line-strong",
-          )}
+          className="rounded-sm border border-line-soft bg-surface-code px-2 py-1.5"
         >
           <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
             {step.role === "user" ? "任务 / 用户" : step.role === "assistant" ? "子代理" : step.role}
@@ -67,7 +63,7 @@ export function SubagentPreview({
       ))}
       {/* 流式中的尾巴（还没进 recentSteps）——运行中才可能出现 */}
       {streamingText !== null && streamingText !== "" && (
-        <div className="rounded-sm border border-line-soft border-l-2 border-l-accent-dim bg-surface-code px-2 py-1.5">
+        <div className="rounded-sm border border-line-soft bg-surface-code px-2 py-1.5">
           <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
             子代理（正在输出）
           </div>

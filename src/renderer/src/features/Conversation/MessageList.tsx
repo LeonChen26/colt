@@ -188,7 +188,7 @@ export const MessageBubble = memo(function MessageBubble({
       const open = openState.get(message.id) === true;
       return (
         <div className="flex justify-start" data-conv-skill={message.id}>
-          <div className="flex max-w-[86%] flex-col gap-1.5 rounded-md border border-l-[3px] border-line border-l-accent-dim bg-surface-raised px-3 py-2">
+          <div className="flex max-w-[86%] flex-col gap-1.5 rounded-md border border-line bg-surface-raised px-3 py-2">
             <div className="flex items-center gap-1.5 text-[11.5px]">
               <ScrollText {...ICON.sm} className="shrink-0 text-accent-dim" />
               <span className="font-medium text-text-primary">技能 {name}</span>
@@ -230,7 +230,7 @@ export const MessageBubble = memo(function MessageBubble({
       <div className="flex justify-end" data-conv-user={message.id}>
         <div
           data-conv-user-bubble=""
-          className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-md border border-r-[3px] border-line border-r-accent-dim bg-surface-overlay px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
+          className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-md border border-line bg-surface-overlay px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
         >
           {message.image && (
             <img

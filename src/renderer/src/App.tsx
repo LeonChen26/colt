@@ -730,13 +730,13 @@ export default function App(): React.JSX.Element {
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
-            <div className="m-3.5 shrink-0 rounded-md border border-line border-l-2 border-l-danger bg-danger-soft px-3.5 py-3 text-[13px] text-danger-fg">
+            <div className="m-3.5 shrink-0 rounded-md border border-line bg-danger-soft px-3.5 py-3 text-[13px] text-danger-fg">
               {error}
             </div>
           )}
 
           {modelServiceReady === false && (
-            <div className="m-3.5 shrink-0 rounded-md border border-line border-l-2 border-l-warning bg-warning-soft px-3.5 py-3 text-[13px] text-warning">
+            <div className="m-3.5 shrink-0 rounded-md border border-line bg-warning-soft px-3.5 py-3 text-[13px] text-warning">
               尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
               DeepSeek 或自建的 OpenAI 兼容服务均可）。
             </div>
@@ -869,10 +869,8 @@ function ProjectRow({
     <div
       data-project-row={project.id}
       className={cn(
-        "group flex items-center gap-1 rounded-sm border-l-2 py-1.5 pl-1.5 pr-1.5 transition",
-        active
-          ? "border-accent bg-surface-overlay"
-          : "border-transparent hover:bg-surface-overlay/60",
+        "group flex items-center gap-1 rounded-sm py-1.5 pl-1.5 pr-1.5 transition",
+        active ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",
       )}
     >
       <button
@@ -965,8 +963,8 @@ function SessionRow({
     <div
       data-session-row={session.id}
       className={cn(
-        "group/session flex w-full items-center gap-2 rounded-sm border-l-2 px-1.5 py-1.5 transition",
-        active ? "border-l-accent bg-surface-overlay" : "border-l-transparent hover:bg-surface-overlay/60",
+        "group/session flex w-full items-center gap-2 rounded-sm px-1.5 py-1.5 transition",
+        active ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",
       )}
     >
       <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
