@@ -19,7 +19,13 @@ import type {
   WorkerMessage,
 } from "@shared/worker-protocol";
 
-/** 上限与界面一屏能放下多少直接相关 */
+/**
+ * 一次最多问几题。
+ *
+ * **不再是屏幕限制**：v1.65 起界面一次只显示一题、可前后翻页（原先全部平铺，上限与
+ * 「一屏能放下几题」直接相关）。保留 4 是产品取舍——一次问太多会把决策负担整个推给
+ * 用户，而每题都要他停下来想。`MAX_OPTIONS` 仍是屏幕限制：选项在同一页里平铺。
+ */
 export const MAX_QUESTIONS = 4;
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 4;
@@ -49,7 +55,7 @@ const optionSchema = Type.Object({
 const questionSchema = Type.Object({
   question: Type.String({ description: "问题正文" }),
   header: Type.Optional(
-    Type.String({ description: `短标签（≤${MAX_HEADER_CHARS} 字符），多题时作分组标题` }),
+    Type.String({ description: `短标签（≤${MAX_HEADER_CHARS} 字符），翻页时作该题的标题` }),
   ),
   options: Type.Array(optionSchema, {
     description: `${MIN_OPTIONS}~${MAX_OPTIONS} 个选项`,
@@ -61,7 +67,7 @@ const questionSchema = Type.Object({
 
 const askUserSchema = Type.Object({
   questions: Type.Array(questionSchema, {
-    description: `1~${MAX_QUESTIONS} 个问题，一屏全部展示`,
+    description: `1~${MAX_QUESTIONS} 个问题，界面上一次显示一题（可前后翻页）`,
     minItems: 1,
     maxItems: MAX_QUESTIONS,
   }),
@@ -222,7 +228,9 @@ export function createAskUserTools(host: AskUserHost): AgentHarnessTool<Executio
       "何时用：需求有关键分岔、存在无法从代码推断的偏好、或将要做不可逆动作而意图不明时——" +
       "先问再做，比猜错返工便宜。" +
       "何时不用：答案能从代码/文档查到（自己查），或只是想确认无关紧要的细节（直接做）。" +
-      `限制：一次 ${1}~${MAX_QUESTIONS} 题，每题 ${MIN_OPTIONS}~${MAX_OPTIONS} 个选项。` +
+      `限制：一次 ${1}~${MAX_QUESTIONS} 题（界面一次显示一题，可前后翻），每题 ${MIN_OPTIONS}~${MAX_OPTIONS} 个选项。` +
+      "用户除了点选项，还可以**自己输入**一段回答——两者会一起回传（形如「A、另外我还想…」）。" +
+      "所以选项要覆盖主要分支、但不必穷尽，也别把选项写得像唯一解。" +
       "用户可能跳过：此时你会收到一条说明，请据此自行决断并声明假设，不要重复发问。",
     parameters: askUserSchema,
     // 参数位置照内核签名：(toolCallId, params, onUpdate, toolContext, invocation, context)

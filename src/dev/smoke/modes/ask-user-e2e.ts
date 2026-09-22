@@ -9,7 +9,7 @@
  * 为什么必须有一条打模型的：这条链路里有两段**只有模型真的调用工具才走得到**——
  * ① worker 侧 `before_tool` 跳过 `ask_user` 的那条闸门守卫；
  * ② 「模型看见工具 → 发起问卷 → 答案回到模型 → 模型继续」这条往返。
- * 免费的 `ask-user` 模式（23 条）是从 `sessionManager.questions.enqueue()` **直接入队**，
+ * 免费的 `ask-user` 模式（39 条）是从 `sessionManager.questions.enqueue()` **直接入队**，
  * 验的是入队之后的一切（卡片 / 选项 / 载荷 / 超时 / 回收）；**入队之前**那一段只有这里能验。
  *
  * 判据一律取自**主进程**（`getView` / `questions` / `approvals`）：渲染层是并发参与者

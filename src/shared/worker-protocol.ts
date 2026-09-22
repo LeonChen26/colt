@@ -401,13 +401,17 @@ export interface HostResult {
 /**
  * 模型向用户提的一个问题（`ask_user` 工具）。
  *
- * 上限不是随手定的：`MAX_QUESTIONS` / `MAX_OPTIONS` 与界面一屏能放下多少直接相关，
- * `header` 长度限制是为了让多题分组标题不换行。校验在 worker 侧做（见
- * `worker/lib/ask-user-tool.ts`），主进程只做转发、不重复校验。
+ * `MAX_OPTIONS`（每题 2~4）仍是屏幕限制——选项在同一页里平铺；`header` 的长度限制是为了
+ * 让它的标题不换行。`MAX_QUESTIONS` **不再受屏幕限制**（v1.65 起界面一次只显示一题、
+ * 可前后翻页），保留 4 是产品取舍。校验在 worker 侧做（见 `worker/lib/ask-user-tool.ts`），
+ * 主进程只做转发、不重复校验。
+ *
+ * 答案由**界面**拼装成 `Record<问题原文, 字符串>`：选中项与自填文字用「、」相连
+ * （见 `renderer/src/lib/question-answer.ts`）——所以「点选项」与「自己输入」都是合法答案。
  */
 export interface AskUserQuestion {
   question: string;
-  /** 短标签（≤12 字符），多题时作为分组标题；单题可省 */
+  /** 短标签（≤12 字符），翻页时作该题的标题；单题可省 */
   header?: string;
   /** 2~4 个选项 */
   options: { label: string; description: string }[];
