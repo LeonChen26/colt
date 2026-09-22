@@ -21,6 +21,7 @@ import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
 import {
   createSession,
+  deleteProject,
   deleteSession,
   getFileBaseline,
   getProject,
@@ -321,6 +322,38 @@ export function registerIpcHandlers(): void {
     );
     mkdirSync(root, { recursive: true });
     return upsertProject(root);
+  });
+
+  /**
+   * 注销工作区：断开登记并清掉它名下的**全部会话**（记录 + 派生数据 + JSONL 历史）。
+   *
+   * **不碰磁盘上的项目目录**——那是用户的源码；注销登记 ≠ 删代码，目录还在的话之后
+   * 重新「打开」就回到原样（会话记录不可恢复）。
+   *
+   * 运行中（含正等人授权 / 作答）的会话让整次移除被拒绝：与 `session.delete` 同一条
+   * 纪律，半途删掉正在写 JSONL 的会话只会让进程与历史错配。检查放在**任何删除之前**，
+   * 这样拒绝时库与磁盘都还没动过。
+   */
+  handle("project.delete", (request) => {
+    if (!getProject(request.projectId)) throw new Error("工作区不存在或已被移除");
+    const sessions = listSessions(request.projectId);
+    const busy = sessions.find((session) => sessionManager.isRunning(session.id));
+    if (busy) throw new Error(`会话「${busy.title}」正在运行，请先中止后再移除工作区`);
+
+    // 先关 worker（若已加载）释放文件句柄，再删库与文件——与 session.delete 同一顺序
+    for (const session of sessions) sessionManager.close(session.id);
+    const removed = deleteProject(request.projectId) ?? [];
+    for (const session of removed) {
+      // 会话已永久删除：审批状态、图钉、工具图片都随它一起收干净
+      sessionManager.approvals.unregister(session.id);
+      dropSessionPin(session.id);
+      removeToolOutput(session.id);
+      removeSessionJsonl(session.kernelSessionId);
+    }
+    // 本项目的草稿：没落库也没有文件，丢掉内存记录即可（否则它一直挂在一张不存在的项目下）
+    const staleDrafts = [...drafts].filter(([, draft]) => draft.projectId === request.projectId);
+    for (const [id] of staleDrafts) drafts.delete(id);
+    return { ok: true } as const;
   });
 
   handle("session.create", (request) => {

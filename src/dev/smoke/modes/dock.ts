@@ -8,11 +8,17 @@
  */
 import { BrowserWindow, clipboard, WebContentsView } from "electron";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createSession, getProject, recordFileBaseline } from "../../../main/db/repo";
+import {
+  createSession,
+  getProject,
+  recordFileBaseline,
+  setKernelSessionId,
+  upsertProject,
+} from "../../../main/db/repo";
 import { hostBridge } from "../../../main/host";
 import { sessionManager } from "../../../main/session-manager";
 import { toolOutputDir } from "../../../main/tool-output";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ConversationView, ViewFileChange, ViewSkill } from "@shared/worker-protocol";
 import type { ApprovalRequest } from "@shared/protocol";
 import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
@@ -34,6 +40,8 @@ import { sleep, uncaughtErrors } from "../context";
  * 而「本次改动」成了同一处的下钻**清单层**——原「改动」「文件」两个页签都已取消，
  * 故这两件事在同一段里连起来验：总账 → 清单 → diff → 内容，再逐层退回去。
  * 越界路径与「工具卡传绝对路径」也顺带钉一下。
+ * v1.61 的第三段「本次用量」也在同一段里验：**零消耗整段不渲染**、有消耗时结论与视图一致、
+ * 出口能开「统计」页签并还原（结论在此、流水在彼，见 `UI-REGIONS` ⑦-G）。
  *
  * A3-3 的「页签关闭 + 「+」新增视图」同样在这里验：关闭**激活**页签后激活位是否交还默认视图、
  * 以及**关闭「浏览器」后原生视图是否真的收起 / 重开是否重新可见**
@@ -52,6 +60,15 @@ import { sleep, uncaughtErrors } from "../context";
  *
  * 工具截图的「按需读回」链路（落盘 → 读回 → 不越界 → 随会话删除清理）也在这一段里验：
  * 它横跨 worker（写）/ 主进程（读）/ 删除清理三处，只有真 userData + 真 IPC 才覆盖得到。
+ *
+ * 末尾一段是「移除工作区」（规则 ③-D），只走 IPC（**不点界面按钮**：那一按会弹原生确认框，
+ * 会把本模式整条链路挂住；界面那一按交给 `rm-workspace` 模式，它把 `dialog.showMessageBox`
+ * 打桩成「点了确认」），验整项目级联（项目行 / 名下会话 / JSONL / 落盘截图一起清），
+ * 以及一条**否定断言**——断开登记之后**磁盘上的项目目录必须一行不动**。刻意用独立项目做靶子，
+ * 不碰本模式的主角。**分工**：本段是「不需要任何注入」的那半边（总在跑）；另两段——
+ * 「运行中会话让整次移除被拒绝」（要 `sessionManager.isRunning()` 为真，而它只能来自 worker
+ * 发来的 `view.running`，本模式推的受控视图只改渲染层那份）与「界面那一按的连锁反应」——
+ * 由独立模式 `COLT_SMOKE_MODE=rm-workspace` 覆盖（挂 `scripts/running-worker.cjs` 假 worker）。
  *
  * 不调用模型、不产生计费；浏览器靶子复用夹具站（port 0，跑完即关）。
  *
@@ -241,6 +258,33 @@ export async function runDock(
       const el = aside ? aside.querySelector("[data-follow-ledger]") : null;
       if (!el) return false;
       el.click();
+      return true;
+    })()`);
+
+  /**
+   * 读「任务摘要」的**本次用量**段（v1.61）：`present` 判整段在不在——**零消耗时必须不在**
+   * （「无消耗时整段不渲染」是这段的规矩，也是它不摆空壳的判据）。`cost` 读结论里的费用，
+   * `hasExit` 读去「统计」页签的那个出口。
+   */
+  const usageProbe = (): Promise<{ present: boolean; cost: string; hasExit: boolean }> =>
+    run(`(() => {
+      const aside = [...document.querySelectorAll("aside")].find((a) =>
+        a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+      const sec = aside ? aside.querySelector("[data-usage-section]") : null;
+      const cost = aside ? aside.querySelector("[data-usage-cost]") : null;
+      return {
+        present: sec !== null,
+        cost: cost ? (cost.textContent ?? "").trim() : "",
+        hasExit: aside ? aside.querySelector("[data-usage-open]") !== null : false,
+      };
+    })()`);
+
+  /** 点「本次用量」段的出口（→ 打开「统计」页签） */
+  const clickUsageExit = (): Promise<boolean> =>
+    run<boolean>(`(() => {
+      const btn = document.querySelector("[data-usage-open]");
+      if (!btn) return false;
+      btn.click();
       return true;
     })()`);
 
@@ -822,6 +866,54 @@ export async function runDock(
     ]);
     checks.push(["有改动时总账可点（进入清单的出口）", ledger0.clickable]);
     log(`  总账：${ledger0.text}`);
+
+    // ---- v1.61：任务摘要的第三段「本次用量」（结论在此、流水仍在「统计」页签）----
+    log("[v1.61] 「任务摘要」的「本次用量」段：有消耗才出现，出口开「统计」页签");
+    checks.push([
+      "零消耗时**整段不渲染**（不摆一个 $0.0000 的空壳）",
+      (await usageProbe()).present === false,
+    ]);
+    // 推一份「真有消耗」的视图：stats 是视图自带的字段（零 IPC、不读 DB）
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        stats: {
+          messageCount: 6,
+          inputTokens: 12345,
+          outputTokens: 678,
+          totalTokens: 13023,
+          costUsd: 0.0421,
+          contextUsed: 8000,
+        },
+      }),
+    );
+    await sleep(400);
+    const usageOn = await usageProbe();
+    checks.push([
+      "有消耗时出现，结论数与视图一致（费用 $0.0421，出口在）",
+      usageOn.present && usageOn.cost === "$0.0421" && usageOn.hasExit,
+    ]);
+    const tabsBeforeUsage = (await probe()).tabCount;
+    checks.push(["点「查看完整统计」命中", await clickUsageExit()]);
+    await sleep(500);
+    const onStats = await probe();
+    checks.push([
+      "出口打开并激活「统计」页签（页签数 +1）",
+      onStats.activeLabel === "统计" && onStats.tabCount === tabsBeforeUsage + 1,
+    ]);
+    // 关掉刚开的「统计」还原——后面的下钻用例依赖「页签数不变」这条既有前提
+    await run(
+      `(() => { const b = document.querySelector('button[aria-label="关闭统计"]'); if (b) b.click(); return null; })()`,
+    );
+    await sleep(400);
+    const restored = await probe();
+    checks.push([
+      "关掉「统计」后页签数还原、激活位交还「任务摘要」",
+      restored.tabCount === tabsBeforeUsage && restored.activeLabel === "任务摘要",
+    ]);
+    // 视图恢复成默认（后面的下钻用例依赖默认的 fileChanges）
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(400);
 
     // 点总账 → 下钻的**清单层**（⑦-G 第四步：不再切到「改动」页签——那个页签已经没有了，
     // 故这里的关键判据是「落到清单层」而不是「多了一个页签」，页签数应当**纹丝不动**）
@@ -2435,6 +2527,63 @@ export async function runDock(
     checks.push(["删除会话后落盘目录被清掉（不留孤儿截图）", !existsSync(spillDir)]);
     const afterDelete = await readToolImage(spillSession.id, "call_smoke");
     checks.push(["删除后读回不抛异常，仍旧回 missing", afterDelete.status === "missing"]);
+
+    // ---- 移除工作区：断开登记 + 清会话，但**不动磁盘上的代码**（规则 ③-D）----
+    // 与 session.delete 同族，多出来的三处只有真 IPC 才覆盖得到：整项目级联（含 JSONL
+    // 与落盘截图）、以及「不删目录」这条**否定断言**——纯逻辑单测里根本没有磁盘可看。
+    // 前提**自己建**（AGENTS §五⑬）：造一个**独立项目**，绝不碰本模式的主角那个。
+    log("[移除工作区] 断开登记 + 清会话 + 磁盘上的代码一行不动（规则 ③-D）");
+    const sessionsRoot = dirname(sessionsDir);
+    const doomedRoot = join(sessionsRoot, "smoke-doomed-workspace");
+    mkdirSync(doomedRoot, { recursive: true });
+    const keepFile = join(doomedRoot, "keep.txt");
+    writeFileSync(keepFile, "用户的代码\n", "utf8");
+    const doomed = upsertProject(doomedRoot);
+    const doomedSession = createSession(doomed.id, join(sessionsRoot, doomed.id));
+    setKernelSessionId(doomedSession.id, "smoke-kernel-doomed");
+    // JSONL 与工具截图各落一份：删项目时它们必须一起消失
+    const doomedJsonl = join(sessionsRoot, doomed.id, "20260101_smoke-kernel-doomed.jsonl");
+    mkdirSync(dirname(doomedJsonl), { recursive: true });
+    writeFileSync(doomedJsonl, "{}\n", "utf8");
+    const doomedToolDir = toolOutputDir(doomedSession.id);
+    mkdirSync(doomedToolDir, { recursive: true });
+    writeFileSync(join(doomedToolDir, "call_smoke.png"), pngBytes);
+    // 前置**先自证**：下面三条「清掉了 / 没被删」全是否定断言，靶子若压根没建出来，
+    // 它们会一起**必然为真**（AGENTS §五⑫）——那种绿比一条红更贵。
+    checks.push([
+      "前置：JSONL / 落盘截图 / 代码目录三件靶子都真的建好了",
+      existsSync(doomedJsonl) && existsSync(doomedToolDir) && existsSync(keepFile),
+    ]);
+
+    const afterRemove = await run<{ ok: boolean }>(
+      `window.colt.invoke("project.delete", ${JSON.stringify({ projectId: doomed.id })})`,
+    );
+    checks.push(["移除工作区如实回报 ok", afterRemove?.ok === true]);
+    const projectIds = await run<string[]>(
+      'window.colt.invoke("project.list", undefined).then((list) => list.map((item) => item.id))',
+    );
+    checks.push(["断开登记：它不再出现在 project.list 里", !projectIds.includes(doomed.id)]);
+    checks.push(["只断开这一个：本模式的主角项目没被牵连", projectIds.includes(projectId)]);
+    const leftover = await run<number>(
+      `window.colt.invoke("session.list", ${JSON.stringify({ projectId: doomed.id })})` +
+        ".then((list) => list.length)",
+    );
+    checks.push(["名下的会话一并清掉（按库查询回空）", leftover === 0]);
+    checks.push(["JSONL 历史被清掉（不留孤儿文件）", !existsSync(doomedJsonl)]);
+    checks.push(["落盘的工具截图被清掉（与 session.delete 同一套收尾）", !existsSync(doomedToolDir)]);
+    checks.push(["**磁盘上的项目目录一行不动**（注销登记 ≠ 删代码）", existsSync(keepFile)]);
+
+    const missing = await run<{ threw: boolean; message: string }>(
+      `window.colt.invoke("project.delete", ${JSON.stringify({ projectId: "no-such-project" })})
+         .then(() => ({ threw: false, message: "" }))
+         .catch((error) => ({ threw: true, message: String(error && error.message) }))`,
+    );
+    checks.push([
+      "项目不存在时如实报错，而不是静默成功",
+      missing.threw === true && missing.message.length > 0,
+    ]);
+    // 断言都取完再清场：那个「代码目录」留着只是垃圾（它已经证明过自己没被删）
+    rmSync(doomedRoot, { recursive: true, force: true });
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   } finally {

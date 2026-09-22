@@ -593,8 +593,37 @@ export function getSession(sessionId: string): SessionInfo | undefined {
 }
 
 /**
+ * 清掉某个会话的**全部派生行**（不含 `sessions` 本体）。
+ *
+ * 这些表都没有 FK CASCADE，删会话 / 删项目时**必须逐张手动清**——漏一张就留下一堆
+ * 够不到的孤儿行。抽成一个函数是为了让「漏掉一段」在结构上不可能：删单条会话（
+ * `deleteSession`）与删整个项目（`deleteProject`）共用同一份清单。
+ */
+function deleteSessionScopedRows(db: ReturnType<typeof getDatabase>, sessionId: string): void {
+  db.prepare("DELETE FROM file_changes WHERE session_id = ?").run(sessionId);
+  db.prepare("DELETE FROM file_baselines WHERE session_id = ?").run(sessionId);
+  db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
+  db.prepare("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
+  db.prepare("DELETE FROM session_events WHERE session_id = ?").run(sessionId);
+  db.prepare("DELETE FROM approval_audit WHERE session_id = ?").run(sessionId);
+  db.prepare("DELETE FROM todos WHERE session_id = ?").run(sessionId);
+}
+
+/**
+ * 按会话 id 清掉全部派生行——**不要求 `sessions` 里真有这一行**。
+ *
+ * `deleteSession` 对库里没有的会话直接返回（防误删），但有一类会话**只在内存里**：
+ * 没落过库，却照样经 `recordSessionEvent` 等写进派生表。`[model/during-init]` 的合成会话
+ * （`smoke-during-init`）就是这么攒出 18 条孤儿 `session_events` 的（2026-09-22 清出）。
+ * 这种会话没有 `sessions` 行可删，只能按 id 反查清派生行，故单独开一条出口。
+ */
+export function purgeSessionScopedRows(sessionId: string): void {
+  deleteSessionScopedRows(getDatabase(), sessionId);
+}
+
+/**
  * 永久删除会话及其派生数据。
- * 子表（usage/tool_calls/file_changes）无 FK CASCADE，须与之同事务手动删除；
+ * 子表（usage/tool_calls/file_changes/…）无 FK CASCADE，须与之同事务手动删除；
  * 返回被删会话的快照（含 jsonlPath / kernelSessionId），供调用方清理历史文件。
  */
 export function deleteSession(sessionId: string): SessionInfo | undefined {
@@ -604,12 +633,7 @@ export function deleteSession(sessionId: string): SessionInfo | undefined {
 
   db.exec("BEGIN");
   try {
-    db.prepare("DELETE FROM file_changes WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM file_baselines WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM session_events WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM approval_audit WHERE session_id = ?").run(sessionId);
+    deleteSessionScopedRows(db, sessionId);
     db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     db.exec("COMMIT");
   } catch (error) {
@@ -617,6 +641,34 @@ export function deleteSession(sessionId: string): SessionInfo | undefined {
     throw error;
   }
   return existing;
+}
+
+/**
+ * 注销一个项目：删掉项目行、它名下的**全部会话**与各自的派生数据，返回被删会话的快照，
+ * 供调用方清理 JSONL 历史文件。项目不存在时返回 `undefined`。
+ *
+ * **不动磁盘上的项目目录**：那是用户的源码，注销登记不是删代码（这与首启的
+ * `clearUserData` 那种「清空重来」是两回事）。
+ *
+ * `sessions` 外键虽带 `ON DELETE CASCADE`，但那条链只覆盖会话本体；派生表仍要靠
+ * `deleteSessionScopedRows` 逐张清，所以先按会话清、再删会话与项目，全程一个事务。
+ */
+export function deleteProject(projectId: string): SessionInfo[] | undefined {
+  const db = getDatabase();
+  if (!getProject(projectId)) return undefined;
+  const sessions = listSessions(projectId);
+
+  db.exec("BEGIN");
+  try {
+    for (const session of sessions) deleteSessionScopedRows(db, session.id);
+    db.prepare("DELETE FROM sessions WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return sessions;
 }
 
 /** 更新会话标题与消息数 */

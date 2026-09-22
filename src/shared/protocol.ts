@@ -247,6 +247,7 @@ export const IPC_CHANNELS = [
   "project.pick",
   "project.list",
   "project.createScratch",
+  "project.delete",
   "session.create",
   "session.list",
   "session.open",
@@ -381,6 +382,21 @@ export interface IpcInvokeMap {
   "project.createScratch": {
     request: void;
     response: Project;
+  };
+  /**
+   * 注销一个工作区（项目）：断开登记，并清掉它名下的**全部会话**（记录 + JSONL 历史 +
+   * 派生数据）。
+   *
+   * **不碰磁盘上的项目目录**——那里装的是用户的代码，注销登记 ≠ 删代码。目录还在的话，
+   * 之后重新「打开」一次就回到原样（`upsertProject` 按 root_key 去重会复用同一条登记，
+   * 但那里的会话已经不在，会话记录不可恢复）。
+   *
+   * 运行中（含正等人授权 / 作答）的会话会让整次移除被拒绝——与 `session.delete` 同一条
+   * 纪律：删掉正在写 JSONL 的会话只会让进程与历史错配。
+   */
+  "project.delete": {
+    request: { projectId: string };
+    response: { ok: true };
   };
   /**
    * 新建会话：**只分配 id，不落库**（草稿）。

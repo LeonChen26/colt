@@ -8,20 +8,27 @@ import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase } from "../src/main/db/index.ts";
 import {
   createSession,
+  deleteProject,
   deleteSession,
   getFileBaseline,
+  getProject,
   getSession,
   getSetting,
   listProjectChanges,
   listProjects,
+  listSessionEvents,
   listSessionFileChanges,
+  listSessionTodos,
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  purgeSessionScopedRows,
   recordFileBaseline,
   recordFileChange,
+  recordSessionEvent,
   recordToolCall,
   recordUsage,
+  replaceSessionTodos,
   setChangeNet,
   setKernelSessionId,
   setSessionModel,
@@ -154,6 +161,89 @@ describe("deleteSession", () => {
 
   test("删除不存在的会话返回 undefined", () => {
     assert.equal(deleteSession("nope"), undefined);
+  });
+
+  test("待办清单一并清掉（todos 没有 FK 级联，漏删就留下够不到的孤儿行）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    replaceSessionTodos(session.id, [
+      { id: "a", subject: "第一步", activeForm: "正在做第一步", status: "pending", blockedBy: [], updatedAt: 1 },
+    ]);
+
+    deleteSession(session.id);
+    assert.deepEqual(listSessionTodos(session.id), []);
+  });
+});
+
+describe("deleteProject", () => {
+  test("断开登记：项目行、名下会话与全部派生数据一起清掉", () => {
+    const project = upsertProject("E:/demo");
+    const first = createSession(project.id, "E:/demo/jsonl");
+    const second = createSession(project.id, "E:/demo/jsonl");
+    recordUsage({ sessionId: first.id, kernelUsageId: "u1", provider: "p", model: "m", input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0, timestamp: 1 });
+    recordToolCall({ toolCallId: "c1", sessionId: first.id, toolName: "bash", inputJson: null, isError: false, durationMs: 1, timestamp: 1 });
+    recordFileChange(first.id, { id: "ch1", path: "a.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 1 });
+    recordFileBaseline(first.id, "a.ts", { existed: true, text: "旧内容\n" });
+    replaceSessionTodos(second.id, [
+      { id: "a", subject: "第一步", activeForm: "正在做第一步", status: "pending", blockedBy: [], updatedAt: 1 },
+    ]);
+
+    const removed = deleteProject(project.id);
+    assert.deepEqual(removed?.map((item) => item.id).sort(), [first.id, second.id].sort());
+    assert.equal(getProject(project.id), undefined);
+    assert.equal(listProjects().length, 0);
+    assert.equal(listSessions(project.id).length, 0);
+    assert.equal(getSession(first.id), undefined);
+    assert.equal(listSessionUsage(first.id).records.length, 0);
+    assert.equal(listSessionToolCalls(first.id).length, 0);
+    assert.equal(listSessionFileChanges(first.id).length, 0);
+    assert.equal(getFileBaseline(first.id, "a.ts"), undefined);
+    assert.deepEqual(listSessionTodos(second.id), []);
+  });
+
+  test("只动本项目：别的项目的项目行与会话原样保留", () => {
+    const doomed = upsertProject("E:/demo");
+    const kept = upsertProject("E:/other");
+    createSession(doomed.id, "E:/demo/jsonl");
+    const keptSession = createSession(kept.id, "E:/other/jsonl");
+
+    deleteProject(doomed.id);
+    assert.equal(getProject(doomed.id), undefined);
+    assert.notEqual(getProject(kept.id), undefined);
+    assert.deepEqual(listSessions(kept.id).map((item) => item.id), [keptSession.id]);
+  });
+
+  test("项目不存在返回 undefined（调用方据此如实报错，而不是静默成功）", () => {
+    assert.equal(deleteProject("nope"), undefined);
+  });
+});
+
+describe("purgeSessionScopedRows", () => {
+  test("库里没有这条会话也按 id 清派生行（「只在内存里」的合成会话靠它收尾）", () => {
+    const ghost = "smoke-during-init";
+    recordSessionEvent(ghost, "合成会话写下的事件");
+    assert.equal(listSessionEvents(ghost).length, 1);
+
+    purgeSessionScopedRows(ghost);
+    assert.deepEqual(listSessionEvents(ghost), []);
+  });
+
+  test("对照：deleteSession 对库里没有的会话直接返回，清不掉这些行——这正是当初漏出孤儿的原因", () => {
+    const ghost = "smoke-during-init";
+    recordSessionEvent(ghost, "合成会话写下的事件");
+
+    assert.equal(deleteSession(ghost), undefined);
+    assert.equal(listSessionEvents(ghost).length, 1);
+  });
+
+  test("有会话行时：清派生行但**不动** sessions 本体（与 deleteSession 的边界）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordSessionEvent(session.id, "事件");
+
+    purgeSessionScopedRows(session.id);
+    assert.deepEqual(listSessionEvents(session.id), []);
+    assert.notEqual(getSession(session.id), undefined);
   });
 });
 

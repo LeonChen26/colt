@@ -500,6 +500,68 @@ export default function App(): React.JSX.Element {
     [loadProjectSessions],
   );
 
+  /**
+   * 移除工作区：断开登记并清掉它名下的全部会话；**磁盘上的代码一行不动**。
+   *
+   * 与 `deleteSession` 同一套纪律：先走主进程的原生确认框（不用 `window.confirm`，
+   * 理由见协议注释），再调后端，最后把渲染层里「与库同寿命」的状态全部收干净——
+   * 缓存视图、图钉、会话列表、展开态，以及删的正好是当前项目时的选中态。
+   */
+  const deleteProject = useCallback(
+    async (project: Project) => {
+      try {
+        const { confirmed } = await window.colt.invoke("dialog.confirm", {
+          message: `确定移除工作区「${project.name}」？`,
+          detail:
+            "该项目下的会话记录会被一并清除，且不可恢复。磁盘上的文件不受影响，之后重新打开该目录即可恢复登记。",
+          confirmLabel: "移除",
+        });
+        if (!confirmed) return;
+        // 先取一份 id 清单：删完再问就问不到了（`session.list` 读的是库）。它同时也覆盖
+        // 「该项目没展开、渲染层手里根本没有它的会话列表」这一档——不能拿缓存当依据。
+        const doomed = await window.colt.invoke("session.list", { projectId: project.id });
+        await window.colt.invoke("project.delete", { projectId: project.id });
+
+        const removedIds = new Set(doomed.map((session) => session.id));
+        // 缓存与库同寿命：会话没了，渲染层那份「最后视图」也别留着
+        for (const id of removedIds) dropCachedView(id);
+        // 主进程那份图钉已随 project.delete 清掉（见 ipc），这里同步视觉状态
+        setPinnedSessions((set) => {
+          let changed = false;
+          const next = new Set(set);
+          for (const id of removedIds) if (next.delete(id)) changed = true;
+          return changed ? next : set;
+        });
+        // 草稿没落库、也不在 sessionsByProject 里：它属于被删项目时同样要丢掉
+        if (draftRef.current?.projectId === project.id) discardDraft();
+
+        setSessionsByProject((map) => {
+          if (!map.has(project.id)) return map;
+          const next = new Map(map);
+          next.delete(project.id);
+          return next;
+        });
+        setExpandedProjects((set) => {
+          if (!set.has(project.id)) return set;
+          const next = new Set(set);
+          next.delete(project.id);
+          return next;
+        });
+
+        const list = await window.colt.invoke("project.list", undefined);
+        setProjects(list);
+        // 删的正好是当前项目：切到列表里的下一条（没有就留空，中间区回到「还没有项目」）
+        setActiveProject((current) => (current?.id === project.id ? (list[0] ?? null) : current));
+        setActiveSession((current) =>
+          current && current.projectId === project.id ? null : current,
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [discardDraft],
+  );
+
   return (
     <div className="flex h-full flex-col">
       {firstRun && (
@@ -604,6 +666,7 @@ export default function App(): React.JSX.Element {
                       project={project}
                       active={project.id === activeProject?.id}
                       expanded={expanded}
+                      busy={list.some((session) => runningSessions.has(session.id))}
                       onToggle={() =>
                         setExpandedProjects((set) => {
                           const next = new Set(set);
@@ -620,6 +683,7 @@ export default function App(): React.JSX.Element {
                         setMainView("chat");
                         void newSession(project.id);
                       }}
+                      onDelete={() => void deleteProject(project)}
                     />
                     {expanded && (
                       <div className="mt-0.5 pl-3">
@@ -794,21 +858,26 @@ function formatElapsed(startedAt: number, now: number): string {
   return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
 }
 
-/** 项目行：折叠三角 + 项目名 + 新建会话 */
+/** 项目行：折叠三角 + 项目名 + 新建会话 + 移除工作区 */
 function ProjectRow({
   project,
   active,
   expanded,
+  busy,
   onToggle,
   onActivate,
   onNewSession,
+  onDelete,
 }: {
   project: Project;
   active: boolean;
   expanded: boolean;
+  /** 该项目下有会话正在运行（含等人回话）——此时不允许移除，与 session.delete 一致 */
+  busy: boolean;
   onToggle: () => void;
   onActivate: () => void;
   onNewSession: () => void;
+  onDelete: () => void;
 }): React.JSX.Element {
   return (
     <div
@@ -842,6 +911,16 @@ function ProjectRow({
         className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-raised hover:text-text-primary focus:opacity-100"
       >
         <Plus {...ICON.xs} />
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={busy}
+        data-project-remove
+        title={busy ? "有会话正在运行，不可移除工作区" : "移除工作区（不影响磁盘上的文件）"}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-raised hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+      >
+        <Trash2 {...ICON.xs} />
       </button>
     </div>
   );

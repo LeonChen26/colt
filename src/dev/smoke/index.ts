@@ -38,6 +38,13 @@
  *       面板迁入页签（A3-5 / ⑦-H / ⑦-G：「工具」「改动」「文件」三个视图都取消后只剩统计与规则）、
  *       观测抽屉（B2）与它的**条目详情**（N1：点行展开完整字段 + 复制到剪贴板）、
  *       浏览器前进/后退/刷新（B1），以及 ⑥ Live Bar 的运行状态段（C1/C2：已中断 / 已失败 / 空闲）
+ * rm-workspace：「移除工作区」（规则 ③-D）三段——①「运行中的会话让整次移除被拒绝」+
+ *       「跑完就能删」的对照；②「假 worker 对**不属于本用例的会话**零写入」（渲染层挂载会
+ *       自动打开当前项目第一条会话，那多半是用户的真实会话）；③**点界面那一按**的连锁反应
+ *       （原生确认框打桩成「确认」，断言侧栏那行消失 / 库里也没了 / 别家项目没被牵连）。
+ *       ①② 要挂 `COLT_WORKER_OVERRIDE=scripts/running-worker.cjs` 假 worker（不调模型、
+ *       不计费），**缺了就明说跳过**；③ 不依赖它，总在跑。前提自己建：独立靶子项目 +
+ *       临时免密钥 provider，不碰本机既有配置
  * model：未开启会话（无 worker）时也能选模型——落库的选定值照样回显、切换立即生效；
  *        以及**没有可用模型**时主区黄条与对话区共存（输入卡片的下半行不能被裁掉）；
  *        另有「还没用起来的会话」一条链：空项目直接给草稿（打开就见输入框）、草稿不进侧栏、
@@ -83,7 +90,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { upsertProject } from "../../main/db/repo";
 import { dirname, join } from "node:path";
-import { setActiveOutputPath, uncaughtErrors } from "./context";
+import { removeFixtureProjects, setActiveOutputPath, uncaughtErrors } from "./context";
 import { runAskUser } from "./modes/ask-user";
 import { runAskUserE2e } from "./modes/ask-user-e2e";
 import { runBasic } from "./modes/basic";
@@ -109,6 +116,7 @@ import {
   runSessionDraft,
 } from "./modes/model";
 import { runReenter } from "./modes/reenter";
+import { runRmWorkspace } from "./modes/rm-workspace";
 import { runSubagent } from "./modes/subagent";
 import { runTodo } from "./modes/todo";
 
@@ -257,6 +265,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runMemoryE2e(window, log, run);
     } else if (mode === "dock") {
       await runDock(window, project.id, sessionsDir, log, run);
+    } else if (mode === "rm-workspace") {
+      await runRmWorkspace(window, project.id, sessionsDir, log, run);
     } else if (mode === "perf") {
       await runPerf(window, project.id, sessionsDir, log, run);
     } else if (mode === "todo") {
@@ -282,6 +292,13 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
     console.error("[SMOKE] 失败", error);
     lines.push(`[SMOKE] 失败 ${String(error)}`);
   } finally {
+    // 夹具收尾：注销这次跑动用过的一次性夹具项目（否则每跑一趟就往库里攒会话）。
+    // 放在落日志之前，好让「注销了哪些」也进 .log；失败不阻断本次结论。
+    try {
+      await removeFixtureProjects(log);
+    } catch (error) {
+      lines.push(`[SMOKE] 夹具收尾失败（不阻断结论）${String(error)}`);
+    }
     try {
       await writeFile(`${outputPath}.log`, lines.join("\n"), "utf8");
     } catch {

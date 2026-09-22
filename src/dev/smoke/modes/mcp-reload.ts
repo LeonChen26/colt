@@ -31,9 +31,9 @@
 import { app, BrowserWindow } from "electron";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { createSession, upsertProject } from "../../../main/db/repo";
+import { createSession, deleteSession, upsertProject } from "../../../main/db/repo";
 import { sessionManager } from "../../../main/session-manager";
-import { isolateUserHome, sleep, uncaughtErrors } from "../context";
+import { isolateUserHome, removeOrphanSessionJsonl, sleep, uncaughtErrors } from "../context";
 
 export async function runMcpReload(
   window: BrowserWindow,
@@ -246,6 +246,13 @@ export async function runMcpReload(
     } catch (error) {
       log(`关闭会话失败（无害）：${error instanceof Error ? error.message : String(error)}`);
     }
+    // 夹具会话是一次性的：只 close 会把库里的行与落盘的 JSONL 都留下，每跑一趟攒一条
+    // （2026-09-22 清出的孤儿文件里就有一个出自这里）。close 之后按产品的删法一起清掉。
+    sessionManager.close(session.id);
+    await sleep(300);
+    deleteSession(session.id);
+    removeOrphanSessionJsonl(log);
+    checks.push(["收尾后 sessions 下不再有无主 JSONL 历史", removeOrphanSessionJsonl().length === 0]);
     log("[mcp-reload] 断言");
     for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
     log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);

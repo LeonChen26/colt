@@ -14,7 +14,9 @@ import {
   deleteSession,
   getSession,
   listProjects,
+  listSessionEvents,
   listSessions,
+  purgeSessionScopedRows,
   setSessionModel,
   upsertProject,
 } from "../../../main/db/repo";
@@ -23,7 +25,7 @@ import { listProviders, removeProvider, saveProvider } from "../../../main/provi
 import { deleteSecret, getSecret, setSecret } from "../../../main/secrets";
 import { writeOnboardedFlag } from "../../../main/first-run";
 import { hasUsableProvider, resolveSessionModel } from "@shared/model-ref";
-import { sleep } from "../context";
+import { removeOrphanSessionJsonl, sleep } from "../context";
 
 /**
  * 「未开启会话也能选模型」的端到端用例。
@@ -347,13 +349,24 @@ export async function runModelSwitchDuringOpen(
       !errors.some((message) => message.includes("初始化")),
     ]);
   } finally {
-    log("[model/during-init] 端到端断言");
-    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
-    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
+    // 收尾：这条合成会话**没落过库**，但它照样被主进程记了派生行、被内核写了 JSONL 历史
+    // （库里的孤儿 `session_events`、主仓库项目目录下的孤儿文件都出自这里，跨多次运行累积）。
+    // 合成会话没有 `sessions` 行可删，`deleteSession` 会直接 no-op，故走 purge + 无主清扫。
     sessionManager.close(sessionId);
+    await sleep(300);
+    purgeSessionScopedRows(sessionId);
+    removeOrphanSessionJsonl(log);
+    checks.push([
+      "收尾清掉合成会话写下的库记录（不留孤儿 session_events）",
+      listSessionEvents(sessionId).length === 0,
+    ]);
+    checks.push(["收尾后 sessions 下不再有无主 JSONL 历史", removeOrphanSessionJsonl().length === 0]);
     removeProvider(PROVIDER_ID);
     deleteSecret(PROVIDER_ID);
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
+    log("[model/during-init] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
   }
 }
 
@@ -1040,21 +1053,27 @@ export async function runSessionDraft(
     }
     checks.push(["落库后侧栏出现了这条会话（转正）", appeared]);
   } finally {
-    log("[session/draft] 端到端断言");
-    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
-    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
     // 把这个项目还给「空」：否则下次跑到这里，「打开就见输入框」的前提就不成立了
     for (const leftover of listSessions(emptyProject.id)) {
       sessionManager.close(leftover.id);
       deleteSession(leftover.id);
     }
     if (draftId) sessionManager.close(draftId);
+    // 上面删的是库里的行，**落盘的 JSONL 历史不会跟着走**（`deleteSession` 只碰库，清文件那步
+    // 在产品侧是 IPC `session.delete` 里的 `removeSessionJsonl`）。不收尾的话每跑一趟就往
+    // `sessions/…-smoke-draft-empty-fixture/` 里留一个够不到的文件（2026-09-22 清出 19 个）。
+    await sleep(300);
+    removeOrphanSessionJsonl(log);
+    checks.push(["收尾后 sessions 下不再有无主 JSONL 历史", removeOrphanSessionJsonl().length === 0]);
     removeProvider(PROVIDER_ID);
     deleteSecret(PROVIDER_ID);
     if (savedDeepseekKey) setSecret("deepseek", savedDeepseekKey);
     // 把仓库项目顶回 project.list[0]：渲染层挂在空夹具项目上没有意义，
     // 后面的用例（以及下次运行）该看到的是真实项目。
     upsertProject(cwd);
+    log("[session/draft] 端到端断言");
+    for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
+    log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
   }
 }
 

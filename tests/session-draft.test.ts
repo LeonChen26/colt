@@ -115,6 +115,26 @@ describe("新建工作目录：project.createScratch", () => {
   });
 });
 
+describe("注销工作区：project.delete", () => {
+  test("「运行中」检查排在任何删除动作之前——拒绝时库与磁盘都还没动过", () => {
+    const body = handlerBody("project.delete");
+    const guardAt = body.indexOf("isRunning(");
+    assert.notEqual(guardAt, -1, "找不到运行态检查：守卫缺失，运行中的会话会被连根删掉");
+    assert.ok(
+      guardAt < body.indexOf("sessionManager.close("),
+      "关 worker 必须排在拒绝之后，否则「拒绝」已经有了副作用",
+    );
+    assert.ok(
+      guardAt < body.indexOf("deleteProject("),
+      "删库必须排在拒绝之后，否则拒绝之后数据已经回不来了",
+    );
+  });
+
+  test("项目不存在时如实报错，而不是静默成功", () => {
+    assert.match(handlerBody("project.delete"), /if \(!getProject\(request\.projectId\)\) throw/);
+  });
+});
+
 describe("起手区的目录算术（scratch-dir）", () => {
   test("默认父目录是家目录下的 .colt/（与用户级记忆同一个命名空间）", () => {
     assert.equal(defaultScratchBase(join("/home", "u")), join("/home", "u", ".colt"));
