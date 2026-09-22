@@ -34,14 +34,15 @@ import { sleep, uncaughtErrors } from "../context";
  *   1) 在主进程里用 executeJavaScript 驱动渲染层 DOM，并**真派发鼠标事件**模拟拖拽；
  *   2) 读主进程侧 WebContentsView 的 `getVisible()`——折叠是否真的收起视图，只有它说了算。
  *
- * ⑦-G 的「任务摘要」（计划 + 紧跟的一行总账）同样用**真实的事件通道**（`session.view`）推一个
- * **受控视图**来驱动：不跑模型，但走的是产品里一模一样的那条链路（事件 → DOM → 点击 → 落点）。
+ * ⑦-G 的「任务摘要」（v1.67 起三段：本次用量 → 计划 → 紧跟的一行总账）同样用**真实的事件通道**
+ * （`session.view`）推一个**受控视图**来驱动：不跑模型，但走的是产品里一模一样的那条链路（事件 → DOM → 点击 → 落点）。
  * ⑦-G 第四步之后「点文件路径 → 预览」落进「任务摘要」的下钻**内容层**（工具卡是唯一入口），
  * 而「本次改动」成了同一处的下钻**清单层**——原「改动」「文件」两个页签都已取消，
  * 故这两件事在同一段里连起来验：总账 → 清单 → diff → 内容，再逐层退回去。
  * 越界路径与「工具卡传绝对路径」也顺带钉一下。
- * v1.61 的第三段「本次用量」也在同一段里验：**零消耗整段不渲染**、有消耗时结论与视图一致、
+ * v1.61 的「本次用量」段也在同一段里验：**零消耗整段不渲染**、有消耗时结论与视图一致、
  * 出口能开「统计」页签并还原（结论在此、流水在彼，见 `UI-REGIONS` ⑦-G）。
+ * v1.67 把它的**位置**提到最前，故顺带断言三段同场时的 DOM 顺序（用量 → 计划 → 改动）。
  *
  * A3-3 的「页签关闭 + 「+」新增视图」同样在这里验：关闭**激活**页签后激活位是否交还默认视图、
  * 以及**关闭「浏览器」后原生视图是否真的收起 / 重开是否重新可见**
@@ -259,6 +260,33 @@ export async function runDock(
       if (!el) return false;
       el.click();
       return true;
+    })()`);
+
+  /**
+   * 读「任务摘要」里**几段的 DOM 顺序**（v1.67 起：本次用量 → 计划 → 本次改动）。
+   * 顺序是这一版的需求本体，写成断言才守得住：三段是同一容器里的兄弟，
+   * 合成一个 `querySelectorAll` 拿到的就是**文档序**，不需自己比坐标。
+   * 只返回**在场上**的那几段（各段「该不该渲染」另有判据，混在一起会互相掩盖）。
+   */
+  const followOrderProbe = (): Promise<string[]> =>
+    run(`(() => {
+      const aside = [...document.querySelectorAll("aside")].find((a) =>
+        a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+      if (!aside) return [];
+      const names = [];
+      const all = aside.querySelectorAll(
+        "[data-usage-section],[data-todo-section],[data-follow-ledger]"
+      );
+      for (const el of all) {
+        names.push(
+          el.hasAttribute("data-usage-section")
+            ? "用量"
+            : el.hasAttribute("data-todo-section")
+              ? "计划"
+              : "改动"
+        );
+      }
+      return names;
     })()`);
 
   /**
@@ -844,11 +872,11 @@ export async function runDock(
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
 
-    // ---- ⑦-G：「任务摘要」= 计划 + 紧跟其下的一行总账 ----
+    // ---- ⑦-G：「任务摘要」= 本次用量 + 计划 + 紧跟其下的一行总账（顺序见 v1.67）----
     // 受控视图里 runningTools 为空、fileChanges 三条（两条项目内 + 一条越界），
     // 正好钉住两件事：右栏**不再**列此刻动作（v1.53 删去「进行中的动作」段，此刻动作只在 ④），
-    // 总账是**紧跟计划**的**一行**双口径。
-    log("[⑦-G] 「任务摘要」：不再列此刻动作，一行总账紧跟计划");
+    // 总账是**紧跟计划**（本视图最后一段）的**一行**双口径。
+    log("[⑦-G] 「任务摘要」：不再列此刻动作，一行总账收尾");
     await clickInDock(`b.textContent.trim() === "任务摘要"`);
     await sleep(300);
     checks.push([
@@ -867,16 +895,35 @@ export async function runDock(
     checks.push(["有改动时总账可点（进入清单的出口）", ledger0.clickable]);
     log(`  总账：${ledger0.text}`);
 
-    // ---- v1.61：任务摘要的第三段「本次用量」（结论在此、流水仍在「统计」页签）----
+    // ---- v1.61：任务摘要的「本次用量」段（结论在此、流水仍在「统计」页签）----
     log("[v1.61] 「任务摘要」的「本次用量」段：有消耗才出现，出口开「统计」页签");
     checks.push([
       "零消耗时**整段不渲染**（不摆一个 $0.0000 的空壳）",
       (await usageProbe()).present === false,
     ]);
-    // 推一份「真有消耗」的视图：stats 是视图自带的字段（零 IPC、不读 DB）
+    // 推一份「真有消耗」的视图：stats 是视图自带的字段（零 IPC、不读 DB）。
+    // 同时给一份**非空清单**：三段同场才验得了顺序（v1.67 起 用量 → 计划 → 改动）。
     window.webContents.send(
       "session.view",
       smokeView({
+        todos: [
+          {
+            id: "smoke-todo-1",
+            subject: "把「本次用量」提到最上面",
+            activeForm: "正在重排「任务摘要」",
+            status: "in_progress",
+            blockedBy: [],
+            updatedAt: stamp,
+          },
+          {
+            id: "smoke-todo-2",
+            subject: "同步文档与冒烟",
+            activeForm: "",
+            status: "pending",
+            blockedBy: ["smoke-todo-1"],
+            updatedAt: stamp,
+          },
+        ],
         stats: {
           messageCount: 6,
           inputTokens: 12345,
@@ -893,6 +940,13 @@ export async function runDock(
       "有消耗时出现，结论数与视图一致（费用 $0.0421，出口在）",
       usageOn.present && usageOn.cost === "$0.0421" && usageOn.hasExit,
     ]);
+    // 顺序（v1.67）：三段**同场**时的阅读顺序就是这一段的需求本体——DOM 序即阅读序。
+    const segments = await followOrderProbe();
+    checks.push([
+      "三段同场时按「用量 → 计划 → 改动」排（v1.67 置顶）",
+      segments.join(" > ") === "用量 > 计划 > 改动",
+    ]);
+    log(`  三段顺序：${segments.join(" > ")}`);
     const tabsBeforeUsage = (await probe()).tabCount;
     checks.push(["点「查看完整统计」命中", await clickUsageExit()]);
     await sleep(500);

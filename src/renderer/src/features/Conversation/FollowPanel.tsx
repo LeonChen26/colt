@@ -5,21 +5,24 @@
  * 右栏工作区的「任务摘要」视图（默认视图，规则 ⑦-E；v1.48 由「正在处理」更名）。
  *
  * 规则 ⑦-G：本视图构成**几段互不重复的结论**（顺序即阅读顺序）——
- *   1. 计划（将来）：待办清单，`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做；
+ *   1. 本次用量（过去 / 累计，v1.61 新增；**v1.67 置顶**）：费用 + 输入 / 输出 tokens 的**结论**，
+ *      数据直接取 `view.stats`（**零 IPC、随会话实时**）；**没有用量时整段不渲染**
+ *      （摆一个「$0.0000」的空壳与摆一个空清单一样没有意义）。
+ *      它只给结论，**流水仍在「统计」页签**（按模型 / 工具排行 / 可筛明细）——
+ *      ⑦-H：附属视图给结论不给流水；这里那行「查看完整统计」就是去流水层的唯一出口。
+ *      加这一段是因为另两段**都可能为空**，只剩一行「0 处 · 0 文件」的面板太空。
+ *      **置顶的理由**：它是三段里**唯一带钱**的结论（花销比进度更早被关心），也是
+ *      最容易被满足的一段——没有消耗就整段消失，不留空壳。
+ *   2. 计划（将来）：待办清单，`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做；
  *      **已完成折成一行**，点开才铺开。没有清单时**整段不渲染**（不占位）——
  *      「没有清单」与「有清单但此刻空闲」是两件事，前者不该在界面上留一个空壳。
  *      清单**不设自己的滚动上限**：它多长就多长，超出面板高度由**本视图整体**滚动，
  *      绝不在半截处截断（曾写死 `max-h-[45%]`，清单略多就只在自己那一小块里滚）。
- *   2. 本次改动（过去 / 累计）：**紧跟计划**的一行常驻总账「N 处 · M 文件」，点它进入清单。
+ *   3. 本次改动（过去 / 累计）：**紧跟计划**（本视图最后一段）的一行常驻总账
+ *      「N 处 · M 文件」，点它进入清单。
  *      `+a −b` 是**净值**（基线 → 现在，与清单层同源）：改完又退回原样就是 0，
  *      故这里不给「干了多少下」的错觉——「处 / 文件」两个数说明干过活，净值说明结果。
  *      它不是可折叠区段（没有 caret / 展开态 / 空态）。
- *   3. 本次用量（过去 / 累计，v1.61 新增）：费用 + 输入 / 输出 tokens 的**结论**，
- *      数据直接取 `view.stats`（**零 IPC、随会话实时**）；**没有用量时整段不渲染**
- *      （同计划段的规矩——摆一个「$0.0000」的空壳与摆一个空清单一样没有意义）。
- *      它只给结论，**流水仍在「统计」页签**（按模型 / 工具排行 / 可筛明细）——
- *      ⑦-H：附属视图给结论不给流水；这里那行「查看完整统计」就是去流水层的唯一出口。
- *      加这一段是因为前两段**都可能为空**，只剩一行「0 处 · 0 文件」的面板太空。
  *
  * 「此刻在跑什么」**不在本视图**（v1.53 删去「进行中的动作」段）：④ 消息流里已有运行中
  * 工具卡（含输出 / diff / 截图）与子代理卡，那是叙事的真源；本视图再列一遍只是把同一批
@@ -175,7 +178,38 @@ export function FollowPanel({
     // 本视图整体滚动（而不是给清单一个自己的滚动盒）：清单必须能完整铺开，
     // 总账**紧跟**在它下面（不再被一个吃高度的中间段顶到面板最下沿）。
     <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
-      {/* 段一：计划（将来）——v1.48 新增。**没有清单时整段不渲染**（不占位）：
+      {/* 段一：本次用量（v1.61 新增；v1.67 置顶）——结论（费用 / tokens）留在这里，
+          流水留在「统计」页签。没有消耗时整段不渲染（`hasUsage`）。 */}
+      {usage !== undefined && hasUsage && (
+        <section data-usage-section="" className="flex shrink-0 flex-col border-b border-line">
+          <SectionHead
+            title="本次用量"
+            meta={<span data-usage-cost="">${usage.costUsd.toFixed(4)}</span>}
+            collapsed={usageCollapsed}
+            onToggle={() => setUsageCollapsed((value) => !value)}
+          />
+          {!usageCollapsed && (
+            <div className="px-3.5 pb-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <UsageStat label="输入" value={formatTokenCount(usage.inputTokens)} />
+                <UsageStat label="输出" value={formatTokenCount(usage.outputTokens)} />
+              </div>
+              <button
+                type="button"
+                data-usage-open=""
+                onClick={onOpenStats}
+                title="打开「统计」页签：按模型 / 工具排行 / 可筛明细"
+                className="mt-2 flex items-center gap-1 text-[11.5px] text-text-muted transition hover:text-text-primary"
+              >
+                查看完整统计
+                <ChevronRight {...ICON.xs} />
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* 段二：计划（将来）——v1.48 新增。**没有清单时整段不渲染**（不占位）：
           那是「模型还没拆解」，不是「有清单但空着」，留个空壳只会让人以为坏了。 */}
       {todos.length > 0 && (
         <section data-todo-section="" className="flex shrink-0 flex-col border-b border-line">
@@ -208,8 +242,9 @@ export function FollowPanel({
         </section>
       )}
 
-      {/* 总账（⑦-G）：一行常驻状态，**紧跟计划**、不是区段（没有 caret / 展开态 / 空态）。
-          「空」时它仍在，只是数字为 0 且**不给出口**——一个点了没反应的按钮就是死控件。 */}
+      {/* 段三：本次改动（总账，⑦-G）——一行常驻状态，**紧跟计划**（本视图最后一段），
+          不是区段（没有 caret / 展开态 / 空态）。「空」时它仍在，只是数字为 0 且**不给出口**
+          ——一个点了没反应的按钮就是死控件。 */}
       {places === 0 ? (
         <div
           data-follow-ledger=""
@@ -249,37 +284,6 @@ export function FollowPanel({
             <ChevronRight {...ICON.xs} />
           </span>
         </button>
-      )}
-
-      {/* 段三：本次用量（v1.61）——结论（费用 / tokens）留在这里，流水留在「统计」页签。
-          没有消耗时整段不渲染（`hasUsage`）。 */}
-      {usage !== undefined && hasUsage && (
-        <section data-usage-section="" className="flex shrink-0 flex-col border-t border-line">
-          <SectionHead
-            title="本次用量"
-            meta={<span data-usage-cost="">${usage.costUsd.toFixed(4)}</span>}
-            collapsed={usageCollapsed}
-            onToggle={() => setUsageCollapsed((value) => !value)}
-          />
-          {!usageCollapsed && (
-            <div className="px-3.5 pb-2.5">
-              <div className="grid grid-cols-2 gap-2">
-                <UsageStat label="输入" value={formatTokenCount(usage.inputTokens)} />
-                <UsageStat label="输出" value={formatTokenCount(usage.outputTokens)} />
-              </div>
-              <button
-                type="button"
-                data-usage-open=""
-                onClick={onOpenStats}
-                title="打开「统计」页签：按模型 / 工具排行 / 可筛明细"
-                className="mt-2 flex items-center gap-1 text-[11.5px] text-text-muted transition hover:text-text-primary"
-              >
-                查看完整统计
-                <ChevronRight {...ICON.xs} />
-              </button>
-            </div>
-          )}
-        </section>
       )}
     </div>
   );

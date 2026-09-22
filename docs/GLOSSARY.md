@@ -41,13 +41,14 @@
 | 叫法 | 是什么 | 在哪 |
 |---|---|---|
 | **Live Bar** | ⑥ 那条常驻状态条 | `Conversation/index.tsx` |
-| **任务摘要** | ⑦ 的**默认视图**（`DockKind` 仍为 `follow`），v1.48 由「正在处理」更名；两段：计划 → 本次改动总账（紧跟其下） | `FollowPanel.tsx` |
-| **计划（待办清单）** | 「任务摘要」的**第一段**（v1.48 新增）：模型的账本——`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做，**已完成折成一行**。真源是库（`todos` 表），由模型经 `todo` 工具维护；**没有清单时整段不渲染** | `FollowPanel.tsx` + `main/todo-store.ts` |
+| **任务摘要** | ⑦ 的**默认视图**（`DockKind` 仍为 `follow`），v1.48 由「正在处理」更名；三段（v1.67 起）：本次用量 → 计划 → 本次改动总账（紧跟其下） | `FollowPanel.tsx` |
+| **本次用量** | 「任务摘要」的**第一段**（v1.61 新增，v1.67 置顶）：费用 + 输入 / 输出 tokens 的**结论**（取自 `view.stats`）；**零消耗时整段不渲染**；出口「查看完整统计」→「统计」页签 | `FollowPanel.tsx` |
+| **计划（待办清单）** | 「任务摘要」的**第二段**（v1.48 新增；v1.67 起排在用量之后）：模型的账本——`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做，**已完成折成一行**。真源是库（`todos` 表），由模型经 `todo` 工具维护；**没有清单时整段不渲染** | `FollowPanel.tsx` + `main/todo-store.ts` |
 | **思考轨** | agent 推理流的独立呈现，默认整块折叠 | `MessageList.tsx` 的 `ThinkingRail` |
 | **行动流** | 消息 + 工具卡 + 授权卡的合称 | `MessageList.tsx` |
 | **工具卡** | 一次工具调用的卡片，可展开看入参 / 输出 / **内嵌 diff** | `MessageList.tsx` 的 `ToolCard` |
 | **授权卡** | 审批卡片：四档决定 + 可见倒计时 + 风险分色 | `ApprovalCard.tsx` |
-| **总账** | 「任务摘要」底部那一行「N 处 · M 文件」，点它进清单层 | `FollowPanel.tsx` |
+| **总账** | 「任务摘要」**最后一段**那一行「N 处 · M 文件」，点它进清单层 | `FollowPanel.tsx` |
 | **下钻三层** | 清单 → diff → 文件内容 | `panels/ChangeDrilldown.tsx` |
 | **观测抽屉** | 浏览器页签底部那条：控制台 / 网络 / 下载 | `ObserveDrawer.tsx` |
 | **净值** | 多次改动后看「**最终改成了什么**」（基线 → 现在），而不是逐次累加 | `shared/line-diff.ts` + `main/net-change.ts` |
