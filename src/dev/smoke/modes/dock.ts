@@ -3106,11 +3106,20 @@ export async function runDock(
     //   ④ 这一行是**界面控件**，不署名「Agent」（按它自己的标记 `data-assistant-row="branch"` 认）。
     // 受控视图推 **2 轮**（用户/助手各两条）就够分辨「落点是尖端」与「不是尖端」。
     log("[④ 分叉] 每轮最终输出下面一行按钮；落点是尖端就没有；点了送出的是该轮最终回复的 id");
+    // 时间戳在 Node 侧造好塞进夹具（渲染层只管格式化）：第一轮落在**昨天**（验跨天
+    // 格式「MM-dd HH:mm」），第二轮留在今天。期望文案在 Node 侧按同一公式算出来，
+    // 别写死日期——冒烟哪天跑都不许变红。
+    const now = new Date();
+    const at = (dayOffset: number, h: number, m: number): number =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, h, m, 0, 0).getTime();
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const yesterdayClock = `${pad2(yesterday.getMonth() + 1)}-${pad2(yesterday.getDate())} 14:26`;
     const forkMessages: ViewMessage[] = [
-      { id: "smoke-u1", role: "user", text: "第一问", toolCalls: [] },
-      { id: "smoke-a1", role: "assistant", text: "第一答", toolCalls: [] },
-      { id: "smoke-u2", role: "user", text: "第二问", toolCalls: [] },
-      { id: "smoke-a2", role: "assistant", text: "第二答", toolCalls: [] },
+      { id: "smoke-u1", role: "user", text: "第一问", toolCalls: [], timestamp: at(-1, 14, 25) },
+      { id: "smoke-a1", role: "assistant", text: "第一答", toolCalls: [], timestamp: at(-1, 14, 26) },
+      { id: "smoke-u2", role: "user", text: "第二问", toolCalls: [], timestamp: at(0, 14, 30) },
+      { id: "smoke-a2", role: "assistant", text: "第二答", toolCalls: [], timestamp: at(0, 14, 31) },
     ];
     window.webContents.send("session.view", smokeView({ messages: forkMessages }));
     await sleep(400);
@@ -3133,6 +3142,8 @@ export async function runDock(
       visible: boolean;
       hittable: boolean;
       rowText: string | null;
+      clock: string | null;
+      clockLeftOfButton: boolean;
     }>(`(() => {
       const buttons = [...document.querySelectorAll("[data-conv-branch]")];
       const btn = buttons[0] ?? null;
@@ -3145,9 +3156,15 @@ export async function runDock(
         hittable = !!hit && (hit === btn || btn.contains(hit));
       }
       const style = btn ? getComputedStyle(btn) : null;
-      // 按**这一行自己的标记**认它（不去数 parentElement）：整行文本必须**只有**按钮文案，
-      // 多出一个「Agent」就说明控件又被署上了角色名。
+      // 按**这一行自己的标记**认它（不去数 parentElement）：整行不许出现「Agent」——
+      // 多出一个就说明控件又被署上了角色名（v1.76 起行内还有问答结束时间，故按
+      // 「不含 Agent 且含按钮文案」判，不再要求整行文本就是按钮文案）。
       const row = document.querySelector('[data-assistant-row="branch"]');
+      const clock = document.querySelector("[data-conv-turn-clock]");
+      let clockLeftOfButton = false;
+      if (clock && btn) {
+        clockLeftOfButton = !!(clock.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING);
+      }
       return {
         count: buttons.length,
         target: btn ? btn.getAttribute("data-conv-branch") : null,
@@ -3157,9 +3174,13 @@ export async function runDock(
         visible: !!(btn && btn.getClientRects().length > 0 && style.opacity !== "0" && style.visibility !== "hidden"),
         hittable,
         rowText: row ? row.textContent.replace(/\\s+/g, "") : null,
+        clock: clock ? clock.textContent.trim() : null,
+        clockLeftOfButton,
       };
     })()`);
-    log(`  按钮：count=${forkProbe.count} target=${forkProbe.target} 文案「${forkProbe.label}」整行「${forkProbe.rowText}」`);
+    log(
+      `  按钮：count=${forkProbe.count} target=${forkProbe.target} 文案「${forkProbe.label}」整行「${forkProbe.rowText}」时间「${forkProbe.clock}」`,
+    );
 
     checks.push([
       "两轮里有且仅有一条「从这里分叉」，且它对着第一轮的最终回复（末轮是尖端，不给）",
@@ -3174,8 +3195,16 @@ export async function runDock(
       forkProbe.visible && forkProbe.hittable,
     ]);
     checks.push([
-      "这一行**不署名「Agent」**（整行文本就是按钮文案，控件不是 agent 说的话）",
-      forkProbe.rowText === "从这里分叉",
+      "这一行**不署名「Agent」**（整行只有结束时间与按钮文案，控件不是 agent 说的话）",
+      forkProbe.rowText !== null && !forkProbe.rowText.includes("Agent") && forkProbe.rowText.includes("从这里分叉"),
+    ]);
+    checks.push([
+      "分叉左边带问答结束时间（跨天补日期：昨天 14:26）",
+      forkProbe.clock === yesterdayClock,
+    ]);
+    checks.push([
+      "结束时间排在分叉按钮左边",
+      forkProbe.clockLeftOfButton,
     ]);
 
     const clickBranch = (id: string): Promise<boolean> =>
@@ -3207,6 +3236,24 @@ export async function runDock(
       "只剩一轮时按钮消失（规则跟着尖端走，不是写死的轮号）",
       (await run<number>(`document.querySelectorAll("[data-conv-branch]").length`)) === 0,
     ]);
+
+    // 当天的轮子只给 HH:mm（不带日期）——跨天格式已在上面验过，这里钉另一半。
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        messages: [
+          { id: "smoke-u1", role: "user", text: "第一问", toolCalls: [], timestamp: at(0, 9, 40) },
+          { id: "smoke-a1", role: "assistant", text: "第一答", toolCalls: [], timestamp: at(0, 9, 41) },
+          { id: "smoke-u2", role: "user", text: "第二问", toolCalls: [], timestamp: at(0, 9, 45) },
+          { id: "smoke-a2", role: "assistant", text: "第二答", toolCalls: [], timestamp: at(0, 9, 46) },
+        ],
+      }),
+    );
+    await sleep(400);
+    const todayClock = await run<string | null>(
+      `document.querySelector("[data-conv-turn-clock]")?.textContent.trim() ?? null`,
+    );
+    checks.push(["当天的问答结束时间只显示 HH:mm（今天 09:41）", todayClock === "09:41"]);
 
     // 运行中**必须点不动**：worker 的消息循环是 `void handle(command)`——**不排队**，
     // 而 `navigate` 要挪历史指针 + 重拍快照 + 推视图；与在飞的那一轮交叠，指针和视图会被

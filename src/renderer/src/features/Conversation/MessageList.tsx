@@ -611,27 +611,41 @@ export function MessageWindow({
     // 跑着的时候不给点：`navigate` 会挪指针 + 重拍快照 + 推视图，而 worker 的消息循环
     // 不排队，正跑的那一轮会把指针和视图边跑边覆盖（详见 props 里 `running` 那段）。
     const blocked = running;
+    // 问答结束时间（= 这轮最终回复的时刻）：旧会话的消息没有 timestamp 就不写
+    // ——不猜一个「现在」上去（与「净值算不出就不显示数字」同一条纪律）。
+    const endedClock = formatTurnClock(turn.final.timestamp);
     return (
       // `label={null}`：这一行是个**界面控件**，不是 agent 说的话——不署名「Agent」，
       // 但角色列照留，左缘与正文列对齐（同 ④-E 收起入口那一行）。`anchor` 供冒烟认这一行。
       <AssistantRow label={null} anchor="branch">
-        <button
-          type="button"
-          data-conv-branch={targetId}
-          disabled={blocked}
-          onClick={() => onBranchTurn(targetId)}
-          title={
-            blocked
-              ? "这一轮还在跑——等它结束，再从这里分叉"
-              : "从这一轮之后分叉：之后的提问会形成新分支"
-          }
-          className={`flex items-center gap-1.5 self-start rounded-sm border border-line px-2.5 py-1 text-xs text-text-muted ${
-            blocked ? "cursor-not-allowed opacity-50" : "transition hover:border-line-strong hover:text-text-primary"
-          }`}
-        >
-          <GitBranch {...ICON.sm} className="shrink-0" />
-          从这里分叉
-        </button>
+        <div className="flex items-center gap-2">
+          {endedClock !== null && (
+            <span
+              className="shrink-0 text-xs tabular-nums text-text-muted/70"
+              data-conv-turn-clock={targetId}
+              title="这一轮问答的结束时间"
+            >
+              {endedClock}
+            </span>
+          )}
+          <button
+            type="button"
+            data-conv-branch={targetId}
+            disabled={blocked}
+            onClick={() => onBranchTurn(targetId)}
+            title={
+              blocked
+                ? "这一轮还在跑——等它结束，再从这里分叉"
+                : "从这一轮之后分叉：之后的提问会形成新分支"
+            }
+            className={`flex items-center gap-1.5 rounded-sm border border-line px-2.5 py-1 text-xs text-text-muted ${
+              blocked ? "cursor-not-allowed opacity-50" : "transition hover:border-line-strong hover:text-text-primary"
+            }`}
+          >
+            <GitBranch {...ICON.sm} className="shrink-0" />
+            从这里分叉
+          </button>
+        </div>
       </AssistantRow>
     );
   };
@@ -718,6 +732,24 @@ export function MessageWindow({
       ))}
     </>
   );
+}
+
+/**
+ * 一轮问答的**结束时间**文案：当天只给 HH:mm，跨天补「MM-dd」前缀——长会话跨天
+ * 很常见，只给时分会让两天的消息看起来发生在同一个点。旧数据没有 timestamp 就
+ * 返回 null（不猜「现在」，与「净值算不出就不显示数字」同一条纪律）。
+ */
+function formatTurnClock(timestamp: number | undefined): string | null {
+  if (timestamp === undefined || !Number.isFinite(timestamp)) return null;
+  const date = new Date(timestamp);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const today = new Date();
+  const sameDay =
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  return sameDay ? hm : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
 }
 
 /**
