@@ -88,9 +88,16 @@
 import { app, BrowserWindow } from "electron";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { upsertProject } from "../../main/db/repo";
+import { deleteSession, listSessions, upsertProject } from "../../main/db/repo";
+import { sessionManager } from "../../main/session-manager";
 import { dirname, join } from "node:path";
-import { removeFixtureProjects, setActiveOutputPath, uncaughtErrors } from "./context";
+import {
+  removeFixtureProjects,
+  removeOrphanSessionJsonl,
+  setActiveOutputPath,
+  sleep,
+  uncaughtErrors,
+} from "./context";
 import { runAskUser } from "./modes/ask-user";
 import { runAskUserE2e } from "./modes/ask-user-e2e";
 import { runBasic } from "./modes/basic";
@@ -219,9 +226,17 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
   window.webContents.on("did-finish-load", pinVisibility);
   pinVisibility();
 
+  // 会话清扫的锚点：try 内赋值（upsert 出项目即记），finally 据此只删「本次新增」的会话。
+  let smokeProjectId: string | undefined;
+  let preexistingSessionIds = new Set<string>();
+
   try {
     const projectRoot = process.env.COLT_SMOKE_CWD ?? process.cwd();
     const project = upsertProject(projectRoot);
+    smokeProjectId = project.id;
+    // 跑前快照本项目已有会话：收尾只删这之后新建的，跑之前就在库里的一律不碰——
+    // 冒烟拿的是开发者的真实项目（upsertProject 的是仓库根），不能顺手动用户数据。
+    preexistingSessionIds = new Set(listSessions(project.id).map((session) => session.id));
     log(`项目：${project.name} (${project.rootPath})`);
 
     const sessionsDir = join(app.getPath("userData"), "sessions", project.id);
@@ -298,6 +313,25 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await removeFixtureProjects(log);
     } catch (error) {
       lines.push(`[SMOKE] 夹具收尾失败（不阻断结论）${String(error)}`);
+    }
+    // 会话清扫：各模式在冒烟项目（仓库根，开发者的真实项目）里直接 createSession 造会话，
+    // 收尾不带走就会一直攒在侧栏里（2026-09-23 实测：dev 库攒出 173 条空会话——
+    // model 每趟泄 4 条、perf 每趟 1 条，产品的草稿逻辑本身没坏：草稿只在内存，
+    // 发首条消息才落库）。只删本次新增（跑前快照之外的那些）；先关 worker 再删行，
+    // 最后把删行后变无主的 JSONL 历史一并扫掉（判据取文件头 kernelId，见 context.ts）。
+    if (smokeProjectId !== undefined) {
+      try {
+        const created = listSessions(smokeProjectId)
+          .filter((session) => !preexistingSessionIds.has(session.id))
+          .map((session) => session.id);
+        for (const sessionId of created) sessionManager.close(sessionId);
+        if (created.length > 0) await sleep(300); // 等 dispose 的进程退出、释放 JSONL 句柄
+        for (const sessionId of created) deleteSession(sessionId);
+        if (created.length > 0) log(`会话清扫：删掉本次新建的会话 ${created.length} 条`);
+        removeOrphanSessionJsonl(log);
+      } catch (error) {
+        lines.push(`[SMOKE] 会话清扫失败（不阻断结论）${String(error)}`);
+      }
     }
     try {
       await writeFile(`${outputPath}.log`, lines.join("\n"), "utf8");
