@@ -9,18 +9,49 @@
  * 只有 `browser-host.ts` 用它们（`snapshot` / `#refreshContentFit` / `click` / `type`）。
  */
 
-/** 页面内取可交互元素：给每个元素打稳定 ref，返回一段人类/模型可读的清单 */
+/**
+ * 页面内取**可见**可交互元素：给每个元素打稳定 ref，返回一段人类/模型可读的清单。
+ *
+ * 可见性过滤（借鉴 browser-use，但保留本项目的持久 ref 机制）：不可见元素进清单只会
+ * 误导——模型拿着 ref 去点一个看不见的东西。判据四条：
+ *   ① 几何零尺寸（display:none 必然 0×0）；
+ *   ② 已滚出视口顶部（rect.bottom <= 0）或远在视口下方阈值之外（top >= 视口高 + 800）；
+ *   ③ visibility 隐藏（此时元素仍有尺寸，① 抓不到）；
+ *   ④ 透明度归零（同上）。
+ * 视口下方 800px 内的**保留**：模型可以先看清单再滚动，滚动后 ref 不变
+ * （data-colt-ref 持久编号 + window.__coltRefSeq），这是相对 browser-use 每次重建索引的优势。
+ * 过滤发生在 slice(0, 200) 之前——先切 200 再过滤会让一屏隐藏元素吃光配额。
+ * 被遮挡（z-index 盖住）不判：每元素一次 hit test 太贵，且 ref 点击本身有「找不到」兜底。
+ *
+ * 新元素标记：本页（本次导航生命周期内）**首次**进入清单的 ref 前缀 `*[`，其余仍是 `[`。
+ * 模型滚动 / 翻页后重新 snapshot，一眼可辨哪些是新出现的（借鉴 browser-use）。
+ * 记忆存 window.__coltSeenRefs（Set），随导航重置——新页面首个 snapshot 全部带 `*[` 是预期。
+ */
 export const SNAPSHOT_SCRIPT = `(() => {
   const selector = 'a,button,input,select,textarea,[role="button"],[role="link"],[contenteditable="true"]';
-  const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 200);
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const limit = vh + 800;
+  const visible = Array.from(document.querySelectorAll(selector)).filter((el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (rect.bottom <= 0 || rect.top >= limit) return false;
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    if (Number(style.opacity) <= 0) return false;
+    return true;
+  }).slice(0, 200);
   let seq = Number(window.__coltRefSeq || 0);
-  const lines = nodes.map((el) => {
+  let seen = window.__coltSeenRefs;
+  if (!(seen instanceof Set)) { seen = new Set(); window.__coltSeenRefs = seen; }
+  const lines = visible.map((el) => {
     let ref = el.getAttribute('data-colt-ref');
     if (!ref) { seq += 1; ref = 'e' + seq; el.setAttribute('data-colt-ref', ref); }
+    const fresh = !seen.has(ref);
+    seen.add(ref);
     const raw = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.innerText || el.value || '';
     const name = String(raw).replace(/\\s+/g, ' ').trim().slice(0, 80);
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    return '[' + ref + '] ' + role + ' "' + name + '"';
+    return (fresh ? '*[' : '[') + ref + '] ' + role + ' "' + name + '"';
   });
   window.__coltRefSeq = seq;
   return 'URL: ' + location.href + '\\nTITLE: ' + document.title + '\\n' + lines.join('\\n');
@@ -88,3 +119,47 @@ export function typeScript(ref: string, text: string): string {
     return '已输入到 ${ref}';
   })()`;
 }
+
+/**
+ * 截图叠框：给页面上带 ref 的**可见**元素画边框 + ref 角标，画完返回叠了几个。
+ * 与 SNAPSHOT_SCRIPT 用同一套可见性判据（框与清单一致，框多了只会误导）。
+ * 覆盖层 pointer-events:none 不挡交互、用最大 z-index；元素本身不在交互元素
+ * selector 里，不会被下一次 snapshot 收录。注入 → capturePage → 移除，全程不落盘。
+ */
+export const OVERLAY_SCRIPT = `(() => {
+  const old = document.getElementById('__colt_overlay');
+  if (old) old.remove();
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const limit = vh + 800;
+  const box = document.createElement('div');
+  box.id = '__colt_overlay';
+  box.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+  for (const el of document.querySelectorAll('[data-colt-ref]')) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (rect.bottom <= 0 || rect.top >= limit) continue;
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') continue;
+    if (Number(style.opacity) <= 0) continue;
+    const frame = document.createElement('div');
+    frame.style.cssText = 'position:fixed;border:1.5px solid #e91e63;border-radius:3px;box-sizing:border-box;';
+    frame.style.left = rect.left + 'px';
+    frame.style.top = rect.top + 'px';
+    frame.style.width = rect.width + 'px';
+    frame.style.height = rect.height + 'px';
+    const tag = document.createElement('div');
+    tag.textContent = el.getAttribute('data-colt-ref');
+    tag.style.cssText = 'position:absolute;left:0;top:-17px;background:#e91e63;color:#fff;font:11px/16px monospace;padding:0 3px;border-radius:2px;white-space:nowrap;';
+    frame.appendChild(tag);
+    box.appendChild(frame);
+  }
+  document.documentElement.appendChild(box);
+  return box.childElementCount;
+})()`;
+
+/** 移除截图叠框（OVERLAY_SCRIPT 的收尾，截图完成后立即执行） */
+export const OVERLAY_REMOVE_SCRIPT = `(() => {
+  const old = document.getElementById('__colt_overlay');
+  if (old) old.remove();
+  return true;
+})()`;

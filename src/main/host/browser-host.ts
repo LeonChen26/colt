@@ -22,46 +22,43 @@
  * 两者都在导航时清空。
  *
  * 文件：下载经 will-download 落盘到应用自有的下载目录（不写进用户的「下载」文件夹），
- * 限制**单文件体积**（超限取消并提示）。⚠️ 观测列表那 5 条的 `MAX_DOWNLOADS_PER_SESSION`
- * 只做**缓冲截断**，不是下载数量上限——本类目前**不限制一个会话能下几个文件**。
+ * 限制**单文件体积**（超限取消并提示）——接管本体在 browser-downloads.ts。
+ * ⚠️ 观测列表那 5 条的 `MAX_DOWNLOADS_PER_SESSION` 只做**缓冲截断**，不是下载数量上限
+ * ——目前**不限制一个会话能下几个文件**。新窗口请求一律在当前视图接管（browser-popups.ts）。
  * 上传是唯一需要 CDP 的动作——input[type=file] 出于安全无法用 JS 赋值，
  * 故用 Electron 内置的 webContents.debugger 调 DOM.setFileInputFiles（不新增依赖）。
  */
 import {
-  app,
   session,
   WebContentsView,
   type BrowserWindow,
   type WebContents,
 } from "electron";
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import type { BrowserNavAction, BrowserObservation, BrowserRect, BrowserViewState } from "@shared/protocol";
 import type { HostResult } from "@shared/worker-protocol";
 import {
   CaptureBuffer,
   clampWaitTimeout,
-  exceedsDownloadSize,
-  formatDownloadNotice,
   formatNavigationNotice,
   formatWaitResult,
   isFileInput,
   isWaitMode,
-  MAX_DOWNLOAD_BYTES,
   parseWaitOutcome,
-  planDownload,
   readPaths,
   readRef,
   resolveViewport,
-  shouldAdoptPopup,
   waitScript,
   WAIT_QUIET_MS,
-  type DownloadEntry,
   type WaitMode,
 } from "./browser-observe";
+import { DownloadHook } from "./browser-downloads";
+import { PopupAdopter } from "./browser-popups";
 import {
   clickScript,
   CONTENT_WIDTH_SCRIPT,
+  OVERLAY_REMOVE_SCRIPT,
+  OVERLAY_SCRIPT,
   SNAPSHOT_SCRIPT,
   typeScript,
 } from "./browser-scripts";
@@ -119,14 +116,18 @@ export class BrowserHost {
   readonly #sessions = new Map<string, SessionBrowser>();
   /** webContents.id → sessionId：把 partition 级网络/下载事件收敛到对应会话 */
   readonly #webContentsToSession = new Map<number, string>();
-  /** 会话 → 已触发的下载数，用于给落盘文件名加序号（否则同名会互相覆盖） */
-  readonly #downloadSeq = new Map<string, number>();
+  /** 下载接管（seq 计数 / 落盘 / 体积上限）——行为本体在 browser-downloads.ts */
+  readonly #downloads = new DownloadHook((webContentsId) => {
+    const sessionId = this.#webContentsToSession.get(webContentsId);
+    if (sessionId === undefined) return undefined;
+    const capture = this.#sessions.get(sessionId)?.capture;
+    return capture === undefined ? undefined : { sessionId, capture };
+  });
   /** 承载内嵌视图的主窗口；未挂载前浏览器动作会明确报错，而不是静默失败 */
   #window: BrowserWindow | undefined;
   /** 视图状态变化回调（由 HostBridge 接到 sessionManager 的推送出口） */
   #onState: ((state: BrowserViewState) => void) | undefined;
   #networkHooked = false;
-  #downloadHooked = false;
   #browserSession: Electron.Session | undefined;
 
   /** 主进程建好主窗口后调用（内嵌视图必须有宿主窗口） */
@@ -499,83 +500,6 @@ export class BrowserHost {
     return this.#sessions.get(sessionId)?.capture;
   }
 
-  /** 本会话的下载目录：放应用数据目录下，既不污染项目工作区，也不写进用户的「下载」文件夹 */
-  #downloadDir(sessionId: string): string {
-    return join(app.getPath("userData"), "browser-downloads", sessionId);
-  }
-
-  /**
-   * 接管下载。
-   *
-   * 与网络同理，will-download 是 session 级；这里挂在浏览器专属 partition 上，
-   * 不属于本类管辖的窗口（例如应用自身）根本不在该 session，天然不干预。
-   */
-  #hookDownload(): void {
-    if (this.#downloadHooked) return;
-    this.#downloadHooked = true;
-
-    this.#session().on("will-download", (_event, item, webContents) => {
-      // 类型上非空，但并非所有下载来源都会带上它，故按可选处理
-      const source = webContents as WebContents | undefined;
-      const sessionId = source === undefined ? undefined : this.#webContentsToSession.get(source.id);
-      if (sessionId === undefined) return;
-      const capture = this.#sessions.get(sessionId)?.capture;
-      if (capture === undefined) return;
-
-      const url = item.getURL();
-      const seq = (this.#downloadSeq.get(sessionId) ?? 0) + 1;
-      this.#downloadSeq.set(sessionId, seq);
-
-      const dir = this.#downloadDir(sessionId);
-      const plan = planDownload(item.getFilename(), seq, dir);
-      if (!plan.ok) {
-        item.cancel();
-        capture.recordConsole({ level: "warning", message: plan.reason, source: url, line: 0 });
-        return;
-      }
-
-      try {
-        mkdirSync(dir, { recursive: true });
-        item.setSavePath(plan.path);
-      } catch (error) {
-        capture.recordConsole({
-          level: "error",
-          message: `下载无法落盘：${error instanceof Error ? error.message : String(error)}`,
-          source: url,
-          line: 0,
-        });
-        return;
-      }
-
-      // 页面能反复触发下载，故设体积上限，避免被拖着把磁盘写满
-      let overSizeLimit = false;
-      item.on("updated", (_updated, state) => {
-        if (state === "progressing" && exceedsDownloadSize(item.getReceivedBytes())) {
-          overSizeLimit = true;
-          item.cancel();
-        }
-      });
-
-      item.once("done", (_done, state) => {
-        const entry: DownloadEntry = {
-          filename: plan.filename,
-          path: plan.path,
-          url,
-          bytes: item.getReceivedBytes(),
-          state,
-          note: overSizeLimit ? `超过体积上限（${MAX_DOWNLOAD_BYTES} 字节），已取消` : undefined,
-        };
-        capture.recordDownload(entry);
-        capture.recordConsole({
-          level: state === "completed" ? "info" : "warning",
-          message: formatDownloadNotice(entry),
-          source: url,
-          line: 0,
-        });
-      });
-    });
-  }
-
   /**
    * 懒创建：某会话首次使用浏览器时才建 WebContents（规则 ⑦-2）。
    *
@@ -640,69 +564,46 @@ export class BrowserHost {
     // 刷新还会把相同条目重复录入（计数失真）。之所以不在提交完成（did-navigate）时清——
     // 新页的文档请求先于提交到达，提交时清会把新页自己的请求一起抹掉。
     // 页内导航（SPA 路由）与子框架不算换页，不清。
-    let pendingAdopt: { url: string } | undefined;
+    const popups = new PopupAdopter();
     contents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
       if (!isMainFrame || isInPlace) return;
+      const current = this.#sessions.get(sessionId);
+      if (current !== undefined) current.navSeq += 1;
       capture.reset();
       // 缩放是按视图隔离的、且**跨导航保留**（见 setZoomMode），于是新页面会带着上一页的比例
       // 出生。必须先回到 100% 再量再算：否则「需要多宽」量到的是缩放后的假象，
       // 而新站可能本来就装得下（留着旧比例等于替用户白缩一屏）。
       // 不用 emit：紧接着的 did-navigate / did-finish-load 会把新状态整份推过去。
-      const current = this.#sessions.get(sessionId);
       if (current !== undefined && current.zoom !== 1) {
         current.zoom = 1;
         this.#setZoomFactor(current, 1);
       }
       // 弹窗接管的提示写在 loadURL 之前，上面的 reset 会把它抹掉——这里补写回来，
       // 否则「这次换页是接管新窗口」这条线索在观测里消失
-      const adopt = pendingAdopt;
-      pendingAdopt = undefined;
-      if (adopt !== undefined) {
-        capture.recordConsole({
-          level: "info",
-          message: `拦截新窗口请求，已在当前窗口打开：${adopt.url}`,
-          source: adopt.url,
-          line: 0,
-        });
-      }
+      popups.drainAdopted(capture);
     });
     // 地址/标题变化都要同步给渲染层（右栏浏览器视图的 URL 展示）
+    // did-navigate-in-page（SPA 路由 / hash 跳转）同样计入页面指纹：对动作链而言，
+    // 「页面整个换了」与「主框架导航」是同一件事——后续动作的 ref 大概率已失效。
     contents.on("did-navigate", () => this.#emitState(sessionId, true));
-    contents.on("did-navigate-in-page", () => this.#emitState(sessionId, true));
+    contents.on("did-navigate-in-page", () => {
+      const current = this.#sessions.get(sessionId);
+      if (current !== undefined) current.navSeq += 1;
+      this.#emitState(sessionId, true);
+    });
     contents.on("page-title-updated", () => this.#emitState(sessionId, true));
     // 装载完成后量一次「有没有够不到的内容」：此时布局才定型，量出来的数才作数。
     // 页面在 did-navigate 时就已提交，但那时子资源与字体还没到位，宽度会偏小。
     // 此刻子资源仍可能在飞（#measureContentWidth 自带有限次重试），量完顺带定缩放。
     contents.on("did-finish-load", () => void this.#refreshContentFit(sessionId));
-    // 新窗口一律不开：默认行为会生出一个不受本类管理的窗口——读不到、disposeAll 也回收不掉，
-    // 而 agent 后续的 snapshot/text 仍停在旧页面上，表现为「点了没反应」。改为在当前视图接管。
-    // 接管与否记一条 info 到控制台缓冲（这里没有独立的通知通道，靠文案自证来源）。
-    contents.setWindowOpenHandler((details) => {
-      if (!shouldAdoptPopup(details.url)) {
-        capture.recordConsole({
-          level: "info",
-          message: `已拦截非 http(s) 的新窗口请求：${details.url}`,
-          source: details.url,
-          line: 0,
-        });
-        return { action: "deny" };
-      }
-      capture.reset();
-      capture.recordConsole({
-        level: "info",
-        message: `拦截新窗口请求，已在当前窗口打开：${details.url}`,
-        source: details.url,
-        line: 0,
-      });
-      // 上面那条提示随后会被 did-start-navigation 的 reset 抹掉，先挂号、reset 后重放；
-      // 若导航根本没能开始（loadURL 直接失败），缓冲里还留着这条，线索不丢
-      pendingAdopt = { url: details.url };
-      void contents.loadURL(details.url).catch(() => undefined);
-      return { action: "deny" };
-    });
+    // 新窗口一律不开，改在当前视图接管——处置逻辑（含拦截提示的挂号/重放协调）在
+    // browser-popups.ts，与上面 did-start-navigation 的 drainAdopted 是一对。
+    contents.setWindowOpenHandler((details) =>
+      popups.handleWindowOpen(details, capture, (url) => contents.loadURL(url)),
+    );
 
     this.#hookNetwork();
-    this.#hookDownload();
+    this.#downloads.hook(this.#session());
     this.#webContentsToSession.set(contentsId, sessionId);
     this.#sessions.set(sessionId, {
       view,
@@ -714,6 +615,7 @@ export class BrowserHost {
       zoom: 1,
       fit: false,
       appliedWidth: -1,
+      navSeq: 0,
     });
     owner.contentView.addChildView(view);
     return view;
@@ -792,6 +694,12 @@ export class BrowserHost {
         return { text: contents.getURL() || "about:blank" };
       case "title":
         return { text: contents.getTitle() };
+      case "fingerprint": {
+        // 页面指纹：动作链的「这个动作之后页面换没换」判据。格式钉死为 `nav=<n> url=<url>`，
+        // worker 侧按前缀解析（navSeq 是核心，URL 仅供中止报告里给人读）。
+        const entry = this.#sessions.get(sessionId);
+        return { text: `nav=${entry?.navSeq ?? 0} url=${contents.getURL() || "about:blank"}` };
+      }
       case "console":
         return { text: capture?.consoleText() ?? "控制台：自上次导航以来没有输出。" };
       case "network":
@@ -859,11 +767,34 @@ export class BrowserHost {
         return { text: up ? "已向上滚动" : "已向下滚动" };
       }
       case "screenshot": {
+        // capturePage 需要视图真的可见：视图出生时是隐藏的（位置等渲染层上报），
+        // 但「未摆过」（appliedWidth<0）且「未被用户收起」时存在间隙——渲染层还没上报
+        // 矩形，截图却先到了（agent 首次 navigate 后立刻截 / 自动化直驱没有渲染层）。
+        // 此时按兜底矩形摆一次（可见、不闪真实场景：上报一到就会被纠正）。
+        const shotEntry = this.#sessions.get(sessionId);
+        if (shotEntry !== undefined && shotEntry.appliedWidth < 0 && !shotEntry.hidden) {
+          this.#applyBounds(sessionId);
+        }
+        // 先给可见的 ref 元素叠边框 + 编号再截：模型拿到截图就能与 snapshot 清单对上号
+        // （哪个框是哪个 ref 一目了然）。注入 → 截图 → 移除，覆盖层不落盘、不挡交互。
+        let overlayCount = 0;
+        try {
+          overlayCount = Number(await contents.executeJavaScript(OVERLAY_SCRIPT, true)) || 0;
+        } catch {
+          // 叠框是增强不是前提：注入失败（如页面 CSP 极严）仍照常截图
+        }
         const image = await contents.capturePage();
+        try {
+          await contents.executeJavaScript(OVERLAY_REMOVE_SCRIPT, true);
+        } catch {
+          // 移除失败也无碍：下次注入会先清旧层，导航更会连带清掉
+        }
         const title = contents.getTitle();
         const url = contents.getURL();
         return {
-          text: `已截取页面：${title || "(无标题)"} ${url}`.trim(),
+          text:
+            `已截取页面（叠 ${overlayCount} 个元素框，对应 snapshot 清单里的 ref）：` +
+            `${title || "(无标题)"} ${url}`.trim(),
           image: { data: image.toPNG().toString("base64"), mimeType: "image/png" },
         };
       }
@@ -883,7 +814,7 @@ export class BrowserHost {
     const entry = this.#sessions.get(sessionId);
     if (entry === undefined) return;
     this.#sessions.delete(sessionId);
-    this.#downloadSeq.delete(sessionId);
+    this.#downloads.disposeSession(sessionId);
     // 去抖中的重量可能还没跑：撤掉定时器，在飞的那次由 #measureContentWidth 的
     // 「条目还是不是它」守卫收尾
     if (entry.measureTimer !== undefined) clearTimeout(entry.measureTimer);

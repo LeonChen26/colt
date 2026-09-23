@@ -9,6 +9,7 @@
 import { app, BrowserWindow } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { hostBridge } from "../../../main/host";
+import { runActionChain } from "../../../worker/lib/browser-tool";
 import { join } from "node:path";
 import type { HostResult } from "@shared/worker-protocol";
 import { createFixtureServer } from "../../../../scripts/fixture-server.mjs";
@@ -55,6 +56,28 @@ export async function runFixture(projectRoot: string, log: (message: string) => 
       "snapshot 找到全部靶元素",
       [uploadRef, downloadRef, popupRef, logRef, netRef, lateRef].every((ref) => ref !== undefined),
     ]);
+
+    // 可见性过滤：隐藏的不进清单、视口下方阈值内（400px）保留、阈值外（1200px）剔除。
+    // 断言挂在文案上而不是 ref 上——文案是夹具页钉死的，ref 序号随页面加元素会变。
+    checks.push([
+      "snapshot 剔除隐藏元素",
+      !snapshot.text.includes("隐藏不应出现的按钮") && !snapshot.text.includes("隐藏不应出现的链接"),
+    ]);
+    checks.push(["snapshot 保留视口下方阈值内元素", snapshot.text.includes("视口下方四百像素")]);
+    checks.push(["snapshot 剔除视口外过远元素", !snapshot.text.includes("视口下方一千二百像素")]);
+
+    // 新元素标记：首次 snapshot 的元素全部带 `*[`（本页第一次进清单），立即二次应全部褪去
+    const snapAgain = await call("snapshot");
+    checks.push(["snapshot 首次清单带 *[ 新元素标记", snapshot.text.includes("*[")]);
+    checks.push(["snapshot 二次清单无 *[（无新增）", !snapAgain.text.includes("*[")]);
+
+    // 截图叠框：回报叠框数量且图片真实返回（框的可见性判据与 snapshot 同源）。
+    // fixture 无渲染层上报矩形，视图停留在出生时的隐藏态——产品侧 screenshot 会在
+    // 「未摆过且未收起」的间隙先按兜底矩形摆放一次（同真实场景「navigate 后立刻截」
+    // 的竞态兜底），这里的断言顺带把那条兜底路径也验掉。
+    const shot = await call("screenshot");
+    const overlayN = Number(/叠 (\d+) 个元素框/.exec(shot.text)?.[1] ?? 0);
+    checks.push(["screenshot 叠元素框并回报数量（>=6）", overlayN >= 6 && shot.image !== undefined]);
 
     // 观测基线：导航本身会产生一条文档请求，且 dev 期 Electron 会注入一条 CSP 安全告警，
     // 所以这里不要求「完全为空」，而是要求「没有 error、没有失败请求」。
@@ -158,6 +181,72 @@ export async function runFixture(projectRoot: string, log: (message: string) => 
     checks.push(["弹窗在当前窗口接管", (await call("url")).text.includes("/popup.html")]);
     checks.push(["弹窗拦截有提示", (await call("console")).text.includes("拦截新窗口请求，已在当前窗口打开")]);
     checks.push(["未新开窗口", BrowserWindow.getAllWindows().length === windowsBefore]);
+
+    // ---- 动作链：一次链填完三字段表单并提交；提交即跳转的两种形态（链尾 / 链中） ----
+    // 链循环是 worker 侧 browser-tool 的真实实现（runActionChain），这里用一个转发到
+    // hostBridge.handle 的桥驱动它——「逐动作 RPC + 指纹比对 + 中止文案」走的都是本体。
+    // 放在弹窗段**之后**：本段会导航去 form.html，而前面的段用的还是主页 snapshot 的 ref。
+    const chainBridge = {
+      call: (capability: "browser", action: string, params: Record<string, unknown>) =>
+        hostBridge.handle({ sessionId, capability, action, params }),
+    };
+    const formInputRef = (snap: string, label: string): string | undefined =>
+      new RegExp(`\\[(e\\d+)\\] input "${label}"`).exec(snap)?.[1];
+    const formSubmitRef = (snap: string): string | undefined =>
+      new RegExp(`\\[(e\\d+)\\] button "提交表单"`).exec(snap)?.[1];
+
+    await call("navigate", { url: `${server.url}form.html` });
+    const snap1 = (await call("snapshot")).text;
+    const name1 = formInputRef(snap1, "姓名字段");
+    const email1 = formInputRef(snap1, "邮箱字段");
+    const submit1 = formSubmitRef(snap1);
+    if (name1 !== undefined && email1 !== undefined && submit1 !== undefined) {
+      const chained = await runActionChain(chainBridge, [
+        { action: "type", ref: name1, text: "张三" },
+        { action: "type", ref: email1, text: "zhang@example.com" },
+        { action: "click", ref: submit1 },
+      ]);
+      log(`链（提交收尾）：${chained.text.split("\n").slice(0, 4).join(" | ")}`);
+      checks.push([
+        "链尾提交：完成文案 + 跳转提示",
+        chained.text.includes("动作链完成") && chained.text.includes("已跳转"),
+      ]);
+      await sleep(800);
+      const done1 = (await call("text")).text;
+      log(`链（提交收尾）回显页：${done1.slice(0, 160).replace(/\n/g, " ")}`);
+      checks.push([
+        "链填的值真到了页面（GET 参数回显）",
+        done1.includes("姓名=张三") && done1.includes("邮箱=zhang@example.com"),
+      ]);
+
+      // 链中提交：跳转后面的动作不该执行（邮箱应保持空）
+      await call("navigate", { url: `${server.url}form.html` });
+      const snap2 = (await call("snapshot")).text;
+      const name2 = formInputRef(snap2, "姓名字段");
+      const email2 = formInputRef(snap2, "邮箱字段");
+      const submit2 = formSubmitRef(snap2);
+      if (name2 !== undefined && email2 !== undefined && submit2 !== undefined) {
+        const aborted = await runActionChain(chainBridge, [
+          { action: "type", ref: name2, text: "李四" },
+          { action: "click", ref: submit2 },
+          { action: "type", ref: email2, text: "不该被输入" },
+        ]);
+        log(`链（中途跳转）：${aborted.text.split("\n").slice(0, 4).join(" | ")}`);
+        checks.push([
+          "链中提交：中止并如实报告未执行数",
+          aborted.text.includes("已中止") && aborted.text.includes("余下 1 个动作未执行"),
+        ]);
+        await sleep(800);
+        const done2 = (await call("text")).text;
+        log(`链（中途跳转）回显页：${done2.slice(0, 160).replace(/\n/g, " ")}`);
+        checks.push([
+          "跳转后未执行的动作真的没发生",
+          done2.includes("姓名=李四") && !done2.includes("不该被输入"),
+        ]);
+      }
+    } else {
+      log("表单页靶元素未找全，跳过动作链断言");
+    }
 
     // 关闭会话：destroy 会触发窗口的 closed 回调，而该回调是异步执行的——若它访问了已销毁的
     // 对象，异常会落在用例之后才抛，把结论变成假绿。所以这里等一拍并显式断言。

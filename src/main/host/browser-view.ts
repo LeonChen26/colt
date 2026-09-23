@@ -76,4 +76,10 @@ export interface SessionBrowser {
   appliedWidth: number;
   /** 去抖用的重测定时器（拖分隔条时每像素都会走到 #applyBounds） */
   measureTimer?: NodeJS.Timeout;
+  /**
+   * 页面指纹的导航计数：主框架导航（did-start-navigation）与页内导航（SPA 路由 / hash，
+   * did-navigate-in-page）各递增一次。browser_act 动作链用它判断「这个动作之后页面换没换」
+   * ——序列号比 URL 可靠（同 URL 刷新、SPA 路由都会变 URL 之外的页面状态）。
+   */
+  navSeq: number;
 }

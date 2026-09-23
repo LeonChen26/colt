@@ -312,6 +312,16 @@ export function buildSignature(invocation: ToolInvocation): string {
     return `${toolName}:${normalizePath(args[pathKey] as string)}`;
   }
   if (toolName === BROWSER_ACT_TOOL) {
+    // 动作链：逐动作生成（click/type 带 ref，与单动作同粒度），于是「本会话不再询问」
+    // 的记忆只覆盖同样的链，与单动作签名互不误放。
+    if (Array.isArray(args.actions)) {
+      const parts = (args.actions as { action?: unknown; ref?: unknown }[]).map((item) => {
+        const name = typeof item.action === "string" ? item.action : "";
+        const ref = typeof item.ref === "string" ? item.ref : "";
+        return `${name}${ref ? `:${ref}` : ""}`;
+      });
+      return `browser_act:chain:${parts.join(",")}`;
+    }
     const action = typeof args.action === "string" ? args.action : "";
     // 上传的签名必须带上文件本身：只按 ref 记忆，会让「本次会话不再询问」覆盖之后任意文件的传外
     if (action === "upload") return `browser_act:upload:${readUploadPaths(args).join(",")}`;
@@ -353,6 +363,15 @@ function buildSummary(invocation: ToolInvocation): string {
       : `${toolName}: ${path}`;
   }
   if (toolName === BROWSER_ACT_TOOL) {
+    if (Array.isArray(args.actions)) {
+      const chain = args.actions as { action?: unknown; ref?: unknown }[];
+      const parts = chain.map((item) => {
+        const name = typeof item.action === "string" ? item.action : "";
+        const ref = typeof item.ref === "string" ? item.ref : "";
+        return `${name}${ref ? ` ${ref}` : ""}`;
+      });
+      return `browser: 链 ${chain.length} 步（${parts.join(" → ")}）`;
+    }
     const action = typeof args.action === "string" ? args.action : "";
     if (action === "upload") {
       const paths = readUploadPaths(args);
@@ -555,6 +574,20 @@ export function assessToolRisk(
 
   // 浏览器操作：可能改变页面状态，需确认。wait/viewport 不改动页面数据，按只读放行
   if (toolName === BROWSER_ACT_TOOL) {
+    // 动作链：链中只可能是 click/type/scroll/wait（worker 侧 schema 限制），但这里独立把关——
+    // 出现任何其它动作都按 dangerous，不把安全承诺寄托在上游 schema 兑现上。
+    if (Array.isArray(args.actions)) {
+      const chain = args.actions as { action?: unknown }[];
+      const known = chain.every(
+        (item) =>
+          item.action === "click" || item.action === "type" || item.action === "scroll" || item.action === "wait",
+      );
+      if (!known) return { risk: "dangerous", reason: "动作链含未知或越界动作，需单独确认" };
+      if (chain.every((item) => item.action === "wait" || item.action === "scroll")) {
+        return { risk: "safe", reason: "等待与滚动不改动页面数据" };
+      }
+      return { risk: "moderate", reason: `动作链（${chain.length} 个动作），会改变页面状态` };
+    }
     if (args.action === "wait") return { risk: "safe", reason: "等待页面就绪，无副作用" };
     if (args.action === "viewport") return { risk: "safe", reason: "调整浏览窗口视口，不改动页面数据" };
     if (args.action === "upload") {

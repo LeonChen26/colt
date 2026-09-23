@@ -51,6 +51,16 @@ const MAIN_PAGE = `<!doctype html>
   <button id="late" type="button">延迟 1.5 秒出现文本</button>
   <div id="lateBox"></div>
 
+  <!-- 可见性过滤靶：隐藏元素不该进 snapshot 清单；视口下方 800px 阈值内的保留、外的剔除。
+       下方按钮用绝对定位钉坐标——若用撑高 spacer，按钮位置 = 内容高度 + spacer，
+       会随页面上方内容多少漂移（首版就因此把「视口下方 400px」钉到了约 1000px 处）。 -->
+  <h2>可见性过滤</h2>
+  <button id="hiddenBtn" type="button" style="display:none">隐藏不应出现的按钮</button>
+  <a href="/payload.txt" download style="visibility:hidden">隐藏不应出现的链接</a>
+  <button id="nearBelow" type="button">视口下方四百像素</button>
+  <button id="farBelow" type="button">视口下方一千二百像素</button>
+  <div style="height:2000px"></div>
+
   <script>
     var mode = document.getElementById('mode');
     var apply = function () {
@@ -83,6 +93,19 @@ const MAIN_PAGE = `<!doctype html>
         document.getElementById('lateBox').textContent = '延迟内容已出现';
       }, 1500);
     });
+
+    // 可见性过滤靶：nearBelow 钉在视口下方 400px（阈值 800 内，应保留），
+    // farBelow 钉在视口下方 1200px（阈值外，应剔除）。绝对定位相对文档顶，
+    // snapshot 时滚动位置为 0，rect.top 恰为 innerHeight + below，与内容高度无关。
+    // 加载时求值一次即可——snapshot 断言跑在任何 viewport 覆盖之前，视口还是默认尺寸。
+    var pin = function (id, below) {
+      var el = document.getElementById(id);
+      el.style.position = 'absolute';
+      el.style.top = (window.innerHeight + below) + 'px';
+      el.style.left = '24px';
+    };
+    pin('nearBelow', 400);
+    pin('farBelow', 1200);
   </script>
 </body>
 </html>`;
@@ -92,6 +115,31 @@ const POPUP_PAGE = `<!doctype html>
 <body>
   <h1>这是新窗口目标页</h1>
   <p>若你看到的仍是浏览器窗口里的同一页，说明弹窗已被拦截并在当前窗口打开。</p>
+</body></html>`;
+
+/** 动作链靶：三字段表单，GET 提交到 form-done——「一次链填完提交」与「提交即跳转」共用 */
+const FORM_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>夹具·表单页</title></head>
+<body>
+  <h1>三字段表单</h1>
+  <form action="/form-done.html" method="get">
+    <input name="name" aria-label="姓名字段">
+    <input name="email" aria-label="邮箱字段">
+    <input name="memo" aria-label="备注字段">
+    <button type="submit">提交表单</button>
+  </form>
+</body></html>`;
+
+const FORM_DONE_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>夹具·表单完成</title></head>
+<body>
+  <h1>表单已提交</h1>
+  <div id="echo"></div>
+  <script>
+    var params = new URLSearchParams(location.search);
+    document.getElementById('echo').textContent =
+      '姓名=' + params.get('name') + ' 邮箱=' + params.get('email') + ' 备注=' + params.get('memo');
+  </script>
 </body></html>`;
 
 /**
@@ -128,7 +176,8 @@ function sendHtml(response, body) {
 }
 
 function handleRequest(request, response) {
-  const url = request.url ?? "/";
+  // 去掉查询串再路由：表单 GET 提交会带 ?name=... ，精确匹配会把合法页面打成 404
+  const url = (request.url ?? "/").split("?")[0];
 
   // 浏览器会自动取 favicon；不显式处理就会被下面的兜底 404 命中，平白给网络面板添噪声
   if (url === "/favicon.ico") {
@@ -146,6 +195,14 @@ function handleRequest(request, response) {
   }
   if (url === "/popup.html") {
     sendHtml(response, POPUP_PAGE);
+    return;
+  }
+  if (url === "/form.html") {
+    sendHtml(response, FORM_PAGE);
+    return;
+  }
+  if (url === "/form-done.html") {
+    sendHtml(response, FORM_DONE_PAGE);
     return;
   }
   if (url === "/narrow.html") {
