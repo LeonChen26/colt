@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  Archive,
   Bot,
   Brain,
   Check,
@@ -172,6 +173,8 @@ export const MessageBubble = memo(function MessageBubble({
   /** 卡片改了展开状态 → 回传容器（唯一真源在 `Conversation`） */
   onToggleOpen: (id: string, open: boolean) => void;
 }): React.JSX.Element | null {
+  // 压缩条目：正文是会话摘要，画成压缩卡（署名谁都不对——它不是任何人说的话）
+  if (message.compaction !== undefined) return <CompactionCard message={message} />;
   // 只渲染用户与助手：工具结果已合并进各自的工具卡片（它根本不在 messages 里，
   // 见 ViewMessage.role），`other` 这类结构性消息也不单独成条
   if (message.role !== "user" && message.role !== "assistant") return null;
@@ -675,6 +678,7 @@ export function MessageWindow({
           规则 ④-C 要求工具卡不可省略、不可简化成一行纯文本，收起来也不能是把它删掉。 */}
       {visibleTurns.map((turn) => (
         <Fragment key={turn.key}>
+          {turn.compaction !== null && row(turn.compaction)}
           {turn.user !== null && row(turn.user)}
           {folded && turn.steps.length > 0 && !expandedTurns.has(turn.key) ? (
             <AssistantRow>
@@ -713,6 +717,32 @@ export function MessageWindow({
         </Fragment>
       ))}
     </>
+  );
+}
+
+/**
+ * 压缩完成后的摘要卡：压缩把更早的历史替换成了一条摘要，不画它的话消息流
+ * 只剩尾部保留消息——用户看到的就是「历史全没了 / 像开了个新会话」（v1.75）。
+ * 卡片留在压缩发生时的时序位（transcript 头部），翻旧消息能一路翻到它。
+ */
+function CompactionCard({ message }: { message: ViewMessage }): React.JSX.Element {
+  const before = message.compaction?.tokensBefore ?? 0;
+  // 数字口径与完成通知一致（worker 侧 compactDoneMessage）：>=1000 折成 k、保留一位小数；
+  // <=0 不写数字（算不出就别下结论，与「写个假 0」是两回事）
+  const label = before > 0 ? (before >= 1000 ? `${Math.round(before / 100) / 10}k` : `${before}`) : null;
+  return (
+    <div className="flex justify-start" data-conv-compaction={message.id}>
+      <div className="flex max-w-[86%] flex-col gap-1.5 rounded-md border border-line bg-surface-raised px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs">
+          <Archive {...ICON.sm} className="shrink-0 text-accent-dim" />
+          <span className="font-medium text-text-primary">已压缩上下文</span>
+          {label !== null && (
+            <span className="text-text-muted">· 压缩前约 {label} tokens，更早的对话已收进这条摘要</span>
+          )}
+        </div>
+        {message.text && <Markdown>{message.text}</Markdown>}
+      </div>
+    </div>
   );
 }
 

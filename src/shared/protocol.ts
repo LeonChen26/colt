@@ -84,6 +84,19 @@ export interface GitStatus {
   detached: boolean;
 }
 
+/**
+ * 「已提交」批量判定结果（`git.committed` 的返回）。
+ *
+ * 「已提交」的口径是**文件粒度**：已跟踪且当前内容与 HEAD 一致（比内容不比 hash——
+ * amend 后与 HEAD 一致也算）；修改过 / 暂存过 / 未跟踪 / 被忽略 / 盘上不存在，一律不标。
+ */
+export interface GitCommittedResult {
+  /** 是否位于 git 仓库；false = 全部不标（非仓库 / git 不可用 / 执行失败同形降级） */
+  isRepo: boolean;
+  /** 已提交（与 HEAD 一致）的项目内相对路径，正斜杠归一 */
+  committed: string[];
+}
+
 /** 矩形（窗口内容坐标，CSS px 即 DIP） */
 export interface BrowserRect {
   x: number;
@@ -299,6 +312,7 @@ export const IPC_CHANNELS = [
   /** 按需拉一个子代理的完整流（视图只带有界尾部） */
   "session.subagentTranscript",
   "git.status",
+  "git.committed",
   "browser.bounds",
   "browser.state.get",
   "browser.observe",
@@ -746,6 +760,18 @@ export interface IpcInvokeMap {
   "git.status": {
     request: { cwd: string };
     response: GitStatus;
+  };
+  /**
+   * 批量判定「本次改动」清单里的文件是否**已提交**（已跟踪且当前内容与 HEAD 一致）。
+   *
+   * 只读：`git --no-optional-locks status --porcelain -z --no-renames --ignored`，
+   * 不写任何 git 状态（不刷新索引、不留锁文件）。根由主进程按 sessionId → 项目推出，
+   * 与 `file.read` 同一套信任边界：根外绝对路径与 `..` 逃逸路径直接判「不提交」。
+   * 按需调用（清单层打开时），不随视图推送轮询——`git status` 在大仓库上不便宜。
+   */
+  "git.committed": {
+    request: { sessionId: string; paths: string[] };
+    response: GitCommittedResult;
   };
   /**
    * 渲染层上报内嵌浏览器的「页面区域」矩形（窗口内容坐标），主进程据此摆放 WebContentsView。

@@ -148,6 +148,7 @@ export async function runSubagent(
       },
     ],
     running: true,
+    runningOperation: "run",
     lastRun: null,
     queuedCount: 0,
     stats: {

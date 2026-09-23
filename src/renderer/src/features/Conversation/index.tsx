@@ -1158,9 +1158,25 @@ export function Conversation({
             />
 
             {/* 流式中的助手内容：思考轨 + 流式文本 + 运行中工具，
-                与完成态 MessageBubble 共用 AssistantRow 骨架，保证左边缘一致 */}
-            {(view?.thought || view?.streamingText || (view?.runningTools.length ?? 0) > 0) && (
-              <AssistantRow>
+                与完成态 MessageBubble 共用 AssistantRow 骨架，保证左边缘一致。
+                压缩期间（runningOperation === "compaction"）整行是压缩状态而非对话：
+                署名不给「Agent」（那段文本是摘要不是回复），状态头**常驻**——摘要请求
+                发出到第一个 token 之间 streamingText 还是 null，没有状态头就又是一段「无提示」窗口 */}
+            {(view?.thought ||
+              view?.streamingText ||
+              (view?.runningTools.length ?? 0) > 0 ||
+              view?.runningOperation === "compaction") && (
+              <AssistantRow label={view?.runningOperation === "compaction" ? null : "Agent"}>
+                {view?.runningOperation === "compaction" && (
+                  <div
+                    data-conv-compacting=""
+                    className="mb-2 flex items-center gap-1.5 text-2xs text-text-secondary"
+                  >
+                    <span className="live-dot" />
+                    <span>正在压缩上下文</span>
+                    <span className="text-text-muted">· 生成摘要中，完成后历史将替换为摘要</span>
+                  </div>
+                )}
                 {view?.thought && <ThinkingRail text={view.thought} />}
                 {view?.streamingText && (
                   <div className="relative">
@@ -1585,7 +1601,10 @@ export function Conversation({
                 <>
                   <span className="flex items-center gap-1.5">
                     <span className={cn("live-dot", stale && "stale-dot")} />
-                    <span>运行中</span>
+                    {/* 压缩说清楚在压缩（v1.74）：通用「运行中」说不清那段无署名摘要文本是什么 */}
+                    <span>
+                      {view?.runningOperation === "compaction" ? "正在压缩上下文" : "运行中"}
+                    </span>
                     <span className="font-mono">{elapsedLabel}</span>
                   </span>
                   {lastActivity > 0 && (

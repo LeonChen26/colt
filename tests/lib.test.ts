@@ -1319,6 +1319,51 @@ describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
     assert.equal(turns[0]?.final?.id, "a1");
   });
 
+  test("压缩条目自成一张卡并开新轮：尾部保留消息归进这一轮（v1.75 压缩卡）", () => {
+    const compaction: ViewMessage = {
+      id: "cp1",
+      role: "other",
+      text: "压缩后的摘要",
+      toolCalls: [],
+      compaction: { tokensBefore: 32000 },
+    };
+    const turns = groupTurns([compaction, reply("a1"), user("u1"), reply("a2")]);
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0]?.compaction?.id, "cp1");
+    assert.equal(turns[0]?.user, null);
+    assert.equal(turns[0]?.final?.id, "a1");
+    assert.equal(turns[1]?.compaction, null);
+    assert.equal(turns[1]?.user?.id, "u1");
+    assert.equal(turns[1]?.final?.id, "a2");
+    // 顺序不变式照旧成立：压缩卡也是消息，不许在成轮时被丢掉或换位
+    const flat = turns.flatMap((turn) => [
+      ...(turn.compaction ? [turn.compaction] : []),
+      ...(turn.user ? [turn.user] : []),
+      ...turn.steps,
+      ...(turn.final ? [turn.final] : []),
+    ]);
+    assert.deepEqual(
+      flat.map((message) => message.id),
+      ["cp1", "a1", "u1", "a2"],
+    );
+  });
+
+  test("turnOfMessage：压缩条目开新轮的口径与 groupTurns 对齐", () => {
+    const compaction: ViewMessage = {
+      id: "cp1",
+      role: "other",
+      text: "压缩后的摘要",
+      toolCalls: [],
+      compaction: { tokensBefore: 32000 },
+    };
+    const messages = [compaction, reply("a1"), user("u1"), reply("a2")];
+    assert.equal(groupTurns(messages).length, 2);
+    assert.deepEqual(
+      messages.map((_, index) => turnOfMessage(messages, index)),
+      [0, 0, 1, 1],
+    );
+  });
+
   test("turnOfMessage：与 groupTurns 的轮序逐条对齐（换窗口单位全靠它）", () => {
     const messages = [reply("a0"), user("u1"), step("a1", 1), reply("a2"), user("u2"), reply("a3")];
     // 先把「按 groupTurns 算出来是几轮」定下来，再看换算有没有跟它一致

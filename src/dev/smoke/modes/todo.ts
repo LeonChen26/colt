@@ -314,6 +314,7 @@ export async function runTodo(
       thought: null,
       runningTools: [],
       running: false,
+      runningOperation: null,
       lastRun: null,
       queuedCount: 0,
       stats: {

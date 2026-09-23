@@ -255,6 +255,29 @@ export function projectTranscript(
   const toolResults: ViewToolResult[] = [];
 
   for (const entry of transcript) {
+    // 压缩条目：内核压缩完成后，transcript 的开头就是它（更早的历史已被它整体替换，
+    // 尾部保留消息紧随其后）。不认它的话消息流只剩尾部——用户看到「历史全没了」。
+    if ((entry as { type?: string }).type === "compaction") {
+      const record = entry as unknown as {
+        id: string;
+        summary: string;
+        tokensBefore: number;
+        timestamp?: number;
+      };
+      messages.push({
+        id: record.id,
+        // `other`：摘要不是任何人说的话，气泡署名谁都不对——渲染层按 compaction 标记画卡
+        role: "other",
+        text: typeof record.summary === "string" ? record.summary : "",
+        compaction: {
+          // 缺失/非法给 0：渲染层对 <=0 不显示数字（与完成通知 compactDoneMessage 同口径）
+          tokensBefore: typeof record.tokensBefore === "number" ? record.tokensBefore : 0,
+        },
+        toolCalls: [],
+        timestamp: record.timestamp,
+      });
+      continue;
+    }
     if ((entry as { type?: string }).type !== "message") continue;
     const record = entry as unknown as {
       id: string;
@@ -444,6 +467,9 @@ export function project(
     // 而 run_start 写入的恰是 "open"（表示「进行中的操作」而非「已完成」），
     // 用它判定会把整个运行期误判为空闲。
     running: operation !== null,
+    // 「在忙什么」与「忙不忙」分开投影（见契约注释）：压缩期间流式区只有一段
+    // 无署名的摘要文本，渲染层要靠 kind 才能给出「正在压缩上下文」的状态呈现。
+    runningOperation: operation?.kind ?? null,
     lastRun: projectLastRun(snapshot.lastResult),
     queuedCount: snapshot.queues?.length ?? 0,
     stats: {

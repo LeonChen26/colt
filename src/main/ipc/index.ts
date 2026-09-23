@@ -15,7 +15,7 @@ import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { isSkillFilePath } from "@shared/skill-path";
 import { runEnvCheck } from "../env-check";
-import { readGitStatus } from "../git";
+import { readCommittedFiles, readGitStatus } from "../git";
 import { defaultScratchBase, scratchRootPath } from "../lib/scratch-dir";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
@@ -732,6 +732,11 @@ export function registerIpcHandlers(): void {
   );
 
   handle("git.status", (request) => readGitStatus(request.cwd));
+
+  // 「已提交」批量判定（清单层按需调用）：根只由主进程按 sessionId → 项目推出（同 file.read）
+  handle("git.committed", (request) =>
+    readCommittedFiles(resolveSessionRoot(request.sessionId), request.paths),
+  );
 
   // 内嵌浏览器：渲染层上报页面区域矩形供主进程摆放 WebContentsView（原生视图不参与 DOM 叠层）
   handle("browser.bounds", (request) => {

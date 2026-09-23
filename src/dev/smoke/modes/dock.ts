@@ -7,6 +7,7 @@
  * 由 scripts/split-smoke.mjs 从 src/dev/smoke/index.ts 逐字切出，内容与拆分前一致。
  */
 import { BrowserWindow, clipboard, WebContentsView } from "electron";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   createSession,
@@ -381,6 +382,7 @@ export async function runDock(
     netRows: [string, string][];
     netRowValues: [string, string][];
     netUnknown: number;
+    committed: string[];
   }> =>
     run(`(() => {
       const root = document.querySelector("[data-drill]");
@@ -407,6 +409,7 @@ export async function runDock(
         nets: attrText("[data-clist-net-value]", "data-clist-net-value"),
         netRows: attrText("[data-clist-net]", "data-clist-net"),
         netRowValues: attrText("[data-clist-net-row-value]", "data-clist-net-row-value"),
+        committed: attrAll("[data-clist-committed]", "data-clist-committed"),
         netUnknown: Number(
           document.querySelector("[data-clist-net-unknown]")?.getAttribute("data-clist-net-unknown") ??
             "0",
@@ -854,6 +857,7 @@ export async function runDock(
       thought: null,
       runningTools: [],
       running: false,
+      runningOperation: null,
       lastRun: null,
       queuedCount: 0,
       stats: {
@@ -1540,6 +1544,209 @@ export async function runDock(
     await sleep(300);
     window.webContents.send("session.view", smokeView({}));
     await sleep(400);
+
+    // ---- 「已提交」标注：改动记录不归 0（它是会话轨迹），给「翻篇了」的标注 ----
+    // 链路走真链路：渲染层进清单层 → IPC `git.committed` → 主进程 spawn git。
+    // 期望值由**独立 oracle** 现算（本模式自己跑一遍只读 status，与产品实现互不引用）：
+    // 两套各算各的还能对上，判定才算真的对（别拿产品自证产品）。
+    // 夹具项目就是本仓库本身（COLT_SMOKE_CWD），哪些文件「与 HEAD 一致」取决于跑动时的
+    // 工作区状态，故期望不能写死；候选都是已跟踪文件，不在 status 输出里 = 已提交。
+    log("[已提交] 清单层的「已提交」标注：与 HEAD 一致才标");
+    const statusOracle = spawnSync(
+      "git",
+      ["--no-optional-locks", "status", "--porcelain", "-z", "--no-renames", "--ignored"],
+      // encoding 不能省：spawnSync 默认给 Buffer，下面 typeof stdout !== "string" 会把
+      // 一次成功的调用误报成「git 不可用」（产品用 execFile，stdout 天然是 string 没这问题）
+      { cwd: rootPath, windowsHide: true, timeout: 10_000, encoding: "utf8" },
+    );
+    if (statusOracle.status !== 0 || typeof statusOracle.stdout !== "string") {
+      // 前提未成立就明说（同 approval 场景三的纪律）：git 不可用时这条链路无从验起。
+      // 跳过原因必须带诊断细节——PATH 缺失 / 超时 / 非仓库在「不可用」三个字里长得一样
+      log(
+        `  跳过：git 不可用（status=${String(statusOracle.status)}，error=${String(
+          statusOracle.error?.message ?? "无",
+        )}，stderr=${String(statusOracle.stderr ?? "").slice(0, 200)}），「已提交」链路未验`,
+      );
+    } else {
+      const dirty = new Set(
+        String(statusOracle.stdout)
+          .split("\0")
+          .filter((entry) => entry.length > 3 && entry[2] === " ")
+          .map((entry) => entry.slice(3).replaceAll("\\", "/")),
+      );
+      const candidates = [
+        "package.json",
+        "tsconfig.json",
+        "README.md",
+        "AGENTS.md",
+        "src/main/git.ts",
+        "src/main/session-manager.ts",
+      ];
+      const cleanRel = candidates.find((rel) => !dirty.has(rel) && existsSync(join(rootPath, rel)));
+      const dirtyRel = candidates.find((rel) => dirty.has(rel)) ?? null;
+      if (cleanRel === undefined) {
+        log("  跳过：候选文件此刻都有未提交改动，无「已提交」正例可验");
+      } else {
+        // 盘上没有的文件：git 对它什么都不会说，必须**不标**（标了就是「已提交」在撒谎）
+        const missingRel = "smoke-committed-missing.txt";
+        window.webContents.send(
+          "session.view",
+          smokeView({
+            fileChanges: [
+              fakeChange("committed-clean", cleanRel, stamp + 6),
+              fakeChange("committed-missing", missingRel, stamp + 7),
+              ...(dirtyRel === null
+                ? []
+                : [fakeChange("committed-dirty", dirtyRel, stamp + 8)]),
+            ],
+          }),
+        );
+        await sleep(400);
+        checks.push(["（前置）推「已提交」受控视图后仍可进清单", await clickLedger()]);
+        await sleep(1500); // 判定是两次 spawn（rev-parse + status），留足时间
+        const committedList = await drillProbe();
+        checks.push([
+          `与 HEAD 一致的文件带「已提交」标注（${cleanRel}）`,
+          committedList.committed.includes(cleanRel),
+        ]);
+        checks.push([
+          "盘上不存在的文件不标（git 对它无话可说，标了就是撒谎）",
+          !committedList.committed.includes(missingRel),
+        ]);
+        if (dirtyRel !== null) {
+          checks.push([
+            `修改中的文件不标（${dirtyRel}）`,
+            !committedList.committed.includes(dirtyRel),
+          ]);
+        }
+        checks.push([
+          `「已提交」只标该标的（恰 1 个标注，实为 ${committedList.committed.length} 个）`,
+          committedList.committed.length === 1,
+        ]);
+        log(
+          `  已提交标注：${JSON.stringify(committedList.committed)}（clean=${cleanRel}，dirty=${dirtyRel ?? "无"}）`,
+        );
+        // 还原成后续用例依赖的状态（默认视图 + 不在下钻里）
+        checks.push(["退出「已提交」场景的下钻", await clickCrumb("follow")]);
+        await sleep(300);
+        window.webContents.send("session.view", smokeView({}));
+        await sleep(400);
+      }
+    }
+
+    // ---- v1.74 压缩上下文：进行中要有「正在压缩」的状态与进度 ----
+    // 用户反馈：压缩期间会话区毫无提示——只有通用「运行中」+ 一段无署名摘要流，
+    // 完成后历史整片清空。呈现层验两处：Live Bar 文案 + 消息流状态头（流式摘要即进度）。
+    // 受控视图推 runningOperation（真压缩链路要打模型，不在本模式验；快照四态投影
+    // 由 tests/project.test.ts 的 runningOperation 用例覆盖）。
+    log("[压缩提示] 压缩进行中：Live Bar 与消息流都要说清「在压缩」");
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        running: true,
+        runningOperation: "compaction",
+        streamingText: "正在生成会话摘要……",
+        thought: null,
+        runningTools: [],
+      }),
+    );
+    await sleep(400);
+    const compacting = await run<{ live: string; head: string; gone: boolean } | null>(
+      `(() => {
+        const runState = document.querySelector("[data-run-state]");
+        const head = document.querySelector("[data-conv-compacting]");
+        return {
+          live: runState ? runState.textContent ?? "" : "",
+          head: head ? head.textContent ?? "" : "",
+          gone: head === null,
+        };
+      })()`,
+    );
+    checks.push([
+      "压缩中 Live Bar 显示「正在压缩上下文」（不是只有通用「运行中」）",
+      compacting !== null && compacting.live.includes("正在压缩上下文"),
+    ]);
+    checks.push([
+      "压缩中消息流尾部出现状态头（data-conv-compacting），不再是无署名摘要流",
+      compacting !== null && compacting.head.includes("正在压缩上下文"),
+    ]);
+    log(`  压缩态：Live Bar="${compacting?.live.trim() ?? "未读取"}"，状态头="${compacting?.head.trim() ?? "未读取"}"`);
+    // 还原成默认视图（后续用例依赖空闲态）
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
+    const compactingGone = await run<boolean>(
+      `document.querySelector("[data-conv-compacting]") === null`,
+    );
+    checks.push(["还原默认视图后压缩状态头消失", compactingGone === true]);
+
+    // ---- v1.75 压缩完成：摘要要以「压缩卡」留在消息流里 ----
+    // 用户反馈：compact 完成后消息流整片清空，界面上像开了个新会话——摘要无处可看。
+    // 真压缩链路要打模型，本模式推受控视图验呈现（投影侧由 tests/project.test.ts 的
+    // compaction 用例覆盖）。压缩条目在 transcript 头部、尾部保留消息紧随其后，
+    // 故压缩卡必须是消息流的**第一条**——它后面才接得上保留消息。
+    log("[压缩卡] 压缩完成后消息流顶部出现可读的摘要卡");
+    window.webContents.send(
+      "session.view",
+      smokeView({
+        messages: [
+          {
+            id: "smoke-compact-1",
+            role: "other",
+            text: "此前讨论了三件事：排版令牌、输入卡高度、右栏宽度记忆。",
+            toolCalls: [],
+            compaction: { tokensBefore: 32000 },
+          },
+          ...viewBase.messages,
+        ],
+      }),
+    );
+    await sleep(400);
+    const compactCard = await run<{
+      title: string;
+      fullText: string;
+      firstRow: string | null;
+    } | null>(
+      `(() => {
+        const card = document.querySelector("[data-conv-compaction]");
+        if (card === null) return null;
+        const rows = Array.from(document.querySelectorAll("[data-msg-row]"));
+        return {
+          title: card.querySelector("span.font-medium")?.textContent ?? "",
+          fullText: card.textContent ?? "",
+          firstRow: rows.length > 0 ? rows[0].getAttribute("data-msg-row") : null,
+        };
+      })()`,
+    );
+    checks.push([
+      "压缩完成后消息流顶部出现压缩卡（data-conv-compaction）",
+      compactCard !== null,
+    ]);
+    checks.push([
+      "压缩卡标题为「已压缩上下文」",
+      compactCard !== null && compactCard.title.includes("已压缩上下文"),
+    ]);
+    checks.push([
+      "压缩卡带压缩前规模（32k，与完成通知同口径）",
+      compactCard !== null && compactCard.fullText.includes("32k"),
+    ]);
+    checks.push([
+      "摘要正文可读（排版令牌那一条在卡里）",
+      compactCard !== null && compactCard.fullText.includes("排版令牌"),
+    ]);
+    checks.push([
+      "压缩卡在消息流第一位（时序位，其后才是尾部保留消息）",
+      compactCard !== null && compactCard.firstRow === "smoke-compact-1",
+    ]);
+    log(
+      `  压缩卡：标题="${compactCard?.title ?? "未读取"}"，全文长度=${compactCard?.fullText.length ?? 0}，首行=${compactCard?.firstRow ?? "无"}`,
+    );
+    // 还原成默认视图（后续用例依赖 viewBase 的原始消息）
+    window.webContents.send("session.view", smokeView({}));
+    await sleep(300);
+    const compactCardGone = await run<boolean>(
+      `document.querySelector("[data-conv-compaction]") === null`,
+    );
+    checks.push(["还原默认视图后压缩卡消失", compactCardGone === true]);
 
     // ---- A3-5：中栏的观测 / 管理面板迁入 ⑦ 页签 ----
     // 迁入前它们在**中栏**另起一个 aside（同一件事两处实现、两套入口）；迁入后

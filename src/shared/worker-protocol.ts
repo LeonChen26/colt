@@ -70,6 +70,12 @@ export interface ViewMessage {
    */
   skill?: ViewSkillInvocation;
   /**
+   * 有值即「这条是内核的压缩条目」：`text` 是压缩产出的会话摘要，不是任何人说的话。
+   * 内核压缩完成后会把 transcript 整体替换成「压缩条目 + 尾部保留」——不认它的话，
+   * 投影出的消息流只剩尾部，用户看到的就是「历史全没了 / 像开了个新会话」。
+   */
+  compaction?: { tokensBefore: number };
+  /**
    * 助手消息里的工具调用。
    *
    * `skill` 有值即「这次 `read` 读的就是某个已装载技能的文件」——模型**因为技能而改变行为**
@@ -361,6 +367,15 @@ export interface ConversationView {
   subagents: ViewSubagent[];
   /** 是否有进行中的操作 */
   running: boolean;
+  /**
+   * 进行中的操作是哪一种（内核 `operation.kind` 的投影）：run = 普通运行、
+   * compaction = 压缩上下文、navigation = 分支切换；null = 空闲。
+   *
+   * `running` 只回答「忙不忙」，这里回答「在忙什么」——压缩是一次真实的摘要模型请求，
+   * 期间消息流里只有一段无署名的流式摘要文本；不说清楚是在压缩，用户看到的就是
+   * Agent 突然自言自语、随后整条历史被摘要替换（`running` 布尔把这些差别全压扁了）。
+   */
+  runningOperation: "run" | "compaction" | "navigation" | null;
   /**
    * 最近一轮运行的终态；`null` = 本会话还没跑过任何一轮。
    * ⑥ 据此把「空闲 / 已中断 / 已失败」分开（C1）——正常跑完（`completed`）与「没跑过」一样回到「空闲」，

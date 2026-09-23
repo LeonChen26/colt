@@ -570,3 +570,117 @@ describe("project：read 命中技能文件时工具卡带 skill 标记（P3）"
     );
   });
 });
+
+describe("project：runningOperation 投影「在忙什么」（v1.74 压缩期间的可辨识状态）", () => {
+  const meta = {
+    providerId: "test-provider",
+    modelId: "test-model",
+    thinkingLevel: "medium",
+    skills: [],
+    fileChanges: [],
+    contextUsed: 0,
+  } as unknown as Parameters<typeof project>[1];
+
+  /** 只造内核 operation 里 project() 读到的形状（id/kind/startedAt/…） */
+  const snapshotOf = (operation: unknown): LaneSnapshot =>
+    ({ transcript: [], operation }) as unknown as LaneSnapshot;
+
+  const op = (kind: "run" | "compaction" | "navigation"): unknown => ({
+    id: "op_1",
+    kind,
+    startedAt: 0,
+    fromTipId: null,
+    status: "open",
+    runningTools: [],
+  });
+
+  test("run / compaction / navigation / 空闲四态如实投影，不被 running 布尔压扁", () => {
+    const kinds = ["run", "compaction", "navigation"] as const;
+    for (const kind of kinds) {
+      assert.equal(project(snapshotOf(op(kind)), meta, new Map(), []).runningOperation, kind);
+    }
+    assert.equal(project(snapshotOf(null), meta, new Map(), []).runningOperation, null);
+  });
+
+  test("与 running 同源一致：压缩中 running=true 且 kind 可辨识，空闲两者都归位", () => {
+    const compacting = project(snapshotOf(op("compaction")), meta, new Map(), []);
+    assert.equal(compacting.running, true);
+    assert.equal(compacting.runningOperation, "compaction");
+    const idle = project(snapshotOf(null), meta, new Map(), []);
+    assert.equal(idle.running, false);
+    assert.equal(idle.runningOperation, null);
+  });
+});
+
+describe("project：压缩条目投影成可读的摘要消息（v1.75 压缩卡的数据源）", () => {
+  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
+    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
+  const meta = {
+    providerId: "test-provider",
+    modelId: "test-model",
+    thinkingLevel: "medium",
+    skills: [],
+    fileChanges: [],
+    contextUsed: 0,
+  } as unknown as Parameters<typeof project>[1];
+
+  /** 内核 CompactionEntry 的形状（EntryBase 的 id/timestamp + 自有字段） */
+  const compactionEntry = (over: Record<string, unknown> = {}): unknown => ({
+    type: "compaction",
+    id: "cp1",
+    timestamp: 1234,
+    summary: "此前讨论了三件事：排版令牌、输入卡高度、右栏宽度记忆。",
+    tokensBefore: 32000,
+    retainedTail: [],
+    fromHook: false,
+    ...over,
+  });
+  const messageEntry = (id: string, role: string, text: string): unknown => ({
+    type: "message",
+    id,
+    message: { role, content: [{ type: "text", text }], timestamp: 5678 },
+  });
+
+  test("压缩条目 → role=other + compaction 标记，摘要正文留在 text 里", () => {
+    const view = project(snapshotOf([compactionEntry()]), meta, new Map(), []);
+    assert.equal(view.messages.length, 1);
+    const card = view.messages[0]!;
+    assert.equal(card.role, "other");
+    assert.equal(card.id, "cp1");
+    assert.equal(card.timestamp, 1234);
+    assert.deepEqual(card.compaction, { tokensBefore: 32000 });
+    assert.ok(card.text.includes("排版令牌"), "摘要正文必须完整带到（压缩卡画的就是它）");
+    assert.deepEqual(card.toolCalls, []);
+  });
+
+  test("时序位保持：压缩卡在前、尾部保留消息在后（内核就是按这个顺序放回 transcript 的）", () => {
+    const view = project(
+      snapshotOf([compactionEntry(), messageEntry("a1", "assistant", "尾部保留的回复")]),
+      meta,
+      new Map(),
+      [],
+    );
+    assert.deepEqual(
+      view.messages.map((message) => message.id),
+      ["cp1", "a1"],
+    );
+  });
+
+  test("tokensBefore 缺失/非法时给 0（渲染层对 <=0 不显示数字，不写假值）", () => {
+    const missing = project(snapshotOf([compactionEntry({ tokensBefore: undefined })]), meta, new Map(), []);
+    assert.deepEqual(missing.messages[0]?.compaction, { tokensBefore: 0 });
+    const bogus = project(snapshotOf([compactionEntry({ tokensBefore: "many" })]), meta, new Map(), []);
+    assert.deepEqual(bogus.messages[0]?.compaction, { tokensBefore: 0 });
+  });
+
+  test("没有压缩条目时消息不带 compaction 键（不给普通消息无中生有）", () => {
+    const view = project(
+      snapshotOf([messageEntry("u1", "user", "在吗")]),
+      meta,
+      new Map(),
+      [],
+    );
+    assert.equal(view.messages[0]?.compaction, undefined);
+    assert.ok(!("compaction" in view.messages[0]!));
+  });
+});

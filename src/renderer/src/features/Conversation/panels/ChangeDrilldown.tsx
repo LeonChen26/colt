@@ -276,6 +276,14 @@ export function ChangeDrilldown({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   /** 内容层的重读令牌：换文件时靠 `path` 变，重读同一文件靠它自增 */
   const [token, setToken] = useState(entry.layer === "content" ? entry.token : 0);
+  /**
+   * 已提交的文件集合（`git.committed` 按需拉取）；null = 未判定 / 不在仓库里 → 一律不标。
+   *
+   * 刻意**只在清单层打开时**拉、且以「文件集合」为键：`git status` 在大仓库上不便宜，
+   * 不能跟着视图推送（受控视图一推就是新数组）反复跑；文件集合没变，结论也不会变。
+   * 用户提交之后回来再进一次清单层会重新拉——那时标注才是新的。
+   */
+  const [committed, setCommitted] = useState<ReadonlySet<string> | null>(null);
 
   // 容器再次发来请求（④ 又点了一个路径 / 又点了总账 / 又点了一个子代理）→ 按请求重置层。
   // 依赖是 **`nonce`** 而不是 `entry` 对象本身：对象身份会因调用方的实现细节而变或不变，
@@ -294,6 +302,30 @@ export function ChangeDrilldown({
     }
     // eslint 式的「依赖不全」在此是有意的：`entry` 的其余字段都随 `nonce` 一起换。
   }, [entry.nonce]);
+
+  // 「已提交」按需拉取：只在清单层、只随文件集合变化。见 `committed` 状态的注释。
+  const committedPathsKey = files.map((file) => file.path).join("\n");
+  useEffect(() => {
+    if (layer !== "list" || committedPathsKey === "") return undefined;
+    let disposed = false;
+    setCommitted(null);
+    // `files` 刻意不在依赖里：它的身份跟着视图推送走，而结论只取决于路径集合
+    void window.colt
+      .invoke("git.committed", {
+        sessionId,
+        paths: files.map((file) => file.path),
+      })
+      .then((result) => {
+        if (!disposed) setCommitted(new Set(result.committed));
+      })
+      .catch(() => {
+        // 判定不了（非仓库 / git 不可用 / 会话已删）与「不在仓库里」同形：不标
+        if (!disposed) setCommitted(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [sessionId, layer, committedPathsKey]);
 
   const current = fileOf(path);
   const revision: ViewFileChange | null =
@@ -512,6 +544,17 @@ export function ChangeDrilldown({
                           <span className="truncate text-2xs text-text-muted">
                             {many && <span className="text-text-secondary">×{file.history.length} </span>}
                             {file.kind === "write" ? "新建" : "编辑"} · {formatAgo(file.latestAt)}
+                            {/* 已提交：改动记录不归 0（它是会话轨迹），只给「这件事翻篇了」的标注。
+                                口径见 `git.committed`——比内容不比 hash，amend 后与 HEAD 一致也算 */}
+                            {committed?.has(file.path) && (
+                              <span
+                                data-clist-committed={file.path}
+                                title="该文件当前内容与最近一次提交（HEAD）一致"
+                                className="ml-1 text-success-fg"
+                              >
+                                · 已提交
+                              </span>
+                            )}
                           </span>
                         </span>
                         {/* `+a −b` 全应用**只在这里**出现一次（⑦-G：此前被渲染了三遍）。
