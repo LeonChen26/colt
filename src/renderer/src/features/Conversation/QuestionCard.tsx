@@ -139,8 +139,8 @@ export function QuestionCard({
         <MessageCircleQuestion {...ICON.lg} className="mt-0.5 shrink-0 text-accent" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11.5px] font-medium text-text-primary">需要你的决定</span>
-            <span className="text-[11.5px] text-text-muted">
+            <span className="text-xs font-medium text-text-primary">需要你的决定</span>
+            <span className="text-xs text-text-muted">
               {total} 个问题
               {allAnswered ? "" : `（已答 ${answeredCount}）`}
             </span>
@@ -149,20 +149,20 @@ export function QuestionCard({
               <span
                 data-question-subagent={request.subagent.name}
                 title="这次提问来自一个子代理，不是主对话"
-                className="flex items-center gap-1 rounded-xs border border-line px-1.5 py-0.5 text-[11.5px] text-text-secondary"
+                className="flex items-center gap-1 rounded-xs border border-line px-1.5 py-0.5 text-xs text-text-secondary"
               >
                 <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
                 来自 {request.subagent.name}
               </span>
             )}
           </div>
-          <p className="mt-1 text-[11.5px] text-text-muted">
+          <p className="mt-1 text-xs text-text-muted">
             模型卡在这里等你回答，不作答它不会继续。
           </p>
         </div>
         <span
           className={cn(
-            "flex shrink-0 items-center gap-1 font-mono text-[11.5px]",
+            "flex shrink-0 items-center gap-1 font-mono text-xs",
             expired ? "text-text-muted" : "text-accent",
           )}
         >
@@ -174,7 +174,7 @@ export function QuestionCard({
       {/* 多题才出翻页控件：单题时它就是一张普通卡，多一行「第 1 / 1 题」纯属噪音 */}
       {total > 1 && (
         <div className="mt-3 flex items-center gap-2">
-          <span data-question-page className="font-mono text-[11.5px] text-text-muted">
+          <span data-question-page className="font-mono text-xs text-text-muted">
             第 {index + 1} / {total} 题
           </span>
           <span className="flex-1" />
@@ -183,7 +183,7 @@ export function QuestionCard({
             data-question-prev
             disabled={busy || expired || index === 0}
             onClick={() => setPage(index - 1)}
-            className="rounded-md border border-line px-2 py-0.5 text-[11.5px] text-text-secondary transition hover:text-text-primary disabled:opacity-40"
+            className="rounded-md border border-line px-2 py-0.5 text-xs text-text-secondary transition hover:text-text-primary disabled:opacity-40"
           >
             上一题
           </button>
@@ -192,7 +192,7 @@ export function QuestionCard({
             data-question-next
             disabled={busy || expired || index === total - 1}
             onClick={() => setPage(index + 1)}
-            className="rounded-md border border-line px-2 py-0.5 text-[11.5px] text-text-secondary transition hover:text-text-primary disabled:opacity-40"
+            className="rounded-md border border-line px-2 py-0.5 text-xs text-text-secondary transition hover:text-text-primary disabled:opacity-40"
           >
             下一题
           </button>
@@ -201,13 +201,13 @@ export function QuestionCard({
 
       <div className="mt-3">
         {current.header !== undefined && (
-          <span className="text-[11.5px] font-medium uppercase tracking-wide text-text-muted">
+          <span className="text-xs font-medium uppercase tracking-wide text-text-muted">
             {current.header}
           </span>
         )}
-        <p className="text-[11.5px] text-text-primary">{current.question}</p>
+        <p className="text-xs text-text-primary">{current.question}</p>
         {current.multiSelect === true && (
-          <p className="mt-0.5 text-[11.5px] text-text-muted">可多选</p>
+          <p className="mt-0.5 text-xs text-text-muted">可多选</p>
         )}
         <div className="mt-1.5 flex flex-col gap-1">
           {current.options.map((option) => {
@@ -227,9 +227,9 @@ export function QuestionCard({
                     : "border-line hover:border-line-strong hover:bg-surface-overlay",
                 )}
               >
-                <span className="text-[11.5px] text-text-primary">{option.label}</span>
+                <span className="text-xs text-text-primary">{option.label}</span>
                 {option.description !== "" && (
-                  <span className="mt-0.5 block text-[11.5px] text-text-muted">
+                  <span className="mt-0.5 block text-xs text-text-muted">
                     {option.description}
                   </span>
                 )}
@@ -250,12 +250,12 @@ export function QuestionCard({
           onKeyDown={onInputKeyDown}
           disabled={busy || expired}
           placeholder="或自己输入…"
-          className="mt-1.5 w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-[11.5px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent disabled:opacity-50"
+          className="mt-1.5 w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent disabled:opacity-50"
         />
       </div>
 
       {expired ? (
-        <p className="mt-3 text-[11.5px] text-text-muted">
+        <p className="mt-3 text-xs text-text-muted">
           已超时：模型已收到「未作答」，会按自己的假设继续并在回复里说明。
         </p>
       ) : (
@@ -266,7 +266,7 @@ export function QuestionCard({
             disabled={busy || !allAnswered}
             onClick={submit}
             title={allAnswered ? undefined : "每道题都要选一项或自己输入才能提交"}
-            className="flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[11.5px] font-medium text-accent-fg transition hover:opacity-90 disabled:opacity-50"
+            className="flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-accent-fg transition hover:opacity-90 disabled:opacity-50"
           >
             <Send {...ICON.sm} />
             提交
@@ -282,7 +282,7 @@ export function QuestionCard({
               onSkip();
             }}
             title="不回答：模型会按自己的假设继续，并说明假设"
-            className="flex items-center gap-1 rounded-md border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:text-text-primary disabled:opacity-50"
+            className="flex items-center gap-1 rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:opacity-50"
           >
             <SkipForward {...ICON.sm} />
             跳过

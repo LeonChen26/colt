@@ -55,7 +55,7 @@ export function Picker({
         disabled={disabled}
         title={title}
         className={cn(
-          "cbtn flex h-7 items-center gap-1.5 rounded-sm border px-2 text-[11.5px] text-text-secondary transition",
+          "cbtn flex h-7 items-center gap-1.5 rounded-sm border px-2 text-xs text-text-secondary transition",
           plain
             ? "border-transparent hover:border-transparent hover:bg-surface-overlay hover:text-text-primary"
             : "border-line hover:border-line-strong hover:text-text-primary",
@@ -78,13 +78,13 @@ export function Picker({
                 setOpen(false);
               }}
               className={cn(
-                "block w-full px-2.5 py-1 text-left text-[11.5px] transition hover:bg-surface-raised",
+                "block w-full px-2.5 py-1 text-left text-xs transition hover:bg-surface-raised",
                 option.value === value ? "text-text-primary" : "text-text-secondary",
               )}
             >
               <span className="block truncate">{option.label}</span>
               {option.hint && (
-                <span className="mt-0.5 block truncate text-[10.5px] text-text-muted">
+                <span className="mt-0.5 block truncate text-2xs text-text-muted">
                   {option.hint}
                 </span>
               )}

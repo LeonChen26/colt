@@ -63,7 +63,7 @@ function Bar({ share, tone }: { share: number; tone?: "danger" }): React.JSX.Ele
 /** 分段标题：小字大写的分组名 + 右侧的结论数字（「共 128 次 · 3 失败」） */
 function SectionHead({ title, note }: { title: string; note?: string }): React.JSX.Element {
   return (
-    <div className="mb-1.5 flex items-baseline gap-2 px-1.5 text-[10.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
+    <div className="mb-1.5 flex items-baseline gap-2 px-1.5 text-2xs font-semibold uppercase tracking-[.5px] text-text-muted">
       <span>{title}</span>
       <span className="flex-1" />
       {note !== undefined && <span className="font-medium normal-case tracking-normal">{note}</span>}
@@ -75,9 +75,9 @@ function SectionHead({ title, note }: { title: string; note?: string }): React.J
 function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }): React.JSX.Element {
   return (
     <div className="rounded-sm border border-line bg-surface px-2.5 py-2">
-      <div className="text-[10.5px] text-text-muted">{label}</div>
-      <div className="mt-0.5 font-mono text-[15px] font-semibold text-text-primary">{value}</div>
-      {sub !== undefined && <div className="mt-0.5 text-[10.5px] text-text-muted">{sub}</div>}
+      <div className="text-2xs text-text-muted">{label}</div>
+      <div className="mt-0.5 font-mono text-base font-semibold text-text-primary">{value}</div>
+      {sub !== undefined && <div className="mt-0.5 text-2xs text-text-muted">{sub}</div>}
     </div>
   );
 }
@@ -145,7 +145,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
 
   const chip = (active: boolean, danger = false): string =>
     cn(
-      "rounded-full border px-1.5 py-[2px] text-[10.5px] transition",
+      "rounded-full border px-1.5 py-[2px] text-2xs transition",
       active
         ? danger
           ? "border-danger bg-danger-soft font-semibold text-danger-fg"
@@ -185,16 +185,16 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         {models.map((stat) => (
           <div key={stat.model} className="flex items-center gap-2 px-1.5 py-1">
             <span
-              className="min-w-0 w-[82px] truncate font-mono text-[11.5px] text-text-primary"
+              className="min-w-0 w-[82px] truncate font-mono text-xs text-text-primary"
               title={stat.model === UNKNOWN_MODEL ? "记录里没有模型名" : stat.model}
             >
               {stat.model}
             </span>
             <Bar share={stat.costShare} />
-            <span className="w-[74px] shrink-0 text-right font-mono text-[10.5px] text-text-secondary">
+            <span className="w-[74px] shrink-0 text-right font-mono text-2xs text-text-secondary">
               ${stat.costUsd.toFixed(4)}
             </span>
-            <span className="w-[34px] shrink-0 text-right text-[10.5px] text-text-muted">
+            <span className="w-[34px] shrink-0 text-right text-2xs text-text-muted">
               {percent(stat.costShare)}
             </span>
           </div>
@@ -222,14 +222,14 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             <span className="shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100">
               <ChevronRight {...ICON.xs} />
             </span>
-            <span className="min-w-0 w-[82px] truncate font-mono text-[11.5px] text-text-primary">
+            <span className="min-w-0 w-[82px] truncate font-mono text-xs text-text-primary">
               {stat.toolName}
             </span>
             <Bar share={stat.share} tone={stat.failed > 0 ? "danger" : undefined} />
-            <span className="w-[74px] shrink-0 text-right font-mono text-[10.5px] text-text-secondary">
+            <span className="w-[74px] shrink-0 text-right font-mono text-2xs text-text-secondary">
               {stat.calls} 次
             </span>
-            <span className="w-[34px] shrink-0 text-right text-[10.5px] text-text-muted">
+            <span className="w-[34px] shrink-0 text-right text-2xs text-text-muted">
               {percent(stat.share)}
             </span>
           </button>
@@ -238,7 +238,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
           <button
             type="button"
             onClick={() => setAllToolsShown((value) => !value)}
-            className="block w-full px-1.5 py-1 text-left text-[10.5px] text-text-muted transition hover:text-text-primary"
+            className="block w-full px-1.5 py-1 text-left text-2xs text-text-muted transition hover:text-text-primary"
           >
             {allToolsShown
               ? "收起"
@@ -265,14 +265,14 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             <span className="shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100">
               <ChevronRight {...ICON.xs} />
             </span>
-            <span className="min-w-0 w-[82px] truncate font-mono text-[11.5px] text-text-primary">
+            <span className="min-w-0 w-[82px] truncate font-mono text-xs text-text-primary">
               {stat.toolName}
             </span>
             <Bar share={stat.share} />
-            <span className="w-[74px] shrink-0 text-right font-mono text-[10.5px] text-text-secondary">
+            <span className="w-[74px] shrink-0 text-right font-mono text-2xs text-text-secondary">
               {formatToolDuration(stat.totalMs)}
             </span>
-            <span className="w-[34px] shrink-0 text-right text-[10.5px] text-text-muted">
+            <span className="w-[34px] shrink-0 text-right text-2xs text-text-muted">
               {percent(stat.share)}
             </span>
           </button>
@@ -284,7 +284,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         type="button"
         data-stats-detail-toggle=""
         onClick={() => setDetailOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 px-1.5 py-1.5 text-left text-[11.5px] text-text-muted transition hover:text-text-primary"
+        className="flex w-full items-center gap-1.5 px-1.5 py-1.5 text-left text-xs text-text-muted transition hover:text-text-primary"
       >
         <ChevronRight
           {...ICON.xs}
@@ -333,7 +333,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             return (
               <div
                 key={call.id}
-                className="flex items-center gap-2 rounded-xs px-1.5 py-1 font-mono text-[10.5px] text-text-muted"
+                className="flex items-center gap-2 rounded-xs px-1.5 py-1 font-mono text-2xs text-text-muted"
               >
                 <span
                   className={cn("shrink-0", call.isError ? "text-danger-fg" : "text-text-secondary")}
@@ -354,7 +354,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             );
           })}
           {filtered.length > shown.length && (
-            <div className="px-1.5 py-1 text-[10.5px] text-text-muted">
+            <div className="px-1.5 py-1 text-2xs text-text-muted">
               只显示前 {DETAIL_LIMIT} 条（共 {filtered.length} 条），可用上面的筛选收窄
             </div>
           )}

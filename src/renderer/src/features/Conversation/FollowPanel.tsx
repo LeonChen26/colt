@@ -65,7 +65,7 @@ function SectionHead({
     <button
       type="button"
       onClick={onToggle}
-      className="flex h-[var(--h-panel-head)] w-full shrink-0 items-center gap-1.5 px-3.5 text-left text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted transition hover:text-text-secondary"
+      className="flex h-[var(--h-panel-head)] w-full shrink-0 items-center gap-1.5 px-3.5 text-left text-xs font-semibold uppercase tracking-[.5px] text-text-muted transition hover:text-text-secondary"
     >
       <ChevronDown
         {...ICON.xs}
@@ -73,7 +73,7 @@ function SectionHead({
       />
       <span className="truncate">{title}</span>
       {meta !== undefined && (
-        <span className="ml-auto shrink-0 text-[10.5px] font-medium normal-case tracking-normal text-text-muted">
+        <span className="ml-auto shrink-0 text-2xs font-medium normal-case tracking-normal text-text-muted">
           {meta}
         </span>
       )}
@@ -85,8 +85,8 @@ function SectionHead({
 function UsageStat({ label, value }: { label: string; value: string }): React.JSX.Element {
   return (
     <div className="rounded-sm border border-line bg-surface px-2 py-1.5">
-      <div className="text-[10.5px] text-text-muted">{label}</div>
-      <div className="mt-0.5 font-mono text-[13px] font-semibold text-text-primary">{value}</div>
+      <div className="text-2xs text-text-muted">{label}</div>
+      <div className="mt-0.5 font-mono text-sm font-semibold text-text-primary">{value}</div>
     </div>
   );
 }
@@ -139,7 +139,7 @@ export function FollowPanel({
           data-todo-subject=""
           title={todo.subject}
           className={cn(
-            "min-w-0 flex-1 truncate text-[11.5px]",
+            "min-w-0 flex-1 truncate text-xs",
             todo.status === "completed" ? "text-text-muted" : "text-text-secondary",
           )}
         >
@@ -147,7 +147,7 @@ export function FollowPanel({
         </span>
       </div>
       {blocked.has(todo.id) && (
-        <div className="truncate pl-3.5 text-[10.5px] text-text-muted">
+        <div className="truncate pl-3.5 text-2xs text-text-muted">
           等待：
           {todo.blockedBy
             .filter((id) => !doneTodos.some((item) => item.id === id))
@@ -199,7 +199,7 @@ export function FollowPanel({
                 data-usage-open=""
                 onClick={onOpenStats}
                 title="打开「统计」页签：按模型 / 工具排行 / 可筛明细"
-                className="mt-2 flex items-center gap-1 text-[11.5px] text-text-muted transition hover:text-text-primary"
+                className="mt-2 flex items-center gap-1 text-xs text-text-muted transition hover:text-text-primary"
               >
                 查看完整统计
                 <ChevronRight {...ICON.xs} />
@@ -227,7 +227,7 @@ export function FollowPanel({
                   type="button"
                   data-todo-done-toggle=""
                   onClick={() => setDoneOpen((value) => !value)}
-                  className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[11.5px] text-text-muted transition hover:text-text-secondary"
+                  className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-text-muted transition hover:text-text-secondary"
                 >
                   <ChevronRight
                     {...ICON.xs}
@@ -251,10 +251,10 @@ export function FollowPanel({
           className="flex w-full shrink-0 items-center gap-2 bg-surface px-3 py-2"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
-          <span className="shrink-0 text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
+          <span className="shrink-0 text-xs font-semibold uppercase tracking-[.5px] text-text-muted">
             本次改动
           </span>
-          <span className="min-w-0 flex-1 truncate text-[11.5px] text-text-muted">0 处 · 0 文件</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-text-muted">0 处 · 0 文件</span>
         </div>
       ) : (
         <button
@@ -265,10 +265,10 @@ export function FollowPanel({
           className="group flex w-full shrink-0 items-center gap-2 bg-surface px-3 py-2 text-left transition hover:bg-surface-overlay"
         >
           <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
-          <span className="shrink-0 text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
+          <span className="shrink-0 text-xs font-semibold uppercase tracking-[.5px] text-text-muted">
             本次改动
           </span>
-          <span className="min-w-0 flex-1 truncate text-[11.5px] text-text-secondary">
+          <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
             <span className="font-semibold text-text-primary">{places}</span> 处 ·{" "}
             <span className="font-semibold text-text-primary">{fileCount}</span> 文件
             {hasDiff && (
@@ -279,7 +279,7 @@ export function FollowPanel({
               </>
             )}
           </span>
-          <span className="flex shrink-0 items-center gap-1 text-[11.5px] text-text-muted transition group-hover:text-text-primary">
+          <span className="flex shrink-0 items-center gap-1 text-xs text-text-muted transition group-hover:text-text-primary">
             查看全部
             <ChevronRight {...ICON.xs} />
           </span>

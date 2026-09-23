@@ -75,7 +75,7 @@ export function EventsPanel({ sessionId }: { sessionId: string }): React.JSX.Ele
       empty="还没有安全事件。技能装载告警、同名技能覆盖、AGENTS.md 与记忆读取失败等会记录在此（重启后仍可回看）。"
       onRefresh={() => void load()}
     >
-      <div className="mb-3 text-[10.5px] leading-relaxed text-text-muted">
+      <div className="mb-3 text-2xs leading-relaxed text-text-muted">
         这些事件发生时界面会短暂提示，但提示会消失——这里保留完整记录。
       </div>
       {events.map((event, index) => (
@@ -85,8 +85,8 @@ export function EventsPanel({ sessionId }: { sessionId: string }): React.JSX.Ele
         >
           <ShieldAlert {...ICON.sm} className="mt-0.5 shrink-0 text-warning" />
           <div className="min-w-0 flex-1">
-            <div className="text-[11.5px] leading-relaxed text-text-primary">{event.message}</div>
-            <div className="mt-0.5 text-[10.5px] text-text-muted">{formatTime(event.createdAt)}</div>
+            <div className="text-xs leading-relaxed text-text-primary">{event.message}</div>
+            <div className="mt-0.5 text-2xs text-text-muted">{formatTime(event.createdAt)}</div>
           </div>
         </div>
       ))}

@@ -95,7 +95,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         <div className="mb-1.5 flex items-center justify-between">
           <span
             className={cn(
-              "text-[10.5px] uppercase tracking-[.5px]",
+              "text-2xs uppercase tracking-[.5px]",
               kind === "deny" ? "text-danger" : "text-text-muted",
             )}
           >
@@ -105,7 +105,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             type="button"
             disabled={busy}
             onClick={() => void clear(kind)}
-            className="text-[10.5px] text-text-muted transition hover:text-danger disabled:opacity-50"
+            className="text-2xs text-text-muted transition hover:text-danger disabled:opacity-50"
           >
             全部清除
           </button>
@@ -128,9 +128,9 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
                 )}
               />
               <div className="min-w-0 flex-1">
-                <div className="font-mono text-[11.5px] text-text-primary">{scope}</div>
+                <div className="font-mono text-xs text-text-primary">{scope}</div>
                 {detail && (
-                  <div className="mt-0.5 truncate font-mono text-[10.5px] text-text-muted" title={detail}>
+                  <div className="mt-0.5 truncate font-mono text-2xs text-text-muted" title={detail}>
                     {detail}
                   </div>
                 )}
@@ -164,7 +164,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
       empty="本次会话还没有记住任何规则。在审批卡片上选「本会话内始终允许」或「始终拒绝」时会记在这里。"
       onRefresh={() => void load()}
     >
-      <div className="mb-3 text-[10.5px] leading-relaxed text-text-muted">
+      <div className="mb-3 text-2xs leading-relaxed text-text-muted">
         规则仅存于内存，以会话为单位存活：删除会话或退出应用即失效。
       </div>
       {section("放行", "allow", allowed)}

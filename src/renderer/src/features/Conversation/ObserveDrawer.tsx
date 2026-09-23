@@ -153,7 +153,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
                 }
               }}
               className={cn(
-                "flex h-6 shrink-0 items-center gap-1.5 rounded-sm px-2 text-[11.5px] transition",
+                "flex h-6 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs transition",
                 active
                   ? "bg-surface-overlay text-text-primary"
                   : "text-text-muted hover:bg-surface-overlay hover:text-text-secondary",
@@ -164,7 +164,7 @@ export function ObserveDrawer({ sessionId }: { sessionId: string }): React.JSX.E
               {count > 0 && (
                 <span
                   className={cn(
-                    "rounded-xs px-1 text-[10.5px]",
+                    "rounded-xs px-1 text-2xs",
                     id === "downloads"
                       ? "bg-surface-raised text-text-secondary"
                       : "bg-danger-soft text-danger-fg",
@@ -212,7 +212,7 @@ interface RowsProps<T> {
 }
 
 function Empty({ text }: { text: string }): React.JSX.Element {
-  return <p className="px-1 py-3 text-[11.5px] text-text-muted">{text}</p>;
+  return <p className="px-1 py-3 text-xs text-text-muted">{text}</p>;
 }
 
 /** 级别 → 圆点颜色；未知级别按普通处理 */
@@ -248,7 +248,7 @@ function ObsRow({
       aria-expanded={open}
       title={open ? "收起详情" : "展开详情"}
       onClick={() => onToggle(rowKey)}
-      className="-mx-1 flex w-[calc(100%+8px)] items-start gap-2 rounded-xs px-1 py-[3px] text-left text-[11.5px] leading-relaxed transition hover:bg-surface-overlay"
+      className="-mx-1 flex w-[calc(100%+8px)] items-start gap-2 rounded-xs px-1 py-[3px] text-left text-xs leading-relaxed transition hover:bg-surface-overlay"
     >
       {children}
       <ChevronRight
@@ -292,14 +292,14 @@ function Detail({ fields }: { fields: ObsField[] }): React.JSX.Element {
       className="mb-1 ml-4 rounded-sm border border-line bg-surface-overlay/50 px-2 py-1.5"
     >
       {fields.map((item) => (
-        <div key={item.label} className="flex items-start gap-2 text-[11.5px] leading-relaxed">
+        <div key={item.label} className="flex items-start gap-2 text-xs leading-relaxed">
           <span className="w-[46px] shrink-0 text-text-muted">{item.label}</span>
           {/* 值一律换行、**不截断**：这就是本功能的全部意义（长 URL / 绝对路径要看得全） */}
           <span
             data-obs-field={item.label}
             className={cn(
               "min-w-0 flex-1 break-all text-text-secondary",
-              item.mono && "font-mono text-[10.5px]",
+              item.mono && "font-mono text-2xs",
             )}
           >
             {item.value}
@@ -312,7 +312,7 @@ function Detail({ fields }: { fields: ObsField[] }): React.JSX.Element {
           data-obs-copy=""
           onClick={copy}
           title="复制这条观测的完整字段"
-          className="flex h-5 items-center gap-1 rounded-xs px-1.5 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          className="flex h-5 items-center gap-1 rounded-xs px-1.5 text-2xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
         >
           {copied ? <Check {...ICON.xs} /> : <Copy {...ICON.xs} />}
           {copied ? "已复制" : "复制"}
@@ -344,7 +344,7 @@ function ConsoleRows({ entries, expandedKey, onToggle }: RowsProps<ConsoleEntry>
                 {entry.message}
               </span>
               {entry.source.length > 0 && (
-                <span className="shrink-0 font-mono text-[10.5px] text-text-muted">
+                <span className="shrink-0 font-mono text-2xs text-text-muted">
                   {shortSource(entry.source)}
                   {entry.line > 0 ? `:${entry.line}` : ""}
                 </span>
@@ -372,7 +372,7 @@ function NetworkRows({ entries, expandedKey, onToggle }: RowsProps<NetworkEntry>
             <ObsRow tab="network" rowKey={rowKey} open={open} onToggle={onToggle}>
               <span
                 className={cn(
-                  "shrink-0 rounded-xs px-1 font-mono text-[10.5px]",
+                  "shrink-0 rounded-xs px-1 font-mono text-2xs",
                   problem ? "bg-danger-soft text-danger-fg" : "bg-surface-overlay text-text-muted",
                 )}
               >
@@ -381,7 +381,7 @@ function NetworkRows({ entries, expandedKey, onToggle }: RowsProps<NetworkEntry>
               <span className="min-w-0 flex-1 truncate text-text-secondary">
                 <span className="font-mono">{entry.method}</span> {entry.url}
               </span>
-              <span className="shrink-0 text-[10.5px] text-text-muted">{entry.resourceType}</span>
+              <span className="shrink-0 text-2xs text-text-muted">{entry.resourceType}</span>
             </ObsRow>
             {open && <Detail fields={networkFields(entry)} />}
           </div>
@@ -408,7 +408,7 @@ function DownloadRows({ entries, expandedKey, onToggle }: RowsProps<DownloadEntr
                   </span>
                   <span
                     className={cn(
-                      "shrink-0 text-[10.5px]",
+                      "shrink-0 text-2xs",
                       entry.state === "completed" ? "text-success-fg" : "text-warning",
                     )}
                   >
@@ -417,7 +417,7 @@ function DownloadRows({ entries, expandedKey, onToggle }: RowsProps<DownloadEntr
                       : `${entry.state}${entry.note !== undefined ? `：${entry.note}` : ""}`}
                   </span>
                 </span>
-                <span className="block truncate font-mono text-[10.5px] text-text-muted">
+                <span className="block truncate font-mono text-2xs text-text-muted">
                   {entry.path}
                 </span>
               </span>

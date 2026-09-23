@@ -22,7 +22,7 @@ export function DiffView({ patch }: { patch: string }): React.JSX.Element {
   return (
     // max-h 与工具输出区一致：大 patch（lockfile / 生成文件）一次性全量渲染，
     // 不设上限会把消息流撑出上万像素高度，也拖慢首次渲染
-    <div className="max-h-80 overflow-auto rounded-sm border border-line bg-surface-code font-mono text-[11.5px] leading-relaxed">
+    <div className="max-h-80 overflow-auto rounded-sm border border-line bg-surface-code font-mono text-xs leading-relaxed">
       {lines.map((line, index) => {
         const kind = classifyDiffLine(line, inHunk);
         if (kind === "hunk") inHunk = true;

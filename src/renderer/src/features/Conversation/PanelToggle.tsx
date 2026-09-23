@@ -30,7 +30,7 @@ export function PanelToggle({
       onClick={onClick}
       title={title}
       className={cn(
-        "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] transition",
+        "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs transition",
         active
           ? "border-accent bg-accent-soft text-text-primary"
           : "border-line text-text-secondary hover:text-text-primary",

@@ -53,6 +53,13 @@
   --font-sans: "Inter", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
 
+  /* 字号令牌：全应用只用这几个语义档（text-2xs/xs/sm/base），不再散写 text-[Npx]。
+     档位与用途：2xs=徽标/时间戳/语言标签；xs=次要文字/面板正文；sm=正文与主文案；
+     base=标题与重点数值；2xl=起手态 hero 标题。xs 及以上沿用 Tailwind 默认档值与行高，
+     2xs 是唯一自定义档。 */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 14px;
+
   /* 高度（elevation）：低透明度黑 + 收紧的扩散，暗色下才有「抬起来」而不是「糊一团」的观感。
      三档对应：sm = 贴边的小浮件；md = 下拉 / 菜单；lg = 抽屉 / 模态这类大浮层。
      xl / 2xl 一并接管：组件里既有的 `shadow-xl` / `shadow-2xl` 用的是亮色向的默认值，
@@ -173,7 +180,7 @@ body {
   background-color: var(--color-surface);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -335,7 +342,7 @@ body.resizing * {
   background: var(--color-surface-code);
   color: var(--color-text-secondary);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.7;
 }
 .code-view .gutter {
@@ -433,7 +440,7 @@ body.resizing * {
   border-radius: var(--radius-md);
   padding: 10px 14px;
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: 14px;
   font-style: italic;
   /* 模型写的原样文本：含无空格长串（路径 / URL / hash）时按任意位置断行，
      否则它会把会话区顶出一条横向滚动条（`.md` 用的是同族的 `word-break`）。 */
@@ -445,7 +452,7 @@ body.resizing * {
    颜色全部引用代码高亮令牌，随主题联动。
    ============================================================ */
 .md {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.7;
   color: var(--color-text-primary);
   word-break: break-word;
@@ -485,7 +492,7 @@ body.resizing * {
   justify-content: space-between;
   padding: 5px 10px;
   border-bottom: 1px solid var(--color-line);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-text-muted);
 }
 .md .md-code-head .lang {
@@ -509,7 +516,7 @@ body.resizing * {
   padding: 10px 12px;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--color-text-primary);
 }
@@ -546,7 +553,7 @@ body.resizing * {
 .md h4,
 .md h5,
 .md h6 {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
   margin: 14px 0 8px;
   color: var(--color-text-primary);
@@ -581,7 +588,7 @@ body.resizing * {
 .md table {
   border-collapse: collapse;
   margin: 0 0 10px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .md th,
 .md td {

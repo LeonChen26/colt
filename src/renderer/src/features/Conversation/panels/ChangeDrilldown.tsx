@@ -122,7 +122,7 @@ function CrumbButton({
       type="button"
       data-drill-crumb={marker}
       onClick={onClick}
-      className="flex shrink-0 items-center gap-1 rounded-xs px-1 py-0.5 text-[11.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+      className="flex shrink-0 items-center gap-1 rounded-xs px-1 py-0.5 text-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
     >
       <ChevronLeft {...ICON.xs} />
       {label}
@@ -148,8 +148,8 @@ function BackRow({
       className="group flex w-full shrink-0 items-center gap-2 border-t border-line bg-surface px-3 py-2 text-left transition hover:bg-surface-overlay"
     >
       <Undo2 {...ICON.sm} className="shrink-0 text-text-muted" />
-      <span className="text-[11.5px] text-text-secondary">{label}</span>
-      <span className="ml-auto shrink-0 text-[11.5px] text-text-muted transition group-hover:text-text-primary">
+      <span className="text-xs text-text-secondary">{label}</span>
+      <span className="ml-auto shrink-0 text-xs text-text-muted transition group-hover:text-text-primary">
         {hint ?? "ESC"}
       </span>
     </button>
@@ -200,35 +200,35 @@ function NetDiff({
 
   if (reverted) {
     return (
-      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
         本次会话已还原：该文件当前内容与改动前一致。
       </p>
     );
   }
   if (error !== null) {
     return (
-      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
         无法获取净变化：{error}
       </p>
     );
   }
   if (result === null) {
     return (
-      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
         正在计算净变化…
       </p>
     );
   }
   if (result.status !== "ok") {
     return (
-      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
         {result.reason}
       </p>
     );
   }
   if (result.patch === "") {
     return (
-      <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
         本次会话已还原：该文件当前内容与改动前一致。
       </p>
     );
@@ -387,7 +387,7 @@ export function ChangeDrilldown({
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             <span
               data-drill-crumb="subagent"
-              className="flex min-w-0 items-center gap-1 px-1 text-[11.5px] font-medium text-text-primary"
+              className="flex min-w-0 items-center gap-1 px-1 text-xs font-medium text-text-primary"
               title={subagent?.title}
             >
               <Bot {...ICON.xs} className="shrink-0 text-text-muted" />
@@ -399,7 +399,7 @@ export function ChangeDrilldown({
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             {inList ? (
-              <span className="shrink-0 px-1 text-[11.5px] font-medium text-text-primary">
+              <span className="shrink-0 px-1 text-xs font-medium text-text-primary">
                 本次改动
               </span>
             ) : (
@@ -407,7 +407,7 @@ export function ChangeDrilldown({
                 type="button"
                 data-drill-crumb="list"
                 onClick={goList}
-                className="shrink-0 rounded-xs px-1 py-0.5 text-[11.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+                className="shrink-0 rounded-xs px-1 py-0.5 text-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
               >
                 本次改动
               </button>
@@ -419,7 +419,7 @@ export function ChangeDrilldown({
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             <span
               data-drill-crumb="current"
-              className="min-w-0 truncate px-1 font-mono text-[11.5px] text-text-primary"
+              className="min-w-0 truncate px-1 font-mono text-xs text-text-primary"
               title={path}
             >
               {path}
@@ -430,7 +430,7 @@ export function ChangeDrilldown({
         {inList && (
           <span
             title="「处」是改动次数、「文件」是按路径去重后的文件数；+a −b 是净值（改动前 → 现在）"
-            className="shrink-0 pl-1 font-mono text-[10.5px] text-text-secondary"
+            className="shrink-0 pl-1 font-mono text-2xs text-text-secondary"
           >
             <span className="font-semibold text-text-primary">{list.places}</span> 处 ·{" "}
             <span className="font-semibold text-text-primary">{list.fileCount}</span> 文件
@@ -447,7 +447,7 @@ export function ChangeDrilldown({
       {inList ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5" data-clist="">
           {list.groups.length === 0 ? (
-            <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+            <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
               本次还没有改动文件。
             </p>
           ) : (
@@ -456,7 +456,7 @@ export function ChangeDrilldown({
                 {/* 目录只是一行**弱标签**：保留归属，但不额外消耗一次点击 */}
                 <div
                   data-clist-dir={group.dir}
-                  className="flex items-baseline gap-2 px-1.5 py-1 text-[10.5px] text-text-muted"
+                  className="flex items-baseline gap-2 px-1.5 py-1 text-2xs text-text-muted"
                 >
                   <Folder {...ICON.xs} className="shrink-0 self-center" />
                   <span className="truncate font-mono" title={group.dir}>
@@ -506,10 +506,10 @@ export function ChangeDrilldown({
                         )}
                         <FileDiff {...ICON.sm} className="shrink-0 text-text-muted" />
                         <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="truncate font-mono text-[11.5px] text-text-primary">
+                          <span className="truncate font-mono text-xs text-text-primary">
                             {file.name}
                           </span>
-                          <span className="truncate text-[10.5px] text-text-muted">
+                          <span className="truncate text-2xs text-text-muted">
                             {many && <span className="text-text-secondary">×{file.history.length} </span>}
                             {file.kind === "write" ? "新建" : "编辑"} · {formatAgo(file.latestAt)}
                           </span>
@@ -520,7 +520,7 @@ export function ChangeDrilldown({
                         <span
                           data-clist-net-value={file.path}
                           title={netTitle(file)}
-                          className="shrink-0 font-mono text-[10.5px]"
+                          className="shrink-0 font-mono text-2xs"
                         >
                           <NetNumbers added={file.netAddedLines} removed={file.netRemovedLines} />
                         </span>
@@ -537,12 +537,12 @@ export function ChangeDrilldown({
                             title="本次会话的累计改动（改动前 → 现在）"
                             className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay"
                           >
-                            <span className="min-w-0 flex-1 truncate text-[10.5px] text-text-secondary">
+                            <span className="min-w-0 flex-1 truncate text-2xs text-text-secondary">
                               全部改动（累计）
                             </span>
                             <span
                               data-clist-net-row-value={file.path}
-                              className="shrink-0 font-mono text-[10.5px]"
+                              className="shrink-0 font-mono text-2xs"
                             >
                               {file.netAddedLines === null || file.netRemovedLines === null ? (
                                 <span className="text-text-muted">—</span>
@@ -562,13 +562,13 @@ export function ChangeDrilldown({
                               onClick={() => goDiff(file.path, rev.id)}
                               className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay"
                             >
-                              <span className="shrink-0 font-mono text-[10.5px] text-text-secondary">
+                              <span className="shrink-0 font-mono text-2xs text-text-secondary">
                                 #{file.history.length - index}
                               </span>
-                              <span className="min-w-0 flex-1 truncate text-[10.5px] text-text-muted">
+                              <span className="min-w-0 flex-1 truncate text-2xs text-text-muted">
                                 {formatAgo(rev.timestamp)}
                               </span>
-                              <span className="shrink-0 font-mono text-[10.5px]">
+                              <span className="shrink-0 font-mono text-2xs">
                                 {rev.addedLines > 0 && (
                                   <span className="text-success-fg">+{rev.addedLines}</span>
                                 )}
@@ -591,7 +591,7 @@ export function ChangeDrilldown({
           {list.hidden > 0 && (
             <div
               data-clist-hidden={list.hidden}
-              className="px-1.5 py-1.5 text-[10.5px] leading-relaxed text-text-muted"
+              className="px-1.5 py-1.5 text-2xs leading-relaxed text-text-muted"
             >
               已隐藏 {list.hidden} 个项目外文件（不在项目根内，无法预览）
             </div>
@@ -601,7 +601,7 @@ export function ChangeDrilldown({
           {list.netUnknown > 0 && (
             <div
               data-clist-net-unknown={list.netUnknown}
-              className="px-1.5 py-1.5 text-[10.5px] leading-relaxed text-text-muted"
+              className="px-1.5 py-1.5 text-2xs leading-relaxed text-text-muted"
             >
               {list.netUnknown} 个文件未记录改动前的内容（过大 / 二进制 / 读取失败），未计入净值
             </div>
@@ -611,7 +611,7 @@ export function ChangeDrilldown({
         /* 子代理的完整过程流：视图里只有有界尾部，这里按需拉整份（决策七 D9） */
         <div className="min-h-0 flex-1 overflow-auto" data-drill-subagent={subagentId ?? ""}>
           {subagentId === null ? (
-            <p className="px-3 py-6 text-center text-[11.5px] text-text-muted">没有选中的子代理。</p>
+            <p className="px-3 py-6 text-center text-xs text-text-muted">没有选中的子代理。</p>
           ) : (
             <SubagentStream
               sessionId={sessionId}
@@ -625,7 +625,7 @@ export function ChangeDrilldown({
       ) : layer === "diff" ? (
         <div className="flex min-h-0 flex-1 flex-col" data-drill-diff="">
           <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
-            <span className="truncate font-mono text-[11.5px] text-text-secondary" title={path ?? ""}>
+            <span className="truncate font-mono text-xs text-text-secondary" title={path ?? ""}>
               {path}
             </span>
             {/* 同一文件改过多次时给历史切换；只有一次就不给（一个选项的开关是噪声）。
@@ -638,7 +638,7 @@ export function ChangeDrilldown({
                   onClick={() => setRevisionId(NET_REVISION)}
                   title="本次会话的累计改动（改动前 → 现在）"
                   className={cn(
-                    "rounded-xs px-1.5 py-0.5 text-[10.5px] transition",
+                    "rounded-xs px-1.5 py-0.5 text-2xs transition",
                     netSelected
                       ? "bg-accent-soft font-semibold text-text-primary"
                       : "text-text-muted hover:text-text-primary",
@@ -654,7 +654,7 @@ export function ChangeDrilldown({
                     onClick={() => setRevisionId(rev.id)}
                     title={formatAgo(rev.timestamp)}
                     className={cn(
-                      "rounded-xs px-1.5 py-0.5 text-[10.5px] transition",
+                      "rounded-xs px-1.5 py-0.5 text-2xs transition",
                       !netSelected && rev.id === revision?.id
                         ? "bg-accent-soft font-semibold text-text-primary"
                         : "text-text-muted hover:text-text-primary",
@@ -671,7 +671,7 @@ export function ChangeDrilldown({
               data-drill-content=""
               onClick={() => path !== null && goContent(path)}
               className={cn(
-                "flex shrink-0 items-center gap-1 rounded-sm border border-line px-1.5 py-1 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
+                "flex shrink-0 items-center gap-1 rounded-sm border border-line px-1.5 py-1 text-2xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
                 !(current !== undefined && current.history.length > 1) && "ml-auto",
               )}
             >
@@ -685,7 +685,7 @@ export function ChangeDrilldown({
             ) : revision?.patch ? (
               <DiffView patch={revision.patch} />
             ) : (
-              <p className="px-2 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+              <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
                 {revision
                   ? "该改动由 write 工具整文件写入，内核未提供 diff。点右上「看文件」看结果。"
                   : "这次改动没有可显示的 diff。"}
@@ -695,7 +695,7 @@ export function ChangeDrilldown({
         </div>
       ) : path === null ? (
         // 进到内容层却没有目标：只可能是状态被清空，给一句说明而不是白屏
-        <p className="px-3 py-6 text-center text-[11.5px] text-text-muted">
+        <p className="px-3 py-6 text-center text-xs text-text-muted">
           没有选中的文件。
         </p>
       ) : (

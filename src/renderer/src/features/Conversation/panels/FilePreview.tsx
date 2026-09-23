@@ -43,8 +43,8 @@ function Placeholder({
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
       {icon}
-      <p className="mt-2 text-[13px] text-text-secondary">{title}</p>
-      <p className="max-w-[260px] text-[11.5px] leading-relaxed text-text-muted">{body}</p>
+      <p className="mt-2 text-sm text-text-secondary">{title}</p>
+      <p className="max-w-[260px] text-xs leading-relaxed text-text-muted">{body}</p>
     </div>
   );
 }
@@ -96,17 +96,17 @@ export function FilePreview({
     <div className="flex min-h-0 w-full flex-1 flex-col" data-file-view={path}>
       {/* 文件头：路径 + 语言 + 体积 + 重读 */}
       <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
-        <span className="truncate font-mono text-[11.5px] text-text-secondary" title={path}>
+        <span className="truncate font-mono text-xs text-text-secondary" title={path}>
           {path}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {language !== null && (
-            <span className="font-mono text-[10.5px] text-text-muted" data-file-lang={language}>
+            <span className="font-mono text-2xs text-text-muted" data-file-lang={language}>
               {language}
             </span>
           )}
           {result !== null && (
-            <span className="text-[10.5px] text-text-muted">{formatBytes(result.size)}</span>
+            <span className="text-2xs text-text-muted">{formatBytes(result.size)}</span>
           )}
           <button
             type="button"
@@ -121,7 +121,7 @@ export function FilePreview({
       </div>
 
       {loading ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-[11.5px] text-text-muted">
+        <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-xs text-text-muted">
           <Loader2 {...ICON.sm} className="animate-spin" />
           正在读取…
         </div>

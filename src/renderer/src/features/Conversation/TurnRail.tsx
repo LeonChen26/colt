@@ -177,8 +177,8 @@ export function TurnRail({
           className="pointer-events-none absolute left-full z-30 ml-1.5 w-64 -translate-y-1/2 rounded-md border border-line bg-surface-raised px-2.5 py-1.5 shadow-xl"
           style={{ top: hovered.y }}
         >
-          <span className="block text-[10.5px] text-text-muted">第 {hovered.turn} 轮</span>
-          <span className="mt-0.5 line-clamp-2 block text-[11.5px] leading-snug text-text-secondary">
+          <span className="block text-2xs text-text-muted">第 {hovered.turn} 轮</span>
+          <span className="mt-0.5 line-clamp-2 block text-xs leading-snug text-text-secondary">
             {hovered.label}
           </span>
         </div>

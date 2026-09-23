@@ -18,7 +18,7 @@ export function TerminalOutput({
   const spans = useMemo(() => parseAnsi(text), [text]);
   return (
     <pre
-      className={`overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-text-secondary ${className}`}
+      className={`overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-text-secondary ${className}`}
     >
       {spans.map((span, index) => (
         <span key={index} className={span.className || undefined}>

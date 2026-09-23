@@ -42,16 +42,16 @@ export function FirstRunGate({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="w-[520px] max-w-[92vw] rounded-lg border border-line bg-surface-raised p-6 shadow-2xl">
-        <h1 className="text-[15px] font-semibold text-text-primary">
+        <h1 className="text-base font-semibold text-text-primary">
           {historical ? "检测到历史数据" : "欢迎使用 Colt"}
         </h1>
-        <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
+        <p className="mt-2 text-sm leading-relaxed text-text-secondary">
           {historical
             ? "本机已存在 Colt 的工作台数据。请选择是继续沿用，还是清空后重新开始。"
             : "Colt 是桌面 Agent 工作台。开始前请确认运行环境满足要求，随后即可打开项目目录与 Agent 对话。"}
         </p>
 
-        <div className="mt-4 rounded-lg border border-line bg-surface p-3 text-[11.5px]">
+        <div className="mt-4 rounded-lg border border-line bg-surface p-3 text-xs">
           {historical ? (
             <ul className="space-y-1.5 text-text-secondary">
               <li className="flex items-center gap-2">
@@ -77,7 +77,7 @@ export function FirstRunGate({
         </div>
 
         {error && (
-          <p className="mt-3 rounded-md border border-line bg-danger-soft px-3 py-2 text-[11.5px] text-danger-fg">
+          <p className="mt-3 rounded-md border border-line bg-danger-soft px-3 py-2 text-xs text-danger-fg">
             {error}
           </p>
         )}
@@ -139,7 +139,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex items-center gap-1.5 rounded-md px-3.5 py-2 text-[13px] transition disabled:opacity-50",
+        "flex items-center gap-1.5 rounded-md px-3.5 py-2 text-sm transition disabled:opacity-50",
         variant === "primary"
           ? "bg-accent text-accent-fg hover:opacity-90"
           : "border border-line text-text-secondary hover:text-text-primary",

@@ -187,7 +187,7 @@ function DockTab({
         onClick={onActivate}
         aria-pressed={active}
         className={cn(
-          "flex h-full items-center gap-1.5 pl-2 text-[11.5px] whitespace-nowrap transition",
+          "flex h-full items-center gap-1.5 pl-2 text-xs whitespace-nowrap transition",
           onClose === undefined ? "pr-2" : "pr-1",
           active ? "font-medium text-text-primary" : "text-text-muted hover:text-text-secondary",
         )}
@@ -585,7 +585,7 @@ export function WorkspaceDock({
                   onOpenKind(kind);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2.5 rounded-sm px-2 py-[7px] text-left text-[13px] text-text-secondary transition hover:bg-surface-raised hover:text-text-primary"
+                className="flex w-full items-center gap-2.5 rounded-sm px-2 py-[7px] text-left text-sm text-text-secondary transition hover:bg-surface-raised hover:text-text-primary"
               >
                 <span className="shrink-0 text-text-muted">
                   <meta.Icon {...ICON.sm} />
@@ -593,10 +593,10 @@ export function WorkspaceDock({
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span>{meta.label}</span>
                   {meta.desc !== undefined && (
-                    <span className="truncate text-[11.5px] text-text-muted">{meta.desc}</span>
+                    <span className="truncate text-xs text-text-muted">{meta.desc}</span>
                   )}
                 </span>
-                {opened && <span className="shrink-0 text-[10.5px] text-text-muted">已打开</span>}
+                {opened && <span className="shrink-0 text-2xs text-text-muted">已打开</span>}
               </button>
             );
           })}
@@ -649,7 +649,7 @@ export function WorkspaceDock({
             {/* min-w-0 + flex-1：让地址先被截断，把位置留给右侧的联调标记——
                 否则地址会把标记挤出可视区，那就成了「看不见的出口」（等于没有）。 */}
             <span
-              className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-text-secondary"
+              className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary"
               title={browser?.title || url || undefined}
             >
               {loaded ? url || "about:blank" : "尚未加载"}
@@ -670,7 +670,7 @@ export function WorkspaceDock({
               <span
                 data-browser-viewport={`${override.width}x${override.height}`}
                 title={`响应式联调视口 ${override.width}×${override.height}（agent 设置）：页面按这个尺寸重排，超出停靠区的部分看不到。点「恢复」交还给按停靠区尺寸的自适应布局。`}
-                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-warning bg-warning-soft px-2 py-1 text-[11.5px] font-medium leading-none text-warning"
+                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-warning bg-warning-soft px-2 py-1 text-xs font-medium leading-none text-warning"
               >
                 <MonitorSmartphone {...ICON.sm} className="shrink-0" />
                 <span className="min-w-0 truncate">
@@ -684,7 +684,7 @@ export function WorkspaceDock({
                   data-browser-viewport-reset=""
                   onClick={onResetViewport}
                   title="恢复自适应视口，交还给按停靠区尺寸的布局"
-                  className="shrink-0 rounded-xs bg-warning px-1.5 py-[3px] text-[11.5px] font-semibold text-accent-fg transition hover:opacity-90"
+                  className="shrink-0 rounded-xs bg-warning px-1.5 py-[3px] text-xs font-semibold text-accent-fg transition hover:opacity-90"
                 >
                   恢复
                 </button>
@@ -700,7 +700,7 @@ export function WorkspaceDock({
               <span
                 data-browser-zoom={Math.round(zoom * 100)}
                 title={`已按「适应宽度」等比缩到 ${Math.round(zoom * 100)}%，整页宽度都能看见；点「还原」回到 100%（页面会重新按停靠区尺寸重排）。`}
-                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-line bg-surface-overlay px-2 py-1 text-[11.5px] font-medium leading-none text-text-secondary"
+                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-line bg-surface-overlay px-2 py-1 text-xs font-medium leading-none text-text-secondary"
               >
                 <ZoomOut {...ICON.sm} className="shrink-0" />
                 <span className="min-w-0 truncate font-mono">{Math.round(zoom * 100)}%</span>
@@ -709,7 +709,7 @@ export function WorkspaceDock({
                   data-browser-zoom-reset=""
                   onClick={() => onBrowserZoom(false)}
                   title="回到 100%"
-                  className="shrink-0 rounded-xs bg-surface-raised px-1.5 py-[3px] text-[11.5px] font-semibold text-text-primary transition hover:bg-line"
+                  className="shrink-0 rounded-xs bg-surface-raised px-1.5 py-[3px] text-xs font-semibold text-text-primary transition hover:bg-line"
                 >
                   还原
                 </button>
@@ -726,7 +726,7 @@ export function WorkspaceDock({
           {clippedX && (
             <div
               data-browser-clipped={`${needWidth}>${areaWidth}`}
-              className="flex shrink-0 items-start gap-1.5 border-b border-warning/40 bg-warning-soft px-2.5 py-1.5 text-[11.5px] leading-relaxed text-warning"
+              className="flex shrink-0 items-start gap-1.5 border-b border-warning/40 bg-warning-soft px-2.5 py-1.5 text-xs leading-relaxed text-warning"
             >
               <MoveHorizontal {...ICON.sm} className="mt-px shrink-0" />
               <span className="min-w-0 flex-1">
@@ -748,7 +748,7 @@ export function WorkspaceDock({
                   data-browser-fit=""
                   onClick={() => onBrowserZoom(true)}
                   title="把整页等比缩小到能看见全部宽度；页面会变小，可随时在工具条上「还原」回 100%"
-                  className="shrink-0 self-center rounded-xs bg-warning px-1.5 py-[3px] text-[11.5px] font-semibold text-accent-fg transition hover:opacity-90"
+                  className="shrink-0 self-center rounded-xs bg-warning px-1.5 py-[3px] text-xs font-semibold text-accent-fg transition hover:opacity-90"
                 >
                   适应宽度
                 </button>
@@ -773,8 +773,8 @@ export function WorkspaceDock({
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
               <Globe className="text-text-muted" style={{ width: 26, height: 26 }} />
-              <p className="mt-2 text-[13px] text-text-secondary">浏览器尚未加载</p>
-              <p className="max-w-[240px] text-[11.5px] leading-relaxed text-text-muted">
+              <p className="mt-2 text-sm text-text-secondary">浏览器尚未加载</p>
+              <p className="max-w-[240px] text-xs leading-relaxed text-text-muted">
                 agent 使用浏览器时会自动打开；在此之前不占用资源。
               </p>
             </div>

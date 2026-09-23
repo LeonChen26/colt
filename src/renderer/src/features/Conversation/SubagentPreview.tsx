@@ -24,12 +24,12 @@ export function SubagentPreview({
   return (
     <div data-subagent-preview={subagent.id} className="flex flex-col gap-1.5">
       {subagent.error !== undefined && (
-        <p className="rounded-sm border border-line bg-danger-soft px-2 py-1.5 text-[11.5px] leading-relaxed text-danger-fg">
+        <p className="rounded-sm border border-line bg-danger-soft px-2 py-1.5 text-xs leading-relaxed text-danger-fg">
           {subagent.error}
         </p>
       )}
       {hidden > 0 && (
-        <p className="rounded-xs bg-surface-overlay/60 px-2 py-1 text-[10.5px] text-text-muted">
+        <p className="rounded-xs bg-surface-overlay/60 px-2 py-1 text-2xs text-text-muted">
           只列出最近 {recentSteps.length} 步（共 {stepCount} 步）——完整过程在右上「在右栏查看完整过程」
         </p>
       )}
@@ -38,24 +38,24 @@ export function SubagentPreview({
           key={step.id}
           className="rounded-sm border border-line-soft bg-surface-code px-2 py-1.5"
         >
-          <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
+          <div className="mb-0.5 text-2xs font-medium tracking-[.5px] text-text-muted">
             {step.role === "user" ? "任务 / 用户" : step.role === "assistant" ? "子代理" : step.role}
           </div>
           {step.thought !== undefined && (
             <div className="thought mb-1">
-              <span className="flex items-center gap-1 text-[10.5px] text-text-muted">
+              <span className="flex items-center gap-1 text-2xs text-text-muted">
                 <Brain {...ICON.xs} /> 思考
               </span>
               {step.thought}
             </div>
           )}
           {step.text !== "" && (
-            <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
+            <div className="whitespace-pre-wrap text-xs leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
               {step.text}
             </div>
           )}
           {step.toolCalls.map((call) => (
-            <div key={call.id} className="truncate font-mono text-[10.5px] text-text-muted">
+            <div key={call.id} className="truncate font-mono text-2xs text-text-muted">
               {call.name} {call.args}
             </div>
           ))}
@@ -64,31 +64,31 @@ export function SubagentPreview({
       {/* 流式中的尾巴（还没进 recentSteps）——运行中才可能出现 */}
       {streamingText !== null && streamingText !== "" && (
         <div className="rounded-sm border border-line-soft bg-surface-code px-2 py-1.5">
-          <div className="mb-0.5 text-[10.5px] font-medium tracking-[.5px] text-text-muted">
+          <div className="mb-0.5 text-2xs font-medium tracking-[.5px] text-text-muted">
             子代理（正在输出）
           </div>
-          <div className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
+          <div className="whitespace-pre-wrap text-xs leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
             {streamingText}
           </div>
         </div>
       )}
       {thought !== null && (
         <div className="thought">
-          <div className="text-[10.5px] text-text-muted">思考中</div>
+          <div className="text-2xs text-text-muted">思考中</div>
           {thought}
         </div>
       )}
       {runningTools.map((tool) => (
-        <div key={tool.id} className="truncate font-mono text-[10.5px] text-text-muted">
+        <div key={tool.id} className="truncate font-mono text-2xs text-text-muted">
           <span className="live-dot mr-1 inline-block" />
           {tool.name} {tool.args}
         </div>
       ))}
       {recentSteps.length === 0 && streamingText === null && runningTools.length === 0 && (
-        <p className="px-1 text-[11.5px] text-text-muted">（还没有内容）</p>
+        <p className="px-1 text-xs text-text-muted">（还没有内容）</p>
       )}
       {(subagent.stats.inputTokens > 0 || subagent.stats.outputTokens > 0) && (
-        <p className="text-[10.5px] text-text-muted">
+        <p className="text-2xs text-text-muted">
           这个子代理自己的消耗：输入 {subagent.stats.inputTokens} · 输出{" "}
           {subagent.stats.outputTokens} tokens
           {subagent.stats.costUsd > 0 ? ` · $${subagent.stats.costUsd.toFixed(4)}` : ""}

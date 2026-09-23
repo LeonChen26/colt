@@ -43,7 +43,7 @@ export function SidePanelShell({
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex h-[var(--h-panel-head)] shrink-0 items-center justify-between border-b border-line px-3">
-        <span className="flex items-center gap-1.5 text-[11.5px] font-medium text-text-secondary">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
           {icon}
           {title}
           {meta}
@@ -59,7 +59,7 @@ export function SidePanelShell({
       </div>
 
       {error && (
-        <div className="m-2 rounded-md border border-line bg-danger-soft px-2 py-1.5 text-[11.5px] text-danger-fg">
+        <div className="m-2 rounded-md border border-line bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
           {error}
         </div>
       )}
@@ -68,9 +68,9 @@ export function SidePanelShell({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading && isEmpty ? (
-          <p className="px-3 py-10 text-center text-[11.5px] text-text-muted">加载中…</p>
+          <p className="px-3 py-10 text-center text-xs text-text-muted">加载中…</p>
         ) : isEmpty ? (
-          <p className="px-3 py-10 text-center text-[11.5px] leading-relaxed text-text-muted">
+          <p className="px-3 py-10 text-center text-xs leading-relaxed text-text-muted">
             {empty}
           </p>
         ) : (

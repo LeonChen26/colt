@@ -55,29 +55,29 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-6">
-        <h2 className="mb-1 text-[15px]">设置</h2>
-        <p className="mb-6 text-[11.5px] text-text-muted">
+        <h2 className="mb-1 text-base">设置</h2>
+        <p className="mb-6 text-xs text-text-muted">
           密钥经系统加密后保存在本地，界面不会回显明文。
         </p>
 
         {message && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-success/40 bg-success-soft px-3 py-2 text-[13px] text-success-fg">
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-success/40 bg-success-soft px-3 py-2 text-sm text-success-fg">
             <Check {...ICON.md} />
             {message}
           </div>
         )}
         {error && (
-          <div className="mb-4 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-[13px] text-danger">
+          <div className="mb-4 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
 
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-[13px]">模型服务</h3>
+          <h3 className="text-sm">模型服务</h3>
           <button
             type="button"
             onClick={() => setAdding((value) => !value)}
-            className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:text-text-primary"
+            className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary"
           >
             <Plus {...ICON.sm} />
             添加 OpenAI 兼容服务
@@ -162,27 +162,27 @@ function ApprovalPolicySettings({
 
   return (
     <div className="mt-6">
-      <h3 className="mb-1 text-[13px]">审批</h3>
-      <p className="mb-3 text-[11.5px] text-text-muted">
+      <h3 className="mb-1 text-sm">审批</h3>
+      <p className="mb-3 text-xs text-text-muted">
         自动审批模式下，只有首词在此列表中的命令（如 npm / pytest / git）才会交给模型分析后自动放行；
         其余操作一律弹窗确认。留空即关闭自动放行、全部转人工。
       </p>
       <div className="rounded-lg border border-line bg-surface-raised p-3">
-        <label className="mb-1 block text-[11.5px] text-text-muted">可自动放行的命令（每行一个）</label>
+        <label className="mb-1 block text-xs text-text-muted">可自动放行的命令（每行一个）</label>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={6}
           disabled={loading}
           placeholder={"npm\npnpm\npytest\ngit"}
-          className="w-full resize-none rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[11.5px] outline-none transition placeholder:text-text-muted focus:border-accent disabled:opacity-50"
+          className="w-full resize-none rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition placeholder:text-text-muted focus:border-accent disabled:opacity-50"
         />
         <div className="mt-2 flex justify-end">
           <button
             type="button"
             onClick={() => void save()}
             disabled={loading}
-            className="rounded-md bg-accent px-3 py-1.5 text-[11.5px] text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
           >
             保存
           </button>
@@ -254,17 +254,17 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
   return (
     <div className="mt-6">
       <div className="mb-1 flex items-center justify-between">
-        <h3 className="text-[13px]">MCP 服务</h3>
+        <h3 className="text-sm">MCP 服务</h3>
         <button
           type="button"
           onClick={() => void reload()}
           disabled={projectId === undefined || reloading}
-          className="rounded-md border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
           {reloading ? "重载中…" : "重新加载"}
         </button>
       </div>
-      <p className="mb-3 text-[11.5px] text-text-muted">
+      <p className="mb-3 text-xs text-text-muted">
         在项目根的 <span className="font-mono">.colt/mcp.json</span> 或用户级的{" "}
         <span className="font-mono">~/.colt/mcp.json</span>（对全部项目生效）里声明 MCP server：
         本地进程用 command，远程用 url，项目级同名覆盖用户级。改完点「重新加载」即可生效、
@@ -272,7 +272,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       </p>
 
       {diagnostics.length > 0 && (
-        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-[11.5px] text-danger">
+        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
           <span>
             MCP 配置有 {diagnostics.length} 处问题——坏掉的条目不会出现在下面：
           </span>
@@ -287,7 +287,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       {project === null ? (
         <McpNotice>先打开一个项目，才能看到它声明的 MCP server。</McpNotice>
       ) : error !== null ? (
-        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-[11.5px] text-danger">
+        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
           {error}
         </div>
       ) : loading ? (
@@ -317,7 +317,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
 
 function McpNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-[11.5px] text-text-muted">
+    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
       {children}
     </div>
   );
@@ -343,15 +343,15 @@ function McpServerCard({ server }: { server: McpServerView }): React.JSX.Element
   return (
     <div data-mcp-server={server.name} className="rounded-lg border border-line bg-surface-raised p-3">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2 text-[13px]">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
           <span className="truncate">{server.name}</span>
-          <span className="shrink-0 rounded-xs bg-surface-overlay px-1.5 py-0.5 font-mono text-[11.5px] text-text-muted">
+          <span className="shrink-0 rounded-xs bg-surface-overlay px-1.5 py-0.5 font-mono text-xs text-text-muted">
             {server.transport}
           </span>
         </div>
         <span
           className={cn(
-            "flex shrink-0 items-center gap-1 text-[11.5px]",
+            "flex shrink-0 items-center gap-1 text-xs",
             MCP_STATUS_CLASS[server.status],
           )}
         >
@@ -359,16 +359,16 @@ function McpServerCard({ server }: { server: McpServerView }): React.JSX.Element
           {MCP_STATUS_LABEL[server.status]}
         </span>
       </div>
-      <div className="mt-0.5 truncate font-mono text-[11.5px] text-text-muted" title={server.target}>
+      <div className="mt-0.5 truncate font-mono text-xs text-text-muted" title={server.target}>
         {server.target}
       </div>
-      {server.error !== undefined && <div className="mt-1.5 text-[11.5px] text-danger">{server.error}</div>}
+      {server.error !== undefined && <div className="mt-1.5 text-xs text-danger">{server.error}</div>}
       {server.tools.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {server.tools.map((tool) => (
             <span
               key={tool}
-              className="rounded-xs bg-surface-overlay px-2 py-0.5 font-mono text-[11.5px] text-text-secondary"
+              className="rounded-xs bg-surface-overlay px-2 py-0.5 font-mono text-xs text-text-secondary"
             >
               {tool}
             </span>
@@ -481,18 +481,18 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
   return (
     <div className="mt-6">
       <div className="mb-1 flex items-center justify-between">
-        <h3 className="text-[13px]">技能</h3>
+        <h3 className="text-sm">技能</h3>
         <button
           type="button"
           data-skill-rescan=""
           onClick={() => void rescan()}
           disabled={projectId === undefined || rescanning}
-          className="rounded-md border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
           {rescanning ? "重扫中…" : "重新扫描"}
         </button>
       </div>
-      <p className="mb-3 text-[11.5px] text-text-muted">
+      <p className="mb-3 text-xs text-text-muted">
         在项目根的 <span className="font-mono">{".agents/skills/<名字>/SKILL.md"}</span> 或用户级的{" "}
         <span className="font-mono">{"~/.agents/skills/<名字>/SKILL.md"}</span> 里放技能（agentskills.io
         标准），项目级同名覆盖用户级；另有一层随应用分发的<strong>内置</strong>技能排在最后，磁盘上的同名
@@ -501,7 +501,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
       </p>
 
       {status !== null && status.warnings.length > 0 && (
-        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-[11.5px] text-warning">
+        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning">
           <span>装载告警（与「事件」页签同一记录）：</span>
           {status.warnings.map((item) => (
             <span key={item}>{item}</span>
@@ -510,12 +510,12 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
       )}
 
       {hasProjectSkill && (
-        <p className="mb-3 text-[11.5px] text-warning">
+        <p className="mb-3 text-xs text-warning">
           项目级技能随仓库分发，会进系统提示词、影响模型行为——注意来源是否可信。
         </p>
       )}
 
-      <p className="mb-3 text-[11.5px] text-text-muted">
+      <p className="mb-3 text-xs text-text-muted">
         关掉某个技能 = <strong>不再装载</strong>：不进系统提示词、模型看不见，
         <span className="font-mono">/skill</span> 也会被明确拒绝；文件仍在磁盘上，随时可以开回来
         （偏好写在项目根的 <span className="font-mono">{".colt/skills.json"}</span>
@@ -524,7 +524,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
 
       {/* 动作级失败：只加一条说明，**不动清单**（见 `actionError` 的注释） */}
       {actionError !== null && (
-        <div className="mb-3 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-[11.5px] text-danger">
+        <div className="mb-3 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
           {actionError}
         </div>
       )}
@@ -532,7 +532,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
       {project === null ? (
         <SkillNotice>先打开一个项目，才能看到它装载的技能。</SkillNotice>
       ) : error !== null ? (
-        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-[11.5px] text-danger">
+        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
           {error}
         </div>
       ) : loading ? (
@@ -565,7 +565,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
 
 function SkillNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-[11.5px] text-text-muted">
+    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
       {children}
     </div>
   );
@@ -607,13 +607,13 @@ function SkillCard({
         skill.disabled && "opacity-60",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2 text-[13px]">
+      <div className="flex min-w-0 items-center gap-2 text-sm">
         <Sparkles {...ICON.xs} className="shrink-0 text-text-muted" />
         <span className="truncate">{skill.name}</span>
         {/* 出处如实标：项目级随仓库分发，值得一眼看出（P5） */}
         <span
           className={cn(
-            "shrink-0 rounded-xs px-1.5 py-0.5 text-[11.5px]",
+            "shrink-0 rounded-xs px-1.5 py-0.5 text-xs",
             skill.source === "project"
               ? "bg-warning-soft text-warning"
               : "bg-surface-overlay text-text-muted",
@@ -622,7 +622,7 @@ function SkillCard({
           {SKILL_SOURCE_LABEL[skill.source]}
         </span>
         {!skill.modelInvocable && (
-          <span className="shrink-0 rounded-xs bg-surface-overlay px-1.5 py-0.5 text-[11.5px] text-text-muted">
+          <span className="shrink-0 rounded-xs bg-surface-overlay px-1.5 py-0.5 text-xs text-text-muted">
             仅手动调用
           </span>
         )}
@@ -640,17 +640,17 @@ function SkillCard({
                 ? "启用：重新装载这个技能"
                 : "禁用：不再装载这个技能"
           }
-          className="ml-auto shrink-0 rounded-md border border-line px-2 py-0.5 text-[11.5px] text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          className="ml-auto shrink-0 rounded-md border border-line px-2 py-0.5 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "…" : skill.disabled ? "已禁用" : "已启用"}
         </button>
       </div>
-      <div className="mt-1 text-[11.5px] text-text-secondary">{skill.description}</div>
-      <div className="mt-0.5 truncate font-mono text-[11.5px] text-text-muted" title={skill.filePath}>
+      <div className="mt-1 text-xs text-text-secondary">{skill.description}</div>
+      <div className="mt-0.5 truncate font-mono text-xs text-text-muted" title={skill.filePath}>
         {skill.filePath}
       </div>
       {locked && (
-        <p className="mt-1 text-[11.5px] text-text-muted">
+        <p className="mt-1 text-xs text-text-muted">
           这条禁用来自用户级 <span className="font-mono">{"~/.colt/skills.json"}</span>
           ——项目配置里删不掉它（两层是并集），要开回来请改那份。
         </p>
@@ -665,7 +665,7 @@ function SkillCard({
           type="button"
           data-skill-toggle={skill.name}
           onClick={() => setOpen((value) => !value)}
-          className="flex items-center gap-1 text-[11.5px] text-text-muted transition hover:text-text-primary"
+          className="flex items-center gap-1 text-xs text-text-muted transition hover:text-text-primary"
         >
           <ChevronRight {...ICON.xs} className={open ? "shrink-0 rotate-90" : "shrink-0"} />
           {open ? "收起正文" : "查看正文"}
@@ -684,20 +684,20 @@ function SkillCard({
             type="button"
             data-skill-reveal={skill.name}
             onClick={onReveal}
-            className="text-[11.5px] text-text-muted transition hover:text-text-primary"
+            className="text-xs text-text-muted transition hover:text-text-primary"
           >
             在文件管理器中显示
           </button>
         )}
         {/* 规模如实报（P7 剩下的那半）：此前只看得到「超没超上限」，看不到它到底多大 */}
-        <span data-skill-size={skill.name} className="ml-auto shrink-0 text-[11.5px] text-text-muted">
+        <span data-skill-size={skill.name} className="ml-auto shrink-0 text-xs text-text-muted">
           正文 {lines} 行 · {chars} 字符
         </span>
       </div>
       {open && (
         <pre
           data-skill-body={skill.name}
-          className="mt-1.5 max-h-72 overflow-auto rounded-sm border border-line bg-surface-code px-2 py-1.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-text-secondary"
+          className="mt-1.5 max-h-72 overflow-auto rounded-sm border border-line bg-surface-code px-2 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-text-secondary"
         >
           {skill.content}
         </pre>
@@ -762,16 +762,16 @@ function ProviderCard({
     <div className="rounded-lg border border-line bg-surface-raised p-3">
       <div className="mb-2 flex items-start justify-between">
         <div>
-          <div className="flex items-center gap-2 text-[13px]">
+          <div className="flex items-center gap-2 text-sm">
             {provider.name}
             {provider.builtin && (
-              <span className="rounded-xs bg-surface-overlay px-1.5 py-0.5 text-[11.5px] text-text-muted">
+              <span className="rounded-xs bg-surface-overlay px-1.5 py-0.5 text-xs text-text-muted">
                 内置
               </span>
             )}
             <span
               className={cn(
-                "flex items-center gap-1 text-[11.5px]",
+                "flex items-center gap-1 text-xs",
                 // 无需密钥是**正常**状态，不该跟「未配置密钥」一样报黄
                 !provider.requiresKey
                   ? "text-text-muted"
@@ -788,7 +788,7 @@ function ProviderCard({
                   : "未配置密钥"}
             </span>
           </div>
-          <div className="mt-0.5 font-mono text-[11.5px] text-text-muted">
+          <div className="mt-0.5 font-mono text-xs text-text-muted">
             {provider.baseUrl}
           </div>
         </div>
@@ -821,7 +821,7 @@ function ProviderCard({
         {provider.models.map((model) => (
           <span
             key={model.id}
-            className="flex items-center gap-1.5 rounded-xs bg-surface-overlay px-2 py-0.5 font-mono text-[11.5px] text-text-secondary"
+            className="flex items-center gap-1.5 rounded-xs bg-surface-overlay px-2 py-0.5 font-mono text-xs text-text-secondary"
           >
             {model.id}
             {model.imageInput === true && (
@@ -858,13 +858,13 @@ function ProviderCard({
                 ? "输入新密钥以替换"
                 : "粘贴 API Key"
           }
-          className="flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[11.5px] outline-none transition placeholder:text-text-muted focus:border-accent"
+          className="flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition placeholder:text-text-muted focus:border-accent"
         />
         <button
           type="button"
           onClick={() => void saveKey()}
           disabled={!key.trim()}
-          className="rounded-md bg-accent px-3 py-1.5 text-[11.5px] text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
         >
           保存
         </button>
@@ -1024,7 +1024,7 @@ function ProviderForm({
         <Field label="显示名" value={name} onChange={setName} placeholder="我的服务" />
       </div>
       {editing && (
-        <p className="mb-1 text-[11.5px] text-text-muted">标识是服务的唯一 key，不可修改。</p>
+        <p className="mb-1 text-xs text-text-muted">标识是服务的唯一 key，不可修改。</p>
       )}
       <Field
         label="Base URL"
@@ -1034,11 +1034,11 @@ function ProviderForm({
       />
       <div className="mt-2">
         <div className="mb-1 flex items-center justify-between">
-          <label className="block text-[11.5px] text-text-muted">模型</label>
+          <label className="block text-xs text-text-muted">模型</label>
           <button
             type="button"
             onClick={() => setDrafts((rows) => [...rows, { ...EMPTY_MODEL_DRAFT }])}
-            className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11.5px] text-text-secondary transition hover:text-text-primary"
+            className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-xs text-text-secondary transition hover:text-text-primary"
           >
             <Plus {...ICON.sm} />
             添加模型
@@ -1054,7 +1054,7 @@ function ProviderForm({
             />
           ))}
         </div>
-        <p className="mt-1.5 text-[11.5px] text-text-muted">
+        <p className="mt-1.5 text-xs text-text-muted">
           价格为美元 / 百万 tokens，留空按 0 计；最大输出留空按 min(上下文,{" "}
           {LEGACY_MAX_TOKENS})；勾选「图片」后才会放开图片上传，「推理」影响思考输出的处理。
         </p>
@@ -1067,7 +1067,7 @@ function ProviderForm({
         placeholder={editing ? "留空保持现有密钥" : undefined}
       />
 
-      <label className="mt-3 flex cursor-pointer items-start gap-2 text-[11.5px] text-text-secondary">
+      <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-text-secondary">
         <input
           type="checkbox"
           checked={!requiresKey}
@@ -1086,7 +1086,7 @@ function ProviderForm({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-line px-3 py-1.5 text-[11.5px] text-text-secondary"
+          className="rounded-md border border-line px-3 py-1.5 text-xs text-text-secondary"
         >
           取消
         </button>
@@ -1094,7 +1094,7 @@ function ProviderForm({
           type="button"
           onClick={() => void submit()}
           disabled={!id.trim() || !baseUrl.trim()}
-          className="rounded-md bg-accent px-3 py-1.5 text-[11.5px] text-accent-fg disabled:opacity-40"
+          className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg disabled:opacity-40"
         >
           保存
         </button>
@@ -1104,7 +1104,7 @@ function ProviderForm({
 }
 
 const MODEL_INPUT =
-  "rounded-md border border-line bg-surface px-2 py-1 font-mono text-[11.5px] outline-none transition placeholder:text-text-muted focus:border-accent";
+  "rounded-md border border-line bg-surface px-2 py-1 font-mono text-xs outline-none transition placeholder:text-text-muted focus:border-accent";
 
 function ModelRow({
   draft,
@@ -1138,7 +1138,7 @@ function ModelRow({
           className={`${MODEL_INPUT} w-full`}
         />
       </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-text-secondary">
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
         <label className="flex shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap">
           <input
             type="checkbox"
@@ -1217,14 +1217,14 @@ function Field({
 }): React.JSX.Element {
   return (
     <div className="mt-2">
-      <label className="mb-1 block text-[11.5px] text-text-muted">{label}</label>
+      <label className="mb-1 block text-xs text-text-muted">{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
-        className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-[11.5px] outline-none transition placeholder:text-text-muted focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition placeholder:text-text-muted focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
       />
     </div>
   );

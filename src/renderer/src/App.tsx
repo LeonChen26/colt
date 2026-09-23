@@ -585,7 +585,7 @@ export default function App(): React.JSX.Element {
       )}
       <header className="flex h-[var(--h-topbar)] shrink-0 items-center justify-between border-b border-line bg-surface-raised px-3.5">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold tracking-[.2px] text-text-primary">
+          <span className="text-sm font-semibold tracking-[.2px] text-text-primary">
             Colt
           </span>
         </div>
@@ -593,7 +593,7 @@ export default function App(): React.JSX.Element {
           {/* env 尚未探测完成（null）时不能渲染红条：那只是「还不知道」，不是「确认没有」——
               否则每次启动都会先闪一帧「未找到 bash」再消失（探测要做多轮文件系统访问）。 */}
           {env !== null && !env.bashPath ? (
-            <span className="text-[11.5px] text-danger">未找到 bash，命令工具不可用</span>
+            <span className="text-xs text-danger">未找到 bash，命令工具不可用</span>
           ) : null}
           <div className="flex items-center gap-0.5 rounded-sm border border-line p-0.5">
             {THEME_OPTIONS.map((item) => (
@@ -621,7 +621,7 @@ export default function App(): React.JSX.Element {
             title={activeProject ? "项目改动汇总" : "打开项目后可查看改动"}
             disabled={!activeProject}
             className={cn(
-              "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] transition disabled:cursor-not-allowed disabled:opacity-40",
+              "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40",
               mainView === "changes"
                 ? "border-accent bg-accent-soft text-text-primary"
                 : "border-line text-text-secondary hover:border-line-strong hover:text-text-primary",
@@ -635,7 +635,7 @@ export default function App(): React.JSX.Element {
             onClick={() => setMainView((value) => (value === "settings" ? "chat" : "settings"))}
             title="设置"
             className={cn(
-              "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-[11.5px] transition",
+              "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs transition",
               mainView === "settings"
                 ? "border-accent bg-accent-soft text-text-primary"
                 : "border-line text-text-secondary hover:border-line-strong hover:text-text-primary",
@@ -686,11 +686,11 @@ export default function App(): React.JSX.Element {
                     />
                     {expanded && (
                       <div className="mt-0.5 pl-3">
-                        <div className="truncate px-2 py-0.5 font-mono text-[10.5px] text-text-muted">
+                        <div className="truncate px-2 py-0.5 font-mono text-2xs text-text-muted">
                           {project.rootPath}
                         </div>
                         {list.length === 0 ? (
-                          <div className="px-2 py-1.5 text-[11.5px] text-text-muted">还没有会话</div>
+                          <div className="px-2 py-1.5 text-xs text-text-muted">还没有会话</div>
                         ) : (
                           list.map((session) => (
                             <SessionRow
@@ -730,13 +730,13 @@ export default function App(): React.JSX.Element {
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
-            <div className="m-3.5 shrink-0 rounded-md border border-line bg-danger-soft px-3.5 py-3 text-[13px] text-danger-fg">
+            <div className="m-3.5 shrink-0 rounded-md border border-line bg-danger-soft px-3.5 py-3 text-sm text-danger-fg">
               {error}
             </div>
           )}
 
           {modelServiceReady === false && (
-            <div className="m-3.5 shrink-0 rounded-md border border-line bg-warning-soft px-3.5 py-3 text-[13px] text-warning">
+            <div className="m-3.5 shrink-0 rounded-md border border-line bg-warning-soft px-3.5 py-3 text-sm text-warning">
               尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
               DeepSeek 或自建的 OpenAI 兼容服务均可）。
             </div>
@@ -777,7 +777,7 @@ export default function App(): React.JSX.Element {
                 {/* 走到这里只有两种情形：还没选中项目（让用户先去打开一个），
                     或项目在跟前但会话列表还在路上——后者马上会由自动草稿补上输入框，
                     所以不再说「新建一个会话开始对话」（那会把用户支使去点侧栏的「+」）。 */}
-                <p className="text-[13px] text-text-muted">
+                <p className="text-sm text-text-muted">
                   {activeProject ? "正在准备会话…" : "打开一个项目目录开始"}
                 </p>
               </div>
@@ -818,7 +818,7 @@ function SidebarSection({
               )}
             />
           )}
-          <span className="truncate text-[11.5px] font-semibold uppercase tracking-[.5px] text-text-muted">
+          <span className="truncate text-xs font-semibold uppercase tracking-[.5px] text-text-muted">
             {title}
           </span>
         </button>
@@ -826,7 +826,7 @@ function SidebarSection({
           <button
             type="button"
             onClick={action.onClick}
-            className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-[11.5px] text-text-secondary opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
+            className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-xs text-text-secondary opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
           >
             {action.icon}
             {action.label}
@@ -886,7 +886,7 @@ function ProjectRow({
       </button>
       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-muted" />
       <button type="button" onClick={onActivate} className="min-w-0 flex-1 text-left">
-        <div className="truncate text-[13px] text-text-primary">{project.name}</div>
+        <div className="truncate text-sm text-text-primary">{project.name}</div>
       </button>
       <button
         type="button"
@@ -987,7 +987,7 @@ function SessionRow({
         <span className="min-w-0 flex-1">
           <span
             className={cn(
-              "block truncate text-[13px] leading-tight",
+              "block truncate text-sm leading-tight",
               active ? "text-text-primary" : "text-text-secondary",
             )}
           >
@@ -995,7 +995,7 @@ function SessionRow({
           </span>
           <span
             className={cn(
-              "block truncate text-[10.5px] leading-tight tabular-nums",
+              "block truncate text-2xs leading-tight tabular-nums",
               waiting
                 ? "text-warning"
                 : offlineState === "crashed"
@@ -1058,7 +1058,7 @@ function SessionRow({
 
 function Empty({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
-    <p className="px-3 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+    <p className="px-3 py-6 text-center text-xs leading-relaxed text-text-muted">
       {children}
     </p>
   );

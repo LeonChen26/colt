@@ -60,7 +60,7 @@ export function SubagentStream({
 function LiveStream({ subagent }: { subagent: ViewSubagent }): React.JSX.Element {
   return (
     <div data-subagent-live={subagent.id} className="flex flex-col gap-2 p-3">
-      <p className="rounded-sm border border-line bg-surface-raised px-2 py-1.5 text-[11.5px] leading-relaxed text-text-muted">
+      <p className="rounded-sm border border-line bg-surface-raised px-2 py-1.5 text-xs leading-relaxed text-text-muted">
         还在跑：这一层**跟着实时刷新**，但只画视图里带的**最近几步**——完整过程要等它跑完
         （那时会自动换成整份）。
       </p>
@@ -118,19 +118,19 @@ function FetchedStream({
 
   if (state.status === "loading") {
     return (
-      <p className="px-3 py-6 text-center text-[11.5px] text-text-muted">正在读取子代理的过程…</p>
+      <p className="px-3 py-6 text-center text-xs text-text-muted">正在读取子代理的过程…</p>
     );
   }
   if (state.status === "failed") {
     return (
-      <p className="px-3 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-3 py-6 text-center text-xs leading-relaxed text-text-muted">
         读取子代理过程失败：{state.message}
       </p>
     );
   }
   if (state.messages.length === 0) {
     return (
-      <p className="px-3 py-6 text-center text-[11.5px] leading-relaxed text-text-muted">
+      <p className="px-3 py-6 text-center text-xs leading-relaxed text-text-muted">
         这个子代理还没有留下过程记录（可能刚启动，或它的历史已随会话进程一起回收）。
       </p>
     );

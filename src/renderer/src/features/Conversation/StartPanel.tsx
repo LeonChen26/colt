@@ -36,13 +36,13 @@ export function StartPanel({
 }): React.JSX.Element {
   return (
     <div data-conv-start className="flex w-full flex-col items-center gap-2">
-      <div className="text-[10.5px] uppercase tracking-[1.5px] text-text-muted">
+      <div className="text-2xs uppercase tracking-[1.5px] text-text-muted">
         Colt · 本地编码 Agent
       </div>
-      <h2 className="m-0 mt-1.5 text-[24px] font-semibold tracking-[-.4px] text-text-primary">
+      <h2 className="m-0 mt-1.5 text-2xl font-semibold tracking-[-.4px] text-text-primary">
         今天要修哪个 bug？
       </h2>
-      <p className="m-0 text-[13px] text-text-secondary">
+      <p className="m-0 text-sm text-text-secondary">
         描述你想做的事，Colt 会先给你一份计划。
       </p>
       <div className="mt-4 flex max-w-[560px] flex-wrap justify-center gap-2">
@@ -51,7 +51,7 @@ export function StartPanel({
             key={suggestion}
             type="button"
             onClick={() => onSuggestion(suggestion)}
-            className="rounded-sm border border-line px-3 py-1.5 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:bg-surface-overlay hover:text-text-primary"
+            className="rounded-sm border border-line px-3 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:bg-surface-overlay hover:text-text-primary"
           >
             {suggestion}
           </button>
@@ -64,7 +64,7 @@ export function StartPanel({
         所以这个控件不放进 ⑤ 的工具行常驻：那里是「发这条消息的参数」，而它是「这条会话的归属」，
         平时看它就够了，要看的地方是 ② 会话头。
       */}
-      <div className="mt-4 flex max-w-[560px] flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 text-[11.5px] text-text-secondary">
+      <div className="mt-4 flex max-w-[560px] flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 text-xs text-text-secondary">
         <span className="flex min-w-0 items-center gap-1.5" title="这条会话的工作目录">
           <Folder {...ICON.xs} className="shrink-0 text-text-muted" />
           <span data-conv-workdir className="truncate font-mono">

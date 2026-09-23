@@ -120,7 +120,7 @@ export function AssistantRow({
 }): React.JSX.Element {
   return (
     <div className="flex gap-2.5" data-assistant-row={anchor}>
-      <span className="w-[46px] shrink-0 pt-[3px] text-[11.5px] text-text-muted">{label}</span>
+      <span className="w-[46px] shrink-0 pt-[3px] text-xs text-text-muted">{label}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">{children}</div>
     </div>
   );
@@ -189,7 +189,7 @@ export const MessageBubble = memo(function MessageBubble({
       return (
         <div className="flex justify-start" data-conv-skill={message.id}>
           <div className="flex max-w-[86%] flex-col gap-1.5 rounded-md border border-line bg-surface-raised px-3 py-2">
-            <div className="flex items-center gap-1.5 text-[11.5px]">
+            <div className="flex items-center gap-1.5 text-xs">
               <ScrollText {...ICON.sm} className="shrink-0 text-accent-dim" />
               <span className="font-medium text-text-primary">技能 {name}</span>
               <span className="text-text-muted">· 本会话装载，非你的发言</span>
@@ -200,7 +200,7 @@ export const MessageBubble = memo(function MessageBubble({
               // `anywhere` 的断行机会**计入 min-content**，盒子才会真的收窄。
               <p
                 data-conv-skill-text=""
-                className="text-[13px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
+                className="text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
               >
                 {instructions}
               </p>
@@ -209,7 +209,7 @@ export const MessageBubble = memo(function MessageBubble({
               type="button"
               data-conv-skill-toggle={message.id}
               onClick={() => onToggleOpen(message.id, !open)}
-              className="flex items-center gap-1 self-start text-[11.5px] text-text-muted transition hover:text-text-primary"
+              className="flex items-center gap-1 self-start text-xs text-text-muted transition hover:text-text-primary"
             >
               <ChevronRight {...ICON.xs} className={open ? "shrink-0 rotate-90" : "shrink-0"} />
               {open ? "收起技能正文" : "展开技能正文"}
@@ -217,7 +217,7 @@ export const MessageBubble = memo(function MessageBubble({
             {open && (
               <pre
                 data-conv-skill-body={message.id}
-                className="max-h-72 overflow-auto rounded-sm border border-line bg-surface-overlay px-2 py-1.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-text-muted"
+                className="max-h-72 overflow-auto rounded-sm border border-line bg-surface-overlay px-2 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-text-muted"
               >
                 {message.text}
               </pre>
@@ -230,7 +230,7 @@ export const MessageBubble = memo(function MessageBubble({
       <div className="flex justify-end" data-conv-user={message.id}>
         <div
           data-conv-user-bubble=""
-          className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-md border border-line bg-surface-overlay px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
+          className="flex max-w-[72%] flex-col items-end gap-1.5 rounded-md border border-line bg-surface-overlay px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text-primary"
         >
           {message.image && (
             <img
@@ -241,7 +241,7 @@ export const MessageBubble = memo(function MessageBubble({
           )}
           {message.text}
         </div>
-        <span className="ml-2.5 shrink-0 pt-[3px] text-[11.5px] text-text-muted">你</span>
+        <span className="ml-2.5 shrink-0 pt-[3px] text-xs text-text-muted">你</span>
       </div>
     );
   }
@@ -622,7 +622,7 @@ export function MessageWindow({
               ? "这一轮还在跑——等它结束，再从这里分叉"
               : "从这一轮之后分叉：之后的提问会形成新分支"
           }
-          className={`flex items-center gap-1.5 self-start rounded-sm border border-line px-2.5 py-1 text-[11.5px] text-text-muted ${
+          className={`flex items-center gap-1.5 self-start rounded-sm border border-line px-2.5 py-1 text-xs text-text-muted ${
             blocked ? "cursor-not-allowed opacity-50" : "transition hover:border-line-strong hover:text-text-primary"
           }`}
         >
@@ -642,7 +642,7 @@ export function MessageWindow({
               type="button"
               data-conv-earlier
               onClick={loadEarlier}
-              className="rounded-sm border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+              className="rounded-sm border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
               载入更早的 {chunkSize(total, head, chunk)} {unitWord}（还有 {start} {unitWord}）
             </button>
@@ -652,7 +652,7 @@ export function MessageWindow({
               type="button"
               data-conv-later
               onClick={loadLater}
-              className="rounded-sm border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+              className="rounded-sm border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
               载入更晚的 {Math.min(chunk, below)} {unitWord}（还有 {below} {unitWord}）
             </button>
@@ -664,7 +664,7 @@ export function MessageWindow({
               type="button"
               data-conv-latest
               onClick={gotoLatest}
-              className="rounded-sm border border-line px-2.5 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+              className="rounded-sm border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
               回到最新
             </button>
@@ -683,7 +683,7 @@ export function MessageWindow({
                 data-conv-steps-summary={turn.key}
                 onClick={() => toggleTurn(turn.key)}
                 title="这一轮的中间步骤已收起，点开看思考与工具调用"
-                className="flex items-center gap-1.5 self-start rounded-md border border-line bg-surface-raised px-3 py-2 text-[11.5px] text-text-muted transition hover:border-line-strong hover:text-text-primary"
+                className="flex items-center gap-1.5 self-start rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted transition hover:border-line-strong hover:text-text-primary"
               >
                 <ChevronRight {...ICON.sm} className="shrink-0" />
                 {describeSteps(summarizeSteps(turn.steps))}
@@ -698,7 +698,7 @@ export function MessageWindow({
                     type="button"
                     data-conv-steps-collapse={turn.key}
                     onClick={() => toggleTurn(turn.key)}
-                    className="flex items-center gap-1.5 self-start text-[11.5px] text-text-muted transition hover:text-text-secondary"
+                    className="flex items-center gap-1.5 self-start text-xs text-text-muted transition hover:text-text-secondary"
                   >
                     <ChevronRight {...ICON.sm} className="shrink-0 -rotate-90" />
                     收起过程
@@ -724,7 +724,7 @@ function ThoughtBlock({ text }: { text: string }): React.JSX.Element {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 text-[11.5px] text-text-muted transition hover:text-text-secondary"
+        className="flex items-center gap-1.5 text-xs text-text-muted transition hover:text-text-secondary"
       >
         <ChevronRight
           {...ICON.sm}
@@ -749,7 +749,7 @@ export function ThinkingRail({ text }: { text: string }): React.JSX.Element {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 text-[11.5px] text-text-muted transition hover:text-text-secondary"
+        className="flex items-center gap-1.5 text-xs text-text-muted transition hover:text-text-secondary"
       >
         <ChevronRight
           {...ICON.sm}
@@ -1001,7 +1001,7 @@ export function ToolCard({
             className={cn("shrink-0 text-text-muted transition-transform", open && "rotate-90")}
           />
           <span className="shrink-0 text-text-muted">{icon}</span>
-          <span className="shrink-0 font-mono text-[11.5px] font-semibold text-text-primary">
+          <span className="shrink-0 font-mono text-xs font-semibold text-text-primary">
             {card === undefined ? mcpToolLabel(name) ?? name : `子代理 · ${card.name}`}
           </span>
           {/* P3：这次读的是技能文件——模型「自己想起来用技能」的唯一可见信号 */}
@@ -1009,7 +1009,7 @@ export function ToolCard({
             <span
               data-tool-skill={skill}
               title={`这次读取的是技能「${skill}」的文件`}
-              className="flex shrink-0 items-center gap-1 rounded-xs bg-accent-soft px-1.5 py-0.5 text-[10.5px] text-accent-dim"
+              className="flex shrink-0 items-center gap-1 rounded-xs bg-accent-soft px-1.5 py-0.5 text-2xs text-accent-dim"
             >
               <ScrollText {...ICON.xs} />
               技能 {skill}
@@ -1034,13 +1034,13 @@ export function ToolCard({
           className={cn(
             // flex-1 + min-w-0：占满剩余宽度、窄中栏时容许收缩（truncate 兜底）。
             // 固定宽度会在窄中栏把右侧的增删行数 / 运行态 / 失败徽标挤出卡片、被 overflow 裁掉。
-            "min-w-0 flex-1 truncate font-mono text-[11.5px] text-text-secondary",
+            "min-w-0 flex-1 truncate font-mono text-xs text-text-secondary",
             clickable && "cursor-pointer hover:text-text-primary hover:underline",
           )}
         >
           {subtitleText ?? ""}
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-[11.5px] text-text-muted">
+        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-xs text-text-muted">
           {hasStat && (
             <span>
               <span className="text-success-fg">+{change!.addedLines}</span>{" "}
@@ -1087,7 +1087,7 @@ export function ToolCard({
               data-subagent-abort={card.id}
               onClick={() => onAbortSubagent(card.id)}
               title="中止这个子代理（不影响主对话与其它子代理）"
-              className="shrink-0 rounded-xs px-1 text-[10.5px] text-text-muted transition hover:bg-surface-overlay hover:text-danger-fg"
+              className="shrink-0 rounded-xs px-1 text-2xs text-text-muted transition hover:bg-surface-overlay hover:text-danger-fg"
             >
               中止
             </button>
@@ -1106,7 +1106,7 @@ export function ToolCard({
                   type="button"
                   data-subagent-open={card.id}
                   onClick={() => onOpenSubagent(card.id)}
-                  className="mb-2 flex items-center gap-1 rounded-sm border border-line px-2 py-1 text-[11.5px] text-text-secondary transition hover:border-line-strong hover:text-text-primary"
+                  className="mb-2 flex items-center gap-1 rounded-sm border border-line px-2 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
                 >
                   <PanelRight {...ICON.xs} />
                   在右栏查看完整过程
@@ -1115,10 +1115,10 @@ export function ToolCard({
               <SubagentPreview subagent={card} />
               {result?.output ? (
                 <>
-                  <div className="mt-2 mb-1 text-[11.5px] text-text-muted">
+                  <div className="mt-2 mb-1 text-xs text-text-muted">
                     作为工具结果回到主对话的内容
                   </div>
-                  <pre className="max-h-60 overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                  <pre className="max-h-60 overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-xs whitespace-pre-wrap text-text-secondary">
                     {result.output}
                   </pre>
                 </>
@@ -1130,13 +1130,13 @@ export function ToolCard({
             <>
               {hasArgs && (
                 <>
-                  <div className="mb-1 text-[11.5px] text-text-muted">参数</div>
-                  <pre className="mb-2 max-h-32 overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                  <div className="mb-1 text-xs text-text-muted">参数</div>
+                  <pre className="mb-2 max-h-32 overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-xs whitespace-pre-wrap text-text-secondary">
                     {formatArgs(args)}
                   </pre>
                 </>
               )}
-              <div className="mb-1 text-[11.5px] text-text-muted">输出</div>
+              <div className="mb-1 text-xs text-text-muted">输出</div>
               {result ? (
                 <>
                   {imageSrc !== undefined ? (
@@ -1146,7 +1146,7 @@ export function ToolCard({
                       src={imageSrc}
                     />
                   ) : needsFetch ? (
-                    <p className="mb-2 px-1 text-[11.5px] text-text-muted">
+                    <p className="mb-2 px-1 text-xs text-text-muted">
                       {fetchedImage?.status === "failed" ? fetchedImage.message : "正在读取截图…"}
                     </p>
                   ) : null}
@@ -1154,18 +1154,18 @@ export function ToolCard({
                     name === "bash" ? (
                       <TerminalOutput text={result.output} className="max-h-80" />
                     ) : (
-                      <pre className="max-h-80 overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-text-secondary">
+                      <pre className="max-h-80 overflow-auto rounded-sm bg-surface-code px-3 py-2 font-mono text-xs whitespace-pre-wrap text-text-secondary">
                         {result.output}
                       </pre>
                     )
                   ) : imageSrc !== undefined || needsFetch ? null : (
-                    <p className="px-1 text-[11.5px] text-text-muted">（无输出）</p>
+                    <p className="px-1 text-xs text-text-muted">（无输出）</p>
                   )}
                 </>
               ) : running ? (
-                <p className="px-1 text-[11.5px] text-text-muted">执行中…</p>
+                <p className="px-1 text-xs text-text-muted">执行中…</p>
               ) : (
-                <p className="px-1 text-[11.5px] text-text-muted">（无输出）</p>
+                <p className="px-1 text-xs text-text-muted">（无输出）</p>
               )}
             </>
           )}
