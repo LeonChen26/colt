@@ -11,9 +11,15 @@
  * 只读：浏览 + 预览，**没有**新建 / 重命名 / 删除——写盘是 agent 工具与审批的领域，
  * 用户侧再加一套绕过审批的写入口会破坏「所有落盘动作可裁决」的安全模型。
  *
- * 结构：左右分栏。左是懒加载目录树（展开某层才拉某层），右是**现成的 `FilePreview`**
- * （安全边界在主进程，这里只传路径）。分栏而不是「点开→返回」是因为浏览的核心动作是
- * 「逛目录、瞄一眼」，每看一个文件都要折返一次树是纯粹的损耗。
+ * 结构：左右分栏，**内容在左、目录树在右**——浏览时视线与阅读起点都在内容上，树只是
+ * 索引，贴右不挡正文。右是懒加载目录树（展开某层才拉某层），左是**现成的 `FilePreview`**
+ * （安全边界在主进程，这里只传路径）。
+ *
+ * 树**可整体收起**（头部开关，v1.80）：收起后预览占满全宽——树是索引，逛完就该让位。
+ * （节点级的逐个展开/收起是树自己的事，见 `DirNode`。）
+ *
+ * 分栏而不是「点开→返回」是因为浏览的核心动作是「逛目录、瞄一眼」，每看一个文件都要
+ * 折返一次树是纯粹的损耗。
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -24,6 +30,8 @@ import {
   Folder,
   FolderOpen,
   FolderTree,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCw,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
@@ -210,6 +218,8 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
   /** 已展开的目录集合（含根 ""）——树的可折叠状态 */
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   const [selected, setSelected] = useState<string | null>(null);
+  /** 整棵目录树是否收起（收起后预览占满全宽；树的数据保留，展开即时回来） */
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
   /** 预览的重读令牌：自增驱动 FilePreview 重读（重读按钮用；agent 可能刚改过文件） */
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -292,70 +302,50 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col" data-files-tree="">
-      {/* 头部：标题 + 隐藏说明 + 刷新（对齐 FilePreview / 浏览器页签的头部模式） */}
+      {/* 头部：标题 + 隐藏说明 + 目录树收起开关 + 刷新（对齐 FilePreview / 浏览器页签的头部模式） */}
       <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
         <FolderTree {...ICON.sm} className="shrink-0 text-text-muted" />
         <span className="text-xs font-medium text-text-secondary">文件</span>
-        <span
-          className="shrink-0 text-2xs text-text-muted"
-          title="这些目录不参与浏览：内容是哈希对象 / 依赖黑盒，列出来没有意义"
-        >
-          已隐藏 .git · node_modules
-        </span>
-        <button
-          type="button"
-          onClick={refresh}
-          title="重新读取目录"
-          aria-label="重新读取目录"
-          className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
-        >
-          <RefreshCw {...ICON.xs} className={cn(root?.loading === true && "animate-spin")} />
-        </button>
+        {!treeCollapsed && (
+          <span
+            className="shrink-0 text-2xs text-text-muted"
+            title="这些目录不参与浏览：内容是哈希对象 / 依赖黑盒，列出来没有意义"
+          >
+            已隐藏 .git · node_modules
+          </span>
+        )}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setTreeCollapsed((value) => !value)}
+            title={treeCollapsed ? "展开目录树" : "收起目录树"}
+            aria-label={treeCollapsed ? "展开目录树" : "收起目录树"}
+            aria-expanded={!treeCollapsed}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          >
+            {treeCollapsed ? <PanelRightOpen {...ICON.xs} /> : <PanelRightClose {...ICON.xs} />}
+          </button>
+          <button
+            type="button"
+            onClick={refresh}
+            title="重新读取目录"
+            aria-label="重新读取目录"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          >
+            <RefreshCw {...ICON.xs} className={cn(root?.loading === true && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {/* 左：目录树（懒加载）。整棵树可横向滚动兜底，别把预览挤没 */}
-        <div
-          className="min-h-0 shrink-0 overflow-y-auto overflow-x-auto border-r border-line py-1"
-          style={{ width: TREE_WIDTH }}
-        >
-          {rootLoading ? (
-            <p className="px-3 py-10 text-center text-xs text-text-muted">加载中…</p>
-          ) : root === undefined || root.error !== null ? (
-            <div className="flex flex-col items-center gap-2 px-3 py-10 text-center">
-              <p className="text-xs leading-relaxed text-text-secondary">
-                目录读取失败：{root?.error ?? "未知原因"}
-              </p>
-              <button
-                type="button"
-                onClick={refresh}
-                className="rounded-xs border border-line px-2 py-1 text-xs text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary"
-              >
-                重试
-              </button>
-            </div>
-          ) : (
-            <TreeLayer
-              entries={root.entries}
-              depth={0}
-              states={states}
-              expanded={expanded}
-              selected={selected}
-              onToggleDir={toggleDir}
-              onSelectFile={setSelected}
-              onRetry={loadDir}
-            />
-          )}
-        </div>
-
-        {/* 右：选中文件的预览（现成组件；安全边界在主进程） */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* 左：选中文件的预览（现成组件；安全边界在主进程）。内容在左——阅读起点不被树挡 */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-files-preview-pane="">
           {selected === null ? (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
               <FileSearch className="text-text-muted" style={{ width: 24, height: 24 }} />
               <p className="mt-2 text-sm text-text-secondary">选择一个文件预览</p>
               <p className="max-w-[240px] text-xs leading-relaxed text-text-muted">
-                点左侧的文件名查看内容；目录可展开。预览是只读的。
+                点右侧的文件名查看内容；目录可展开（树可整体收起）。预览是只读的。
               </p>
             </div>
           ) : (
@@ -367,6 +357,44 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             />
           )}
         </div>
+
+        {/* 右：目录树（懒加载）。可整体收起——收起时整块不渲染，预览占满全宽；
+            树的数据留在 states 里，再展开即时回来。整棵树可横向滚动兜底，别把预览挤没 */}
+        {!treeCollapsed && (
+          <div
+            className="min-h-0 shrink-0 overflow-y-auto overflow-x-auto border-l border-line py-1"
+            style={{ width: TREE_WIDTH }}
+            data-files-tree-pane=""
+          >
+            {rootLoading ? (
+              <p className="px-3 py-10 text-center text-xs text-text-muted">加载中…</p>
+            ) : root === undefined || root.error !== null ? (
+              <div className="flex flex-col items-center gap-2 px-3 py-10 text-center">
+                <p className="text-xs leading-relaxed text-text-secondary">
+                  目录读取失败：{root?.error ?? "未知原因"}
+                </p>
+                <button
+                  type="button"
+                  onClick={refresh}
+                  className="rounded-xs border border-line px-2 py-1 text-xs text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary"
+                >
+                  重试
+                </button>
+              </div>
+            ) : (
+              <TreeLayer
+                entries={root.entries}
+                depth={0}
+                states={states}
+                expanded={expanded}
+                selected={selected}
+                onToggleDir={toggleDir}
+                onSelectFile={setSelected}
+                onRetry={loadDir}
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

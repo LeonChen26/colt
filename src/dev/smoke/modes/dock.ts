@@ -1430,7 +1430,7 @@ export async function runDock(
         })()`,
       )),
     ]);
-    // 点目录（src）→ 懒加载展开子层；点文件（package.json）→ 右侧出预览
+    // 点目录（src）→ 懒加载展开子层；点文件（package.json）→ 左侧出预览
     await run(`(() => { document.querySelector('[data-dir-entry="src"]')?.click(); return true; })()`);
     await sleep(500);
     checks.push([
@@ -1444,10 +1444,55 @@ export async function runDock(
     );
     await sleep(600);
     checks.push([
-      "点文件 → 右侧出现预览（FilePreview 的 data-file-view）",
+      "点文件 → 左侧出现预览（FilePreview 的 data-file-view）",
       (await run<boolean>(
         `(() => document.querySelector("[data-file-view]") !== null)()`,
       )),
+    ]);
+    // 分栏顺序：两栏各自的锚点量矩形（外层 data-files-tree 是整个面板，量不出栏的位置）
+    const paneRects = await run<{
+      previewLeft: number;
+      previewWidth: number;
+      treeLeft: number;
+      treeWidth: number;
+    } | null>(
+      `(() => {
+        const p = document.querySelector("[data-files-preview-pane]");
+        const t = document.querySelector("[data-files-tree-pane]");
+        if (!p || !t) return null;
+        const pr = p.getBoundingClientRect();
+        const tr = t.getBoundingClientRect();
+        return { previewLeft: pr.left, previewWidth: pr.width, treeLeft: tr.left, treeWidth: tr.width };
+      })()`,
+    );
+    checks.push([
+      "分栏顺序：预览在左、目录树在右（且预览更宽——树只是索引）",
+      paneRects !== null &&
+        paneRects.previewLeft < paneRects.treeLeft &&
+        paneRects.previewWidth > paneRects.treeWidth,
+    ]);
+    // 目录树整体收起：整块不渲染、预览占满（宽度按「收起前 +100 以上」判，不写死像素）
+    const previewBefore = paneRects === null ? 0 : Math.round(paneRects.previewWidth);
+    await clickInDock(`b.getAttribute("aria-label") === "收起目录树"`);
+    await sleep(300);
+    checks.push([
+      "收起目录树 → 树整块消失、预览占满全宽（宽度 +100 以上）",
+      await run<boolean>(
+        `(() => {
+          const p = document.querySelector("[data-files-preview-pane]");
+          if (!p || document.querySelector("[data-files-tree-pane]") !== null) return false;
+          return p.getBoundingClientRect().width > ${previewBefore} + 100;
+        })()`,
+      ),
+    ]);
+    await clickInDock(`b.getAttribute("aria-label") === "展开目录树"`);
+    await sleep(300);
+    checks.push([
+      "再展开 → 树回来，且之前的展开态还在（src/main 仍在）",
+      await run<boolean>(
+        `(() => document.querySelector("[data-files-tree-pane]") !== null &&
+                document.querySelector('[data-dir-entry="src/main"]') !== null)()`,
+      ),
     ]);
     // 越界在主进程拒绝（file.list 的安全边界，走真通道）
     const escapeAttempt = await run<{ rejected: boolean }>(
