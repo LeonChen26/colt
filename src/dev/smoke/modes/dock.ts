@@ -1494,6 +1494,29 @@ export async function runDock(
                 document.querySelector('[data-dir-entry="src/main"]') !== null)()`,
       ),
     ]);
+    // 目录行的点击是**切换**：点已展开的目录要能收起（此前只测过「展开」，收起这条路没人走过）
+    await run(`(() => { document.querySelector('[data-dir-entry="src"]')?.click(); return true; })()`);
+    await sleep(300);
+    checks.push([
+      "点已展开的目录 → 收起（子层消失且 aria-expanded=false）",
+      await run<boolean>(
+        `(() => {
+          const d = document.querySelector('[data-dir-entry="src"]');
+          return d !== null &&
+            d.getAttribute("aria-expanded") === "false" &&
+            document.querySelector('[data-dir-entry="src/main"]') === null;
+        })()`,
+      ),
+    ]);
+    // 再点展开：**当帧**就该有子层——有缓存就不重新拉，收起只是「不渲染」而不是「清数据」。
+    // 不 sleep 是有意的：若实现改成收起/展开时重拉，这一瞬 entries 会是空的，断言必红。
+    await run(`(() => { document.querySelector('[data-dir-entry="src"]')?.click(); return true; })()`);
+    checks.push([
+      "再点展开 → src/main 当帧回来（收起不丢缓存、展开不重拉）",
+      await run<boolean>(
+        `(() => document.querySelector('[data-dir-entry="src/main"]') !== null)()`,
+      ),
+    ]);
     // 越界在主进程拒绝（file.list 的安全边界，走真通道）
     const escapeAttempt = await run<{ rejected: boolean }>(
       `window.colt.invoke("file.list", ${JSON.stringify({ sessionId, path: ".." })})
