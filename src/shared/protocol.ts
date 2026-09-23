@@ -321,6 +321,7 @@ export const IPC_CHANNELS = [
   "browser.zoom",
   "file.read",
   "file.netDiff",
+  "file.list",
 ] as const;
 
 /**
@@ -347,6 +348,22 @@ export type NetChangeResult =
   | { status: "ok"; patch: string; added: number; removed: number }
   | { status: "no-baseline"; reason: string }
   | { status: "unreadable"; reason: string };
+
+/**
+ * 「文件」页签（文件浏览器）树里的一个条目（`file.list` 的返回元素）。
+ *
+ * `path` 是相对项目根的 posix 风格路径（与 `ViewFileChange.path` 同口径），
+ * 目录不带尾斜杠——这样它可以直接回填给 `file.read` / `file.list` 当入参。
+ */
+export interface FsEntry {
+  /** 条目名（文件或目录的最后一段，不含路径） */
+  name: string;
+  /** 相对项目根的 posix 路径；根目录本身为 ""（不作为条目出现） */
+  path: string;
+  kind: "dir" | "file";
+  /** 文件字节数；目录为 0（目录的大小没有便宜且无歧义的算法，不猜） */
+  size: number;
+}
 
 /** 渲染进程 → 主进程的调用通道契约（类型真源） */
 export interface IpcInvokeMap {
@@ -866,6 +883,20 @@ export interface IpcInvokeMap {
   "file.netDiff": {
     request: { sessionId: string; path: string };
     response: NetChangeResult;
+  };
+  /**
+   * 列**项目内**某目录的一层（「文件」页签的懒加载树）。
+   *
+   * 边界与 `file.read` 同一套（`src/main/file-list.ts`）：根由主进程按 sessionId → 项目
+   * 推出，路径（相对项目根；`""` 即根）必须落在项目内，越界在任何 fs 访问之前即被拒。
+   *
+   * 返回如实交代三件事：`entries` 按目录在前排序；`hidden` 是被刻意隐藏的目录名
+   * （`.git` / `node_modules`——列出来是给 UI 标注「已隐藏这些」，不是静默吞掉）；
+   * `truncated` 表示该层超过单层上限被截断，UI 需要明说「还有更多」。
+   */
+  "file.list": {
+    request: { sessionId: string; path: string };
+    response: { entries: FsEntry[]; truncated: boolean; hidden: string[] };
   };
 }
 

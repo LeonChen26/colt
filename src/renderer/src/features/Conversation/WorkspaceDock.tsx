@@ -35,6 +35,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Globe,
+  FolderTree,
   MonitorSmartphone,
   MoveHorizontal,
   Plus,
@@ -52,12 +53,13 @@ import { cn } from "../../lib/utils";
 import { FollowPanel } from "./FollowPanel";
 import { ObserveDrawer } from "./ObserveDrawer";
 import { ChangeDrilldown, type DrillLayer, type DrillRequest } from "./panels/ChangeDrilldown";
+import { FilesPanel } from "./panels/FilesPanel";
 import { RulesPanel } from "./panels/RulesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { EventsPanel } from "./panels/EventsPanel";
 
 /** 视图类型（kind）：决定页签里渲染什么内容 */
-export type DockKind = "follow" | "browser" | "usage" | "rules" | "events";
+export type DockKind = "follow" | "browser" | "files" | "usage" | "rules" | "events";
 
 /**
  * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「任务摘要」只是默认视图）。
@@ -98,6 +100,8 @@ const DOCK_KIND_META: Record<
 > = {
   follow: { label: "任务摘要", Icon: Activity, closable: false },
   browser: { label: "浏览器", Icon: Globe, closable: true, desc: "浏览及调试网页" },
+  // 整项目只读浏览（v1.77）：与「任务摘要」下钻分工——那边是「本次动过什么」，这边是「项目里有什么」
+  files: { label: "文件", Icon: FolderTree, closable: true, desc: "浏览项目内的文件" },
   // A3-5 迁入、⑦-H / ⑦-G 收敛后剩下的两个附属面板：「统计」「规则」。
   // 标签沿用产品既有措辞（不改成设计稿的「代码变更」），免得同一件东西在 ② 与 ⑦ 上出现两套叫法——
   // 故 ⑦-H 把「用量」改名「统计」时，② 的按钮与本表的页签标签**同批**改（v1.30）。
@@ -780,6 +784,8 @@ export function WorkspaceDock({
             </div>
           )}
         </div>
+      ) : activeKind === "files" ? (
+        <FilesPanel sessionId={sessionId} />
       ) : activeKind === "usage" ? (
         <UsagePanel sessionId={sessionId} />
       ) : activeKind === "rules" ? (

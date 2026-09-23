@@ -1337,21 +1337,25 @@ export async function runDock(
 
     // 「+」菜单：只列产品里真有的视图；点菜单外即收
     // 清单由 DOCK_KIND_META 的 closable 推导：follow（默认视图）不可关闭不进菜单，
-    // browser / usage / rules 之外，F3（v1.49 之后的安全事件流）新增了 events「事件」页签——
-    // 共 4 项；「工具」「改动」「文件」三个被取消的 kind 必须不在其中。
+    // browser / usage / rules 之外，F3（v1.49 之后的安全事件流）新增了 events「事件」页签，
+    // v1.77 又新增了 files「文件」页签（整项目浏览器）——共 5 项。
     await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
     await sleep(300);
     const menu = await probe();
     checks.push([
-      "「+」菜单只列真的存在的视图（browser/usage/rules + F3 的 events，共 4 项）",
-      menu.menuItems.length === 4 &&
-        ["browser", "usage", "rules", "events"].every((kind) => menu.menuItems.includes(kind)),
+      "「+」菜单只列真的存在的视图（browser/files/usage/rules/events，共 5 项）",
+      menu.menuItems.length === 5 &&
+        ["browser", "files", "usage", "rules", "events"].every((kind) =>
+          menu.menuItems.includes(kind),
+        ),
     ]);
-    // 三个被取消的 kind 都**不是被藏起来**：只断言「菜单里少一项」不够——
+    // 三个被取消的旧 kind 都**不是被藏起来**：只断言「菜单里少一项」不够——
     // 要确认它们连打开都打不开（否则就是一个点了没反应的死菜单项）。
     // `tools` 并入「统计」（⑦-H 第三步）；`changes` / `file` 并入下钻（⑦-G 第四步）。
+    // 注意旧 kind 叫 `file`（改动树）、新 kind 叫 `files`（整项目浏览器，v1.77）——
+    // 名字相近但语义不同，这里钉住的是「旧的没有借新名字复活」。
     checks.push([
-      "「工具」「改动」「文件」都已不是可打开的视图（kind 已移除，不是藏起来）",
+      "「工具」「改动」「文件(旧)」都已不是可打开的视图（kind 已移除，不是藏起来）",
       ["tools", "changes", "file"].every((kind) => !menu.menuItems.includes(kind)) &&
         (await clickMenuItem("tools")) === false &&
         (await clickMenuItem("changes")) === false &&
@@ -1385,6 +1389,79 @@ export async function runDock(
     checks.push([
       "「+」重新打开「浏览器」→ 页签回到 2 且原生视图重新可见",
       (await probe()).tabCount === 2 && (await waitVisible(true)),
+    ]);
+
+    // ---- v1.77：「文件」页签（整项目浏览器）----
+    // 夹具项目就是本仓库（COLT_SMOKE_CWD），file.list 列的是仓库根——断言用仓库里
+    // 稳定存在的名字（src / package.json），不依赖跑动时的工作区状态。
+    // 安全边界（越界拒绝）不在 UI 上验，直接 invoke 越界路径断言 reject——
+    // 那道闸在主进程，走真通道比模拟点击更能钉住它。
+    log("[文件页签] 整项目浏览器：开页签 / 懒加载树 / 预览 / 越界拒绝");
+    await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
+    await sleep(300);
+    await clickMenuItem("files");
+    await sleep(600);
+    const filesTab = await probe();
+    checks.push([
+      "「+」打开「文件」→ 页签 +1 且树出现（含 src 目录与 package.json）",
+      filesTab.tabCount === 3 &&
+        (await run<boolean>(
+          `(() => {
+            const tree = document.querySelector("[data-files-tree]");
+            if (!tree) return false;
+            const dir = tree.querySelector('[data-dir-entry="src"]');
+            const file = tree.querySelector('[data-file-entry="package.json"]');
+            return dir !== null && file !== null;
+          })()`,
+        )),
+    ]);
+    // .git / node_modules 被隐藏且头部**如实标注**（静默吞比不显示更可疑）
+    checks.push([
+      "隐藏目录不出现，且头部标注「已隐藏 .git · node_modules」",
+      (await run<boolean>(
+        `(() => {
+          const tree = document.querySelector("[data-files-tree]");
+          if (!tree) return false;
+          return (
+            tree.querySelector('[data-dir-entry=".git"]') === null &&
+            tree.querySelector('[data-dir-entry="node_modules"]') === null &&
+            tree.textContent.includes("已隐藏 .git · node_modules")
+          );
+        })()`,
+      )),
+    ]);
+    // 点目录（src）→ 懒加载展开子层；点文件（package.json）→ 右侧出预览
+    await run(`(() => { document.querySelector('[data-dir-entry="src"]')?.click(); return true; })()`);
+    await sleep(500);
+    checks.push([
+      "点目录懒加载展开子层（src 下出现 src/main）",
+      (await run<boolean>(
+        `(() => document.querySelector('[data-dir-entry="src/main"]') !== null)()`,
+      )),
+    ]);
+    await run(
+      `(() => { document.querySelector('[data-file-entry="package.json"]')?.click(); return true; })()`,
+    );
+    await sleep(600);
+    checks.push([
+      "点文件 → 右侧出现预览（FilePreview 的 data-file-view）",
+      (await run<boolean>(
+        `(() => document.querySelector("[data-file-view]") !== null)()`,
+      )),
+    ]);
+    // 越界在主进程拒绝（file.list 的安全边界，走真通道）
+    const escapeAttempt = await run<{ rejected: boolean }>(
+      `window.colt.invoke("file.list", ${JSON.stringify({ sessionId, path: ".." })})
+        .then(() => ({ rejected: false }))
+        .catch(() => ({ rejected: true }))`,
+    );
+    checks.push(["file.list 越界（..）被主进程拒绝", escapeAttempt.rejected === true]);
+    // 关页签 → 页签数回落（收口路径与浏览器一致）
+    await clickInDock(`b.getAttribute("aria-label") === "关闭文件"`);
+    await sleep(400);
+    checks.push([
+      "关闭「文件」页签 → 页签数回落",
+      (await probe()).tabCount === 2,
     ]);
 
     // ---- A3-4：下钻的清单层（⑦-G 取代原「本次改动」树）----

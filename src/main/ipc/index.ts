@@ -42,6 +42,7 @@ import { readToolImage, removeToolOutput } from "../tool-output";
 import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
+import { listDirWithin } from "../file-list";
 import { computeNetChange } from "../net-change";
 import { closeDatabase, openDatabase } from "../db";
 import { closeMemoryDatabase, openMemoryDatabase } from "../db/memory-index";
@@ -775,6 +776,11 @@ export function registerIpcHandlers(): void {
       request.path,
       getFileBaseline(request.sessionId, request.path),
     );
+  });
+
+  /** 「文件」页签的懒加载树：列项目内某目录的一层。边界与 file.read 同一套（根只由主进程推导） */
+  handle("file.list", (request) => {
+    return listDirWithin(resolveSessionRoot(request.sessionId), request.path);
   });
 }
 
