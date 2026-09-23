@@ -18,7 +18,7 @@
  *
  * 外加一条**隐性前提**的断言（`⑤`）：工作区外的技能文件（用户级
  * `~/.agents/skills`）必须能被 `read` 工具读到——「模型自己想起来用技能」全靠
- * 这一条，而它此前没有任何用例护着（见 `reviews/skills-gap-report-2026-09-19.md` 的 A1）。
+ * 这一条，而它此前没有任何用例护着。
  */
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";

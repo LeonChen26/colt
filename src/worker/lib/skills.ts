@@ -99,7 +99,7 @@ export interface LoadedSkills {
   /**
    * 去重**后**各来源目录贡献的技能数，与传进去的目录一一对应。
    * **求和恒等于 `skills.length`**——按来源归因才是对的，否则「用户级 = 总数 − 项目级」
-   * 在同目录重名时会算出负数（见 `reviews/skills-gap-report-2026-09-19.md` A6）。
+   * 在同目录重名时会算出负数。
    */
   counts: number[];
   /**
@@ -361,7 +361,7 @@ export const MAX_NOTICE_DIAGNOSTICS = 3;
  * **不报状态**（装了几个、都叫什么）。状态由 `ConversationView.skills` 承载、渲染层自己展示；
  * 把它当事件播报的后果是每次 worker 启动都往「事件」页签写一条例行信息
  * （`session_events` 只对 5 分钟内的同内容去重），于是真正需要长期可见的清单反而没地方放、
- * 事件表被灌满（见 `reviews/skills-gap-report-2026-09-19.md` P4）。
+ * 事件表被灌满。
  *
  * 「不对模型公开」这条保留的理由：它解释的是「装是装了、怎么都不触发」这个体验盲区，
  * 而本轮还没有技能面板可以展示 `ViewSkill.modelInvocable`，不留就等于让用户自己猜。

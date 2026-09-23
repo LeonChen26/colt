@@ -15,7 +15,7 @@
 |---|---|---|---|
 | `①`~`⑦` | **界面区域编号**（七大区域） | `docs/UI-REGIONS.md` §二 | `⑦` = 右栏工作区 |
 | `⑦-A`…`⑦-H` | **某区域下的规则编号**（区域号 + 字母） | `docs/UI-REGIONS.md` §二 各区域的「规则 X-Y」 | `⑦-G` = 右栏「任务摘要」的规则组 |
-| `A1` / `A3-4` / `B1` / `C1` | **交付批次 / 冒烟用例组编号**（无区域前缀） | `docs/NEXT-PHASE.md` §3.4、`src/dev/smoke/` 的分节注释 | `A3-4` = 清单层那个批次 |
+| `A1` / `A3-4` / `B1` / `C1` | **交付批次 / 冒烟用例组编号**（无区域前缀） | 本表 §四、`src/dev/smoke/` 的分节注释 | `A3-4` = 清单层那个批次 |
 | ~~`N1`~`N4`~~ | 原「下一阶段计划」编号（`N` = Next），**已删除**（见 §四） | 曾定义于 `docs/NEXT-PHASE.md` §3.1 | `N1` = 观测条目详情 |
 
 **判断口诀**：带 `⑦` 这种圆圈数字的是**界面规则**；单独一个字母加数字的是**批次 / 用例**。
@@ -83,37 +83,16 @@
 
 ## 五、冒烟模式（`COLT_SMOKE_MODE`）
 
-| 模式 | 覆盖 | 断言数 |
-|---|---|---|
-| `basic` | 主界面自检 | 仅日志 |
-| `fixture` | 浏览器能力本体 | 25 |
-| `dock` | 右栏 `⑦` 全家桶 | 211 |
-| `model` | 模型解析与降级（六段） | 46 |
-| `host` | 宿主能力往返 | 7 |
-| `memory` | 记忆链路端到端：真实 worker → 索引落库 → 检索 → 项目隔离 | 11 |
-| `memory-e2e` | 记忆行为的真实调用验证（**打模型、计费**） | 12 |
-| `ask-user` | 模型提问（`ask_user`）阻塞链路：卡片 / 选项 / 多题翻页 / 自由输入与选项合并回传 / 空问卷不白屏 / 输入框回车（非末页翻页、末页提交；合成中的回车不算）/ 载荷 / 跳过与超时收尾 / 回收不留悬空卡（**不打模型**） | 39 |
-| `ask-user-e2e` | 提问链路的真实调用验证：模型真的调用 `ask_user`、全权模式下不被静默放行、答案回到模型（**打模型、计费**） | 11 |
-| `subagent` | 子代理呈现链路：④ 卡特化与有界预览 / 卡面「中止」（右栏不再重复列此刻动作）/ **不自动展开右栏** / 下钻的「运行中实时 vs 跑完完整流」分层（**不打模型**） | 21 |
-| `subagent-e2e` | 子代理链路的**真实模型**端到端：清单可见（模型按名调用）/ 免闸门但子 lane 里的写照常弹卡且带「来自 X」/ **fresh 隔离**（主对话密语绝不出现在子 transcript）/ 递归无入口（**打模型、计费**；本地 Ollama 不计费） | 22 |
-| `perf` | 长会话渲染开销（rAF 采样最长帧）+ 消息窗口 / 只看问答折叠 / 目录与搜索（**不打模型**） | 31 |
-| `advanced` / `approval` / `reenter` / `crash` | 长会话 / 审批四场景 / 重入 / 崩溃恢复 | 仅日志 |
+模式清单、断言数与**计费边界**（哪些模式不打模型）以 [`CONTRIBUTING.md`](../CONTRIBUTING.md) 的「冒烟自检」表为准——那张表随增删漂移，这里不重复维护第二份（曾因两表分头维护而漂到 211 vs 255）。
 
-> 上表条数**仅作量级参考，会随增删漂移**——`dock` 就在 2026-09 从 207 变成 211
-> （而文档里三处写死的数字没跟上）。**验收一律以运行输出为准**，不要拿这张表当判据。
-
-相关环境变量：`COLT_SMOKE`（产物名）、`COLT_SMOKE_MODE`、`COLT_SMOKE_CWD`、`COLT_SMOKE_PROMPT`、
-`COLT_SMOKE_WAIT`、`COLT_SMOKE_PANEL`、`COLT_SMOKE_MODEL`、`COLT_SMOKE_ONLY`、
-`COLT_SMOKE_BROWSER_PROMPT`；非冒烟用的有 `COLT_READY_TIMEOUT_MS`、`COLT_APPROVAL_DEBUG`、
-`COLT_WORKER_OVERRIDE`、`COLT_FIXTURE_PORT`。
+相关环境变量：`COLT_SMOKE`（产物名）、`COLT_SMOKE_MODE`、`COLT_SMOKE_CWD`、`COLT_SMOKE_PROMPT`、`COLT_SMOKE_WAIT`、`COLT_SMOKE_PANEL`、`COLT_SMOKE_MODEL`、`COLT_SMOKE_ONLY`、`COLT_SMOKE_BROWSER_PROMPT`；非冒烟用的有 `COLT_READY_TIMEOUT_MS`、`COLT_APPROVAL_DEBUG`、`COLT_WORKER_OVERRIDE`、`COLT_FIXTURE_PORT`。
 
 ---
 
 ## 六、版本号 `vX.YZ`
 
-`UI-REGIONS.md` §六 里的 `v1.0` ~ `v1.48` 是**界面定义版本号**，**不是应用版本号**（`package.json` 的
-`version` 与它无关）。每一条记录「当时」的区域状态与决定——**已被后续版本推翻的会就地标
-「⚠️ 已被 vXX 取代」**，读到时不要按它们判断现状。
+`UI-REGIONS.md` §六 里的 `v1.0` ~ `v1.71` 是**界面定义版本号**，**不是应用版本号**（`package.json` 的
+`version` 与它无关）。每一条记录「当时」的区域状态与决定——**已被后续版本推翻的都在「现状 / 取代」列标出**，读到时不要按它们判断现状。
 
 ---
 

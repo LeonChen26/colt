@@ -217,7 +217,7 @@ export interface ViewRunOutcome {
  *
  * 为什么要整份信息、而不只是名字：装载状态应当由**视图**承载（谁装了、来自哪、
  * 是不是对模型公开），而不是靠一条 `notice` 播报——状态当事件播报会把「事件」页签
- * 灌满例行信息（见 `reviews/skills-gap-report-2026-09-19.md` P4）。
+ * 灌满例行信息。
  * 渲染层今天只用 `name`（本地拦截 `/skill`），其余字段是给「技能」面板/出处展示的底子。
  */
 export interface ViewSkill {
@@ -329,8 +329,8 @@ export interface ConversationView {
    * 有效调用误判成失败，那是**另一种丢输入**。
    *
    * 这里放的是**整份可见信息**而不只是名字：装载状态本来就该由**视图**承载，
-   * 而不是靠一条 `notice` 播报（状态当事件播报会灌满「事件」页签，见
-   * `reviews/skills-gap-report-2026-09-19.md` P4）。名字是 `skills.map(s => s.name)`。
+   * 而不是靠一条 `notice` 播报（状态当事件播报会灌满「事件」页签）。
+   * 名字是 `skills.map(s => s.name)`。
    */
   skills: ViewSkill[];
   messages: ViewMessage[];
