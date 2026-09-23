@@ -322,6 +322,10 @@ export const IPC_CHANNELS = [
   "file.read",
   "file.netDiff",
   "file.list",
+  "terminal.open",
+  "terminal.input",
+  "terminal.resize",
+  "terminal.close",
 ] as const;
 
 /**
@@ -898,6 +902,35 @@ export interface IpcInvokeMap {
     request: { sessionId: string; path: string };
     response: { entries: FsEntry[]; truncated: boolean; hidden: string[] };
   };
+  /**
+   * 打开（或复用）会话的交互终端（「终端」页签）。
+   *
+   * **幂等**：同一会话已开就直接返回，`replay` 是环形缓冲里的全部积压——
+   * 切页签回来重放的就是它，不需要重新敲一遍。`nextSeq` 之后的事件序号从这里
+   * 起算，渲染层丢弃 `seq < nextSeq` 的旧帧（先订阅事件再 open，否则会漏帧）。
+   *
+   * shell 由主进程挑（pwsh → powershell → cmd），渲染层**不能**指定——终端跑在
+   * 会话所属项目根下，这个「根」只有主进程知道怎么推（同 file.read 的边界推导）。
+   */
+  "terminal.open": {
+    request: { sessionId: string; cols: number; rows: number };
+    response: { replay: string; nextSeq: number; shell: string };
+  };
+  /** 往终端写一段输入（键入、粘贴）；终端没开时静默丢弃（页签关了就没必要写） */
+  "terminal.input": {
+    request: { sessionId: string; data: string };
+    response: { ok: true };
+  };
+  /** 视口尺寸变化（FitAddon / ResizeObserver 上报）；终端没开时静默丢弃 */
+  "terminal.resize": {
+    request: { sessionId: string; cols: number; rows: number };
+    response: { ok: true };
+  };
+  /** 关掉终端（页签 × / 会话收口）；没开时也是 ok（幂等收口） */
+  "terminal.close": {
+    request: { sessionId: string };
+    response: { ok: true };
+  };
 }
 
 /** 模型选项 */
@@ -1047,6 +1080,8 @@ export const IPC_EVENTS = [
   "approval.analyzing",
   "userquestion.pending",
   "browser.state",
+  "terminal.output",
+  "terminal.exit",
 ] as const;
 
 /** 主进程 → 渲染进程的推送通道（类型真源） */
@@ -1078,6 +1113,14 @@ export interface IpcEventMap {
   "userquestion.pending": { sessionId: string; requests: UserQuestionRequest[] };
   /** 内嵌浏览器视图状态变化（首次加载 / 导航 / 标题变化 / 销毁） */
   "browser.state": BrowserViewState;
+  /**
+   * 终端输出帧（16ms 合帧后的一批）。`seq` 单调递增，从 `terminal.open` 返回的
+   * `nextSeq` 起算——渲染层在 open **之前**就订阅本事件，再丢弃 `seq < nextSeq`
+   * 的帧，堵住「订阅与 open 之间的窗口」的竞态。
+   */
+  "terminal.output": { sessionId: string; data: string; seq: number };
+  /** 终端进程退出（用户敲了 exit / shell 崩了）；exitCode 为 null 表示被信号杀死 */
+  "terminal.exit": { sessionId: string; exitCode: number | null };
 }
 
 export type IpcEventName = keyof IpcEventMap;

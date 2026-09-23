@@ -291,10 +291,15 @@ export function Conversation({
     (id: string) => {
       const target = dockInstances.find((item) => item.id === id);
       if (target === undefined || !isDockClosable(target.kind)) return;
+      // 终端与页签显隐解耦（切页签不杀），关页签是它三个收口里的第一个——
+      // 这里不杀，PTY 会一直活到会话 dispose（对用户表现为「关了终端还在后台跑」）
+      if (target.kind === "terminal") {
+        void window.colt.invoke("terminal.close", { sessionId }).catch(() => undefined);
+      }
       setDockInstances((list) => list.filter((item) => item.id !== id));
       setDockActiveId((active) => (active === id ? DOCK_DEFAULT_KIND : active));
     },
-    [dockInstances],
+    [dockInstances, sessionId],
   );
 
   /**

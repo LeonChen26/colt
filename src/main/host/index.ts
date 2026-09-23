@@ -13,6 +13,11 @@ import type { BrowserWindow } from "electron";
 import { BrowserHost, type BrowserNavigation } from "./browser-host";
 import { ComputerHost } from "./computer-host";
 import { MemoryHost } from "./memory-host";
+import {
+  TerminalHost,
+  type TerminalExitEvent,
+  type TerminalOutputEvent,
+} from "../terminal-host";
 import { todoStore } from "../todo-store";
 
 export interface HostRequest {
@@ -26,6 +31,7 @@ export class HostBridge {
   readonly #browser = new BrowserHost();
   readonly #computer = new ComputerHost();
   readonly #memory = new MemoryHost();
+  readonly #terminal = new TerminalHost();
 
   /**
    * 内嵌浏览器需要宿主窗口才能挂 WebContentsView，故主进程建窗后必须登记。
@@ -75,6 +81,49 @@ export class HostBridge {
     return this.#browser.observe(sessionId);
   }
 
+  /** 订阅终端输出帧（由 sessionManager 转成 terminal.output 推给渲染层） */
+  onTerminalOutput(listener: (event: TerminalOutputEvent) => void): void {
+    this.#terminal.onOutput(listener);
+  }
+
+  /** 订阅终端退出（同上，转 terminal.exit） */
+  onTerminalExit(listener: (event: TerminalExitEvent) => void): void {
+    this.#terminal.onExit(listener);
+  }
+
+  /** 终端是否还活着（冒烟用：关页签后 PTY 真死 / 重开真活） */
+  terminalAlive(sessionId: string): boolean {
+    return this.#terminal.isAlive(sessionId);
+  }
+
+  /**
+   * 打开（或复用）会话终端。cwd 只由主进程按 sessionId → 项目推出
+   * （与 file.read 同一套信任假设），渲染层不能指定。
+   */
+  terminalOpen(
+    sessionId: string,
+    cwd: string,
+    cols: number,
+    rows: number,
+  ): { replay: string; nextSeq: number; shell: string } {
+    return this.#terminal.open(sessionId, cwd, cols, rows);
+  }
+
+  /** 往终端写输入（页签里的键入 / 粘贴） */
+  terminalInput(sessionId: string, data: string): void {
+    this.#terminal.input(sessionId, data);
+  }
+
+  /** 终端视口尺寸变化（FitAddon 上报） */
+  terminalResize(sessionId: string, cols: number, rows: number): void {
+    this.#terminal.resize(sessionId, cols, rows);
+  }
+
+  /** 关掉终端（页签 ×；会话收口走 disposeSession） */
+  terminalClose(sessionId: string): void {
+    this.#terminal.close(sessionId);
+  }
+
   async handle(request: HostRequest): Promise<HostResult> {
     switch (request.capability) {
       case "browser":
@@ -96,12 +145,15 @@ export class HostBridge {
     this.#browser.closeSession(sessionId);
     this.#computer.resetSession(sessionId);
     this.#memory.clearSession(sessionId);
+    // 终端与页签显隐解耦（切页签不杀），会话收口是它的第二处出口
+    this.#terminal.close(sessionId);
     // todo 无需清理：它没有会话级内存——清单的真源是库，缓存归 session-manager 管
     // （与 `#fileChangesCache` 同一套寿命规则），在这里再存一份才是多余的
   }
 
   disposeAll(): void {
     this.#browser.disposeAll();
+    this.#terminal.disposeAll();
   }
 }
 

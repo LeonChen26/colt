@@ -301,6 +301,9 @@ export class SessionManager {
     // 内嵌浏览器的视图状态（首次加载 / 导航 / 标题变化 / 销毁）统一走本类的推送出口。
     // onState 以最后一次注册为准，故重复 attachWindow 不会叠加监听。
     hostBridge.onBrowserState((state) => this.#emit("browser.state", state));
+    // 终端输出帧（16ms 合帧后）与退出事件，走同一推送出口
+    hostBridge.onTerminalOutput((event) => this.#emit("terminal.output", event));
+    hostBridge.onTerminalExit((event) => this.#emit("terminal.exit", event));
     // 用户回到窗口就停止闪烁；又走开且仍有待审，则继续喊。
     // 这样「闪烁」恒等于「有待审 且 人没在看」——不需要任何一方手动去清。
     window.on("focus", () => this.#setFlashing(false));

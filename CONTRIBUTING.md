@@ -87,7 +87,8 @@ src/
 │  ├─ approval/   审批闸门：策略判定 / 待审队列 / 大模型分析器 / 可配置项
 │  ├─ host/       宿主能力：内嵌浏览器（原生 WebContentsView）、电脑控制、观测
 │  ├─ db/         SQLite（schema + 迁移 + DAO）
-│  └─ ipc/        渲染层所有调用的落点
+│  ├─ ipc/        渲染层所有调用的落点
+│  ├─ terminal-*.ts  终端宿主：每会话一个 PTY（ConPTY）、64KB 环形缓冲、16ms 合帧；shell 挑选与合帧是纯函数，分离可单测
 ├─ preload/    contextBridge 白名单桥（按通道名白名单暴露）
 ├─ renderer/   React 渲染层
 │  └─ src/

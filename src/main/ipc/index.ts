@@ -782,6 +782,32 @@ export function registerIpcHandlers(): void {
   handle("file.list", (request) => {
     return listDirWithin(resolveSessionRoot(request.sessionId), request.path);
   });
+
+  // ---- 「终端」页签：shell 跑在会话所属项目根下（同 file.read 的根推导，渲染层不能指定）----
+
+  handle("terminal.open", (request) => {
+    return hostBridge.terminalOpen(
+      request.sessionId,
+      resolveSessionRoot(request.sessionId),
+      request.cols,
+      request.rows,
+    );
+  });
+
+  handle("terminal.input", (request) => {
+    hostBridge.terminalInput(request.sessionId, request.data);
+    return { ok: true as const };
+  });
+
+  handle("terminal.resize", (request) => {
+    hostBridge.terminalResize(request.sessionId, request.cols, request.rows);
+    return { ok: true as const };
+  });
+
+  handle("terminal.close", (request) => {
+    hostBridge.terminalClose(request.sessionId);
+    return { ok: true as const };
+  });
 }
 
 /** 首启时若环境变量里有 key 且尚未配置，则自动导入一次，方便开发 */

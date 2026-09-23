@@ -279,7 +279,17 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 
 ---
 
-## 五、电脑控制（Computer Use）
+## 五、终端边界
+
+「终端」页签（⑦，v1.78）是**用户直操作能力面**——与浏览器页签的用户侧按钮（后退 / 前进 / 刷新，B1）同一性质：由用户发起、用户敲键，**没有模型参与、没有可裁决的对象，不走审批**。反过来也成立：**模型的工具面里没有终端**（零入口）——模型读不到用户终端的输出、也塞不进命令。将来要把终端接给 agent，必须作为**工具**过 `before_tool` 闸门（风险分级照审批策略定），不许绕开闸门直接写 PTY。
+
+- shell 由主进程挑（pwsh → powershell → cmd），**渲染层不能指定**。
+- cwd 钉在会话所属项目根（主进程按 sessionId 查 DB 推出，同 `file.read` 口径）——渲染层传什么都一样。
+- 输出 64KB 环形缓冲、16ms 合帧；`terminal.input` / `terminal.resize` / `terminal.close` 只作用于本会话的 PTY。
+
+---
+
+## 六、电脑控制（Computer Use）
 
 读整屏截图 + 注入键鼠（`desktopCapturer` + PowerShell / user32）。这是**权限最高**的能力：
 
@@ -289,7 +299,7 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 
 ---
 
-## 六、密钥与隐私
+## 七、密钥与隐私
 
 - 密钥用 Electron **`safeStorage` 加密后落盘**；**明文只存在于内存与 worker 进程的环境变量**里。
 - 界面里**密钥只上行、不下行**——设置页看得到「是否已设置」，看不到明文。
@@ -299,7 +309,7 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 
 ---
 
-## 七、数据
+## 八、数据
 
 - 本机 SQLite（`node:sqlite`），schema 用 `PRAGMA user_version` 管版本，当前 **9**。
 - 迁移**必须带存量数据断言**（`tests/migration.test.ts`），并且要明确「旧数据留 `NULL`」是否是一种语义。
@@ -309,7 +319,7 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 
 ---
 
-## 八、改这些边界时要动哪些文件
+## 九、改这些边界时要动哪些文件
 
 | 你想改 | 要动 |
 |---|---|
@@ -319,6 +329,7 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 | 分析器可自动放行的命令白名单 | `main/approval/config.ts`（存 `settings` 表） |
 | 文件预览的根 / 上限 | `main/file-read.ts` + 调用它的 IPC 落点 |
 | 浏览器 / 电脑控制的限制 | `main/host/browser-host.ts`、`browser-observe.ts`、`computer-host.ts` |
+| 终端的限制 | `main/terminal-host.ts`、`main/terminal-pty.ts`（shell 候选与 PTY 选项，纯函数**记得补单测**：`tests/terminal-pty.test.ts`） |
 | 技能装载的目录与告知口径 | `worker/lib/skills.ts`（目录纯函数 + 文案，**记得补单测**：`tests/skills.test.ts`） |
 
 ---

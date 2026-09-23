@@ -1338,14 +1338,14 @@ export async function runDock(
     // 「+」菜单：只列产品里真有的视图；点菜单外即收
     // 清单由 DOCK_KIND_META 的 closable 推导：follow（默认视图）不可关闭不进菜单，
     // browser / usage / rules 之外，F3（v1.49 之后的安全事件流）新增了 events「事件」页签，
-    // v1.77 又新增了 files「文件」页签（整项目浏览器）——共 5 项。
+    // v1.77 新增 files「文件」页签（整项目浏览器）、v1.78 新增 terminal「终端」页签——共 6 项。
     await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
     await sleep(300);
     const menu = await probe();
     checks.push([
-      "「+」菜单只列真的存在的视图（browser/files/usage/rules/events，共 5 项）",
-      menu.menuItems.length === 5 &&
-        ["browser", "files", "usage", "rules", "events"].every((kind) =>
+      "「+」菜单只列真的存在的视图（browser/files/terminal/usage/rules/events，共 6 项）",
+      menu.menuItems.length === 6 &&
+        ["browser", "files", "terminal", "usage", "rules", "events"].every((kind) =>
           menu.menuItems.includes(kind),
         ),
     ]);
@@ -1463,6 +1463,105 @@ export async function runDock(
       "关闭「文件」页签 → 页签数回落",
       (await probe()).tabCount === 2,
     ]);
+
+    // ---- v1.78：「终端」页签（xterm + 主进程 PTY）----
+    // 命令全部只读（echo），不留盘上痕迹。输入走**真实键盘事件**（keypress/keydown
+    // 派发到 xterm 的隐藏 textarea——Chromium 的 KeyboardEvent 构造器支持
+    // keyCode/charCode 遗留成员，xterm 恰好只认它们）；输出用轮询等——PTY 起壳
+    // （pwsh 冷启）到回显的时间不定，固定 sleep 必假红。cwd 不敲 pwd：shell 的
+    // 提示符自带项目根（PS E:\...\colt>），它出现即证明终端开在会话所属项目下。
+    log("[终端页签] 交互终端：开页签 / 真实输入 / 输出回显 / cwd / 切页签不杀 / 真死与重开");
+    /** 轮询 .xterm 的 textContent 出现 needle（超时返回 false） */
+    const pollTerminalText = async (needle: string, timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const hit = await run<boolean>(
+          `(() => { const t = document.querySelector(".xterm"); ` +
+            `return t !== null && t.textContent.includes(${JSON.stringify(needle)}); })()`,
+        );
+        if (hit) return true;
+        await sleep(200);
+      }
+      return false;
+    };
+    /** 轮询主进程侧 PTY 存活态达到期望（Windows 上 kill 有延迟，等它落地） */
+    const pollAlive = async (expected: boolean, timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (hostBridge.terminalAlive(sessionId) === expected) return true;
+        await sleep(200);
+      }
+      return hostBridge.terminalAlive(sessionId) === expected;
+    };
+    await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
+    await sleep(300);
+    await clickMenuItem("terminal");
+    const termMounted = await pollTerminalText("", 8000);
+    checks.push([
+      "「+」打开「终端」→ xterm 挂载（画布 + 隐藏输入位）且 PTY 活着",
+      termMounted &&
+        (await run<boolean>(
+          `document.querySelector("[data-terminal-panel]") !== null && ` +
+            `document.querySelector(".xterm-helper-textarea") !== null`,
+        )) &&
+        hostBridge.terminalAlive(sessionId),
+    ]);
+    // 真实输入链路：键盘事件 → xterm onData → terminal.input → PTY → 回显
+    await run(
+      `(() => {
+        const ta = document.querySelector(".xterm-helper-textarea");
+        if (!ta) return false;
+        ta.focus();
+        for (const ch of "echo COLT_PTY_SMOKE") {
+          const code = ch.charCodeAt(0);
+          ta.dispatchEvent(new KeyboardEvent("keypress", {
+            key: ch, charCode: code, keyCode: code, which: code, bubbles: true, cancelable: true,
+          }));
+        }
+        ta.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        }));
+        return true;
+      })()`,
+    );
+    checks.push([
+      "键盘输入真的到 PTY（echo 回显出现在终端里）",
+      await pollTerminalText("COLT_PTY_SMOKE", 15000),
+    ]);
+    // cwd：提示符自带项目根（夹具项目 = 本仓库），出现即证明开在会话所属项目下
+    checks.push([
+      "终端开在会话所属项目根下（提示符含仓库目录名）",
+      await pollTerminalText("opensource", 15000),
+    ]);
+    // 切页签不杀：TerminalPanel 卸载只 dispose DOM；切回来 open 幂等拿回放
+    await clickInDock(`b.textContent.trim() === "任务摘要"`);
+    await sleep(400);
+    const awayAlive = hostBridge.terminalAlive(sessionId);
+    await clickInDock(`b.textContent.trim() === "终端"`);
+    await sleep(600);
+    checks.push([
+      "切走再切回：PTY 不死且缓冲回放（之前的话还在）",
+      awayAlive &&
+        hostBridge.terminalAlive(sessionId) &&
+        (await pollTerminalText("COLT_PTY_SMOKE", 8000)),
+    ]);
+    // 真死：关页签（closeDockInstance → terminal.close）；重开 → 新 PTY 真活
+    await clickInDock(`b.getAttribute("aria-label") === "关闭终端"`);
+    checks.push([
+      "关闭「终端」页签 → PTY 真死（主进程侧 isAlive=false）",
+      await pollAlive(false, 8000),
+    ]);
+    await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
+    await sleep(300);
+    await clickMenuItem("terminal");
+    const termReopened = await probe();
+    checks.push([
+      "重开「终端」→ 新 PTY 真活且页签数一致",
+      (await pollAlive(true, 8000)) && (await pollTerminalText("", 8000)) && termReopened.tabCount === 3,
+    ]);
+    // 收尾：关掉终端页签，别让它活到后面的段落（后面还有页签数断言）
+    await clickInDock(`b.getAttribute("aria-label") === "关闭终端"`);
+    await sleep(400);
 
     // ---- A3-4：下钻的清单层（⑦-G 取代原「本次改动」树）----
     // 受控视图里 3 条改动：package.json（根）、../escape.txt（越界）、src/main/file-read.ts。

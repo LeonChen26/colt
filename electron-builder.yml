@@ -32,6 +32,8 @@ files:
 asar: true
 asarUnpack:
   - node_modules/@earendil-works/**
+  # node-pty 是原生模块（.node 二进制）：asar 里 dlopen 不了，必须解包（同上先例）
+  - node_modules/@homebridge/**
 
 win:
   icon: build/icon.ico

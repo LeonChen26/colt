@@ -42,6 +42,7 @@ import {
   RotateCw,
   ShieldAlert,
   ShieldCheck,
+  SquareTerminal,
   X,
   ZoomOut,
 } from "lucide-react";
@@ -57,9 +58,10 @@ import { FilesPanel } from "./panels/FilesPanel";
 import { RulesPanel } from "./panels/RulesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { EventsPanel } from "./panels/EventsPanel";
+import { TerminalPanel } from "./panels/TerminalPanel";
 
 /** 视图类型（kind）：决定页签里渲染什么内容 */
-export type DockKind = "follow" | "browser" | "files" | "usage" | "rules" | "events";
+export type DockKind = "follow" | "browser" | "files" | "terminal" | "usage" | "rules" | "events";
 
 /**
  * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「任务摘要」只是默认视图）。
@@ -102,6 +104,9 @@ const DOCK_KIND_META: Record<
   browser: { label: "浏览器", Icon: Globe, closable: true, desc: "浏览及调试网页" },
   // 整项目只读浏览（v1.77）：与「任务摘要」下钻分工——那边是「本次动过什么」，这边是「项目里有什么」
   files: { label: "文件", Icon: FolderTree, closable: true, desc: "浏览项目内的文件" },
+  // 交互终端（v1.78）：xterm.js + 主进程 PTY，跑在会话所属项目根下；用户直操作，
+  // 模型工具面零入口（安全边界见 docs/SECURITY.md 的终端条目）
+  terminal: { label: "终端", Icon: SquareTerminal, closable: true, desc: "在项目根下开一个 shell" },
   // A3-5 迁入、⑦-H / ⑦-G 收敛后剩下的两个附属面板：「统计」「规则」。
   // 标签沿用产品既有措辞（不改成设计稿的「代码变更」），免得同一件东西在 ② 与 ⑦ 上出现两套叫法——
   // 故 ⑦-H 把「用量」改名「统计」时，② 的按钮与本表的页签标签**同批**改（v1.30）。
@@ -125,10 +130,11 @@ export function isDockClosable(kind: DockKind): boolean {
  * 「+」菜单列出的视图。**由 `closable` 推导**，而不是另写一份清单——
  * 这样「可关闭」与「有重新打开的出口」在结构上恒等，将来也漏不掉。
  *
- * 只列**产品里真的存在**的视图：高保真稿的菜单还画了终端 / 任务摘要 / 代码变更，
- * 但那三种在 ⑦ 里**都不是可开的页签**（⑦-G 之后「代码变更」是「任务摘要」的下钻；
- * v1.48 之后「任务摘要」这个名字归了**默认视图本身**——它不可关闭，也就不该进菜单），
- * 列进来就是点了没反应的死菜单项——宁可少列（同 ⑦-F 那次「死控件」的教训）。
+ * 只列**产品里真的存在**的视图：高保真稿的菜单还画了任务摘要 / 代码变更，
+ * 但那两种在 ⑦ 里**都不是可开的页签**（⑦-G 之后「代码变更」是「任务摘要」的下钻；
+ * v1.48 之后「任务摘要」这个名字归了**默认视图本身**——它不可关闭，也就不该进菜单；
+ * 稿里的「终端」v1.78 起是真的，在列），列进来就是点了没反应的死菜单项——
+ * 宁可少列（同 ⑦-F 那次「死控件」的教训）。
  */
 const DOCK_MENU_KINDS: DockKind[] = (Object.keys(DOCK_KIND_META) as DockKind[]).filter(
   (kind) => DOCK_KIND_META[kind].closable,
@@ -786,6 +792,8 @@ export function WorkspaceDock({
         </div>
       ) : activeKind === "files" ? (
         <FilesPanel sessionId={sessionId} />
+      ) : activeKind === "terminal" ? (
+        <TerminalPanel sessionId={sessionId} />
       ) : activeKind === "usage" ? (
         <UsagePanel sessionId={sessionId} />
       ) : activeKind === "rules" ? (
