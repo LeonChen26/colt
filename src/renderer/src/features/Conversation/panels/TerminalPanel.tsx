@@ -52,6 +52,8 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
   const nextSeqRef = useRef<number>(Number.POSITIVE_INFINITY);
   /** shell 退出后置 true：显示「重新打开」覆盖层；重开通过 reopenToken 重走挂载流程 */
   const [exited, setExited] = useState(false);
+  /** 退出时主进程给的 exitCode（null = 被终止 / 未知），决定覆盖层文案 */
+  const [exitCode, setExitCode] = useState<number | null>(null);
   const [reopenToken, setReopenToken] = useState(0);
   /** open 成功后的 shell 名（头部 meta）；起不来则停在 null */
   const [shellName, setShellName] = useState<string | null>(null);
@@ -63,6 +65,7 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
     if (host === null) return;
     nextSeqRef.current = Number.POSITIVE_INFINITY;
     setExited(false);
+    setExitCode(null);
     setOpenError(null);
     setShellName(null);
 
@@ -91,12 +94,11 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
       nextSeqRef.current = seq + 1;
       terminal.write(data);
     });
-    const offExit = window.colt.on("terminal.exit", ({ sessionId: sid, exitCode }) => {
+    const offExit = window.colt.on("terminal.exit", ({ sessionId: sid, exitCode: code }) => {
       if (sid !== sessionId) return;
+      // 不往终端里写红字：不透明覆盖层会盖住它（等于没写），退出信息由覆盖层自己说
       setExited(true);
-      if (exitCode !== 0) {
-        terminal.write(`\r\n\x1b[31m[进程已退出，代码 ${exitCode ?? "未知"}]\x1b[0m\r\n`);
-      }
+      setExitCode(code);
     });
 
     terminal.onData((data) => {
@@ -188,7 +190,13 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
             data-terminal-exited
             className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-code/95 px-6 text-center"
           >
-            <p className="text-xs text-text-muted">终端已退出</p>
+            <p className="text-xs text-text-muted">
+              {exitCode === null
+                ? "终端已退出（已终止）"
+                : exitCode === 0
+                  ? "终端已退出"
+                  : `终端已退出（代码 ${exitCode}）`}
+            </p>
             <button
               type="button"
               onClick={() => setReopenToken((t) => t + 1)}

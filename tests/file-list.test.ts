@@ -103,12 +103,6 @@ describe("listDirWithin：安全边界", () => {
     assert.ok(names.indexOf("a.ts") < names.indexOf("B.ts"));
   });
 
-  test("目录条目 size 为 0、文件条目 size 为字节数", () => {
-    const { entries } = listDirWithin(root, "docs");
-    assert.equal(entries[0]?.kind, "file");
-    assert.equal(entries[0]?.size, Buffer.byteLength("# g"));
-  });
-
   test("`..` 逃逸被拒（先于任何 fs 访问）", () => {
     assert.throws(() => listDirWithin(root, ".."), /越界/);
   });

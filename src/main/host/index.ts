@@ -119,9 +119,9 @@ export class HostBridge {
     this.#terminal.resize(sessionId, cols, rows);
   }
 
-  /** 关掉终端（页签 ×；会话收口走 disposeSession） */
-  terminalClose(sessionId: string): void {
-    this.#terminal.close(sessionId);
+  /** 关掉终端：页签 × 传 notify=false（面板正在卸载）；系统收口见 disposeSession */
+  terminalClose(sessionId: string, notify = false): void {
+    this.#terminal.close(sessionId, notify);
   }
 
   async handle(request: HostRequest): Promise<HostResult> {
@@ -145,8 +145,9 @@ export class HostBridge {
     this.#browser.closeSession(sessionId);
     this.#computer.resetSession(sessionId);
     this.#memory.clearSession(sessionId);
-    // 终端与页签显隐解耦（切页签不杀），会话收口是它的第二处出口
-    this.#terminal.close(sessionId);
+    // 终端与页签显隐解耦（切页签不杀），会话收口是它的第二处出口。notify=true：
+    // 面板可能还开着（空闲回收走的就是这条链），必须让它可见地退出而不是假活
+    this.#terminal.close(sessionId, true);
     // todo 无需清理：它没有会话级内存——清单的真源是库，缓存归 session-manager 管
     // （与 `#fileChangesCache` 同一套寿命规则），在这里再存一份才是多余的
   }

@@ -78,8 +78,20 @@ export function buildPtyOptions(cwd: string, cols: number, rows: number): IPtyFo
     cols: clampCols(cols),
     rows: clampRows(rows),
     cwd,
-    env: { ...process.env } as Record<string, string>,
+    env: buildEnv(),
   };
+}
+
+/**
+ * process.env 的类型带 undefined 值（且真赋过 undefined 的键会被删掉），逐条过滤成
+ * 干净的 `Record<string, string>`——不用 `as` 断言把「可能 undefined」扫到地毯下。
+ */
+function buildEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 /** 便捷再导出：terminal-host 只需要这一个类型 */

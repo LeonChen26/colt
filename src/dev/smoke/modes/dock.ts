@@ -1470,7 +1470,7 @@ export async function runDock(
     // keyCode/charCode 遗留成员，xterm 恰好只认它们）；输出用轮询等——PTY 起壳
     // （pwsh 冷启）到回显的时间不定，固定 sleep 必假红。cwd 不敲 pwd：shell 的
     // 提示符自带项目根（PS E:\...\colt>），它出现即证明终端开在会话所属项目下。
-    log("[终端页签] 交互终端：开页签 / 真实输入 / 输出回显 / cwd / 切页签不杀 / 真死与重开");
+    log("[终端页签] 交互终端：开页签 / 真实输入 / 输出回显 / cwd / 切页签不杀 / 真死与重开 / 系统收口可见退出");
     /** 轮询 .xterm 的 textContent 出现 needle（超时返回 false） */
     const pollTerminalText = async (needle: string, timeoutMs: number): Promise<boolean> => {
       const deadline = Date.now() + timeoutMs;
@@ -1480,6 +1480,17 @@ export async function runDock(
             `return t !== null && t.textContent.includes(${JSON.stringify(needle)}); })()`,
         );
         if (hit) return true;
+        await sleep(200);
+      }
+      return false;
+    };
+    /** 轮询选择器出现在渲染层（超时返回 false） */
+    const pollTerminalSelector = async (selector: string, timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (await run<boolean>(`document.querySelector(${JSON.stringify(selector)}) !== null`)) {
+          return true;
+        }
         await sleep(200);
       }
       return false;
@@ -1559,6 +1570,19 @@ export async function runDock(
       "重开「终端」→ 新 PTY 真活且页签数一致",
       (await pollAlive(true, 8000)) && (await pollTerminalText("", 8000)) && termReopened.tabCount === 3,
     ]);
+    // 系统收口（会话 dispose / 空闲回收走的就是 notify=true 这条路）：面板还开着时
+    // 必须可见地退出——不修的后果是终端假活（敲键被静默丢弃、界面毫无提示）
+    hostBridge.terminalClose(sessionId, true);
+    checks.push([
+      "系统收口（notify）→ 面板可见地退出（data-terminal-exited），不假活",
+      await pollTerminalSelector("[data-terminal-exited]", 8000),
+    ]);
+    // 覆盖层上的「重新打开」把终端救回来（reopenToken 重走同一条挂载链，open 幂等）
+    await run(
+      `(() => { const b = document.querySelector("[data-terminal-exited] button"); ` +
+        `if (b) b.click(); return true; })()`,
+    );
+    checks.push(["退出覆盖层的「重新打开」→ 新 PTY 真活", await pollAlive(true, 8000)]);
     // 收尾：关掉终端页签，别让它活到后面的段落（后面还有页签数断言）
     await clickInDock(`b.getAttribute("aria-label") === "关闭终端"`);
     await sleep(400);

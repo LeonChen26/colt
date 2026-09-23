@@ -13,6 +13,10 @@
  * 与 `readFileWithin` 的一个入参差异：**`""` 是合法值**（表示项目根）——
  * 浏览器总是从根开始逛，要求非空只会逼调用方传 `"."`。
  *
+ * 已知怪癖：**指向祖先的软链接**（如 `src/link -> ..`）realpath 后仍在根内、不越界，
+ * 但它的子条目 `path` 会与真实路径**同键**——树里同一子树可能在多处出现并共享展开态。
+ * 无崩溃无越界，接受它（VS Code 同类行为）。
+ *
  * 纯 Node（不 import electron），故可直接被 `tests/file-list.test.ts` 覆盖。
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
@@ -75,8 +79,8 @@ export function listDirWithin(
       hidden.push(name);
       continue;
     }
-    // 竞态中被删的条目静默跳过：列目录是快照，agent 正在删文件是常态，
-    // 为一个已经不存在的名字报错只会让整层都打不开。
+    // kind：Dirent 直接给；symlink 得 stat 一次才知道指向的是目录还是文件
+    // （竞态中被删的条目静默跳过——列目录是快照，agent 正在删文件是常态）
     let kind: "dir" | "file";
     if (raw[i].isDirectory()) {
       kind = "dir";
@@ -89,19 +93,9 @@ export function listDirWithin(
     } else {
       continue;
     }
-    // size 只对文件取（目录给 0：目录大小没有便宜且无歧义的算法，不猜）
-    let size = 0;
-    if (kind === "file") {
-      const target = statSync(resolve(targetReal, name), { throwIfNoEntry: false });
-      if (target === undefined) continue;
-      size = target.size;
-    }
-    entries.push({
-      name,
-      path: relative(rootReal, resolve(targetReal, name)).replaceAll("\\", "/"),
-      kind,
-      size,
-    });
+    // 不取 size：渲染层没有任何地方显示它，而每个文件一次同步 stat 在大目录（500 条
+    // 上限附近）足以卡住主进程可感知的一瞬——白付的成本，砍掉（想要时按需加回并给消费方）
+    entries.push({ name, path: relative(rootReal, resolve(targetReal, name)).replaceAll("\\", "/"), kind });
     // 恰好 500 条不多不少时不是截断：只有「还有下一条却装不下」才算
     if (entries.length >= LIST_ENTRY_LIMIT && i < raw.length - 1) {
       entries.sort(compareEntries);

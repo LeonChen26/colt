@@ -68,7 +68,12 @@ function TreeLayer({
       <p className="px-3 py-10 text-center text-xs leading-relaxed text-text-muted">
         项目内没有可浏览的文件
       </p>
-    ) : null;
+    ) : (
+      // 空目录也给一句：留白的话用户分不清「空的」和「没加载出来」
+      <p className="py-1 text-2xs text-text-muted" style={{ paddingLeft: depth * 12 + 18 }}>
+        （空目录）
+      </p>
+    );
   }
   return (
     <>

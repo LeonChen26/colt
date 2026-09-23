@@ -365,8 +365,6 @@ export interface FsEntry {
   /** 相对项目根的 posix 路径；根目录本身为 ""（不作为条目出现） */
   path: string;
   kind: "dir" | "file";
-  /** 文件字节数；目录为 0（目录的大小没有便宜且无歧义的算法，不猜） */
-  size: number;
 }
 
 /** 渲染进程 → 主进程的调用通道契约（类型真源） */

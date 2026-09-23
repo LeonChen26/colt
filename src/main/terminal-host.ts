@@ -44,6 +44,8 @@ export class TerminalHost {
   readonly #sessions = new Map<string, TerminalSession>();
   #onOutput: ((event: TerminalOutputEvent) => void) | undefined;
   #onExit: ((event: TerminalExitEvent) => void) | undefined;
+  /** 探测结果缓存：「哪有 shell」对一台机器是常量，别为每次开页签都阻塞一次主进程 */
+  static #shell: string | undefined;
 
   /** 注册输出回调（由 HostBridge 接到 sessionManager 的推送出口）；以最后一次为准 */
   onOutput(listener: (event: TerminalOutputEvent) => void): void {
@@ -71,7 +73,7 @@ export class TerminalHost {
       return { replay: existing.buffer, nextSeq: existing.seq + 1, shell: existing.shell };
     }
 
-    const shell = pickShell(TerminalHost.#shellExists);
+    const shell = TerminalHost.#pickShell();
     const pty = loadPty().spawn(shell, [], buildPtyOptions(cwd, cols, rows));
     const entry: TerminalSession = { pty, shell, buffer: "", seq: -1, pending: "", flushTimer: undefined };
     this.#sessions.set(sessionId, entry);
@@ -113,13 +115,20 @@ export class TerminalHost {
     }
   }
 
-  /** 关掉终端；没开也是正常（幂等收口，三处都会调到这里） */
-  close(sessionId: string): void {
+  /**
+   * 关掉终端；没开也是正常（幂等收口，三处都会调到这里）。
+   *
+   * `notify`：系统收口（会话 dispose / 空闲回收）时面板**可能还开着**——推一次
+   * `terminal.exit` 让它显示「已退出」覆盖层，否则终端假活（敲键被静默丢弃、
+   * 界面毫无提示）。页签 × 的路径传 false：面板正在卸载，通知没有听众。
+   */
+  close(sessionId: string, notify = false): void {
     const entry = this.#sessions.get(sessionId);
     if (entry === undefined) return;
     // 先删再杀：onExit 回调查不到 entry，就不会把「我们杀的」当成「它自己退了」推出去
     this.#sessions.delete(sessionId);
     this.#stopTimer(entry);
+    if (notify) this.#emitExit(sessionId, null);
     try {
       entry.pty.kill();
     } catch {
@@ -162,6 +171,14 @@ export class TerminalHost {
     if (this.#onExit !== undefined) {
       this.#onExit({ sessionId, exitCode });
     }
+  }
+
+  /** 探测一次，之后一直用（spawnSync 探测阻塞主进程百毫秒级；pwsh 缺席时往往要连探两次） */
+  static #pickShell(): string {
+    if (TerminalHost.#shell === undefined) {
+      TerminalHost.#shell = pickShell(TerminalHost.#shellExists);
+    }
+    return TerminalHost.#shell;
   }
 
   /** shell 是否找得到（PATH 探测）。static 便于单测绕开真实探测 */
