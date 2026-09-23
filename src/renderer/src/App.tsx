@@ -658,7 +658,9 @@ export default function App(): React.JSX.Element {
             ) : (
               projects.map((project) => {
                 const expanded = expandedProjects.has(project.id);
-                const list = sessionsByProject.get(project.id) ?? [];
+                // `undefined` 与空数组必须分开：前者是**还没拉到**，后者是「确实没有会话」。
+                const sessions = sessionsByProject.get(project.id);
+                const list = sessions ?? [];
                 return (
                   <div key={project.id} className="mb-0.5">
                     <ProjectRow
@@ -666,14 +668,19 @@ export default function App(): React.JSX.Element {
                       active={project.id === activeProject?.id}
                       expanded={expanded}
                       busy={list.some((session) => runningSessions.has(session.id))}
-                      onToggle={() =>
+                      onToggle={() => {
                         setExpandedProjects((set) => {
                           const next = new Set(set);
                           if (next.has(project.id)) next.delete(project.id);
                           else next.add(project.id);
                           return next;
-                        })
-                      }
+                        });
+                        // 展开即拉取：会话列表是**按项目懒加载**的，此前只有「把它选成当前项目」
+                        // 才会去拉（切项目那个 effect）——于是展开一个没选中的项目只会照缓存画，
+                        // 缓存为空就显示「还没有会话」，其实库里全是会话。只在「本次是展开」时拉，
+                        // 收起不动缓存，下次展开直接画。
+                        if (!expandedProjects.has(project.id)) void loadProjectSessions(project.id);
+                      }}
                       onActivate={() => setActiveProject(project)}
                       onNewSession={() => {
                         if (project.id !== activeProject?.id) setActiveProject(project);
@@ -689,10 +696,12 @@ export default function App(): React.JSX.Element {
                         <div className="truncate px-2 py-0.5 font-mono text-2xs text-text-muted">
                           {project.rootPath}
                         </div>
-                        {list.length === 0 ? (
+                        {sessions === undefined ? (
+                          <div className="px-2 py-1.5 text-xs text-text-muted">加载中…</div>
+                        ) : sessions.length === 0 ? (
                           <div className="px-2 py-1.5 text-xs text-text-muted">还没有会话</div>
                         ) : (
-                          list.map((session) => (
+                          sessions.map((session) => (
                             <SessionRow
                               key={session.id}
                               session={session}

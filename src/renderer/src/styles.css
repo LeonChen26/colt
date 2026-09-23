@@ -420,13 +420,9 @@ body.resizing * {
   }
 }
 @container center (max-width: 400px) {
-  .cpush {
-    display: none;
-  }
-  .cright {
-    width: 100%;
-    justify-content: flex-end;
-  }
+  /* 不再把右组挤到第二行：/compact 已是图标-only、560 档折叠标签后，中栏压到
+     下限 360（卡片内容约 324px）时整行单行放得下——换行只在标签全折叠后仍装
+     不下时才该发生（flex-wrap 仍留着当最后兜底）。 */
   .cbtn.model .lbl {
     max-width: 52px;
   }

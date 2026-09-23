@@ -1419,8 +1419,11 @@ export function Conversation({
                     : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
                 }
                 className={cn(
-                  "max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-muted",
-                  empty && "min-h-[81px] py-1.5",
+                  // 非起手态 2 行基线（v1.83 起）：原先只有 1 行高（约 31px），太局促；
+                  // 起手态 2.5 行（69px，v1.83 从 3 行/81px 下调——用户嫌高）。
+                  // 两态都只是 min-h：多行输入时仍由 resizeInput 按内容长到 180 上限。
+                  "max-h-[180px] w-full resize-none bg-transparent px-0.5 py-1 text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-muted min-h-[54px]",
+                  empty && "min-h-[69px] py-1.5",
                 )}
               />
               {slashOpen && (
@@ -1499,10 +1502,10 @@ export function Conversation({
                     ? "运行中无法压缩上下文（压缩会重写会话记录）"
                     : "压缩上下文（也可在输入框敲 /compact 回车）"
                 }
-                className="flex h-7 shrink-0 items-center gap-1 rounded-sm px-2 font-mono text-xs text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-7 shrink-0 items-center rounded-sm px-2 text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
               >
+                {/* 图标-only（用户要求）：不占文字宽度，功能由悬停 tooltip 说明 */}
                 <Shrink {...ICON.sm} className="shrink-0" />
-                /compact
               </button>
 
               <span className="cpush flex-1" />

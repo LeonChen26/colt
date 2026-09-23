@@ -886,11 +886,12 @@ export async function runSessionDraft(
         `输入框高 ${wide0.taHeight}px ＝ ${wide0.taLines} 行（${wide0.taSize}px 字 / 行高 ${wide0.taLh} / 内边距 ${wide0.taPad}）｜` +
         `工具行 ${JSON.stringify(wide0.tools)}｜溢出 卡片=${wide0.cardOverflow} 工具行=${wide0.toolsOverflow}`,
     );
-    // 起手态的空输入框应恰好 3 行高：矮了装不下一句话，高了就是用户说的「有点太高」。
-    // 行数由探针按输入框**自己的**行高与内边距现算，所以这条不随字级 / 行高漂移。
+    // 起手态的空输入框应恰好 2.5 行高（v1.83 从 3 行下调，用户反馈「起手态降一点」；
+    // 同批把非起手态从 1 行提到 2 行基线）。行数由探针按输入框**自己的**行高与内边距
+    // 现算，所以这条不随字级 / 行高漂移。
     checks.push([
-      `起手态输入框占 3 行高（实测 ${wide0.taLines} 行 / ${wide0.taHeight}px）`,
-      Math.abs(wide0.taLines - 3) <= 0.15,
+      `起手态输入框占 2.5 行高（实测 ${wide0.taLines} 行 / ${wide0.taHeight}px）`,
+      Math.abs(wide0.taLines - 2.5) <= 0.15,
     ]);
     // 行高必须真的来自 `leading-relaxed`（1.625×字号）。这条是防一类**静默失效**：
     // 起手态曾因为多挂一个 `text-[13px]` 被 tailwind-merge 判成「与 leading 冲突」，
