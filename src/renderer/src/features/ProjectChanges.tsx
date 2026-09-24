@@ -127,9 +127,10 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
             ))}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto p-3">
+          {/* 与下钻的 diff 层同形：flex 列 + 卡片 fill，diff 铺满右栏可用高度并内部自滚 */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
             {current?.patch ? (
-              <DiffView patch={current.patch} />
+              <DiffView patch={current.patch} fill />
             ) : (
               <p className="mt-16 text-center text-xs text-text-muted">
                 {current ? "该改动由 write 工具整文件写入，内核未提供 diff。" : "选择一条改动查看"}

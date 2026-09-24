@@ -20,9 +20,11 @@ import {
   Moon,
   Pin,
   Plus,
+  Search,
   Settings as SettingsIcon,
   Sun,
   Trash2,
+  X,
 } from "lucide-react";
 import { formatSessionStamp } from "@/lib/format";
 import { ICON } from "@/lib/icon";
@@ -55,6 +57,25 @@ export default function App(): React.JSX.Element {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Map<string, SessionInfo[]>>(new Map());
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  /**
+   * 侧栏搜索词（匹配会话**标题** / 项目**名与路径**）。非空时侧栏切成**过滤视图**：
+   * 只显示命中的行、命中的会话自动展开其项目；清空即恢复原样——`expandedProjects`
+   * **一个字都不动**，用户原来的展开态会原样回来。
+   */
+  const [sidebarQuery, setSidebarQuery] = useState("");
+  /**
+   * 搜索用的**全量会话**（跨项目）。侧栏平时是按项目**懒加载**的（只会拉到展开过的项目），
+   * 而搜索必须能跨项目命中，所以查询一变就重拉一次 `session.list`（不传 projectId = 全部）。
+   * 每次都重拉是为了**永远新鲜**：新建 / 删除 / 改标题之后不必再维护一套「何时该失效」的逻辑。
+   * 多一次本地 SQLite 查询换「不会拿陈旧列表去答有没有匹配」，这个交换是划算的。
+   */
+  const [searchSessions, setSearchSessions] = useState<SessionInfo[] | null>(null);
+  /**
+   * 搜索态下**被手动收起**的项目。搜索时行是一律展开的，所以收起不能写进 `expandedProjects`
+   * （那会污染用户平时的展开态）——另记一份，且**换搜索词就复位**。
+   * 留着它的理由：不给这份状态，搜索态里那个收起箭头就成了「点了没反应」的死控件。
+   */
+  const [searchCollapsed, setSearchCollapsed] = useState<Set<string>>(new Set());
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
   /**
@@ -154,6 +175,22 @@ export default function App(): React.JSX.Element {
       }
     })();
   }, []);
+
+  // 侧栏搜索：查询非空才拉全量会话（空串不拉——不进搜索就不付这份代价）。
+  // `stale` 守卫防「连打几个字、先发的响应后到」把结果写反。
+  useEffect(() => {
+    // 换了搜索词就把「搜索内收起」复位：上一次的收起不该带到下一次的结果里。
+    setSearchCollapsed(new Set());
+    if (sidebarQuery.trim() === "") return;
+    let stale = false;
+    void (async () => {
+      const list = await window.colt.invoke("session.list", {});
+      if (!stale) setSearchSessions(list);
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [sidebarQuery]);
 
   // 离开设置页时重新拉取 provider 与密钥状态：既让模型下拉及时反映改动，
   // 也让「未配置密钥」的黄色提示在配好之后立刻消失（否则要重启才更新）
@@ -561,6 +598,40 @@ export default function App(): React.JSX.Element {
     [discardDraft],
   );
 
+  const query = sidebarQuery.trim().toLowerCase();
+  const searching = query !== "";
+  /**
+   * 侧栏要画的「项目 → 会话」行：平时直接来自按项目懒加载的缓存；搜索时换成**过滤后**的集合。
+   *
+   * 搜索两条规则（都按数据本身判，不猜）：① 项目命中 `name` / `rootPath` → 显示该项目行，
+   * 并给它的**全部**会话（你搜的就是这个项目）；② 项目没命中、但有会话命中 `title` → 同样
+   * 显示项目行，但只给命中的会话。搜索时一律展开（命中就得看得见），而 `expandedProjects`
+   * **不动**——清空后用户原来的展开态原样回来。
+   */
+  const sidebarRows = useMemo<
+    { project: Project; sessions: SessionInfo[] | undefined; expanded: boolean }[]
+  >(() => {
+    if (!searching) {
+      return projects.map((project) => ({
+        project,
+        sessions: sessionsByProject.get(project.id),
+        expanded: expandedProjects.has(project.id),
+      }));
+    }
+    const all = searchSessions ?? [];
+    const matched: { project: Project; sessions: SessionInfo[]; expanded: boolean }[] = [];
+    for (const project of projects) {
+      const projectHit =
+        project.name.toLowerCase().includes(query) ||
+        project.rootPath.toLowerCase().includes(query);
+      const mine = all.filter((session) => session.projectId === project.id);
+      const hits = mine.filter((session) => session.title.toLowerCase().includes(query));
+      if (!projectHit && hits.length === 0) continue;
+      matched.push({ project, sessions: projectHit ? mine : hits, expanded: true });
+    }
+    return matched;
+  }, [searching, query, projects, searchSessions, sessionsByProject, expandedProjects]);
+
   return (
     <div className="flex h-full flex-col">
       {firstRun && (
@@ -648,11 +719,14 @@ export default function App(): React.JSX.Element {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className="flex w-[240px] shrink-0 flex-col border-r border-line bg-surface-raised">
+        <aside
+          data-sidebar
+          className="flex w-[240px] shrink-0 flex-col border-r border-line bg-surface-raised"
+        >
           {/* 全局「新建会话」，常驻在项目列表上方：每个项目行自己的「+」是悬停才显形的，
               多项目时想随手开一条得先找对行。按既有规则建到**当前选中的项目**（activeProject，
               见上方 conversationProject 的注释）；一个项目都没有时如实置灰，不做成点了没反应。 */}
-          <div className="shrink-0 px-3 pt-3">
+          <div className="shrink-0 space-y-2 px-3 pt-3">
             <button
               type="button"
               onClick={() => {
@@ -668,6 +742,35 @@ export default function App(): React.JSX.Element {
               <Plus {...ICON.sm} />
               新建会话
             </button>
+            {/* 侧栏搜索：过滤**这一份列表**（会话标题 / 项目名与路径），不是搜会话正文——
+                那是 ④ 会话头那枚「搜索」的事，两回事。命中后侧栏切成过滤视图，见 sidebarRows。 */}
+            <div className="relative">
+              <Search
+                {...ICON.xs}
+                className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-muted"
+              />
+              <input
+                type="text"
+                value={sidebarQuery}
+                onChange={(event) => setSidebarQuery(event.target.value)}
+                disabled={projects.length === 0}
+                data-sidebar-search
+                placeholder="搜索会话 / 项目"
+                aria-label="搜索会话或项目"
+                className="w-full rounded-sm border border-line bg-transparent py-1.5 pl-6 pr-7 text-xs text-text-primary outline-none transition placeholder:text-text-muted focus:border-line-strong disabled:cursor-not-allowed disabled:opacity-40"
+              />
+              {sidebarQuery !== "" && (
+                <button
+                  type="button"
+                  onClick={() => setSidebarQuery("")}
+                  title="清空搜索"
+                  aria-label="清空搜索"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-xs p-0.5 text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+                >
+                  <X {...ICON.xs} />
+                </button>
+              )}
+            </div>
           </div>
           <SidebarSection
             title="项目"
@@ -675,11 +778,17 @@ export default function App(): React.JSX.Element {
           >
             {projects.length === 0 ? (
               <Empty>还没有项目，点「打开」选择目录</Empty>
+            ) : searching && searchSessions === null ? (
+              <div className="px-2 py-1.5 text-xs text-text-muted">搜索中…</div>
+            ) : searching && sidebarRows.length === 0 ? (
+              <div className="px-2 py-1.5 text-xs text-text-muted">
+                没有匹配「{sidebarQuery.trim()}」的会话或项目
+              </div>
             ) : (
-              projects.map((project) => {
-                const expanded = expandedProjects.has(project.id);
+              sidebarRows.map(({ project, sessions, expanded: rowExpanded }) => {
+                // 搜索态一律展开，但允许逐行手动收起（见 searchCollapsed）——不写 expandedProjects。
+                const expanded = searching ? !searchCollapsed.has(project.id) : rowExpanded;
                 // `undefined` 与空数组必须分开：前者是**还没拉到**，后者是「确实没有会话」。
-                const sessions = sessionsByProject.get(project.id);
                 const list = sessions ?? [];
                 return (
                   <div key={project.id} className="mb-0.5">
@@ -689,6 +798,17 @@ export default function App(): React.JSX.Element {
                       expanded={expanded}
                       busy={list.some((session) => runningSessions.has(session.id))}
                       onToggle={() => {
+                        // 搜索态：收起只作用于**本次搜索**——不写 expandedProjects（用户的展开态
+                        // 不能被搜索污染），也不必重拉（结果集本就是从全量会话算出来的）。
+                        if (searching) {
+                          setSearchCollapsed((set) => {
+                            const next = new Set(set);
+                            if (next.has(project.id)) next.delete(project.id);
+                            else next.add(project.id);
+                            return next;
+                          });
+                          return;
+                        }
                         setExpandedProjects((set) => {
                           const next = new Set(set);
                           if (next.has(project.id)) next.delete(project.id);

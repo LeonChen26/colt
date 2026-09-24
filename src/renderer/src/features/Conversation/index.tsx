@@ -18,9 +18,9 @@ import {
   Folder,
   GitBranch,
   ImagePlus,
-  ListTree,
   Loader2,
   MessagesSquare,
+  Search,
   ShieldCheck,
   Shrink,
   Square,
@@ -1047,7 +1047,7 @@ export function Conversation({
           )}
           <PanelToggle
             active={history.open}
-            icon={<ListTree {...ICON.sm} />}
+            icon={<Search {...ICON.sm} />}
             label="搜索"
             title="搜历史文字：提问与回复都搜；点命中跳到那一轮（只滚动，不改会话）"
             onClick={history.toggle}

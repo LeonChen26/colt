@@ -1798,6 +1798,24 @@ export async function runDock(
     checks.push(["累计档：画的是「基线 → 当前」的真实差异", await dockHas(netMark)]);
     log(`  累计档：档位 ${JSON.stringify(netDiff.diffRevisions)}，命中了基线痕迹=${await dockHas(netMark)}`);
 
+    // diff 卡片要**铺满**面板可用高度：外层容器已经封顶，卡片自己再封 320px 就只剩上半屏、
+    // 下面全空（用户报的「下半部分是空的」）。判据按**实测量**算，不写死像素——卡片高应
+    // ≈ 容器内容高（`p-2` 去掉 16px）；容器自己的位置随窗口 / 栏宽变，故两边都现读。
+    const diffFit = await run<{ card: number; avail: number }>(`(() => {
+      const body = document.querySelector("[data-drill-diff-body]");
+      const card = body ? body.querySelector("[data-diff-view]") : null;
+      if (!body || !card) return { card: -1, avail: -1 };
+      return {
+        card: Math.round(card.getBoundingClientRect().height),
+        avail: Math.round(body.clientHeight - 16),
+      };
+    })()`);
+    log(`  diff 卡片高 ${diffFit.card}px / 可用高 ${diffFit.avail}px`);
+    checks.push([
+      "diff 卡片铺满面板可用高度（不再被 320px 上限截成上半屏）",
+      diffFit.avail > 0 && Math.abs(diffFit.card - diffFit.avail) <= 2,
+    ]);
+
     // 已还原的文件：累计档不必读盘，直接给出结论（再点一次主进程也算不出差异）
     checks.push(["回清单", await clickCrumb("list")]);
     await sleep(400);

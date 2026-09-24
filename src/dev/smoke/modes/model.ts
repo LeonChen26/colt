@@ -1038,6 +1038,58 @@ export async function runSessionDraft(
     ]);
     draftId = viaGlobal.session;
 
+    // ---- 侧栏搜索（v1.87）：过滤的是**这一份列表**（会话标题 / 项目名与路径），不是会话正文 ----
+    // 判据全按**现状**算，不硬编码「该有几个项目」——用户机器上登记了几个项目与本用例无关。
+    // 查询串特意选成**只有夹具项目**可能命中的（仓库项目名 "colt" 与其路径里都没有
+    // "smoke-draft-empty"），于是「仓库项目那行被滤掉」才具备判据力（前提先显式建立，§五⑬）。
+    const projectRowIds = (): Promise<string[]> =>
+      run<string[]>(
+        `[...document.querySelectorAll("[data-project-row]")].map((el) => el.getAttribute("data-project-row"))`,
+      );
+    const typeSearch = (text: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const input = document.querySelector("[data-sidebar-search]");
+        if (!input || input.disabled) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(input, ${JSON.stringify(text)});
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`);
+    const sidebarHasText = (text: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const bar = document.querySelector("[data-sidebar]");
+        return Boolean(bar && (bar.textContent ?? "").includes(${JSON.stringify(text)}));
+      })()`);
+
+    const rowsBefore = await projectRowIds();
+    checks.push([
+      "（前提）搜索前仓库项目那一行在侧栏里，否则「被滤掉」无从谈起",
+      rowsBefore.includes(projectId),
+    ]);
+
+    const typedHit = await typeSearch("smoke-draft-empty");
+    await sleep(700);
+    const rowsHit = await projectRowIds();
+    checks.push([
+      `侧栏搜索：搜项目名只剩命中的夹具项目、仓库项目那行被滤掉（${rowsBefore.length} → ${rowsHit.length} 行）`,
+      typedHit && rowsHit.includes(emptyProject.id) && !rowsHit.includes(projectId),
+    ]);
+
+    await typeSearch("zzz-绝不可能命中的串-zzz");
+    await sleep(700);
+    checks.push([
+      "侧栏搜索：搜不到时给「没有匹配」文案、且一行不留（不是留一片空白）",
+      (await projectRowIds()).length === 0 && (await sidebarHasText("没有匹配")),
+    ]);
+
+    await typeSearch("");
+    await sleep(700);
+    const rowsCleared = await projectRowIds();
+    checks.push([
+      "侧栏搜索：清空后侧栏恢复原状（行数回到搜索前、仓库项目那行回来）",
+      rowsCleared.length === rowsBefore.length && rowsCleared.includes(projectId),
+    ]);
+
     // 那个 + 平时是 opacity-0、靠 hover 显形，所以必须做命中测试：只查「在 DOM 里」
     // 发现不了「被顶出可视区 / 上面盖着别的元素」（小目标入口的老坑）。
     const hit = await run<{ found: boolean; top: boolean }>(`(() => {

@@ -233,7 +233,7 @@ function NetDiff({
       </p>
     );
   }
-  return <DiffView patch={result.patch} />;
+  return <DiffView patch={result.patch} fill />;
 }
 
 export function ChangeDrilldown({
@@ -722,11 +722,17 @@ export function ChangeDrilldown({
               看文件
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-2">
+          {/* flex 列 + 卡片 fill：diff 卡片**铺满**面板可用高度、内部自己滚（原先容器封顶、
+              卡片又自带 320px 上限，于是只占上半屏、下面全空）。
+              兜底文案（write 工具无 patch / 没有 diff）是普通流内元素，按内容高贴着顶部。 */}
+          <div
+            className="flex min-h-0 flex-1 flex-col overflow-auto p-2"
+            data-drill-diff-body=""
+          >
             {netSelected ? (
               <NetDiff sessionId={sessionId} path={path ?? ""} net={netOfCurrent} />
             ) : revision?.patch ? (
-              <DiffView patch={revision.patch} />
+              <DiffView patch={revision.patch} fill />
             ) : (
               <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
                 {revision
