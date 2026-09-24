@@ -649,6 +649,26 @@ export default function App(): React.JSX.Element {
 
       <div className="flex flex-1 overflow-hidden">
         <aside className="flex w-[240px] shrink-0 flex-col border-r border-line bg-surface-raised">
+          {/* 全局「新建会话」，常驻在项目列表上方：每个项目行自己的「+」是悬停才显形的，
+              多项目时想随手开一条得先找对行。按既有规则建到**当前选中的项目**（activeProject，
+              见上方 conversationProject 的注释）；一个项目都没有时如实置灰，不做成点了没反应。 */}
+          <div className="shrink-0 px-3 pt-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (!activeProject) return;
+                setMainView("chat");
+                void newSession(activeProject.id);
+              }}
+              disabled={!activeProject}
+              data-sidebar-new-session
+              title={activeProject ? "新建会话" : "先打开一个项目"}
+              className="flex w-full items-center justify-center gap-1.5 rounded-sm border border-line px-2 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Plus {...ICON.sm} />
+              新建会话
+            </button>
+          </div>
           <SidebarSection
             title="项目"
             action={{ label: "打开", icon: <FolderOpen {...ICON.xs} />, onClick: () => void pickProject() }}

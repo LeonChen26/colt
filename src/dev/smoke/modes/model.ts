@@ -1001,6 +1001,43 @@ export async function runSessionDraft(
       log("跳过「新建工作目录」：未设 COLT_WORKSPACE_ROOT，环境前提未建立（AGENTS.md §五⑬）");
     }
 
+    // 全局「新建会话」（v1.84）：常驻在项目列表上方、不靠 hover 显形，但它照样要做命中测试——
+    // 「在 DOM 里」不等于「点得到」。目标项目按既有规则取 `activeProject`——注意**此刻不是**
+    // 夹具空项目：上面「新建工作目录」那节已经把当前项目换成 `out/smoke-workspace`。所以判据
+    // 取「起手区显示的目录**没变**」：不硬编码是哪个项目，只钉住「没跑到别的项目去建」。
+    const globalHit = await run<{ found: boolean; top: boolean }>(`(() => {
+      const btn = document.querySelector("[data-sidebar-new-session]");
+      if (!btn || btn.disabled) return { found: false, top: false };
+      const r = btn.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { found: true, top: Boolean(at && (at === btn || btn.contains(at))) };
+    })()`);
+    checks.push(["[v1.84] 侧栏顶部「新建会话」按钮在可视区且可点", globalHit.found && globalHit.top]);
+
+    const beforeDir = (await run<StartProbe>(startProbe)).workdir;
+    await run(`(() => { document.querySelector("[data-sidebar-new-session]")?.click(); return null; })()`);
+    await sleep(800);
+    const viaGlobal = await run<{ session: string | null; hasInput: boolean; rows: number }>(probeCard);
+    const globalStart = await run<StartProbe>(startProbe);
+    log(
+      `点顶部「新建会话」后：输入框=${viaGlobal.hasInput}，当前会话=${viaGlobal.session ?? "（无）"}，` +
+        `侧栏行数=${viaGlobal.rows}，目录=${globalStart.workdir ?? "（无）"}（点前 ${beforeDir ?? "（无）"}）`,
+    );
+    checks.push([
+      "点顶部「新建会话」后换成了新的一条草稿",
+      viaGlobal.session !== null && viaGlobal.session !== draftId,
+    ]);
+    checks.push(["点顶部「新建会话」后侧栏仍没有多出会话", viaGlobal.rows === 0]);
+    checks.push([
+      "点顶部「新建会话」后那条草稿没有落库",
+      viaGlobal.session !== null && getSession(viaGlobal.session) === undefined,
+    ]);
+    checks.push([
+      "顶部按钮建到当前选中的项目（起手区目录没变）",
+      beforeDir !== null && globalStart.workdir === beforeDir,
+    ]);
+    draftId = viaGlobal.session;
+
     // 那个 + 平时是 opacity-0、靠 hover 显形，所以必须做命中测试：只查「在 DOM 里」
     // 发现不了「被顶出可视区 / 上面盖着别的元素」（小目标入口的老坑）。
     const hit = await run<{ found: boolean; top: boolean }>(`(() => {
