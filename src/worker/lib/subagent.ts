@@ -41,6 +41,7 @@ import type { AgentDef } from "./agent-defs";
 import { projectSubagent, type SubagentProjectionInput } from "./subagent-view";
 import { isQuestionTool } from "./ask-user-tool";
 import { toolDurations } from "./tool-bookkeeping";
+import { createHandoffTimer, handoffInstruction, type HandoffLimits } from "./subagent-handoff";
 
 /** 工具名常量：注册名与闸门判据**必须同源**（改错会静默变成「委派也要弹卡」） */
 export const SUBAGENT_TOOL_NAME = "subagent";
@@ -64,15 +65,8 @@ export function isSubagentLane(laneName: string): boolean {
  */
 export const MAX_CONCURRENT_SUBAGENTS = 3;
 
-/** 单个子代理的墙钟上限，到点中止并在结果里如实说明（否则一路跑掉没人拦得住） */
-export const MAX_SUBAGENT_MS = 10 * 60 * 1000;
-
-/**
- * 超时中止之后**还会等多久**（见 `#run` 里那段注释）。
- *
- * 30s：够一次网络往返或一次工具的收尾，又不至于让「卡死的额度」占太久——额度是 3 个。
- */
-export const GRACE_AFTER_ABORT_MS = 30_000;
+// 墙钟上限 / 收笔窗口 / 中止后的宽限，三段都住在 `subagent-handoff.ts`——
+// 那里与「到点**先要交接**、窗口过了才中止」的整条策略在一起，且时序可单测。
 
 /**
  * 注册表里保留多少个**已结束**的子代理（④ 卡与下钻要能查到；再多就只保最近这些）。
@@ -111,6 +105,12 @@ export interface SubagentDeps {
   harness: () => AgentHarness<ExecutionToolContext> | undefined;
   /** 状态有变（开始 / 结束 / 流式推进）→ 推一次视图（实现方自己合并节流） */
   onUpdate: () => void;
+  /**
+   * 收尾时序的可覆盖值（毫秒）：生产不传，取 `subagent-handoff.ts` 的三个常量。
+   * 存在的理由：30 分钟的墙钟不可能在测试里等，而「到点先要交接、窗口过了才中止」
+   * 正是最该被验的一段（`AGENTS.md` §五⑬：用例的前提要能自己建立）。
+   */
+  handoff?: HandoffLimits;
 }
 
 interface SubagentRun {
@@ -122,6 +122,8 @@ interface SubagentRun {
   startedAt: number;
   endedAt?: number;
   error?: string;
+  /** 走到时间上限、改由「总结交接」收尾（见 `subagent-handoff.ts`） */
+  handedOff?: boolean;
   snapshot: LaneSnapshot;
   stats: { inputTokens: number; outputTokens: number; costUsd: number };
   unsubscribe: () => void;
@@ -272,7 +274,14 @@ function toolCallsOf(content: unknown): { name: string; path: string | null }[] 
 
 /** 诚实的结果文本：结论 + 过程收据（用了什么、改了什么、是不是没跑完） */
 export function buildResultText(
-  input: { name: string; status: ViewSubagent["status"]; error?: string; timedOut: boolean },
+  input: {
+    name: string;
+    status: ViewSubagent["status"];
+    error?: string;
+    timedOut: boolean;
+    /** 走到上限后改由「总结交接」收尾（见 `subagent-handoff.ts`） */
+    handedOff?: boolean;
+  },
   receipt: RunReceipt,
 ): string {
   const head: string[] = [];
@@ -291,9 +300,22 @@ export function buildResultText(
       : `；另有 ${receipt.opaqueCalls.map((item) => `${item.name}×${item.count}`).join("、")}` +
         "，这类调用**可能也写了盘**，但改了哪个文件从记录里看不出来";
   if (input.status === "completed") {
-    head.push(`子代理「${input.name}」已完成（${receipt.steps} 步，${tools}，${files}${opaque}）。`);
+    // 走到上限、由交接收尾的：**不能报成「已完成」**——那句「已完成」会让调用方
+    // 把半途的交接当成任务做完了（本仓最贵的一类错误是「持续撒谎」，见 ERRORS.md）。
+    if (input.handedOff === true) {
+      head.push(
+        `子代理「${input.name}」跑到**时间上限后收笔**（${receipt.steps} 步，${tools}，${files}${opaque}）：` +
+          `下面的结论是它写下的**总结交接**，任务**不一定**做完——接手前先按交接里「没做完的部分」核一遍。`,
+      );
+    } else {
+      head.push(`子代理「${input.name}」已完成（${receipt.steps} 步，${tools}，${files}${opaque}）。`);
+    }
   } else if (input.status === "aborted") {
-    const why = input.timedOut ? "超过时间上限" : "用户或上游中断";
+    const why = input.timedOut
+      ? input.handedOff === true
+        ? "超过时间上限、要了交接但没写完"
+        : "超过时间上限"
+      : "用户或上游中断";
     head.push(
       `子代理「${input.name}」被中止（${why}${input.error === undefined ? "" : `：${input.error}`}），` +
         `结果**不完整**（${receipt.steps} 步，${tools}${opaque}）。别把它当成「做完了」。`,
@@ -458,6 +480,7 @@ export class Subagents {
       startedAt: run.startedAt,
       ...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
       ...(run.error === undefined ? {} : { error: run.error }),
+      ...(run.handedOff === undefined ? {} : { handedOff: run.handedOff }),
       snapshot: run.snapshot,
       stats: run.stats,
       // 与完整流（`projectTranscript(..., toolDurations)`）同源，否则预览里没有单步耗时
@@ -617,23 +640,36 @@ export class Subagents {
     }
     const { run, lane } = spawned;
 
-    let timedOut = false;
-    /** 中止后仍不返回时的「停止等待」信号（见 GRACE_AFTER_ABORT_MS 的注释） */
+    /** 中止后仍不返回时的「停止等待」信号（见 `GRACE_AFTER_ABORT_MS` 的注释） */
     let giveUp: (() => void) | undefined;
     const grace = new Promise<"give-up">((resolve) => {
       giveUp = () => resolve("give-up");
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      void lane.abort(context).catch(() => undefined);
-      // abort **不保证立刻生效**（内核可能正卡在一个不可中断的 await 上）。没有这道兜底，
-      // 那次 `lane.prompt` 会永远挂着：run 永远 running、**永久占住 3 个额度之一**，
-      // 用户之后再也委派不了，界面上还没有任何解释。宽限窗一到就停止等待——额度还回去，
-      // 那条 lane 交给会话自己收（它的产出已经没有接收方了）。
-      const graceTimer = setTimeout(() => giveUp?.(), GRACE_AFTER_ABORT_MS);
-      graceTimer.unref?.();
-    }, MAX_SUBAGENT_MS);
-    timer.unref?.();
+    // 到上限**先要交接**（steer 一句话让它收笔），收笔窗口过了才硬中止；中止之后仍不返回
+    // 就停止等待（否则那次 `lane.prompt` 会永远挂着：run 永远 running、永久占住 3 个额度之一，
+    // 用户之后再也委派不了，界面上还没有任何解释）。三段时序见 `subagent-handoff.ts`。
+    const handoff = createHandoffTimer(
+      {
+        onHandoff: () => {
+          run.handedOff = true;
+          this.#deps.onUpdate(); // 让界面立刻说「收尾中」，别停在「运行中」
+          void lane.steer(handoffInstruction(), undefined, context).catch(() => undefined);
+        },
+        onAbort: () => {
+          void lane.abort(context).catch(() => undefined);
+        },
+        onGiveUp: () => giveUp?.(),
+      },
+      this.#deps.handoff ?? {},
+      {
+        setTimeout: (callback, ms) => {
+          const handle = setTimeout(callback, ms);
+          handle.unref?.();
+          return handle;
+        },
+        clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      },
+    );
 
     try {
       const prompt = lane.prompt(task, undefined, context);
@@ -652,15 +688,15 @@ export class Subagents {
         // 内核把 run 挂起（deferred）时它在后台继续：等它落地再结算，别把「还在跑」报成完成
         await lane.waitForIdle(context).catch(() => undefined);
         const late = await lane.getResult(settled.value.operationId, context).catch(() => undefined);
-        applyOutcome(run, late, timedOut);
+        applyOutcome(run, late, handoff.timedOut());
       } else {
-        applyOutcome(run, settled.value, timedOut);
+        applyOutcome(run, settled.value, handoff.timedOut());
       }
     } catch (error) {
       run.status = "failed";
       run.error = describeSubagentError(error);
     } finally {
-      clearTimeout(timer);
+      handoff.cancel();
     }
 
     run.endedAt = Date.now();
@@ -668,7 +704,13 @@ export class Subagents {
     this.#evictFinished();
     this.#deps.onUpdate();
     return buildResultText(
-      { name: run.name, status: run.status, ...(run.error === undefined ? {} : { error: run.error }), timedOut },
+      {
+        name: run.name,
+        status: run.status,
+        ...(run.error === undefined ? {} : { error: run.error }),
+        timedOut: handoff.timedOut(),
+        handedOff: handoff.handoffRequested(),
+      },
       collectReceipt(run.snapshot.transcript),
     );
   }

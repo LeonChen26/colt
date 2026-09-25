@@ -140,6 +140,11 @@ export interface ConversationView { /* …既有字段… */ subagents: ViewSuba
 
 **agent 定义**（声明式，对标 skills）：`<cwd>/.agents/agents/<name>.md`（项目级优先）+ `~/.agents/agents/<name>.md`（用户级），frontmatter 含 `description`（必填）+ `tools`（逗号分隔），正文 = 该子代理的系统提示词。名字取**文件名**；同名取舍与遮蔽**如实告知**。内建兜底两个：`researcher`（只读白名单）、`general`（默认工具集）。⚠️ **实现前先确认内核是否导出 frontmatter 解析器**；没有就写**极简解析**（只认 `key: value` 与逗号数组）并注明「不是完整 YAML」，**不要为此引新依赖**。
 
+**超时与「总结交接」**（2026-09）：墙钟上限 **30 分钟**（原 10 分钟——「读十几个文件 + 跑几轮测试」的调研在 10 分钟里常被砍在半路，而 cut 掉的那次连结论都拿不到；上限真正的作用是兜住跑飞的那一路，不是压着它快点干完）。
+到点**不立刻杀**，而是先 `lane.steer(handoffInstruction())` 要一份**总结交接**（结论与依据 / 已做的改动与状态 / 没做完的与卡点 / 接手的人下一步），给 **2 分钟**收笔窗口；窗口内写完了，run 正常结算，只是结果文本与卡面都**如实改名**（结果文本「时间上限后收笔…任务不一定做完」、④ 卡「已交接（到时间上限）」、颜色琥珀而非绿）；窗口也过了才 `abort`，中止后仍不返回再等 30s 就停止等待（把并发额度还回去）。
+三段时序抽在 `worker/lib/subagent-handoff.ts`（**注入定时器、可单测**）——30 分钟的墙钟不可能在冒烟里等，而这是最容易写错的一段；`tests/subagent-handoff.test.ts` 用假时钟逐拍验「到点只 steer 不 abort」「窗口过了才 abort」「写完了 cancel 之后彻底安静」。
+**如实口径**：`ViewSubagent.handedOff` 是「为什么结束」的补充，**不是第五种状态**（`status` 仍是 running / completed / failed / aborted）。把一份半途的交接显示成「完成」，就是让调用方把它当交付物——那是本仓最贵的一类错误（持续撒谎，见 `ERRORS.md`）。
+
 ## 6. 分支树与导航（D10 的落地）
 
 - **P0 先验证**：只读探针跑一次 `/memory-tidy`，前后 dump `session.branches`，看是否多出根节点（**验证先于修复**）。探针若证明无此问题，修法降级为「预防子代理引入」。

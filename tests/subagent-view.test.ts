@@ -175,3 +175,17 @@ describe("预览里的工具耗时与完整流同源", () => {
     assert.equal(calls[0]?.durationMs, undefined);
   });
 });
+
+describe("projectSubagent：交接收尾如实带出", () => {
+  test("handedOff 透传；不给时不出现这个字段（不是 false）", () => {
+    const withHandoff = projectSubagent({
+      ...base,
+      handedOff: true,
+      snapshot: snapshot({ transcript: [] }),
+    });
+    assert.equal(withHandoff.handedOff, true);
+    assert.equal(withHandoff.status, "running", "它还是 running——交接只是一段收尾状态");
+    const without = projectSubagent({ ...base, snapshot: snapshot({ transcript: [] }) });
+    assert.equal(without.handedOff, undefined);
+  });
+});

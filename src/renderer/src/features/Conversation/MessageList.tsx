@@ -879,9 +879,15 @@ function formatDuration(ms: number): string {
 }
 
 /** 子代理终态的界面措辞（四种状态都要有名字——颜色只是辅助） */
-function subagentStatusLabel(status: ViewSubagent["status"]): string {
-  if (status === "running") return "运行中";
-  if (status === "completed") return "完成";
+/**
+ * 子代理的状态文案。
+ *
+ * `handedOff`（走到时间上限、由交接收尾）必须**改写文案**：把一份半途的交接显示成「完成」，
+ * 就是让调用方把它当成交付物（`ViewSubagent.handedOff` 的注释里说了为什么不能这么报）。
+ */
+function subagentStatusLabel(status: ViewSubagent["status"], handedOff = false): string {
+  if (status === "running") return handedOff ? "收尾中（写交接）" : "运行中";
+  if (status === "completed") return handedOff ? "已交接（到时间上限）" : "完成";
   if (status === "aborted") return "已中止";
   return "失败";
 }
@@ -1112,17 +1118,21 @@ export function ToolCard({
           {card !== undefined ? (
             <span
               data-subagent-card-status={card.status}
+              {...(card.handedOff === true ? { "data-subagent-handoff": "" } : {})}
               className={cn(
                 "flex items-center gap-1.5",
-                card.status === "running"
-                  ? "text-text-secondary"
-                  : card.status === "completed"
-                    ? "text-success"
-                    : "text-danger-fg",
+                // 交接不是成功：用琥珀而不是绿（绿会让人一眼读成「做完了」）
+                card.handedOff === true
+                  ? "text-warning"
+                  : card.status === "running"
+                    ? "text-text-secondary"
+                    : card.status === "completed"
+                      ? "text-success"
+                      : "text-danger-fg",
               )}
             >
               {card.status === "running" && <span className="live-dot" />}
-              {subagentStatusLabel(card.status)}
+              {subagentStatusLabel(card.status, card.handedOff === true)}
               {subagentElapsed !== undefined && ` ${formatDuration(subagentElapsed)}`}
             </span>
           ) : running ? (

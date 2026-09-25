@@ -153,6 +153,14 @@ export interface ViewSubagent {
   endedAt?: number;
   /** 仅 failed 时有值；摘要展示由渲染层负责 */
   error?: string;
+  /**
+   * 走到**时间上限**、改由「总结交接」收尾（`MAX_SUBAGENT_MS` / `subagent-handoff.ts`）。
+   *
+   * `status` 仍是那四种——它是**为什么结束**的补充说明，不是第五种状态。
+   * 界面必须据此把文案改成「已交接」而**不是**「完成」：交接代表「任务不一定做完」，
+   * 报成完成就是让调用方把半途的产出当成交付物（本仓最贵的一类错误是「持续撒谎」）。
+   */
+  handedOff?: boolean;
   /** 运行中的**有界**尾部快照（视图每 50ms 全量重推，故必须有界） */
   tail: {
     streamingText: string | null;

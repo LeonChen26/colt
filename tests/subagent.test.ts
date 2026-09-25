@@ -160,3 +160,38 @@ describe("收据的诚实口径", () => {
     assert.match(text, /不完整/);
   });
 });
+
+/**
+ * 到时间上限、改由「总结交接」收尾时，结果文本必须**改写口径**：
+ * 一句「已完成」会让调用方把半途的交接当成交付物——那是「持续撒谎」（`ERRORS.md`）。
+ */
+describe("交接收尾的口径", () => {
+  test("completed + handedOff：报「到上限后收笔」并提醒任务不一定做完", () => {
+    const text = buildResultText(
+      { name: "demo", status: "completed", timedOut: false, handedOff: true },
+      collectReceipt([]),
+    );
+    assert.match(text, /时间上限后收笔/);
+    assert.match(text, /总结交接/);
+    assert.match(text, /不一定.{0,4}做完/);
+    assert.doesNotMatch(text, /已完成/, "报成「已完成」就是让调用方把交接当交付物");
+  });
+
+  test("completed 但没有交接（正常跑完）：仍然报「已完成」", () => {
+    const text = buildResultText(
+      { name: "demo", status: "completed", timedOut: false },
+      collectReceipt([]),
+    );
+    assert.match(text, /已完成/);
+    assert.doesNotMatch(text, /总结交接/);
+  });
+
+  test("aborted + timedOut + handedOff：说清是「要了交接但没写完」", () => {
+    const text = buildResultText(
+      { name: "demo", status: "aborted", timedOut: true, handedOff: true },
+      collectReceipt([]),
+    );
+    assert.match(text, /要了交接但没写完/);
+    assert.match(text, /不完整/);
+  });
+});

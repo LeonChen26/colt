@@ -31,6 +31,8 @@ export interface SubagentProjectionInput {
   startedAt: number;
   endedAt?: number;
   error?: string;
+  /** 走到时间上限、由交接收尾（见 `ViewSubagent.handedOff`） */
+  handedOff?: boolean;
   snapshot: LaneSnapshot;
   stats: { inputTokens: number; outputTokens: number; costUsd: number };
   /**
@@ -54,6 +56,7 @@ export function projectSubagent(input: SubagentProjectionInput): ViewSubagent {
     startedAt: input.startedAt,
     ...(input.endedAt === undefined ? {} : { endedAt: input.endedAt }),
     ...(input.error === undefined ? {} : { error: input.error }),
+    ...(input.handedOff === undefined ? {} : { handedOff: input.handedOff }),
     tail: {
       streamingText: streaming ? extractText(streaming.content) || null : null,
       thought: thought.length > 0 ? thought : null,
