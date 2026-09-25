@@ -105,6 +105,7 @@ import { runAdvanced } from "./modes/advanced";
 import { runApproval } from "./modes/approval";
 import { runCrash } from "./modes/crash";
 import { runDock } from "./modes/dock";
+import { runUiLogic } from "./modes/ui-logic";
 import { runFixture } from "./modes/fixture";
 import { runHost } from "./modes/host";
 import { runMemory, runMemoryE2e } from "./modes/memory";
@@ -280,6 +281,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runMemoryE2e(window, log, run);
     } else if (mode === "dock") {
       await runDock(window, project.id, sessionsDir, log, run);
+    } else if (mode === "ui-logic") {
+      await runUiLogic(window, project.id, sessionsDir, log, run);
     } else if (mode === "rm-workspace") {
       await runRmWorkspace(window, project.id, sessionsDir, log, run);
     } else if (mode === "perf") {

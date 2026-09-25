@@ -1542,6 +1542,18 @@ describe("sessionOutline（会话目录与历史搜索）", () => {
     const other: ViewMessage = { id: "o1", role: "other", text: "命中", toolCalls: [] };
     assert.deepEqual(searchHistory([other], "命中"), []);
   });
+
+  // D6：原先默认 limit=50，命中超过 50 处时**调用方拿不到总数**，界面上只能静默地少画几行。
+  // 现在默认不截断（截断与「还有多少条」的交代交给渲染层），limit 只作显式口子保留。
+  test("搜索：不传 limit 时返回**全部**命中（不再默认截断）", () => {
+    const many = Array.from({ length: 120 }, (_, i) => bot(`a${i}`, "命中关键词"));
+    assert.equal(searchHistory(many, "命中关键词").length, 120);
+  });
+
+  test("搜索：显式 limit 仍然生效", () => {
+    const many = Array.from({ length: 10 }, (_, i) => bot(`a${i}`, "命中"));
+    assert.equal(searchHistory(many, "命中", 3).length, 3);
+  });
 });
 
 describe("turnAt（可见消息属于第几轮——点链的「当前点」靠它）", () => {
