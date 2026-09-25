@@ -16,12 +16,15 @@ export function PanelToggle({
   icon,
   label,
   title,
+  anchor,
   onClick,
 }: {
   active: boolean;
   icon: ReactNode;
   label: string;
   title?: string;
+  /** 给「它自己」一个稳定标记（供浮层的「点外部关闭」把自己排除掉，见 HistoryPanel） */
+  anchor?: string;
   onClick: () => void;
 }): React.JSX.Element {
   return (
@@ -29,6 +32,7 @@ export function PanelToggle({
       type="button"
       onClick={onClick}
       title={title}
+      {...(anchor !== undefined ? { "data-panel-toggle": anchor } : {})}
       className={cn(
         "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs transition",
         active

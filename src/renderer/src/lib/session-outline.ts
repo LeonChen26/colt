@@ -114,8 +114,16 @@ function clip(flat: string, at: number, length: number): string {
  *
  * 先压平空白再匹配：正文里换行很多，直接匹配会让「相邻两行」的查询永远搜不到，
  * 而用户心里的「连续文本」是不带换行的。
+ *
+ * `limit` 默认**不截断**：原先默认 50 条，于是命中超过 50 处时调用方拿不到总数、
+ * 也就无处如实告知，界面上看起来就是「只有这些」——静默截断（`docs/UI-TEST-CASES.md` D6）。
+ * 截断与「还有多少条」的交代交给**渲染层**（`HistoryPanel`），它才看得见自己画了多少。
  */
-export function searchHistory(messages: ViewMessage[], query: string, limit = 50): SearchHit[] {
+export function searchHistory(
+  messages: ViewMessage[],
+  query: string,
+  limit = Number.POSITIVE_INFINITY,
+): SearchHit[] {
   const needle = query.trim().toLowerCase();
   if (needle === "") return [];
   const hits: SearchHit[] = [];

@@ -631,7 +631,8 @@ export function Conversation({
    *
    * 附件通道只承载图片（对应内核的 imageInput 语义），非图片一律走不通——但**不能静默**：
    * 往输入框拖一个 PDF 却什么都没发生，用户只会以为程序坏了。
-   * 所有「没进来」的原因都汇总成一条贴在输入卡片里的提示。
+   * 所有「没进来」的原因都汇总成一条贴在输入卡片里的提示——包括**超过上限**那几张
+   * （上限是总量：已有的 + 本次的，超出的明说跳过几张）。
    */
   const addFiles = useCallback(async (files: File[]) => {
     const notes: string[] = [];
@@ -642,12 +643,22 @@ export function Conversation({
       );
     }
     const images = files.filter((file) => file.type.startsWith("image/"));
+    // 上限是**总量**：先看已有的还剩几个位置，多出来的几张要**明说跳过了多少**。
+    // 原先直接 `slice(0, MAX_ATTACHMENTS)`，超出的静默消失——拖 5 张只进来 4 张，
+    // 界面一个字都不说（与全仓「如实计数」的纪律相倒，见 `docs/UI-TEST-CASES.md` D4）。
+    const room = Math.max(0, MAX_ATTACHMENTS - attachments.length);
+    const overflow = Math.max(0, images.length - room);
+    if (overflow > 0) {
+      notes.push(
+        `一次最多放 ${MAX_ATTACHMENTS} 张图片，已跳过 ${overflow} 张（可先移除几张再添加）。`,
+      );
+    }
     if (images.length === 0) {
       setAttachNotice(notes.join(" ") || null);
       return;
     }
     const accepted: Attachment[] = [];
-    for (const file of images.slice(0, MAX_ATTACHMENTS)) {
+    for (const file of images.slice(0, room)) {
       const label = file.name || "剪贴板图片";
       if (file.size > MAX_ATTACHMENT_BYTES) {
         notes.push(`图片过大：${label}（${(file.size / 1024 / 1024).toFixed(1)}MB，上限 4MB）`);
@@ -671,7 +682,8 @@ export function Conversation({
     if (accepted.length > 0) {
       setAttachments((prev) => [...prev, ...accepted].slice(0, MAX_ATTACHMENTS));
     }
-  }, []);
+    // 依赖 `attachments.length`：上面那个 `room` 是按**当前已有**的附件数算的
+  }, [attachments.length]);
 
   /**
    * 手动压缩上下文（⑥ 的按钮与 `/compact` 命令共用）。
@@ -736,12 +748,23 @@ export function Conversation({
     // 命令一律**被消费**（清空输入）、但**不消耗附件**（附件留给下一条消息）——
     // 唯一的例外见下面 `/skill` 的「本地拦下」：那时**故意不清空**，好让用户改完接着发。
     const command = parseSlashCommand(text);
+    // 运行中拦下时**不清空输入**（v1.34 / v1.43 两次同源的教训）：
+    // 原先先 `setInput("")` 再交给 `compact()` 判运行态，于是用户敲的那条命令被吃掉、
+    // 提示还落在看不到的地方；改一个条件就能重敲才对（见 `docs/UI-TEST-CASES.md` D2）。
     if (command?.name === "compact") {
+      if (runningRef.current) {
+        setError("运行中无法压缩上下文：请先停止当前运行，或等它跑完。");
+        return;
+      }
       setInput("");
       await compact();
       return;
     }
     if (command?.name === "memory-tidy") {
+      if (runningRef.current) {
+        setError("运行中无法整理记忆：整理会重写记忆文件，可能与任务同时改它。请等任务结束再试。");
+        return;
+      }
       setInput("");
       await memoryTidy();
       return;
@@ -984,11 +1007,13 @@ export function Conversation({
    * `view` 为 null 时（草稿会话没有 worker）用 `?? 0` 兜底：`null === 0` 是 false，
    * 写死比较会让草稿会话落进「非起手态」，用户看到的是一个既没有提示、也没有报错的空白区。
    *
-   * `notice` 也算进来：那条「还差一步配密钥」的黄条住在消息区里，而起手态要**收起消息区**
-   * （见渲染处），若不把它排除掉就会把黄条一起藏起来——那正是用户唯一能看到的行动指引，
-   * 藏掉就等于静默失败（见 ERRORS.md）。宁可这时不显示起手提示块。
+   * 失败与待办提示（`error` / `notice`）**不再参与**这个判定：它们原先住在消息区顶部，
+   * 所以起手态收起消息区时会连带把它们藏掉，只好把它们排除在起手态之外——代价是
+   * **一个与布局无关的错误会把起手态永远赶走**（`error` 是本地 state，推视图也清不掉，
+   * 见 `docs/UI-TEST-CASES.md` D10）。现在它们搬到了输入列（贴着输入卡片），
+   * 「看得到提示」与「是不是起手态」这两件事才真正分开了。
    */
-  const empty = (view?.messages.length ?? 0) === 0 && !opening && !error && !notice;
+  const empty = (view?.messages.length ?? 0) === 0 && !opening;
 
   return (
     // 两列三行：左列「会话头 / 消息流 / 输入区」，右列是满高的工作区（页签容器）。
@@ -1049,6 +1074,7 @@ export function Conversation({
             active={history.open}
             icon={<Search {...ICON.sm} />}
             label="搜索"
+            anchor="history"
             title="搜历史文字：提问与回复都搜；点命中跳到那一轮（只滚动，不改会话）"
             onClick={history.toggle}
           />
@@ -1087,24 +1113,6 @@ export function Conversation({
             <div className="flex items-center gap-2 text-sm text-text-muted">
               <Loader2 {...ICON.md} className="animate-spin" />
               正在启动会话进程…
-            </div>
-          )}
-
-          {error && (
-            <div
-              data-conv-error
-              className="mb-3 rounded-md border border-line bg-danger-soft px-3 py-2 text-sm text-danger-fg"
-            >
-              {error}
-            </div>
-          )}
-
-          {notice && (
-            <div
-              data-conv-notice
-              className="mb-3 rounded-md border border-line bg-warning-soft px-3 py-2 text-sm text-warning"
-            >
-              {notice}
             </div>
           )}
 
@@ -1293,6 +1301,28 @@ export function Conversation({
           )}
         >
           {/*
+            失败与待办提示（`error` / `notice`）：**贴在输入卡片上方，不在消息滚动区里**。
+            原先它们在消息区顶部（排在消息之前），于是长会话滚到底时用户根本看不到——
+            「敲了没反应 / 点了没反应」的观感就是这么来的（`ERRORS.md` §四：「提示落在用户动手的位置」）。
+            搬出来顺带解决另一个问题：它们不再影响起手态的判定（见 `empty`）。
+          */}
+          {error && (
+            <div
+              data-conv-error
+              className="mb-2 rounded-md border border-line bg-danger-soft px-3 py-2 text-sm text-danger-fg"
+            >
+              {error}
+            </div>
+          )}
+          {notice && (
+            <div
+              data-conv-notice
+              className="mb-2 rounded-md border border-line bg-warning-soft px-3 py-2 text-sm text-warning"
+            >
+              {notice}
+            </div>
+          )}
+          {/*
             输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行）。
             `data-conv-session` 标出「输入框此刻属于哪条会话」——草稿会话不进侧栏，
             界面之外没有别的锚点可用；冒烟靠它取当前会话 id，不靠 DOM 层级去猜（见 AGENTS.md §五⑫）。
@@ -1371,11 +1401,14 @@ export function Conversation({
                   setSlashActive(0);
                 }}
                 onPaste={(e) => {
+                  // 与**拖入**走同一条 `addFiles`：非图片要给出提示（`addFiles` 里的 notes）。
+                  // 原先这里只挑 image/*，一个都没有就 `return`——粘贴一个 PDF 什么都不会发生，
+                  // 与拖入同一文件的行为不一致（见 `docs/UI-TEST-CASES.md` D3）。
                   const files = [...e.clipboardData.items]
-                    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                    .filter((item) => item.kind === "file")
                     .map((item) => item.getAsFile())
                     .filter((file): file is File => file !== null);
-                  if (files.length === 0) return;
+                  if (files.length === 0) return; // 纯文本：放行浏览器默认粘贴行为
                   e.preventDefault();
                   void addFiles(files);
                 }}
