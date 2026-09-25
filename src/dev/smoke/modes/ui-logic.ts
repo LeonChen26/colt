@@ -140,6 +140,38 @@ export async function runUiLogic(
       return { height: Math.round(view.scrollHeight), client: Math.round(view.clientHeight) };
     })()`);
 
+  /** 距底多少像素（= 产品的「是否贴在底部」判据）与当前读数 */
+  const scrollGeom = (): Promise<{ dist: number; top: number; height: number; client: number }> =>
+    run(`(() => {
+      const view = document.querySelector("[data-conv-scroll]");
+      if (!view) return { dist: -1, top: -1, height: 0, client: 0 };
+      return {
+        dist: Math.round(view.scrollHeight - view.scrollTop - view.clientHeight),
+        top: Math.round(view.scrollTop),
+        height: Math.round(view.scrollHeight),
+        client: Math.round(view.clientHeight),
+      };
+    })()`);
+
+  /**
+   * 把附件区的图全部移除。
+   *
+   * 必须能在任何段之前调用——附件是**渲染层本地状态**，推视图清不掉它；
+   * 留着几张图之后再发消息，submit 会先撞上「当前模型不支持图片输入」而**提前 return**，
+   * 于是「发送」这个动作压根没发生，后面的断言全成了假红（踩过一次：气泡文案写着
+   * 「不支持图片输入」，而当时我以为是滚动逻辑坏了）。
+   */
+  const clearAttachments = async (): Promise<number> => {
+    for (let i = 0; i < 8; i += 1) {
+      const removed = await run<boolean>(
+        `(() => { const b = document.querySelector('[aria-label="移除图片"]'); if (!b) return false; b.click(); return true; })()`,
+      );
+      if (!removed) break;
+      await sleep(120);
+    }
+    return run<number>(`document.querySelectorAll('[aria-label="移除图片"]').length`);
+  };
+
   /** 搜索浮层与「+」菜单的开关状态 */
   const panelExists = (): Promise<boolean> =>
     run<boolean>(`!!document.querySelector("[data-conv-history]")`);
@@ -162,17 +194,6 @@ export async function runUiLogic(
     await sleep(250);
   };
   const menuOpen = (): Promise<boolean> => run<boolean>(`!!document.querySelector("[data-dock-add]")`);
-
-  const clearAttachments = async (): Promise<number> => {
-    for (let i = 0; i < 8; i += 1) {
-      const removed = await run<boolean>(
-        `(() => { const b = document.querySelector('[aria-label="移除图片"]'); if (!b) return false; b.click(); return true; })()`,
-      );
-      if (!removed) break;
-      await sleep(120);
-    }
-    return run<number>(`document.querySelectorAll('[aria-label="移除图片"]').length`);
-  };
 
   const dropImages = (n: number): Promise<{ count: number; notice: string }> =>
     run<{ count: number; notice: string }>(`(async () => {
@@ -334,6 +355,52 @@ export async function runUiLogic(
     notes.push(`先 3 张（提示=${JSON.stringify(first3.notice)}）再 2 张 → ${then2.count} 张，提示=${JSON.stringify(then2.notice)}`);
     checks.push(["D4 另一条路径：3 + 2 仍为 4 张，且说清跳过了 1 张", first2Ok(first3, then2)]);
 
+    // ============ 发送后应当回到最新（用户报告：上滚后发消息不跳）============
+    await push({ messages: longMessages, running: false });
+    await clearAttachments(); // 先清干净：有附件时 submit 会先撞「模型不支持图片」而提前 return
+    await sleep(300);
+    // 模拟用户上滚翻看历史（真人的上滚，不是程序设的 jump）
+    await run(`(() => { const v = document.querySelector("[data-conv-scroll]"); if (v) v.scrollTop = 0; return true; })()`);
+    await sleep(500); // 让「离开底部就钉住窗口」那段 onScroll 先生效
+    const beforeSend = await scrollGeom();
+    // 诊断：先手动点一次「回到底部」按钮——区分「按钮路径也坏」与「发送没走这条路」
+    const bottomBtnBefore = await run<boolean>(`!!document.querySelector("[data-conv-bottom]")`);
+    await run(`(() => { const b = document.querySelector("[data-conv-bottom]"); if (b) b.click(); return true; })()`);
+    await sleep(500);
+    const afterBottomBtn = await scrollGeom();
+    notes.push(
+      `诊断：「回到底部」按钮发送前存在=${bottomBtnBefore}；点它之后 dist=${afterBottomBtn.dist}（top=${afterBottomBtn.top}）`,
+    );
+    await run(`(() => { const v = document.querySelector("[data-conv-scroll]"); if (v) v.scrollTop = 0; return true; })()`);
+    await sleep(400);
+    const promptBeforeSend = promptCalls.length;
+    await typeAndEnter("第二条测试消息");
+    await sleep(700);
+    const afterSend = await scrollGeom();
+    const inputAfterSend = await inputValue();
+    const errAfterSend = await run<string>(
+      `((document.querySelector("[data-conv-error]") || {}).textContent || "").slice(0, 40)`,
+    );
+    notes.push(
+      `发送后：输入框=${JSON.stringify(inputAfterSend)}；prompt 桩记录 +${promptCalls.length - promptBeforeSend}；error 文案=${JSON.stringify(errAfterSend)}`,
+    );
+    notes.push(
+      `上滚后发送：发送前 dist=${beforeSend.dist}（top=${beforeSend.top}）；发送后 dist=${afterSend.dist}（top=${afterSend.top}）`,
+    );
+    checks.push(["（前提）发送前确实离开底部（可滚量大于一屏）", beforeSend.dist > 200]);
+    checks.push(["发送后应当**回到底部**（用户在看自己的消息与随后的回复）", afterSend.dist <= 80]);
+    // 新消息真正到达（视图追加）时也得仍在底部
+    await push({
+      messages: [
+        ...longMessages,
+        { id: "smoke-sent-1", role: "user" as const, text: "第二条测试消息", toolCalls: [] },
+      ],
+      running: false,
+    });
+    const afterArrive = await scrollGeom();
+    notes.push(`新消息到达后 dist=${afterArrive.dist}`);
+    checks.push(["新消息到达后仍在底部（不回弹到历史）", afterArrive.dist <= 80]);
+
     // ============ D6：命中很多时如实计数（不再静默截断）============
     await push({
       messages: Array.from({ length: 120 }, (_, i) => ({
@@ -431,7 +498,12 @@ export async function runUiLogic(
 
     log(`uncaughtErrors: ${uncaughtErrors.length}`);
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
-    checks.push([`全程没有真实 prompt 发出（实发 ${promptCalls.length} 条）`, promptCalls.length === 0]);
+    // 「不打模型」的物证：每个 prompt 入口都由桩接住（只记账、不转发）。
+    // 本模式自己会发一条（滚动那一段），所以不能写「0 条」——要写「只有那一条、且被桩接住」。
+    checks.push([
+      `prompt 全部由桩记账、未转发（桩记录：${promptCalls.map((t) => JSON.stringify(t)).join(" / ") || "无"}）`,
+      promptCalls.every((text) => text === "第二条测试消息"),
+    ]);
   } finally {
     sessionManager.compactOrReconnect = realCompact;
     sessionManager.promptOrReconnect = realPrompt;

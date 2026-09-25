@@ -463,13 +463,22 @@ export function MessageWindow({
     setFloating(next.floating);
   }, [chunk, head, total, unit]);
 
-  /** 从浮动段回到**真正的**底部（会同时交回「跟随底部」，否则新消息会落在窗口外） */
+  /**
+   * 回到**真正的**底部（同时交回「跟随底部」，否则新消息会落在窗口外）。
+   *
+   * 除了重置窗口，这里还**立即摆一次滚动位置**：调用方（点「回到底部」、
+   * 或在输入框里发一条新消息）要的是**当下**就到底。只写 `pending` 不够——
+   * 它要等 `[start, end]` 变化才会被消费，而「本来就在跟随底部」时这两个量不变，
+   * pending 会一直挂着，发送那一下就表现为「没反应」。
+   */
   const gotoLatest = useCallback((): void => {
     pending.current = { kind: "bottom" };
     armed.current = false;
     setHeads((current) => ({ ...current, [unit]: FOLLOW_BOTTOM }));
     setFloating(false);
-  }, [unit]);
+    const node = scrollRef.current;
+    if (node !== null) node.scrollTop = node.scrollHeight;
+  }, [unit, scrollRef]);
 
   useLayoutEffect(() => {
     const intent = pending.current;
@@ -541,16 +550,20 @@ export function MessageWindow({
   }, [jump, messages, unit]);
 
   /**
-   * 「回到底部」被按下。只在**浮动段**里才需要它做额外的事——那时容器的「底」不是会话的底，
-   * 光滚过去只会停在一段旧内容上。不浮动时这里什么都不做，保持原有的「只是滚一下」。
+   * 「回到底部」被按下（或用户在输入框里**发了一条新消息**）。
+   *
+   * 只要当前不是「跟随底部」，就要把窗口也交回去——**不只是浮动段**：
+   * 用户往上翻过之后，窗口起点已被 onScroll 钉成具体值（见下面 `onScroll` ①），
+   * 此时光滚 `scrollTop` 只解决一半（新消息虽然仍挂在窗口末尾，但窗口不再跟着底部走）。
+   * 原先这里写着「不浮动就什么都不做」，于是「发完消息不回到底部」成了用户报上来的缺陷。
    */
   const handledFollow = useRef(0);
   useEffect(() => {
     if (followNonce === handledFollow.current) return;
     handledFollow.current = followNonce;
-    if (followNonce === 0 || !floating) return;
+    if (followNonce === 0) return;
     gotoLatest();
-  }, [followNonce, floating, gotoLatest]);
+  }, [followNonce, gotoLatest]);
 
   /**
    * 挂出来的那些轮（渲染就照着它铺）。

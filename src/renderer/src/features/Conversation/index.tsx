@@ -757,6 +757,7 @@ export function Conversation({
         return;
       }
       setInput("");
+      history.bumpFollow(); // 发完就回到底部：用户接下来看的是自己的消息与随后的回复
       await compact();
       return;
     }
@@ -766,6 +767,7 @@ export function Conversation({
         return;
       }
       setInput("");
+      history.bumpFollow();
       await memoryTidy();
       return;
     }
@@ -787,6 +789,7 @@ export function Conversation({
       }
       setInput("");
       setError(null);
+      history.bumpFollow();
       try {
         await window.colt.invoke("session.skill", {
           sessionId,
@@ -811,6 +814,10 @@ export function Conversation({
     setAttachments([]);
     setError(null);
     setAttachNotice(null);
+    // 发送是**明确的「我要说话」意图**：即使用户刚才在翻历史，也要把他带回最新处，
+    // 否则他发完看不到自己那条、也看不到回复（用户报上来的就是这个）。
+    // 注意与「流式追加不抢滚动」不矛盾：那是自动更新时的克制，这是用户动手后的响应。
+    history.bumpFollow();
     try {
       await window.colt.invoke("session.prompt", {
         sessionId,
@@ -820,7 +827,7 @@ export function Conversation({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [input, attachments, view, skillNames, sessionId, compact]);
+  }, [input, attachments, view, skillNames, sessionId, compact, history.bumpFollow]);
 
   const abort = useCallback(async () => {
     try {
