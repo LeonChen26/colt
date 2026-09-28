@@ -38,6 +38,12 @@ files:
   - package.json
   # MIT 要求「所有副本或实质部分中保留版权与许可声明」，故随包分发（进 app.asar 根）
   - LICENSE
+  # node-pty 在 Windows 上真正要用的是 `build/Release/`（N-API 预编译件 + winpty），
+  # `prebuilds/` 下 56 个文件**全是 linux-***（3.5 MB），本配置只出 win 目标、一个都用不上：
+  # `lib/prebuild-file-path.js` 按 `prebuilds/<platform>-<arch>/` 找，而 win32-x64 目录**本就不存在**
+  # （包的 files 白名单里只有 linux 四个），故在 Windows 上恒回落 `build/Release/pty.node`。
+  # 排掉它不影响功能，纯省体积。
+  - "!node_modules/@homebridge/node-pty-prebuilt-multiarch/prebuilds/**"
 
 # pi 内核被 externalize，必须随包分发
 asar: true
