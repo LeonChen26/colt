@@ -15,6 +15,17 @@ directories:
 # 版本仍由 `package.json` 的 `electron` 依赖决定，这里只是取那份已下载的，不会漂。
 electronDist: node_modules/electron/dist
 
+# 跳过「为 Electron 重编原生模块」（@electron/rebuild）。
+# 为什么：唯一的原生依赖 node-pty（@homebridge/node-pty-prebuilt-multiarch）走的是 **N-API**
+# （binding.gyp 里是 node-addon-api），N-API 的 ABI 跨 Node / Electron 稳定，预编译件不需要重编。
+# 但它的 win32 预编译件是按「node ABI」命名的，@electron/rebuild 认定必须重编 → 回落 node-gyp
+# → 本机没装 Visual Studio → 打包失败（2026-09-25 实测报 Could not find any Visual Studio
+# installation to use）。更糟的是 node-gyp rebuild 会**先清空 build/**，把原本能用的预编译件一起删掉，
+# 于是连 dev 的终端页签也跟着坏掉。
+# 实测（2026-09-25）：Electron 44.2.0（ABI 149）下用这份 node ABI 137 的预编译件，pty.spawn
+# 成功、cmd 回显正常 → N-API 跨 ABI 成立，这次重编纯属多余。
+npmRebuild: false
+
 # 只打包构建产物与运行时依赖；devDependencies 不会进包。
 # 三个产物目录**逐个列出**，不用 `out/**/*`：`out/` 同时是冒烟与探针的落地目录
 # （夹具项目、`npm i` 进来的第三方包、截图与日志），通配会把它们整包扫进安装包——
