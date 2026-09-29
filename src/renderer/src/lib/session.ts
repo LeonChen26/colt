@@ -24,6 +24,26 @@ export function isDraftSession(session: { jsonlPath: string }): boolean {
 }
 
 /**
+ * 把一份会话列表拆成「常规」与「已归档」两块，各自**保持原顺序**（列表本身已按 `updated_at` 倒序）。
+ *
+ * 归档与否只看 `status` 这一个字段（协议 `SessionInfo.status` 的 `"archived"`），单一真源。
+ * 侧栏据此把归档的收进项目下的「已归档」子折叠区、常规的照旧平铺；`shouldOfferDraft` 也要
+ * 用 `active` 那一半来判断「还有没有会话可显示」——**归档了不算还有**，否则一个只余归档会话
+ * 的项目会既不给草稿、又不显示任何会话。
+ */
+export function splitArchived(sessions: readonly SessionInfo[]): {
+  active: SessionInfo[];
+  archived: SessionInfo[];
+} {
+  const active: SessionInfo[] = [];
+  const archived: SessionInfo[] = [];
+  for (const session of sessions) {
+    (session.status === "archived" ? archived : active).push(session);
+  }
+  return { active, archived };
+}
+
+/**
  * 当前是否该「就地给一条草稿」——即中间区没有会话可显示，却又确实有项目在跟前。
  *
  * 为什么要有它：没有会话时中间区本来只有一句「新建一个会话开始对话」，用户得先跑到侧栏

@@ -15,6 +15,10 @@
  * 也不读 `usage.totals`：主进程那份 totals 本来就是用同一份 records 累加出来的
  * （见 `repo.ts#listSessionUsage`），自己算一遍才能保证「KPI 总额 == 各模型行之和」——
  * 用户在同一屏里看到两处对不上的数字，是最伤信任的一种呈现。
+ *
+ * ⚠️ **「输入」的口径**：界面上的「输入」指**送进模型的 prompt 总量**（含缓存命中部分），
+ * 故 KPI 用 `promptTokens` 而不是 DB 的 `inputTokens`（后者是净输入，见 `UsageTotals`）。
+ * 命中率的分母也用 `promptTokens`——分母不含命中量本身时，比率可以超过 100%（实测 3878%）。
  */
 import type { ToolCallRecord, UsageRecord } from "@shared/protocol";
 import { parseArgsJson } from "./format";
@@ -25,6 +29,14 @@ export const UNKNOWN_MODEL = "未知模型";
 export interface UsageTotals {
   /** 记录条数，即模型调用的轮次 */
   calls: number;
+  /**
+   * 送进模型的 prompt 总量（含缓存命中部分），**界面上的「输入」就是它**。
+   * = `inputTokens + cacheReadTokens + cacheWriteTokens`，与视图 `stats.promptTokens`、
+   * 上下文占用条同一口径（视图侧的真源是 worker 的 `prompt-tokens.ts`）。
+   * 只报 `inputTokens`（DB 里的净输入）会把长会话的输入报小一个数量级。
+   */
+  promptTokens: number;
+  /** 净输入（DB `input_tokens`，已扣缓存）；**不是**界面上的「输入」，只用于核对明细 */
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -37,7 +49,8 @@ export interface UsageTotals {
 export interface ModelStat {
   model: string;
   calls: number;
-  inputTokens: number;
+  /** 口径同 `UsageTotals.promptTokens`（含缓存命中） */
+  promptTokens: number;
   outputTokens: number;
   costUsd: number;
   /** 费用占比 0..1；总费用为 0 时是 0 而不是 NaN */
@@ -64,7 +77,7 @@ export interface ToolDurationStat {
 
 export interface SessionStats {
   totals: UsageTotals;
-  /** 缓存读取 / 输入 tokens，0..1（原型「缓存命中 … 占输入 49%」的口径） */
+  /** 缓存读取 / **prompt 总量**，0..1（分母必须含命中量本身，否则会算出「占输入 3878%」） */
   cacheHitRatio: number;
   models: ModelStat[];
   /** 工具调用总次数（含失败） */
@@ -91,6 +104,7 @@ function byMetricDesc<T>(
 
 const EMPTY_TOTALS: UsageTotals = {
   calls: 0,
+  promptTokens: 0,
   inputTokens: 0,
   outputTokens: 0,
   cacheReadTokens: 0,
@@ -106,6 +120,7 @@ export function buildSessionStats(
   const totals = records.reduce<UsageTotals>(
     (acc, item) => ({
       calls: acc.calls + 1,
+      promptTokens: acc.promptTokens + item.inputTokens + item.cacheReadTokens + item.cacheWriteTokens,
       inputTokens: acc.inputTokens + item.inputTokens,
       outputTokens: acc.outputTokens + item.outputTokens,
       cacheReadTokens: acc.cacheReadTokens + item.cacheReadTokens,
@@ -124,13 +139,13 @@ export function buildSessionStats(
     const stat = byModel.get(key) ?? {
       model: key,
       calls: 0,
-      inputTokens: 0,
+      promptTokens: 0,
       outputTokens: 0,
       costUsd: 0,
       costShare: 0,
     };
     stat.calls += 1;
-    stat.inputTokens += record.inputTokens;
+    stat.promptTokens += record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens;
     stat.outputTokens += record.outputTokens;
     stat.costUsd += record.costUsd;
     byModel.set(key, stat);
@@ -178,7 +193,7 @@ export function buildSessionStats(
 
   return {
     totals,
-    cacheHitRatio: shareOf(totals.cacheReadTokens, totals.inputTokens),
+    cacheHitRatio: shareOf(totals.cacheReadTokens, totals.promptTokens),
     models,
     toolCalls: toolCalls.length,
     toolFailures,

@@ -293,18 +293,32 @@ export async function runDock(
   /**
    * 读「任务摘要」的**本次用量**段（v1.61）：`present` 判整段在不在——**零消耗时必须不在**
    * （「无消耗时整段不渲染」是这段的规矩，也是它不摆空壳的判据）。`cost` 读结论里的费用，
-   * `hasExit` 读去「统计」页签的那个出口。
+   * `hasExit` 读去「统计」页签的那个出口；`input` / `output` 读两格里的**渲染文字**
+   * （v1.91：口径是 prompt 总量，见 `prompt-tokens.ts`——断言取产品自己的标记
+   * `[data-usage-token]`，不靠标签文字或层级去猜是哪一格）。
    */
-  const usageProbe = (): Promise<{ present: boolean; cost: string; hasExit: boolean }> =>
+  const usageProbe = (): Promise<{
+    present: boolean;
+    cost: string;
+    hasExit: boolean;
+    input: string;
+    output: string;
+  }> =>
     run(`(() => {
       const aside = [...document.querySelectorAll("aside")].find((a) =>
         a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
       const sec = aside ? aside.querySelector("[data-usage-section]") : null;
       const cost = aside ? aside.querySelector("[data-usage-cost]") : null;
+      const cell = (kind) => {
+        const el = aside ? aside.querySelector('[data-usage-token="' + kind + '"]') : null;
+        return el && el.lastElementChild ? (el.lastElementChild.textContent ?? "").trim() : "";
+      };
       return {
         present: sec !== null,
         cost: cost ? (cost.textContent ?? "").trim() : "",
         hasExit: aside ? aside.querySelector("[data-usage-open]") !== null : false,
+        input: cell("input"),
+        output: cell("output"),
       };
     })()`);
 
@@ -862,7 +876,7 @@ export async function runDock(
       queuedCount: 0,
       stats: {
         messageCount: 0,
-        inputTokens: 0,
+        promptTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
         costUsd: 0,
@@ -1178,7 +1192,7 @@ export async function runDock(
         ],
         stats: {
           messageCount: 6,
-          inputTokens: 12345,
+          promptTokens: 12345,
           outputTokens: 678,
           totalTokens: 13023,
           costUsd: 0.0421,
@@ -1191,6 +1205,12 @@ export async function runDock(
     checks.push([
       "有消耗时出现，结论数与视图一致（费用 $0.0421，出口在）",
       usageOn.present && usageOn.cost === "$0.0421" && usageOn.hasExit,
+    ]);
+    // 「输入」的口径（v1.91）：显示的是视图的 `promptTokens`（送进模型的 prompt 总量），
+    // 不是内核那个**扣除缓存后**的净输入。夹具给 12,345 → 界面应为 12.3K。
+    checks.push([
+      "「输入」按 prompt 总量渲染（12.3K），不是内核净输入",
+      usageOn.input === "12.3K" && usageOn.output === "678",
     ]);
     // 顺序（v1.67）：三段**同场**时的阅读顺序就是这一段的需求本体——DOM 序即阅读序。
     const segments = await followOrderProbe();

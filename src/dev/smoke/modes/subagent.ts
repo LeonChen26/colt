@@ -84,7 +84,7 @@ const makeSubagent = (
       recentSteps: steps,
       stepCount,
     },
-    stats: { inputTokens: 120, outputTokens: 40, costUsd: 0.012 },
+    stats: { promptTokens: 120, outputTokens: 40, costUsd: 0.012 },
   };
 };
 
@@ -153,7 +153,7 @@ export async function runSubagent(
     queuedCount: 0,
     stats: {
       messageCount: 0,
-      inputTokens: 0,
+      promptTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
       costUsd: 0,

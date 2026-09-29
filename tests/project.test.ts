@@ -456,10 +456,35 @@ describe("project：工具结果只走 toolResults，不进 messages", () => {
       status: "running" as const,
       startedAt: 1,
       tail: { streamingText: null, thought: null, runningTools: [], recentSteps: [], stepCount: 0 },
-      stats: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      stats: { promptTokens: 0, outputTokens: 0, costUsd: 0 },
     };
     const view = project(conversation(), meta, new Map(), [subagent]);
     assert.deepEqual(view.subagents, [subagent]);
+  });
+
+  test("「输入」按 prompt 总量投影（含缓存命中），不报内核的净输入", () => {
+    // 内核 `Usage.input` 是**扣除缓存后的净输入**（`pi-ai` 的 openai-completions：
+    // `input = prompt_tokens - cacheRead - cacheWrite`）。直接暴露它，长会话的
+    // 「输入」会比真实上下文小一个数量级——这里把 103K / 4.0M 那组实测数钉住。
+    const snapshot = {
+      transcript: [],
+      operation: undefined,
+      stats: {
+        messageCount: 7,
+        usage: {
+          input: 103_246,
+          output: 524,
+          cacheRead: 4_004_672,
+          cacheWrite: 0,
+          totalTokens: 4_108_442,
+          cost: { total: 0.5 },
+        },
+      },
+    } as unknown as LaneSnapshot;
+    const view = project(snapshot, meta, new Map(), []);
+    assert.equal(view.stats.promptTokens, 4_107_918);
+    assert.equal(view.stats.outputTokens, 524);
+    assert.equal(view.stats.totalTokens, 4_108_442);
   });
 });
 

@@ -585,6 +585,7 @@ describe("buildSessionStats", () => {
     );
     assert.deepEqual(stats.totals, {
       calls: 1,
+      promptTokens: 135,
       inputTokens: 100,
       outputTokens: 20,
       cacheReadTokens: 30,
@@ -592,8 +593,19 @@ describe("buildSessionStats", () => {
       cacheTokens: 35,
       costUsd: 0.5,
     });
-    // 「缓存命中」的口径是 **读 / 输入**（对齐概念稿「占输入 49%」）
-    assert.equal(stats.cacheHitRatio, 0.3);
+    // 「输入」的口径是 **prompt 总量**（净输入 + 缓存读 + 缓存写）——单报净输入会把
+    // 长会话的输入报小一个数量级，而「按模型」行的口径必须与总额一致。
+    assert.equal(stats.models[0]?.promptTokens, 135);
+    // 「缓存命中」的分母是同一个 prompt 总量：30 / (100 + 30 + 5)
+    assert.equal(stats.cacheHitRatio, 30 / 135);
+  });
+
+  test("命中率的分母含缓存：命中量远大于净输入时，比率仍 ≤ 1", () => {
+    // 实测形态（本机某会话累计）：净输入 103,246、缓存读 4,004,672。
+    // 分母若用净输入，这里会算出 38.8——界面渲染成「占输入 3878%」。
+    const stats = buildSessionStats([usage("m", 0, { input: 103_246, cacheRead: 4_004_672 })], []);
+    assert.equal(stats.totals.promptTokens, 4_107_918);
+    assert.ok(stats.cacheHitRatio > 0.97 && stats.cacheHitRatio <= 1, String(stats.cacheHitRatio));
   });
 
   test("KPI 总额等于各模型行之和（自己算而不读 totals 的理由）", () => {

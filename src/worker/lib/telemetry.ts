@@ -8,6 +8,7 @@
  */
 import type { WorkerMessage } from "@shared/worker-protocol";
 import { splitModelRef } from "@shared/model-ref";
+import { promptTokensOf } from "./prompt-tokens";
 
 type UsageUpload = Extract<WorkerMessage, { type: "usage" }>;
 type ToolCallUpload = Extract<WorkerMessage, { type: "toolCall" }>;
@@ -22,7 +23,9 @@ export const MAIN_LANE = "main";
 /**
  * 从一条 usage 行算出「本轮上下文占用」（prompt tokens）。
  * pi-ai 的 Usage.input 是扣除 cache 后的净输入，
- * prompt tokens = input + cacheRead + cacheWrite，这才是实际喂给模型的上下文量。
+ * prompt tokens = input + cacheRead + cacheWrite，这才是实际喂给模型的上下文量
+ * （公式的真源是 `prompt-tokens.ts` 的 `promptTokensOf`——同一口径还被会话视图 stats
+ * 与子代理 stats 用着，别在这里再写一遍加法）。
  * 返回 null 表示该行不计入占用（非主 lane 或 adjustment 补记行）。
  *
  * ⚠️ **这条过滤只属于「占用」，不属于「费用」**：子 lane（记忆整理、子代理）的消耗
@@ -32,8 +35,7 @@ export const MAIN_LANE = "main";
 export function contextUsedFromUsage(event: KernelUsageEvent): number | null {
   if (event.lane !== MAIN_LANE) return null;
   if (event.row.adjustment) return null;
-  const usage = event.row.usage;
-  return usage.input + usage.cacheRead + usage.cacheWrite;
+  return promptTokensOf(event.row.usage);
 }
 
 /** 内核 usage 事件中本模块关心的部分 */

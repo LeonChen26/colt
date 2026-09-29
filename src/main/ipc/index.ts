@@ -34,6 +34,7 @@ import {
   listSessions,
   setSessionModel,
   setSessionThinkingLevel,
+  setSessionStatus,
   upsertProject,
 } from "../db/repo";
 import { sessionManager } from "../session-manager";
@@ -225,6 +226,18 @@ function materializeDraft(sessionId: string): void {
   if (draft.thinkingLevel) setSessionThinkingLevel(sessionId, draft.thinkingLevel);
 }
 
+/**
+ * 对**已归档**的会话做任何「会让它跑起来」的动作前，先把它取消归档。
+ *
+ * 归档的语义是「从常规列表隐藏」，而运行中的会话**绝不能**带着「已归档」身份在后台跑——
+ * 那正是一条看不见的运行中会话（归档子区默认还是收起的）。渲染层发现它跑起来时也会
+ * 取消归档（见 `App.tsx`），这里在**数据层**兜一道底：即便渲染层没来得及同步，
+ * 库里也已经是 `active`，下次读列表自然对得上。非归档会话是空操作。
+ */
+function reviveIfArchived(sessionId: string): void {
+  if (getSession(sessionId)?.status === "archived") setSessionStatus(sessionId, "active");
+}
+
 export function registerIpcHandlers(): void {
   handle("env.check", () => runEnvCheck());
 
@@ -398,6 +411,8 @@ export function registerIpcHandlers(): void {
   handle("session.prompt", async (request) => {
     // 首次发消息：草稿在此刻落库（此后才是「真实会话」，会出现在 session.list 里）
     materializeDraft(request.sessionId);
+    // 给已归档会话发消息 = 用户要继续用它：先取消归档，别让它带隐藏身份跑起来
+    reviveIfArchived(request.sessionId);
     // 会话可能已被空闲回收（长时间不用）：由主进程按 sessionId → 项目反查 rootPath
     // 自动重建后再投递，避免旧行为下直接抛「会话未运行」导致界面静默无响应。
     await sessionManager.promptOrReconnect(request.sessionId, request.text, request.images, () =>
@@ -459,6 +474,28 @@ export function registerIpcHandlers(): void {
   });
 
   handle("session.listPinned", () => listPinnedSessions());
+
+  /**
+   * 归档 / 取消归档：只翻 `sessions.status` 一列，会话本体（派生数据 / JSONL）一个字不动。
+   *
+   * 两条拒绝的理由与 `session.delete` 同源，都是「别让界面与真实状态错开」：
+   * ① 草稿没有库行可改，静默成功会让界面以为归档生效了；
+   * ② 运行中（含正等人回话）的会话归档后会从常规列表消失、却在后台继续跑——
+   *    这正是「看不见的运行中会话」。检查放在任何写入之前，拒绝时库还没动过。
+   * 归档时顺手解掉图钉：它已经藏进「已归档」里，再替它保着 worker 没有意义
+   * （取消归档不会把图钉还回来——那是「本次运行有效」的标记，丢了它不损失数据）。
+   */
+  handle("session.setArchived", (request) => {
+    if (drafts.has(request.sessionId)) throw new Error("草稿会话不能归档");
+    const session = getSession(request.sessionId);
+    if (!session) throw new Error("会话不存在或已被删除");
+    if (request.archived && sessionManager.isRunning(request.sessionId)) {
+      throw new Error("会话正在运行，请先中止后再归档");
+    }
+    if (request.archived) dropSessionPin(request.sessionId);
+    setSessionStatus(request.sessionId, request.archived ? "archived" : "active");
+    return { ok: true } as const;
+  });
 
   // 按需读回工具图片：图片不进视图（见 @shared/tool-output），展开卡片时才来这里取
   handle("session.toolOutput", (request) =>
@@ -685,6 +722,7 @@ export function registerIpcHandlers(): void {
     // 与 session.prompt 同理：可能把 worker 拉起来，那就必须先有会话行——
     // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上），下次打开会另起一份历史。
     materializeDraft(request.sessionId);
+    reviveIfArchived(request.sessionId);
     // 会话可能已被空闲回收；主进程反查项目根自动重建后再投递，
     // 否则旧行为下会直接抛「会话未运行」——用户看到的只是“点了没反应”。
     await sessionManager.compactOrReconnect(request.sessionId, () =>
@@ -697,6 +735,7 @@ export function registerIpcHandlers(): void {
     // 与 session.compact 同理：可能把 worker 拉起来，那就必须先有会话行，
     // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上），下次打开会另起一份历史。
     materializeDraft(request.sessionId);
+    reviveIfArchived(request.sessionId);
     await sessionManager.skillOrReconnect(
       request.sessionId,
       request.name,
@@ -710,6 +749,7 @@ export function registerIpcHandlers(): void {
     // 与 session.compact 同理：可能把 worker 拉起来，必须先有会话行，
     // 否则 worker 里那个内核会话 ID 无处落库（UPDATE 打在 0 行上）。
     materializeDraft(request.sessionId);
+    reviveIfArchived(request.sessionId);
     await sessionManager.memoryTidyOrReconnect(request.sessionId, () =>
       openSessionWorker({ sessionId: request.sessionId }),
     );

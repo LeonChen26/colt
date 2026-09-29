@@ -34,7 +34,8 @@ export interface SubagentProjectionInput {
   /** 走到时间上限、由交接收尾（见 `ViewSubagent.handedOff`） */
   handedOff?: boolean;
   snapshot: LaneSnapshot;
-  stats: { inputTokens: number; outputTokens: number; costUsd: number };
+  /** `promptTokens` 口径与主对话一致：含缓存命中部分（见 `prompt-tokens.ts`） */
+  stats: { promptTokens: number; outputTokens: number; costUsd: number };
   /**
    * 工具耗时表（toolCallId → ms）。**必须由调用方给**：不给的话有界预览里的每条
    * `toolCalls[].durationMs` 都会缺，而完整流（`session.subagentTranscript`）却有——

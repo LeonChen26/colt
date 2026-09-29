@@ -26,6 +26,7 @@ import type { ViewTodo } from "@shared/todo";
 import { toolImageFileName } from "@shared/tool-output";
 import { skillInvocationLabel } from "@shared/skill-invocation";
 import { serializeArgs } from "./telemetry";
+import { promptTokensOf } from "./prompt-tokens";
 import { parseSkillInvocation, skillPathMatcher } from "./skills";
 
 /**
@@ -474,7 +475,9 @@ export function project(
     queuedCount: snapshot.queues?.length ?? 0,
     stats: {
       messageCount: snapshot.stats?.messageCount ?? 0,
-      inputTokens: usage?.input ?? 0,
+      // 「输入」按 prompt 总量报（含缓存命中部分）——内核的 `usage.input` 是净输入，
+      // 单用它会让长会话的「输入」比真实上下文小一个数量级（见 `prompt-tokens.ts`）。
+      promptTokens: usage === undefined ? 0 : promptTokensOf(usage),
       outputTokens: usage?.output ?? 0,
       totalTokens: usage?.totalTokens ?? 0,
       costUsd: usage?.cost?.total ?? 0,

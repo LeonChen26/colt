@@ -272,6 +272,8 @@ export const IPC_CHANNELS = [
   "session.view",
   "session.setPinned",
   "session.listPinned",
+  /** 归档 / 取消归档会话：归档即从侧栏常规列表隐藏（数据全留，可随时恢复） */
+  "session.setArchived",
   /** 按需读回一张工具图片（图片已由 worker 落盘，不进视图；见 @shared/tool-output） */
   "session.toolOutput",
   "secrets.set",
@@ -449,6 +451,13 @@ export interface IpcInvokeMap {
     request: { projectId: string };
     response: SessionInfo;
   };
+  /**
+   * 会话列表（按 `projectId` 过滤，不传 = 全部项目）。
+   *
+   * **同时返回 active 与 archived 两种状态**——归档只是「从侧栏常规列表隐藏」，
+   * 数据仍在库里，故主进程不做过滤：渲染层按 `SessionInfo.status` 自行分成
+   * 「常规列表」与「所属项目的『已归档』子折叠区」两块（`lib/session.ts` 的 `splitArchived`）。
+   */
   "session.list": {
     request: { projectId?: string };
     response: SessionInfo[];
@@ -512,6 +521,21 @@ export interface IpcInvokeMap {
   "session.listPinned": {
     request: void;
     response: string[];
+  };
+  /**
+   * 归档 / 取消归档一条会话。
+   *
+   * 归档 = 把它从侧栏的**常规**列表里隐藏，收进所属项目的「已归档」子折叠区；
+   * **数据全部保留**（库行 / 派生数据 / JSONL 历史一个字不动），随时可取消归档恢复。
+   * 与 `session.delete` 的分界要记牢：那个是**永久删除**，这个只是「收起来」。
+   *
+   * 两条拒绝：① **运行中（含正等人授权 / 作答）的会话不能归档**——归档即从列表消失，
+   * 而它仍在后台跑，那是在骗人（与 `session.delete` 同一条纪律）；② **草稿不能归档**——
+   * 它没有库行可改，静默成功会让界面以为生效了。
+   */
+  "session.setArchived": {
+    request: { sessionId: string; archived: boolean };
+    response: { ok: true };
   };
   /**
    * 按需读回一张工具图片。

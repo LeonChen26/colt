@@ -94,7 +94,7 @@ function bigView(sessionId: string, count: number, plain = false): ConversationV
     queuedCount: 0,
     stats: {
       messageCount: count,
-      inputTokens: 0,
+      promptTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
       costUsd: 0,

@@ -32,6 +32,7 @@ import {
   setChangeNet,
   setKernelSessionId,
   setSessionModel,
+  setSessionStatus,
   setSetting,
   touchSession,
   upsertProject,
@@ -136,6 +137,33 @@ describe("sessions", () => {
     const reloaded = getSession(session.id);
     assert.equal(reloaded?.title, "命名");
     assert.equal(reloaded?.messageCount, 5);
+  });
+
+  /**
+   * 归档只翻 `status`，**不动 `updated_at`**：侧栏按 `updated_at` 排「最近活动」，
+   * 拿归档动作去刷新它，会让一条很久没用的会话因刚被归档而排到最前，反而误导。
+   */
+  test("setSessionStatus 归档 / 取消归档，且不改 updated_at", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    setSessionStatus(session.id, "archived");
+    const archived = getSession(session.id);
+    assert.equal(archived?.status, "archived");
+    assert.equal(archived?.updatedAt, session.updatedAt, "归档不是会话活动，不该刷新 updated_at");
+
+    setSessionStatus(session.id, "active");
+    assert.equal(getSession(session.id)?.status, "active");
+  });
+
+  test("listSessions 同时返回 active 与 archived（主进程不过滤，交给渲染层分块）", () => {
+    const project = upsertProject("E:/demo");
+    const live = createSession(project.id, "E:/demo/jsonl");
+    const gone = createSession(project.id, "E:/demo/jsonl");
+    setSessionStatus(gone.id, "archived");
+    const pairs = listSessions(project.id)
+      .map((s) => `${s.id}:${s.status}`)
+      .sort();
+    assert.deepEqual(pairs, [`${live.id}:active`, `${gone.id}:archived`].sort());
   });
 });
 

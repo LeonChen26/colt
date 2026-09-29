@@ -87,9 +87,9 @@ export function SubagentPreview({
       {recentSteps.length === 0 && streamingText === null && runningTools.length === 0 && (
         <p className="px-1 text-xs text-text-muted">（还没有内容）</p>
       )}
-      {(subagent.stats.inputTokens > 0 || subagent.stats.outputTokens > 0) && (
+      {(subagent.stats.promptTokens > 0 || subagent.stats.outputTokens > 0) && (
         <p className="text-2xs text-text-muted">
-          这个子代理自己的消耗：输入 {subagent.stats.inputTokens} · 输出{" "}
+          这个子代理自己的消耗：输入 {subagent.stats.promptTokens} · 输出{" "}
           {subagent.stats.outputTokens} tokens
           {subagent.stats.costUsd > 0 ? ` · $${subagent.stats.costUsd.toFixed(4)}` : ""}
         </p>

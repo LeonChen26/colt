@@ -11,8 +11,11 @@ import {
   type SetStateAction,
 } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   FileDiff,
   FolderOpen,
@@ -38,7 +41,7 @@ import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
 import { ProjectChanges } from "./features/ProjectChanges";
 import { Settings } from "./features/Settings";
-import { isDraftSession, shouldOfferDraft } from "./lib/session";
+import { isDraftSession, shouldOfferDraft, splitArchived } from "./lib/session";
 import { cn } from "./lib/utils";
 
 /** 主区视图 */
@@ -57,6 +60,20 @@ export default function App(): React.JSX.Element {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessionsByProject, setSessionsByProject] = useState<Map<string, SessionInfo[]>>(new Map());
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  /**
+   * 侧栏底部「已归档」区是否展开。默认收起——归档的目的就是让侧栏变短，展开只是临时查看，
+   * 故不持久化。
+   */
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  /**
+   * 全量**已归档**会话，**跨项目**（侧栏底部那一个区里混着各项目的归档会话，每行标出所属项目）。
+   *
+   * 为什么不从 `sessionsByProject` 拼：那份缓存是**按项目懒加载**的，没展开过的项目根本不在
+   * 里面，跨项目汇总会漏。故单独按需拉一次全量（`session.list` 不传 projectId）再筛归档。
+   * 刷新跟着「会话集合变了」的那些动作走——归档 / 恢复 / 删除会话 / 删除项目 / 已归档会话
+   * 跑起来被自动取消归档（见各处 `refreshArchived`）。
+   */
+  const [archivedSessions, setArchivedSessions] = useState<SessionInfo[]>([]);
   /**
    * 侧栏搜索词（匹配会话**标题** / 项目**名与路径**）。非空时侧栏切成**过滤视图**：
    * 只显示命中的行、命中的会话自动展开其项目；清空即恢复原样——`expandedProjects`
@@ -213,10 +230,30 @@ export default function App(): React.JSX.Element {
    * 这也把「点了新建就退出」留下的空会话挡在门外：那类会话从不落库，列表里自然没有它。
    */
   const loadProjectSessions = useCallback(async (projectId: string) => {
-    const list = await window.colt.invoke("session.list", { projectId });
+    const all = await window.colt.invoke("session.list", { projectId });
+    // 归档的**不进这份缓存**：它们统一去侧栏底部的「已归档」区（跨项目汇总，见 archivedSessions）。
+    // 于是这份按项目的列表只装常规会话——`shouldOfferDraft` 拿它判「项目里还有没有会话可显示」
+    // 天然正确（只剩归档会话的项目照样会拿到一条草稿）。
+    const list = splitArchived(all).active;
     setSessionsByProject((map) => new Map(map).set(projectId, list));
     return list;
   }, []);
+
+  /**
+   * 重拉全量已归档会话（跨项目）。必须问全库，不能从按项目的缓存拼（懒加载会漏）。
+   *
+   * 与侧栏搜索同一条思路：**每次会话集合一变就重拉**，用「永远新鲜」换掉一整套「何时该失效」
+   * 的逻辑。调用点都是「会让某条会话在常规 / 归档之间搬家或消失」的动作。
+   */
+  const refreshArchived = useCallback(async () => {
+    const all = await window.colt.invoke("session.list", {});
+    setArchivedSessions(splitArchived(all).archived);
+  }, []);
+
+  // 挂载时先拉一次：底部「已归档」区的条数在收起状态下也要如实
+  useEffect(() => {
+    void refreshArchived();
+  }, [refreshArchived]);
 
   /**
    * 手里那条**还没用起来**的草稿（id + 所属项目）。
@@ -365,6 +402,71 @@ export default function App(): React.JSX.Element {
     },
     [pinnedSessions],
   );
+
+  /**
+   * 归档 / 取消归档一条会话。
+   *
+   * 不走确认框：归档**可逆、不删任何数据**（与 `deleteSession` 的分界正在这里）。成功后
+   * 两份缓存都重拉——会话在「项目常规列表」与「底部已归档区」之间搬家，只改一处会不一致。
+   * 归档会顺带解掉主进程里的图钉（见 ipc），这里把视觉状态同步收掉。
+   */
+  const setSessionArchived = useCallback(
+    async (session: SessionInfo, archived: boolean) => {
+      try {
+        await window.colt.invoke("session.setArchived", { sessionId: session.id, archived });
+        if (archived) {
+          setPinnedSessions((set) => {
+            if (!set.has(session.id)) return set;
+            const next = new Set(set);
+            next.delete(session.id);
+            return next;
+          });
+        }
+        await Promise.all([loadProjectSessions(session.projectId), refreshArchived()]);
+        // 当前会话若正是它，直接同步 `status`：项目列表是 active-only、未必含这条归档会话，
+        // 不能靠它回填；而这个标记必须准——下面那条「跑起来就取消归档」的 effect 依赖它。
+        setActiveSession((current) =>
+          current?.id === session.id
+            ? { ...current, status: archived ? "archived" : "active" }
+            : current,
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [loadProjectSessions, refreshArchived],
+  );
+
+  /** 正在「因跑起来而取消归档」的会话，防同一会话在 IPC 往返期间被重复触发 */
+  const unarchivingRef = useRef<Set<string>>(new Set());
+
+  /**
+   * 已归档的会话一旦跑起来，立刻取消归档。
+   *
+   * 已归档会话只可能被「打开后发消息」跑起来（主进程 `session.prompt` 也会取消归档，那是
+   * 数据层兜底）。界面这边若不同步，它会在**默认收起**的归档区里以「运行中」的身份待着，
+   * 等于一条看不见的运行中会话。判据用已在跟踪的 `runningSessions`，不新增订阅。
+   */
+  useEffect(() => {
+    const session = activeSession;
+    if (!session || session.status !== "archived" || !runningSessions.has(session.id)) return;
+    if (unarchivingRef.current.has(session.id)) return;
+    unarchivingRef.current.add(session.id);
+    void (async () => {
+      try {
+        await window.colt.invoke("session.setArchived", { sessionId: session.id, archived: false });
+        await Promise.all([loadProjectSessions(session.projectId), refreshArchived()]);
+        setActiveSession((current) =>
+          current?.id === session.id ? { ...current, status: "active" } : current,
+        );
+      } catch {
+        // 静默：主进程在 prompt 时已兜底取消归档，下次刷新列表自然对齐，不必打扰用户
+      } finally {
+        unarchivingRef.current.delete(session.id);
+      }
+    })();
+  }, [activeSession, runningSessions, loadProjectSessions, refreshArchived]);
+
   /**
    * 把某个会话的字段就地写回本地缓存（会话列表 + 当前会话）。
    *
@@ -497,6 +599,8 @@ export default function App(): React.JSX.Element {
    */
   useEffect(() => {
     if (mainView !== "chat" || !activeProject) return;
+    // 这份缓存只含常规会话（已归档的已由 loadProjectSessions 滤掉），所以「归档了不算还有会话」
+    // 天然成立：只剩归档会话的项目照样会拿到一条草稿（`undefined` = 还没拉到，照旧要等）
     if (!shouldOfferDraft(activeProject.id, sessionsByProject.get(activeProject.id), activeSession))
       return;
     void newSession(activeProject.id);
@@ -525,6 +629,8 @@ export default function App(): React.JSX.Element {
           return next;
         });
         const list = await loadProjectSessions(session.projectId);
+        // 删掉的也可能是一条**已归档**会话（在底部那个区里删的）：那份跨项目列表也要刷新
+        void refreshArchived();
         setActiveSession((current) => {
           if (current?.id !== session.id) return current;
           return list[0] ?? null;
@@ -533,7 +639,7 @@ export default function App(): React.JSX.Element {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [loadProjectSessions],
+    [loadProjectSessions, refreshArchived],
   );
 
   /**
@@ -586,6 +692,8 @@ export default function App(): React.JSX.Element {
 
         const list = await window.colt.invoke("project.list", undefined);
         setProjects(list);
+        // 该项目名下的**已归档**会话也一并被清了：底部那个跨项目列表要跟着刷新
+        void refreshArchived();
         // 删的正好是当前项目：切到列表里的下一条（没有就留空，中间区回到「还没有项目」）
         setActiveProject((current) => (current?.id === project.id ? (list[0] ?? null) : current));
         setActiveSession((current) =>
@@ -595,7 +703,7 @@ export default function App(): React.JSX.Element {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [discardDraft],
+    [discardDraft, refreshArchived],
   );
 
   const query = sidebarQuery.trim().toLowerCase();
@@ -624,13 +732,57 @@ export default function App(): React.JSX.Element {
       const projectHit =
         project.name.toLowerCase().includes(query) ||
         project.rootPath.toLowerCase().includes(query);
-      const mine = all.filter((session) => session.projectId === project.id);
+      // 归档的会话不进搜索结果：它们在侧栏是「收起来」的，搜索把它翻出来会与那个语义打架
+      const mine = all.filter(
+        (session) => session.projectId === project.id && session.status !== "archived",
+      );
       const hits = mine.filter((session) => session.title.toLowerCase().includes(query));
       if (!projectHit && hits.length === 0) continue;
       matched.push({ project, sessions: projectHit ? mine : hits, expanded: true });
     }
     return matched;
   }, [searching, query, projects, searchSessions, sessionsByProject, expandedProjects]);
+
+  /**
+   * 画一条会话行——**项目常规列表与底部「已归档」区共用**（两处只有 `archived` 不同，共用
+   * 一套模板免得日后各自漂移）。归档行多一个 `context`（所属项目名）：底部那个区是**跨项目**
+   * 的，不写项目名就分不清不同项目里的同名会话；常规列表按项目分组，不必写。
+   */
+  const renderSessionRow = (session: SessionInfo, archived: boolean): React.ReactNode => (
+    <SessionRow
+      key={session.id}
+      session={session}
+      archived={archived}
+      context={
+        archived
+          ? (projects.find((item) => item.id === session.projectId)?.name ?? "未知项目")
+          : undefined
+      }
+      active={session.id === activeSession?.id}
+      startedAt={runningSessions.get(session.id)}
+      offlineState={offlineSessions.get(session.id)}
+      waiting={
+        approvalSessions.has(session.id)
+          ? "approval"
+          : questionSessions.has(session.id)
+            ? "question"
+            : undefined
+      }
+      pinned={pinnedSessions.has(session.id)}
+      now={now}
+      onClick={() => {
+        // 会话归哪个项目由它自己的 `projectId` 决定（切项目那一下要把它一并选中，见 conversationProject）
+        const owner = projects.find((item) => item.id === session.projectId);
+        if (owner && owner.id !== activeProject?.id) setActiveProject(owner);
+        // 在设置 / 改动页点会话行也必须回到对话视图
+        setMainView("chat");
+        setActiveSession(session);
+      }}
+      onTogglePin={() => togglePin(session.id)}
+      onToggleArchive={() => void setSessionArchived(session, !archived)}
+      onDelete={() => void deleteSession(session)}
+    />
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -649,6 +801,8 @@ export default function App(): React.JSX.Element {
               setActiveProject(projectList[0] ?? null);
               setProviders(providerList);
               setModelServiceReady(hasUsableProvider(providerList));
+              // 「清空重来」会把已归档会话一并清掉（沿用历史则不变）：跨项目归档列表跟着刷新
+              void refreshArchived();
               if (choice === "fresh") setActiveSession(null);
             })();
           }}
@@ -789,6 +943,7 @@ export default function App(): React.JSX.Element {
                 // 搜索态一律展开，但允许逐行手动收起（见 searchCollapsed）——不写 expandedProjects。
                 const expanded = searching ? !searchCollapsed.has(project.id) : rowExpanded;
                 // `undefined` 与空数组必须分开：前者是**还没拉到**，后者是「确实没有会话」。
+                // 这份列表**只含常规会话**（已归档的由 `loadProjectSessions` 滤掉，去了底部那个区）。
                 const list = sessions ?? [];
                 return (
                   <div key={project.id} className="mb-0.5">
@@ -838,35 +993,10 @@ export default function App(): React.JSX.Element {
                         </div>
                         {sessions === undefined ? (
                           <div className="px-2 py-1.5 text-xs text-text-muted">加载中…</div>
-                        ) : sessions.length === 0 ? (
+                        ) : list.length === 0 ? (
                           <div className="px-2 py-1.5 text-xs text-text-muted">还没有会话</div>
                         ) : (
-                          sessions.map((session) => (
-                            <SessionRow
-                              key={session.id}
-                              session={session}
-                              active={session.id === activeSession?.id}
-                              startedAt={runningSessions.get(session.id)}
-                              offlineState={offlineSessions.get(session.id)}
-                              waiting={
-                                approvalSessions.has(session.id)
-                                  ? "approval"
-                                  : questionSessions.has(session.id)
-                                    ? "question"
-                                    : undefined
-                              }
-                              pinned={pinnedSessions.has(session.id)}
-                              now={now}
-                              onClick={() => {
-                                if (project.id !== activeProject?.id) setActiveProject(project);
-                                // 同 onNewSession：在设置页点会话行也必须回到对话视图
-                                setMainView("chat");
-                                setActiveSession(session);
-                              }}
-                              onTogglePin={() => togglePin(session.id)}
-                              onDelete={() => void deleteSession(session)}
-                            />
-                          ))
+                          list.map((session) => renderSessionRow(session, false))
                         )}
                       </div>
                     )}
@@ -875,6 +1005,42 @@ export default function App(): React.JSX.Element {
               })
             )}
           </SidebarSection>
+          {/*
+            「已归档」区：**钉在侧栏底部**（`shrink-0`，在 `flex-1` 的项目列表之后），
+            跨项目汇总——归档的从上面的项目列表里收走、全落这里，默认收起。
+            只有确实有归档会话时才出现（没有就不占地方）。展开后限高可滚，别把项目列表挤没。
+            收起状态下的条数也要如实，故 `archivedSessions` 在挂载时就拉好（见 refreshArchived）。
+          */}
+          {archivedSessions.length > 0 && (
+            <div className="flex min-h-0 shrink-0 flex-col border-t border-line">
+              <button
+                type="button"
+                data-archived-toggle
+                aria-expanded={archivedOpen}
+                onClick={() => setArchivedOpen((value) => !value)}
+                className="flex shrink-0 items-center gap-1.5 px-3.5 py-2 text-left transition hover:bg-surface-overlay/60"
+              >
+                <ChevronRight
+                  {...ICON.xs}
+                  className={cn(
+                    "shrink-0 text-text-muted transition-transform",
+                    archivedOpen && "rotate-90",
+                  )}
+                />
+                <span className="truncate text-xs font-semibold uppercase tracking-[.5px] text-text-muted">
+                  已归档
+                </span>
+                <span className="ml-auto shrink-0 text-2xs tabular-nums text-text-muted">
+                  {archivedSessions.length}
+                </span>
+              </button>
+              {archivedOpen && (
+                <div className="max-h-[40vh] min-h-0 overflow-y-auto px-2 pb-2">
+                  {archivedSessions.map((session) => renderSessionRow(session, true))}
+                </div>
+              )}
+            </div>
+          )}
         </aside>
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1063,6 +1229,8 @@ function ProjectRow({
 function SessionRow({
   session,
   active,
+  archived,
+  context,
   startedAt,
   offlineState,
   waiting,
@@ -1070,10 +1238,18 @@ function SessionRow({
   now,
   onClick,
   onTogglePin,
+  onToggleArchive,
   onDelete,
 }: {
   session: SessionInfo;
   active: boolean;
+  /** 归档态：标题变暗、不画图钉、悬停出「恢复」。数据仍在，只是收在底部「已归档」区里 */
+  archived: boolean;
+  /**
+   * 前置上下文（目前只有归档行用：**所属项目名**）——底部「已归档」区是**跨项目**的，
+   * 不写项目名会分不清不同项目里的同名会话；常规列表按项目分组，传 `undefined`。
+   */
+  context?: string;
   startedAt?: number;
   /**
    * worker 已离开内存的原因：空闲休眠（stopped）/ 崩溃（crashed）。
@@ -1092,6 +1268,8 @@ function SessionRow({
   now: number;
   onClick: () => void;
   onTogglePin: () => void;
+  /** 归档 / 恢复本行（`archived` 决定方向，见 setSessionArchived） */
+  onToggleArchive: () => void;
   onDelete: () => void;
 }): React.JSX.Element {
   const running = startedAt !== undefined;
@@ -1137,7 +1315,7 @@ function SessionRow({
           <span
             className={cn(
               "block truncate text-sm leading-tight",
-              active ? "text-text-primary" : "text-text-secondary",
+              active ? "text-text-primary" : archived ? "text-text-muted" : "text-text-secondary",
             )}
           >
             {session.title}
@@ -1152,6 +1330,7 @@ function SessionRow({
                   : "text-text-muted",
             )}
           >
+            {context && <span className="text-text-muted">{context} · </span>}
             {waiting
               ? waiting === "approval"
                 ? "等待你的授权"
@@ -1166,20 +1345,44 @@ function SessionRow({
           </span>
         </span>
       </button>
+      {/* 图钉只在常规行出现：归档时主进程已解掉图钉（见 session.setArchived），
+          在归档行上画它等于展示一个已被清掉的状态 */}
+      {!archived && (
+        <button
+          type="button"
+          onClick={onTogglePin}
+          title={pinned ? "已钉住 · 不会被自动回收" : "钉住：不让它被自动回收"}
+          aria-label={pinned ? "取消钉住" : "钉住会话"}
+          aria-pressed={pinned}
+          className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded-xs transition hover:bg-line-soft focus:opacity-100",
+            pinned
+              ? "text-accent opacity-100"
+              : "text-text-muted opacity-0 group-hover/session:opacity-100 hover:text-text-primary",
+          )}
+        >
+          <Pin {...ICON.xs} className={pinned ? "fill-current" : undefined} />
+        </button>
+      )}
+      {/* 归档 / 恢复：可逆、不删任何数据（与删除会话的分界）。**归档运行中的会话**会被
+          主进程拒绝（它会从列表消失、却在后台继续跑），故与删除一致地置灰并说明原因；
+          **恢复**不受限——把一条归档会话捞回来是无害的。 */}
       <button
         type="button"
-        onClick={onTogglePin}
-        title={pinned ? "已钉住 · 不会被自动回收" : "钉住：不让它被自动回收"}
-        aria-label={pinned ? "取消钉住" : "钉住会话"}
-        aria-pressed={pinned}
-        className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-xs transition hover:bg-line-soft focus:opacity-100",
-          pinned
-            ? "text-accent opacity-100"
-            : "text-text-muted opacity-0 group-hover/session:opacity-100 hover:text-text-primary",
-        )}
+        onClick={onToggleArchive}
+        disabled={!archived && running}
+        title={
+          !archived && running
+            ? "运行中的会话不可归档"
+            : archived
+              ? "恢复：移回会话列表"
+              : "归档：从列表收起（数据保留）"
+        }
+        aria-label={archived ? "恢复会话" : "归档会话"}
+        data-session-archive={archived ? "restore" : "archive"}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover/session:opacity-100 hover:bg-line-soft hover:text-text-primary focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
       >
-        <Pin {...ICON.xs} className={pinned ? "fill-current" : undefined} />
+        {archived ? <ArchiveRestore {...ICON.xs} /> : <Archive {...ICON.xs} />}
       </button>
       <button
         type="button"

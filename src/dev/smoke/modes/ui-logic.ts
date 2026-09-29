@@ -79,7 +79,7 @@ export async function runUiLogic(
     queuedCount: 0,
     stats: {
       messageCount: 0,
-      inputTokens: 0,
+      promptTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
       costUsd: 0,

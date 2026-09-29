@@ -172,6 +172,18 @@ export function setSessionThinkingLevel(sessionId: string, level: string): void 
 }
 
 /**
+ * 设置会话的归档状态（`active` ⇄ `archived`）。
+ *
+ * **刻意不动 `updated_at`**：归档是「把这条收起来」这个动作，不是会话活动——
+ * 侧栏与「已归档」子区都按 `updated_at` 排序（「最近活动在前」），拿归档动作去刷新它，
+ * 会让一条很久没用的会话因为刚被归档而排到最前，反而误导。要区分「活动时间」与
+ * 「归档动作时间」就该加独立列，而不是复用这一列。
+ */
+export function setSessionStatus(sessionId: string, status: "active" | "archived"): void {
+  getDatabase().prepare("UPDATE sessions SET status = ? WHERE id = ?").run(status, sessionId);
+}
+
+/**
  * 记录一次文件改动，返回新行的自增 id。
  *
  * 返回 id 是为了让调用方**紧接着**把这条改动的净值写回去（`setChangeNet`）——

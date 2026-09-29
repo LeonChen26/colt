@@ -13,6 +13,9 @@
  *      加这一段是因为另两段**都可能为空**，只剩一行「0 处 · 0 文件」的面板太空。
  *      **置顶的理由**：它是三段里**唯一带钱**的结论（花销比进度更早被关心），也是
  *      最容易被满足的一段——没有消耗就整段消失，不留空壳。
+ *      **口径（v1.91）**：这里的「输入」= 送进模型的 prompt 总量（**含缓存命中部分**），
+ *      取 `stats.promptTokens`；**不是**内核那个扣除缓存后的净输入
+ *      （长会话里差一个数量级，见 `worker/lib/prompt-tokens.ts`）。
  *   2. 计划（将来）：待办清单，`N/M` 进度 + 进行中那条（带 `activeForm`）+ 待做；
  *      **已完成折成一行**，点开才铺开。没有清单时**整段不渲染**（不占位）——
  *      「没有清单」与「有清单但此刻空闲」是两件事，前者不该在界面上留一个空壳。
@@ -82,9 +85,24 @@ function SectionHead({
 }
 
 /** 用量格：小标签 + 等宽数值（比 `UsagePanel` 的 Kpi 小一号——它只占任务摘要里的一段） */
-function UsageStat({ label, value }: { label: string; value: string }): React.JSX.Element {
+function UsageStat({
+  kind,
+  label,
+  value,
+  title,
+}: {
+  /** 供冒烟 / 探针认人（别靠结构或标签文字去猜是哪一格） */
+  kind: "input" | "output";
+  label: string;
+  value: string;
+  title?: string;
+}): React.JSX.Element {
   return (
-    <div className="rounded-sm border border-line bg-surface px-2 py-1.5">
+    <div
+      data-usage-token={kind}
+      className="rounded-sm border border-line bg-surface px-2 py-1.5"
+      title={title}
+    >
       <div className="text-2xs text-text-muted">{label}</div>
       <div className="mt-0.5 font-mono text-sm font-semibold text-text-primary">{value}</div>
     </div>
@@ -191,8 +209,13 @@ export function FollowPanel({
           {!usageCollapsed && (
             <div className="px-3.5 pb-2.5">
               <div className="grid grid-cols-2 gap-2">
-                <UsageStat label="输入" value={formatTokenCount(usage.inputTokens)} />
-                <UsageStat label="输出" value={formatTokenCount(usage.outputTokens)} />
+                <UsageStat
+                  kind="input"
+                  label="输入"
+                  value={formatTokenCount(usage.promptTokens)}
+                  title="送进模型的全部 prompt tokens（含缓存命中的部分）"
+                />
+                <UsageStat kind="output" label="输出" value={formatTokenCount(usage.outputTokens)} />
               </div>
               <button
                 type="button"

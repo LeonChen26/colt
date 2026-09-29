@@ -41,6 +41,7 @@ import type { AgentDef } from "./agent-defs";
 import { projectSubagent, type SubagentProjectionInput } from "./subagent-view";
 import { isQuestionTool } from "./ask-user-tool";
 import { toolDurations } from "./tool-bookkeeping";
+import { promptTokensOf } from "./prompt-tokens";
 import { createHandoffTimer, handoffInstruction, type HandoffLimits } from "./subagent-handoff";
 
 /** 工具名常量：注册名与闸门判据**必须同源**（改错会静默变成「委派也要弹卡」） */
@@ -125,7 +126,8 @@ interface SubagentRun {
   /** 走到时间上限、改由「总结交接」收尾（见 `subagent-handoff.ts`） */
   handedOff?: boolean;
   snapshot: LaneSnapshot;
-  stats: { inputTokens: number; outputTokens: number; costUsd: number };
+  /** `promptTokens` 口径与主对话一致：含缓存命中部分（见 `prompt-tokens.ts`） */
+  stats: { promptTokens: number; outputTokens: number; costUsd: number };
   unsubscribe: () => void;
 }
 
@@ -570,7 +572,7 @@ export class Subagents {
       status: "running",
       startedAt: Date.now(),
       snapshot: watch.snapshot,
-      stats: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      stats: { promptTokens: 0, outputTokens: 0, costUsd: 0 },
       unsubscribe: () => watch.unsubscribe(),
     };
     this.#runs.set(id, run);
@@ -579,7 +581,7 @@ export class Subagents {
       reduceLaneSnapshot(run.snapshot, event);
       // 归属统计只认**这条 lane 自己的** usage（usage 事件不按 lane 过滤，所有 watcher 都会收到）
       if (event.type === "usage" && event.lane === id && !event.row.adjustment) {
-        run.stats.inputTokens += event.row.usage.input;
+        run.stats.promptTokens += promptTokensOf(event.row.usage);
         run.stats.outputTokens += event.row.usage.output;
         run.stats.costUsd += event.row.usage.cost.total;
       }

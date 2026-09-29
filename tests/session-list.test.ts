@@ -12,11 +12,11 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { isDraftSession, shouldOfferDraft } from "../src/renderer/src/lib/session.ts";
+import { isDraftSession, shouldOfferDraft, splitArchived } from "../src/renderer/src/lib/session.ts";
 import type { SessionInfo } from "../src/shared/protocol.ts";
 
 /** 造一个会话；`draft` 时按主进程约定把 jsonlPath 置空串 */
-function session(id: string, projectId = "p1", draft = false): SessionInfo {
+function session(id: string, projectId = "p1", draft = false, archived = false): SessionInfo {
   return {
     id,
     projectId,
@@ -28,7 +28,7 @@ function session(id: string, projectId = "p1", draft = false): SessionInfo {
     createdAt: 1,
     updatedAt: 1,
     messageCount: 0,
-    status: "active",
+    status: archived ? "archived" : "active",
   };
 }
 
@@ -70,5 +70,34 @@ describe("shouldOfferDraft：无会话时该不该就地给一条草稿", () => 
 
   test("没有项目 → 不给（该先让用户打开一个目录）", () => {
     assert.equal(shouldOfferDraft(undefined, [], null), false);
+  });
+});
+
+describe("splitArchived：按 status 拆成「常规 / 已归档」两块", () => {
+  test("顺序保持不变，只按 status 分流", () => {
+    const list = [session("a"), session("b", "p1", false, true), session("c"), session("d", "p1", false, true)];
+    const { active, archived } = splitArchived(list);
+    assert.deepEqual(active.map((s) => s.id), ["a", "c"]);
+    assert.deepEqual(archived.map((s) => s.id), ["b", "d"]);
+  });
+
+  test("没有归档会话时，常规块就是原列表、归档块为空", () => {
+    const { active, archived } = splitArchived([session("a"), session("b")]);
+    assert.deepEqual(active.map((s) => s.id), ["a", "b"]);
+    assert.equal(archived.length, 0);
+  });
+
+  test("全部归档时常规块为空——`shouldOfferDraft` 据此才知道该给一条草稿", () => {
+    const { active, archived } = splitArchived([session("a", "p1", false, true)]);
+    assert.equal(active.length, 0);
+    assert.deepEqual(archived.map((s) => s.id), ["a"]);
+    // 归档了就不算「项目里还有会话」：否则只余归档的项目会既不给草稿、又不显示任何行
+    assert.equal(shouldOfferDraft("p1", active, null), true);
+  });
+
+  test("空列表两块都空", () => {
+    const { active, archived } = splitArchived([]);
+    assert.equal(active.length, 0);
+    assert.equal(archived.length, 0);
   });
 });

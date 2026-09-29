@@ -195,7 +195,7 @@ export function sameViewSubagent(a: ViewSubagent, b: ViewSubagent): boolean {
     a.tail.stepCount === b.tail.stepCount &&
     sameRunningTools(a.tail.runningTools, b.tail.runningTools) &&
     sameViewMessageList(a.tail.recentSteps, b.tail.recentSteps) &&
-    a.stats.inputTokens === b.stats.inputTokens &&
+    a.stats.promptTokens === b.stats.promptTokens &&
     a.stats.outputTokens === b.stats.outputTokens &&
     a.stats.costUsd === b.stats.costUsd
   );

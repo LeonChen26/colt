@@ -72,9 +72,19 @@ function SectionHead({ title, note }: { title: string; note?: string }): React.J
 }
 
 /** KPI 卡片：值用等宽字体，量级才好在几块之间横向比较 */
-function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }): React.JSX.Element {
+function Kpi({
+  label,
+  value,
+  sub,
+  title,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  title?: string;
+}): React.JSX.Element {
   return (
-    <div className="rounded-sm border border-line bg-surface px-2.5 py-2">
+    <div className="rounded-sm border border-line bg-surface px-2.5 py-2" title={title}>
       <div className="text-2xs text-text-muted">{label}</div>
       <div className="mt-0.5 font-mono text-base font-semibold text-text-primary">{value}</div>
       {sub !== undefined && <div className="mt-0.5 text-2xs text-text-muted">{sub}</div>}
@@ -169,8 +179,9 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         <Kpi label="模型调用" value={String(totals.calls)} sub="次" />
         <Kpi
           label="输入 / 输出"
-          value={`${formatTokenCount(totals.inputTokens)} / ${formatTokenCount(totals.outputTokens)}`}
+          value={`${formatTokenCount(totals.promptTokens)} / ${formatTokenCount(totals.outputTokens)}`}
           sub="tokens"
+          title="输入 = 送进模型的全部 prompt tokens（含缓存命中的部分），输出 = 模型生成的全部"
         />
         <Kpi
           label="缓存"

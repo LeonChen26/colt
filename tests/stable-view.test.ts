@@ -87,7 +87,7 @@ const SUBAGENT: ViewSubagent = {
     recentSteps: [MESSAGE],
     stepCount: 3,
   },
-  stats: { inputTokens: 10, outputTokens: 2, costUsd: 0.01 },
+  stats: { promptTokens: 10, outputTokens: 2, costUsd: 0.01 },
 };
 
 /**
@@ -204,7 +204,7 @@ describe("稳定投影：逐字段判等", () => {
       !sameViewSubagent(SUBAGENT, { ...SUBAGENT, stats: { ...SUBAGENT.stats, costUsd: 0.02 } }),
     );
     assert.ok(
-      !sameViewSubagent(SUBAGENT, { ...SUBAGENT, stats: { ...SUBAGENT.stats, inputTokens: 11 } }),
+      !sameViewSubagent(SUBAGENT, { ...SUBAGENT, stats: { ...SUBAGENT.stats, promptTokens: 11 } }),
     );
   });
 

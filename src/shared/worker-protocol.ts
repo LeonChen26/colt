@@ -171,8 +171,11 @@ export interface ViewSubagent {
     /** 真实总步数——截断时如实给总数，不许静默裁掉 */
     stepCount: number;
   };
-  /** 子代理自己的消耗（费用计入会话；归属只在这里展示） */
-  stats: { inputTokens: number; outputTokens: number; costUsd: number };
+  /**
+   * 子代理自己的消耗（费用计入会话；归属只在这里展示）。
+   * `promptTokens` 的口径与主对话一致：含缓存命中部分（不是内核的净 `input`）。
+   */
+  stats: { promptTokens: number; outputTokens: number; costUsd: number };
 }
 
 /**
@@ -394,8 +397,17 @@ export interface ConversationView {
   queuedCount: number;
   stats: {
     messageCount: number;
-    inputTokens: number;
+    /**
+     * 「输入」= 送进模型的 prompt 总量（会话累计），**含缓存命中部分**
+     * （= 内核 `input + cacheRead + cacheWrite`，与 `contextUsed` 同一公式）。
+     *
+     * **不要**改成内核的 `Usage.input`：它是**扣除缓存后的净输入**，长会话里会被
+     * 缓存压成一个远小于真实上下文的小数（实测 103K 对 4.0M，差 39 倍），
+     * 于是「输入」看起来比「输出」大不了多少——那是口径错，不是统计坏了。
+     */
+    promptTokens: number;
     outputTokens: number;
+    /** 内核给的会话累计总量（= promptTokens + outputTokens） */
     totalTokens: number;
     costUsd: number;
     /**

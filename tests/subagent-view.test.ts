@@ -41,7 +41,7 @@ const base = {
   title: "查一下 read 工具在哪注册",
   status: "running" as const,
   startedAt: 100,
-  stats: { inputTokens: 10, outputTokens: 2, costUsd: 0.01 },
+  stats: { promptTokens: 10, outputTokens: 2, costUsd: 0.01 },
 };
 
 describe("projectSubagent：尾部有界且截断如实", () => {
@@ -130,7 +130,7 @@ describe("projectSubagent：尾部有界且截断如实", () => {
   });
 
   test("统计是**复制**一份，不与输入共享引用（免得后续累加改到调用方的对象）", () => {
-    const stats = { inputTokens: 10, outputTokens: 2, costUsd: 0.01 };
+    const stats = { promptTokens: 10, outputTokens: 2, costUsd: 0.01 };
     const view = projectSubagent({ ...base, stats, snapshot: snapshot({ transcript: [] }) });
     assert.deepEqual(view.stats, stats);
     assert.notStrictEqual(view.stats, stats);
