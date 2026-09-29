@@ -904,6 +904,42 @@ export async function runSessionDraft(
       Math.abs(wide0.taLh / wide0.taSize - 1.625) <= 0.01,
     ]);
 
+    // ---- 宽度一变，输入框高度必须跟着重算（v1.92 修）----
+    // `scrollHeight` 是「内容在**当前宽度**下折几行」的高度，而上面那个 effect 只认 `input`：
+    // 宽度变化它一概不管。启动首帧若量在被挤成 0 宽的中栏上，长 placeholder（Chromium 把它
+    // 当正文计入 scrollHeight）折成一大坨、被 `min(…, 180)` 钳死在 180px，之后打字 / 切会话才
+    // 恢复。这里把输入卡片**压窄再放开**制造同一个宽度骤变（首屏 / 拖栏 / 缩窗口都属这一类）：
+    // 压窄后高度应顶到上限，放开后必须回到原值——停在旧值就是没重算。
+    const widthSwing = await run<{ before: number; narrow: number; after: number }>(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const card = document.querySelector("[data-conv-card]");
+      const ta = card ? card.querySelector("textarea") : null;
+      if (!card || !ta) return { before: -1, narrow: -1, after: -1 };
+      const h = () => Math.round(ta.getBoundingClientRect().height);
+      const before = h();
+      card.style.width = "40px";
+      await sleep(80);
+      const narrow = h();
+      card.style.width = "";
+      await sleep(80);
+      const after = h();
+      return { before, narrow, after };
+    })()`);
+    log(
+      `宽度骤变后的输入框高度：压窄前 ${widthSwing.before}px → 压窄后 ${widthSwing.narrow}px → 放开后 ${widthSwing.after}px`,
+    );
+    checks.push([
+      `把输入框压窄，高度跟着顶到上限（${widthSwing.before} → ${widthSwing.narrow}）`,
+      widthSwing.narrow > widthSwing.before + 20,
+    ]);
+    checks.push([
+      `放开宽度后高度自动重算回原值（${widthSwing.narrow} → ${widthSwing.after}）`,
+      // 先要求它**真的被压窄过**（否则「放开后 == 压窄前」在任何实现下都成立，
+      // 是条必然为真的空断言——AGENTS.md §五⑫）
+      widthSwing.narrow > widthSwing.before + 20 &&
+        Math.abs(widthSwing.after - widthSwing.before) <= 2,
+    ]);
+
     // 拖拽必须拆成「按下」与「移动+抬起」两次 executeJavaScript：按下之后 React 才在 window 上
     // 挂监听，同一个同步块里紧接着派发 move 会丢事件（`dock` 模式同一个坑，见 AGENTS.md §五①）。
     // 位移刻意给到远超上限：钳到哪一格由产品自己算（AGENTS.md §五②：断言别写死像素）。

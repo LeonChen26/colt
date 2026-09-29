@@ -1009,6 +1009,40 @@ export function Conversation({
   }, [input, resizeInput]);
 
   /**
+   * 宽度一变就得重算高度（v1.92 修）。
+   *
+   * `scrollHeight` 不是「内容有多高」这一个定值，而是「**内容在当前宽度下**折成几行」的高度——
+   * textarea 的文本没有硬换行，全靠盒宽折行。输入框是空的，被量的其实是那句长 placeholder
+   * （Chromium 把 placeholder 当正文排版并计入 `scrollHeight`；实测同一个空框：宽 326 以上是
+   * 54px，宽 60 就顶到 180px 上限，把 placeholder 拿掉则任何宽度都恒为 54px）。
+   *
+   * 上面那个 effect 只认 `input`，于是**宽度变化它一概不管**：启动首帧若量在被挤成 0 宽的中栏上
+   * （那一帧右栏宽度先于可用空间就位，见 `useDockWidth`），长 placeholder 折成一大坨、高度被
+   * `min(…, 180)` 钳死成 180px（≈8 行），之后打字（`input` 变）或切会话（组件重挂载）才重算。
+   * 拖右栏、缩放窗口同理——折行数变了，盒子却停在旧值。
+   *
+   * 只认**宽度**变化：`resizeInput` 自己会改高度，笼统地重算会被自己触发成回环。
+   * 首个回调只记录基线、不重算（挂载时那一次已由上面那个 effect 做过）。
+   */
+  useEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    let lastWidth: number | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (lastWidth === null) {
+        lastWidth = width;
+        return;
+      }
+      if (Math.abs(width - lastWidth) < 0.5) return;
+      lastWidth = width;
+      resizeInput();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [resizeInput]);
+
+  /**
    * 起手态：还没有任何内容可看——没消息、没在启动、没报错、也没待办提示。
    *
    * `view` 为 null 时（草稿会话没有 worker）用 `?? 0` 兜底：`null === 0` 是 false，
