@@ -16,13 +16,14 @@ import { resolveSessionModel } from "@shared/model-ref";
 import { isSkillFilePath } from "@shared/skill-path";
 import { runEnvCheck } from "../env-check";
 import { readCommittedFiles, readGitStatus } from "../git";
-import { defaultScratchBase, scratchRootPath } from "../lib/scratch-dir";
+import { defaultScratchBase, scratchRootPath, taskBaseRoot, taskSessionRoot } from "../lib/scratch-dir";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
 import {
   createSession,
   deleteProject,
   deleteSession,
+  ensureTaskProject,
   getFileBaseline,
   getProject,
   getSession,
@@ -80,7 +81,9 @@ function resolveSessionRoot(sessionId: string): string {
   if (session === undefined) throw new Error("会话不存在");
   const project = getProject(session.projectId);
   if (project === undefined) throw new Error("项目不存在");
-  return project.rootPath;
+  // 会话有自己的目录（任务会话，落库时算好存下的时间子目录）就优先用它；
+  // null（普通空间会话、旧行）回落到项目根——两者都出自主进程，信任假设不变。
+  return session.cwd ?? project.rootPath;
 }
 
 /**
@@ -215,12 +218,27 @@ const drafts = new Map<
   { projectId: string; modelRef: string | null; thinkingLevel: ThinkingLevel | null }
 >();
 
-/** 把草稿落库；不是草稿则什么都不做。落库后立刻从草稿表移除，避免二次落库 */
+/**
+ * 把草稿落库；不是草稿则什么都不做。落库后立刻从草稿表移除，避免二次落库。
+ *
+ * 任务会话在此刻**建自己的工作目录**（`<任务基目录>/<时间戳>`，见 `taskSessionRoot`）：
+ * 先 mkdir 再落库——目录必须先存在，worker 一启动 cwd 就指着它。普通空间会话 cwd 为
+ * null（跟随项目根）。目录在落库时刻算而不是建草稿时刻：草稿可能被丢掉，为一条没发过
+ * 消息的草稿建目录，`~/.colt/tasks` 下会攒出一堆空壳。
+ */
 function materializeDraft(sessionId: string): void {
   const draft = drafts.get(sessionId);
   if (!draft) return;
   drafts.delete(sessionId);
-  createSession(draft.projectId, jsonlPathFor(draft.projectId), sessionId);
+  let cwd: string | null = null;
+  if (getProject(draft.projectId)?.kind === "task") {
+    cwd = taskSessionRoot(
+      taskBaseRoot(app.getPath("home"), process.env.COLT_WORKSPACE_ROOT),
+      new Date(),
+    );
+    mkdirSync(cwd, { recursive: true });
+  }
+  createSession(draft.projectId, jsonlPathFor(draft.projectId), sessionId, cwd);
   // 落库前在草稿上选过的模型要跟着走：不然用户「先选模型再发消息」的那一步会被丢掉
   if (draft.modelRef) setSessionModel(sessionId, draft.modelRef);
   if (draft.thinkingLevel) setSessionThinkingLevel(sessionId, draft.thinkingLevel);
@@ -339,6 +357,20 @@ export function registerIpcHandlers(): void {
   });
 
   /**
+   * 取（必要时创建）任务工作区：不指定空间（目录）新建的会话全归到它名下（「任务」栏）。
+   *
+   * 与 createScratch 的分工：那边是「就给我一块干净地方」，一次一个时间戳目录；
+   * 这边是任务栏的**固定**落点（`~/.colt/tasks/workspace`，冒烟下为
+   * `<COLT_WORKSPACE_ROOT>/tasks`），幂等——已登记就直接返回，目录缺失才创建。
+   * 渲染层在启动时调一次，之后「新建会话」就按它的 id 建任务会话。
+   */
+  handle("project.ensureTask", () => {
+    const root = taskBaseRoot(app.getPath("home"), process.env.COLT_WORKSPACE_ROOT);
+    mkdirSync(root, { recursive: true });
+    return ensureTaskProject(root);
+  });
+
+  /**
    * 注销工作区：断开登记并清掉它名下的**全部会话**（记录 + 派生数据 + JSONL 历史）。
    *
    * **不碰磁盘上的项目目录**——那是用户的源码；注销登记 ≠ 删代码，目录还在的话之后
@@ -378,7 +410,8 @@ export function registerIpcHandlers(): void {
       modelRef: null,
       thinkingLevel: null,
     });
-    // 与真实会话同形，界面无需特殊分支；jsonlPath 为空串——文件要等首次发消息才存在
+    // 与真实会话同形，界面无需特殊分支；jsonlPath 为空串——文件要等首次发消息才存在；
+    // cwd 为 null——任务会话自己的目录要等落库时刻才建（见 materializeDraft）
     const draft: SessionInfo = {
       id,
       projectId: request.projectId,
@@ -391,6 +424,7 @@ export function registerIpcHandlers(): void {
       updatedAt: now,
       messageCount: 0,
       status: "active",
+      cwd: null,
     };
     return draft;
   });
@@ -791,7 +825,15 @@ export function registerIpcHandlers(): void {
   // 但要把「页面已经不是你离开时那页」告知正在跑的 agent（见 sessionManager 上的说明）。
   handle("browser.navigate", (request) => {
     const { state, notice } = hostBridge.browserNavigate(request.sessionId, request.action);
-    if (notice.length > 0) sessionManager.notifyUserBrowserNavigation(request.sessionId, notice);
+    if (notice.length > 0) sessionManager.notifyBrowserNotice(request.sessionId, notice);
+    return state;
+  });
+  // 用户接管 / 交还浏览器（两端显式）。与 browser.navigate 同一形态：发起方是用户、不走审批，
+  // 但它**会改变 agent 的动作权限**（接管期间改动类动作被拒），所以必须把这件事告知
+  // 正在跑的 agent——否则它只会反复撞墙，而不知道为什么。
+  handle("browser.control", (request) => {
+    const { state, notice } = hostBridge.browserSetControl(request.sessionId, request.byUser);
+    if (notice.length > 0) sessionManager.notifyBrowserNotice(request.sessionId, notice);
     return state;
   });
   // 撤销 agent 留下的视口联调覆盖（B1 排查中发现的问题）：覆盖是持久状态，

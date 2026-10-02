@@ -89,4 +89,44 @@ describe("browser_act 动作链分派校验", () => {
     assert.ok(typeCall !== undefined, "type 动作真的发到了宿主");
     assert.equal(typeCall.params.text, "", "显式空串不被 definedParams 吃掉（清空是合法意图）");
   });
+
+  test("链中 key 缺键名 → 拒绝并点名下标（宿主侧的报错指不到「链里第几个」）", async () => {
+    await rejects(
+      {
+        actions: [
+          { action: "type", ref: "e1", text: "搜索词" },
+          { action: "key" }, // 漏了键名
+        ],
+      },
+      /actions\[1\].*缺少 key/,
+    );
+  });
+
+  test("单发 key：键名与修饰键原样下发（不拼成字符串，宿主侧按数组校验）", async () => {
+    const { bridge, calls } = recordingBridge();
+    await callAct({ action: "key", key: "a", modifiers: ["ctrl"] }, bridge);
+    const call = calls.find((item) => item.action === "key");
+    assert.ok(call !== undefined, "key 动作真的发到了宿主");
+    assert.equal(call.params.key, "a");
+    assert.deepEqual(call.params.modifiers, ["ctrl"]);
+  });
+
+  test("链里的 key 也逐动作下发（回车提交就靠它）", async () => {
+    const { bridge, calls } = recordingBridge();
+    const result = await callAct(
+      {
+        actions: [
+          { action: "type", ref: "e1", text: "搜索词" },
+          { action: "key", key: "Enter" },
+        ],
+      },
+      bridge,
+    );
+    const call = calls.find((item) => item.action === "key");
+    assert.ok(call !== undefined);
+    assert.equal(call.params.key, "Enter");
+    const first = result.content[0];
+    assert.ok(first !== undefined && first.type === "text");
+    assert.match(first.text, /动作链完成/);
+  });
 });

@@ -53,3 +53,32 @@ export function scratchRootPath(base: string, at: Date, override?: string): stri
   if (trimmed) return trimmed;
   return join(base, scratchDirName(at), WORKSPACE_LEAF);
 }
+
+/**
+ * 任务基目录：任务工作区项目行的 rootPath，也是任务会话各自目录的父目录。
+ * 默认 `~/.colt/tasks`；`override`（`COLT_WORKSPACE_ROOT`，冒烟用）非空时用 `<override>/tasks`
+ * ——注意要**再拼一层**而不是原样用它本身：那个路径本身是「新建工作目录」的落点，会被
+ * 登记成普通项目、被 model 冒烟切过去，任务目录不能和它撞在同一个目录上。
+ *
+ * v1.94 起任务会话**不再共用一个固定工作区**：每个会话落库时在它下面按时间建一个子目录
+ * （见 `taskSessionRoot`）——不然几十个会话的产物混在一个目录里互相踩。所以这里返回的是
+ * **基目录**，没有 `workspace/` 叶子；它同时是任务项目行的 rootPath（审批边界对旧会话
+ * 回落到它，新会话回落不到——它们有自己的 cwd）。
+ */
+export function taskBaseRoot(home: string, override?: string): string {
+  const trimmed = override?.trim();
+  if (trimmed) return join(trimmed, "tasks");
+  return join(home, ".colt", "tasks");
+}
+
+/**
+ * 单个任务会话的工作目录：`<base>/<年月日-时分秒>`。
+ *
+ * 在会话**落库时刻**算一次、存进 `sessions.cwd`，之后不再变——worker 的 cwd、审批边界、
+ * 记忆隔离全从它读。复用 `scratchDirName`（精确到秒）：同一秒内落库两个任务会话才会撞名，
+ * 那需要两条草稿在同一秒各自发出首条消息，人手做不到；撞了也只是共享目录，不丢数据。
+ * 刻意**不带** `workspace/` 叶子：任务目录里每个时间戳就是一个会话的全部，平铺最好找。
+ */
+export function taskSessionRoot(base: string, at: Date): string {
+  return join(base, scratchDirName(at));
+}

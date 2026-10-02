@@ -35,6 +35,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Globe,
+  Hand,
   FolderTree,
   MonitorSmartphone,
   MoveHorizontal,
@@ -43,6 +44,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   SquareTerminal,
+  Undo2,
   X,
   ZoomOut,
 } from "lucide-react";
@@ -263,6 +265,7 @@ export function WorkspaceDock({
   fileRequest,
   subagentRequest,
   onBrowserNav,
+  onBrowserControl,
   onResetViewport,
   onBrowserZoom,
   instances,
@@ -279,6 +282,13 @@ export function WorkspaceDock({
   browser: BrowserViewState | null;
   /** 用户点后退 / 前进 / 刷新（B1）；发起方是用户，不走审批 */
   onBrowserNav: (action: BrowserNavAction) => void;
+  /**
+   * 用户接管 / 交还浏览器（**两端都显式**）。接管期间 agent 的改动类动作会被拒绝。
+   *
+   * 与 `onBrowserNav` 同一形态：不写回返回值——新状态由主进程经 `browser.state` 推回来。
+   * 不自动接管：那与「面板不可见就拦」是同一类错误（替用户表达意愿）。
+   */
+  onBrowserControl: (byUser: boolean) => void;
   /** 用户点「恢复」撤销 agent 留下的视口联调覆盖 */
   onResetViewport: () => void;
   /**
@@ -422,6 +432,9 @@ export function WorkspaceDock({
    * 页面明明已经装下、横条却仍挂在那里说「右侧看不到」——一条立刻在撒谎的提示。
    */
   const zoom = browser?.zoom ?? 1;
+  // 控制态：谁在操作这个浏览器。两个标记都由主进程算好（含 30 秒窗口），渲染层不自己计时
+  const controlledByUser = browser?.controlledByUser === true;
+  const agentActing = browser?.agentActing === true;
   const needWidth = Math.round(contentWidth * zoom);
   const stillClipped = contentWidth > 0 && areaWidth > 0 && needWidth > areaWidth + 1;
   const clippedX = override === null && stillClipped;
@@ -615,8 +628,10 @@ export function WorkspaceDock({
 
       {showBrowser ? (
         <div className="flex min-h-0 flex-1 flex-col">
-          {/* 顶部信息条：原生视图压在下方，「页面区域」之外的东西由渲染层画 */}
-          <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
+          {/* 顶部信息条：原生视图压在下方，「页面区域」之外的东西由渲染层画。
+              `dock-browser-head` 是容器查询的容器（按**右栏宽度**响应，不是窗口宽度）：
+              最窄栏下地址与装饰先让位、出口只缩成图标，见 styles.css 里那一段。 */}
+          <div className="dock-browser-head flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
             {/* 用户自己的浏览控制（B1）。与 agent 的 browser_act 是两条链路：那条走审批，
                 这条是用户在直接操作这个浏览器、没有可审批的对象；但页面被换掉后 agent
                 手里那份判断会过期，故主进程会顺带把这件事告知正在跑的 agent。 */}
@@ -655,7 +670,7 @@ export function WorkspaceDock({
                 <RotateCw {...ICON.xs} />
               </button>
             </div>
-            <Globe {...ICON.xs} className="shrink-0 text-text-muted" />
+            <Globe {...ICON.xs} className="bh-hide-narrow shrink-0 text-text-muted" />
             {/* min-w-0 + flex-1：让地址先被截断，把位置留给右侧的联调标记——
                 否则地址会把标记挤出可视区，那就成了「看不见的出口」（等于没有）。 */}
             <span
@@ -694,9 +709,11 @@ export function WorkspaceDock({
                   data-browser-viewport-reset=""
                   onClick={onResetViewport}
                   title="恢复自适应视口，交还给按停靠区尺寸的布局"
-                  className="shrink-0 rounded-xs bg-warning px-1.5 py-[3px] text-xs font-semibold text-accent-fg transition hover:opacity-90"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-xs bg-warning px-1.5 py-[3px] text-xs font-semibold text-accent-fg transition hover:opacity-90"
                 >
-                  恢复
+                  {/* 同接管出口：窄栏下只剩图标。（它的宽栏外观不变：图标只在窄栏渲染） */}
+                  <Undo2 {...ICON.xs} className="bh-icon-only" />
+                  <span className="bh-hide-narrow">恢复</span>
                 </button>
               </span>
             )}
@@ -725,6 +742,48 @@ export function WorkspaceDock({
                 </button>
               </span>
             )}
+            {/* 控制态：**谁**在操作这个浏览器。
+                「Agent 正在操作」回答的是**归属**而非「有变化”——真实输入后页面会不会动取决于
+                页面自己（有的按钮点下去毫无反馈），用户看到「闪了一下」分不清是 agent 干的还是自己误触。
+                窗口（30 秒，两条动作之间隔着模型思考，按请求粒度算会闪断）由主进程算好，
+                这里只按字段渲染。
+                接管是**两端显式**的：进要用户点、出也要用户点。**不自动接管**——
+                那与我们已撤掉的「面板不可见就拦」是同一类错误：替用户表达意愿。 */}
+            {agentActing && !controlledByUser && (
+              <span
+                data-browser-agent-acting=""
+                title="Agent 正在操作这个浏览器（最近 30 秒内有过改动类动作）"
+                className="flex shrink-0 items-center gap-1 rounded-sm border border-warning bg-warning-soft px-1.5 py-[3px] text-xs font-medium leading-none text-warning"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+                {/* 窄栏下只留这个圆点（它是最次要的一枚提示，且 title 里说清了是什么） */}
+                <span className="bh-hide-narrow">Agent 正在操作</span>
+              </span>
+            )}
+            {/* 状态与出口合一：非接管时是一个低调的「接管」，已接管时变成醒目的
+                「你在操作 · 交还」——既然接管期间 agent 的改动会被拒，用户就必须随时看得出
+                自己处在哪个态，否则他会以为「agent 卡住了」而不是「我接管了」。
+                `shrink-0`：它是出口，窄栏下也不能被挤出去（同联调标记那条教训）。 */}
+            <button
+              type="button"
+              data-browser-control={controlledByUser ? "release" : "take"}
+              onClick={() => onBrowserControl(!controlledByUser)}
+              title={
+                controlledByUser
+                  ? "交还浏览器操作：交还后 agent 可以继续改动页面（它会被通知到）"
+                  : "接管浏览器操作：接管期间 agent 的改动类动作会被拒绝（只读动作不受影响）"
+              }
+              className={
+                controlledByUser
+                  ? "inline-flex shrink-0 items-center gap-1 rounded-xs bg-warning px-1.5 py-[3px] text-xs font-semibold text-accent-fg transition hover:opacity-90"
+                  : "inline-flex shrink-0 items-center gap-1 rounded-xs px-1.5 py-[3px] text-xs font-medium text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+              }
+            >
+              {/* 图标只在窄栏出现（宽栏有文字，图标是白占的宽度）；它让这个出口在最窄栏里
+                  仍是「一个点得到的小目标」——原来那串字会被挤到窗口右边之外。 */}
+              <Hand {...ICON.sm} className="bh-icon-only" />
+              <span className="bh-hide-narrow">{controlledByUser ? "你在操作 · 交还" : "接管"}</span>
+            </button>
           </div>
           {/* 页面装不下且够不到的说明。它**必须**占一条独立的横条而不是挤进 30px 的工具条：
               工具条那一行已经有地址与联调标记在抢位置，再塞一句长文案只会被截断成半个词，

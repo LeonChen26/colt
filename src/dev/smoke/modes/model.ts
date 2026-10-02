@@ -8,7 +8,7 @@
  */
 import { app, BrowserWindow } from "electron";
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   createSession,
   deleteSession,
@@ -622,6 +622,10 @@ export async function runSessionDraft(
   // 起手区「新建工作目录」的落点：由 harness 指到 out/ 下（见 smoke/index.ts 顶部）。
   // 期望值从**同一个环境变量**读出来，不把 out/ 的路径写死在用例里——同源才不会被改漏。
   const scratchRoot = process.env.COLT_WORKSPACE_ROOT ?? "";
+  // 任务基目录（v1.94）：不指定空间的新会话全归它名下，草稿态显示的就是它；
+  // 落库后每个会话在它下面再建自己的时间子目录（sessions.cwd）。落点与主进程同源——
+  // `<COLT_WORKSPACE_ROOT>/tasks`（见 taskBaseRoot），同样钉在 out/ 下。
+  const taskRoot = scratchRoot ? join(scratchRoot, "tasks") : "";
   const savedDeepseekKey = getSecret("deepseek");
   // 另起一个**空**项目：只有它一个会话都没有，才谈得上「打开就见输入框」。
   // 路径固定（不随机），免得每跑一次就往库里多塞一行项目记录。
@@ -865,7 +869,10 @@ export async function runSessionDraft(
       "起手区显示的目录就是这条会话的项目目录",
       (start.workdir ?? "").includes("smoke-draft-empty-fixture"),
     ]);
+    // 「新建工作目录」已收进目录按钮的下拉菜单（v1.93）：先点开菜单，再做命中测试。
     // 小目标入口照例做命中测试：只查「在 DOM 里」发现不了「被顶出可视区 / 上面盖着别的元素」
+    await run(`(() => { document.querySelector("[data-conv-dirmenu]")?.click(); return null; })()`);
+    await sleep(200);
     const newdirHit = await run<string>(`(() => {
       const btn = document.querySelector("[data-conv-newdir]");
       if (!btn) return "missing";
@@ -874,7 +881,10 @@ export async function runSessionDraft(
       const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       return at && (at === btn || btn.contains(at)) ? "ok" : "blocked";
     })()`);
-    checks.push([`「新建工作目录」按钮落在可视区且命中它自己（${newdirHit}）`, newdirHit === "ok"]);
+    checks.push([`「新建工作目录」菜单项落在可视区且命中它自己（${newdirHit}）`, newdirHit === "ok"]);
+    // 收起菜单，别让浮层盖住后续探针的目标
+    await run(`(() => { document.querySelector("[data-conv-dirmenu]")?.click(); return null; })()`);
+    await sleep(200);
 
     // ---- 拉伸右栏：中栏压到下限时起手态不许被裁、也不许跑偏 ----
     // 先把宽度拉回统一默认值，**显式**建立基线：否则「拉伸前」读到的只是上一次运行留下的宽度。
@@ -1015,6 +1025,9 @@ export async function runSessionDraft(
     // 什么都不选时的一键出口：点它 → 主进程建目录 + 登记项目 → 界面切过去。
     // 落点由 harness 指到 out/ 下且**固定**，所以这里既不碰真实家目录，也不会攒目录/项目行。
     if (scratchRoot) {
+      // 「新建工作目录」在目录按钮的下拉菜单里：先开菜单再点菜单项
+      await run(`(() => { document.querySelector("[data-conv-dirmenu]")?.click(); return null; })()`);
+      await sleep(200);
       await run(`(() => { document.querySelector("[data-conv-newdir]")?.click(); return null; })()`);
       let switched: StartProbe | null = null;
       for (let i = 0; i < 20; i += 1) {
@@ -1037,10 +1050,11 @@ export async function runSessionDraft(
       log("跳过「新建工作目录」：未设 COLT_WORKSPACE_ROOT，环境前提未建立（AGENTS.md §五⑬）");
     }
 
-    // 全局「新建会话」（v1.84）：常驻在项目列表上方、不靠 hover 显形，但它照样要做命中测试——
-    // 「在 DOM 里」不等于「点得到」。目标项目按既有规则取 `activeProject`——注意**此刻不是**
-    // 夹具空项目：上面「新建工作目录」那节已经把当前项目换成 `out/smoke-workspace`。所以判据
-    // 取「起手区显示的目录**没变**」：不硬编码是哪个项目，只钉住「没跑到别的项目去建」。
+    // 全局「新建会话」（v1.84）：常驻在侧栏上方、不靠 hover 显形，但它照样要做命中测试——
+    // 「在 DOM 里」不等于「点得到」。v1.93 起它**不指定空间**：会话建到任务栏，起手区目录
+    // 应换成任务基目录（`<COLT_WORKSPACE_ROOT>/tasks`），而不再是当前选中的空间。
+    // （目录是**每会话一个**的时间子目录，落库才建——见本模式末尾的 v1.94 用例；
+    //   草稿态 cwd 还是 null，显示的就是这个基目录。）
     const globalHit = await run<{ found: boolean; top: boolean }>(`(() => {
       const btn = document.querySelector("[data-sidebar-new-session]");
       if (!btn || btn.disabled) return { found: false, top: false };
@@ -1050,27 +1064,32 @@ export async function runSessionDraft(
     })()`);
     checks.push(["[v1.84] 侧栏顶部「新建会话」按钮在可视区且可点", globalHit.found && globalHit.top]);
 
-    const beforeDir = (await run<StartProbe>(startProbe)).workdir;
+    const before = await run<{ session: string | null; hasInput: boolean; rows: number }>(probeCard);
     await run(`(() => { document.querySelector("[data-sidebar-new-session]")?.click(); return null; })()`);
     await sleep(800);
     const viaGlobal = await run<{ session: string | null; hasInput: boolean; rows: number }>(probeCard);
     const globalStart = await run<StartProbe>(startProbe);
     log(
       `点顶部「新建会话」后：输入框=${viaGlobal.hasInput}，当前会话=${viaGlobal.session ?? "（无）"}，` +
-        `侧栏行数=${viaGlobal.rows}，目录=${globalStart.workdir ?? "（无）"}（点前 ${beforeDir ?? "（无）"}）`,
+        `侧栏行数=${viaGlobal.rows}（点前 ${before.rows}），目录=${globalStart.workdir ?? "（无）"}（点前 ${before.session ? "（草稿）" : "（无）"}）`,
     );
     checks.push([
       "点顶部「新建会话」后换成了新的一条草稿",
-      viaGlobal.session !== null && viaGlobal.session !== draftId,
+      viaGlobal.session !== null && viaGlobal.session !== draftId && viaGlobal.session !== before.session,
     ]);
-    checks.push(["点顶部「新建会话」后侧栏仍没有多出会话", viaGlobal.rows === 0]);
+    // 草稿不进侧栏——任务栏的会话行数在点前点后必须一致（不写死 0：任务栏里可能有
+    // 之前运行留下的历史任务，那与本断言无关，不跟着陪绑）
+    checks.push([
+      "点顶部「新建会话」后侧栏没有多出会话（草稿不进侧栏）",
+      viaGlobal.rows === before.rows,
+    ]);
     checks.push([
       "点顶部「新建会话」后那条草稿没有落库",
       viaGlobal.session !== null && getSession(viaGlobal.session) === undefined,
     ]);
     checks.push([
-      "顶部按钮建到当前选中的项目（起手区目录没变）",
-      beforeDir !== null && globalStart.workdir === beforeDir,
+      "顶部按钮建到任务栏（起手区目录换成任务工作目录）",
+      globalStart.workdir !== null && globalStart.workdir === taskRoot,
     ]);
     draftId = viaGlobal.session;
 
@@ -1178,6 +1197,59 @@ export async function runSessionDraft(
       if (!appeared) await sleep(500);
     }
     checks.push(["落库后侧栏出现了这条会话（转正）", appeared]);
+
+    // ---- v1.94：任务会话落库时建**自己的**时间子目录（sessions.cwd）----
+    // 放在本节最后：落库后它会进侧栏任务栏，提前落库会污染前面所有「行数」类断言。
+    // 现场造一条任务草稿（与顶部「新建会话」同语义：projectId = 任务工作区），走生产的
+    // session.prompt 落库，断言：① 库行带 cwd；② cwd 是任务基目录下的 YYYYMMDD-HHmmss
+    // 子目录、磁盘上真的建了（先 mkdir 再落库，worker 一启动 cwd 就指着它）；③ 不是基目录
+    // 本身——目录每会话一个，不共用。
+    const taskProject = listProjects().find((item) => item.kind === "task");
+    if (taskProject && taskRoot) {
+      const taskDraftId = await run<string | null>(
+        `window.colt.invoke("session.create", ${JSON.stringify({ projectId: taskProject.id })})` +
+          `.then((s) => s.id).catch(() => null)`,
+      );
+      const taskOutcome =
+        taskDraftId === null
+          ? "（建草稿失败）"
+          : await run<string>(
+              `window.colt.invoke("session.prompt", ${JSON.stringify({
+                sessionId: taskDraftId,
+                text: "hi",
+              })})` + `.then(() => "OK").catch((e) => String((e && e.message) || e))`,
+            );
+      log(`任务会话首条消息结果：${taskOutcome}`);
+      checks.push(["任务会话首条消息未被挡下", taskOutcome === "OK"]);
+
+      const taskRow = taskDraftId === null ? undefined : getSession(taskDraftId);
+      const taskDirName = taskRow?.cwd ? basename(taskRow.cwd) : "";
+      checks.push([
+        "任务会话落库后带上自己的工作目录（sessions.cwd）",
+        Boolean(taskRow?.cwd),
+      ]);
+      checks.push([
+        "任务会话目录是任务基目录下的时间子目录，且已在磁盘上建好",
+        Boolean(
+          taskRow?.cwd &&
+            dirname(taskRow.cwd) === taskRoot &&
+            /^\d{8}-\d{6}$/.test(taskDirName) &&
+            existsSync(taskRow.cwd),
+        ),
+      ]);
+      checks.push([
+        "任务会话不共用基目录（cwd 不是任务基目录本身）",
+        Boolean(taskRow?.cwd && taskRow.cwd !== taskRoot),
+      ]);
+
+      // 收尾：关 worker、删库行——JSONL 由下面的无主清理统一收走
+      if (taskDraftId) {
+        sessionManager.close(taskDraftId);
+        deleteSession(taskDraftId);
+      }
+    } else {
+      log("跳过 v1.94 任务目录用例：任务工作区或 COLT_WORKSPACE_ROOT 未就位");
+    }
   } finally {
     // 把这个项目还给「空」：否则下次跑到这里，「打开就见输入框」的前提就不成立了
     for (const leftover of listSessions(emptyProject.id)) {

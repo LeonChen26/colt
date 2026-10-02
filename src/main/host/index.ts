@@ -10,7 +10,7 @@
 import type { BrowserNavAction, BrowserObservation, BrowserViewState } from "@shared/protocol";
 import type { HostCapability, HostResult } from "@shared/worker-protocol";
 import type { BrowserWindow } from "electron";
-import { BrowserHost, type BrowserNavigation } from "./browser-host";
+import { BrowserHost, type BrowserControl, type BrowserNavigation } from "./browser-host";
 import { ComputerHost } from "./computer-host";
 import { MemoryHost } from "./memory-host";
 import {
@@ -74,6 +74,23 @@ export class HostBridge {
   /** 开 / 关「适应宽度」（用户点装不下那条横条上的按钮，或点头部的缩放指示还原） */
   browserSetZoom(sessionId: string, fit: boolean): BrowserViewState {
     return this.#browser.setZoom(sessionId, fit);
+  }
+
+  /** 用户接管 / 交还浏览器（两端显式）；真源在 BrowserHost，这里只转发 */
+  browserSetControl(sessionId: string, byUser: boolean): BrowserControl {
+    return this.#browser.setControl(sessionId, byUser);
+  }
+
+  /**
+   * 审批**前置**判断：用户接管期间，改动类 `browser_act` 在弹卡之前就被否决的理由；
+   * 不构成否决时返回 undefined（理由由 BrowserHost 出，见其 `controlBlock`）。
+   */
+  browserControlBlock(
+    sessionId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): string | undefined {
+    return this.#browser.controlBlock(sessionId, toolName, args);
   }
 
   /** 读取会话的浏览器观测快照（B2：控制台 / 网络 / 下载） */

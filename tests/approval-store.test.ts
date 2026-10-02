@@ -870,3 +870,67 @@ describe("ApprovalStore 补充：规则优先级与边界", () => {
     assert.equal(instance.listPending("s2").length, 0);
   });
 });
+
+describe("前置否决（setPrecheck）", () => {
+  /**
+   * 前置否决是「环境态否决」：理由直接成为拒绝决定，**不进队列、不放行、不分析**。
+   * 唯一接线场景是「用户已接管浏览器 ⇒ 改动类 browser_act」，因此这里用同样的形状验证，
+   * 确保「接管后还要先弹一张注定失败的卡」这条路被堵死。
+   */
+  const clickCall = {
+    sessionId: SESSION,
+    toolCallId: "c1",
+    toolName: "browser_act",
+    argsJson: JSON.stringify({ action: "click", ref: "e1" }),
+    now: 1,
+  };
+
+  test("否决理由直接成为拒绝决定，且不进入待审队列", () => {
+    const instance = store();
+    instance.setPrecheck((_sessionId, invocation) =>
+      invocation.toolName === "browser_act" && invocation.args.action === "click"
+        ? `已接管：拒绝 ${String(invocation.args.action)}`
+        : undefined,
+    );
+
+    const outcome = instance.evaluate(clickCall);
+    assert.ok("decision" in outcome, "应当直接裁决，而不是挂起");
+    if (!("decision" in outcome)) throw new Error("unreachable");
+    assert.equal(outcome.decision.approved, false);
+    assert.match(outcome.decision.reason, /已接管/);
+    assert.equal(instance.listPending(SESSION).length, 0, "被前置否决的操作不该弹卡");
+  });
+
+  test("否决拿到的是解析后的入参对象（判据可据此细分动作）", () => {
+    const instance = store();
+    let seen: Record<string, unknown> | undefined;
+    instance.setPrecheck((_sessionId, invocation) => {
+      seen = invocation.args;
+      return undefined;
+    });
+
+    instance.evaluate({
+      sessionId: SESSION,
+      toolCallId: "c1",
+      toolName: "browser_act",
+      argsJson: JSON.stringify({ action: "wait", mode: "idle" }),
+      now: 1,
+    });
+    assert.deepEqual(seen, { action: "wait", mode: "idle" });
+  });
+
+  test("返回 undefined 时不改变正常流程——只读动作照常入待审（不误伤）", () => {
+    const instance = store();
+    instance.setPrecheck(() => undefined);
+
+    const outcome = instance.evaluate(clickCall);
+    assert.ok("request" in outcome, "没被否决就照常入待审");
+    assert.equal(instance.listPending(SESSION).length, 1);
+  });
+
+  test("未安装前置否决时行为与从前一致（对照）", () => {
+    const instance = store();
+    const outcome = instance.evaluate(clickCall);
+    assert.ok("request" in outcome);
+  });
+});

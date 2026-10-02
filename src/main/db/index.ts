@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS projects (
   root_path TEXT NOT NULL,
   /** 规范化后的去重键：盘符小写 + 正斜杠，用于跨写法识别同一目录 */
   root_key TEXT NOT NULL,
+  /** 项目身份：workspace = 普通空间；task = 任务工作区（任务栏的落点），见 ProjectKind */
+  kind TEXT NOT NULL DEFAULT 'workspace',
   created_at INTEGER NOT NULL,
   last_opened_at INTEGER NOT NULL
 );
@@ -49,7 +51,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   message_count INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'active'
+  status TEXT NOT NULL DEFAULT 'active',
+  /** 会话自己的工作目录（worker cwd / 审批边界）。NULL = 跟随项目 rootPath */
+  cwd TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_at DESC);
 
@@ -196,7 +200,7 @@ CREATE TABLE IF NOT EXISTS settings (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 12;
 
 /** 判断某表是否存在：迁移要兼容「早期形态」的旧库，某些表可能还没建 */
 function hasTable(instance: DatabaseSync, table: string): boolean {
@@ -307,6 +311,26 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
          );
          CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, ord);`,
       ),
+  },
+  {
+    // v11：项目身份列。旧库里的项目全是用户显式打开的普通工作区，一律回填默认值
+    // 'workspace'；'task' 只会由 ensureTaskProject 在运行期写入（任务工作区，v1.93 起）。
+    // 表不存在（早期形态的旧库）时跳过加列，交给后面的 SCHEMA 建到最新形态（v7/v8 同款）。
+    version: 11,
+    up: (instance) => {
+      if (!hasTable(instance, "projects")) return;
+      addColumnIfMissing(instance, "projects", "kind", "TEXT NOT NULL DEFAULT 'workspace'");
+    },
+  },
+  {
+    // v12：会话级工作目录。目前只有任务会话会写（每个任务会话一个时间子目录，v1.94 起），
+    // 普通空间会话一律 NULL（跟随项目 rootPath）——旧行不用回填，NULL 即正确语义。
+    // 表不存在（早期形态的旧库）时跳过加列，交给后面的 SCHEMA 建到最新形态（v11 同款）。
+    version: 12,
+    up: (instance) => {
+      if (!hasTable(instance, "sessions")) return;
+      addColumnIfMissing(instance, "sessions", "cwd", "TEXT");
+    },
   },
 ];
 

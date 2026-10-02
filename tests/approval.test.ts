@@ -395,6 +395,70 @@ describe("浏览器工具判定", () => {
       "browser: navigate https://x.com",
     );
   });
+
+  test("按键：签名落到具体哪个键上，且大小写/修饰键顺序都归一化", () => {
+    // 只记「按了键」会让「本会话不再询问」覆盖之后任意按键：Enter 提交与 Ctrl+A 全选
+    // 完全不是一回事，不能共用一个签名。
+    assert.equal(
+      buildSignature({ toolName: "browser_act", args: { action: "key", key: "Enter" } }),
+      "browser_act:key:enter",
+    );
+    assert.equal(
+      buildSignature({ toolName: "browser_act", args: { action: "key", key: "  ENTER " } }),
+      "browser_act:key:enter",
+    );
+    assert.equal(
+      buildSignature({ toolName: "browser_act", args: { action: "key", key: "a", modifiers: ["shift", "ctrl"] } }),
+      buildSignature({ toolName: "browser_act", args: { action: "key", key: "A", modifiers: ["ctrl", "shift"] } }),
+    );
+    assert.equal(
+      buildSignature({ toolName: "browser_act", args: { action: "key", key: "a", modifiers: ["ctrl"] } }),
+      "browser_act:key:ctrl+a",
+    );
+  });
+
+  test("按键：摘要给人看，风险与 click 同档（都会改变页面状态）", () => {
+    const verdict = evaluateTool(
+      { toolName: "browser_act", args: { action: "key", key: "a", modifiers: ["ctrl"] } },
+      config(),
+    );
+    assert.equal(verdict.summary, "browser: key Ctrl+A");
+    assert.equal(verdict.risk, "moderate");
+    assert.equal(verdict.decision, "ask");
+    assert.equal(
+      assessToolRisk({ toolName: "browser_act", args: { action: "key", key: "Enter" } }, ROOT).risk,
+      "moderate",
+    );
+  });
+
+  test("链里含 key：认得它（不误判成越界动作），且链签名逐动作落到键名上", () => {
+    const chain = {
+      toolName: "browser_act",
+      args: {
+        actions: [
+          { action: "type", ref: "e1", text: "搜索词" },
+          { action: "key", key: "Enter" },
+        ],
+      },
+    };
+    const verdict = assessToolRisk(chain, ROOT);
+    assert.equal(verdict.risk, "moderate");
+    assert.match(String(verdict.reason), /动作链/);
+    assert.equal(buildSignature(chain), "browser_act:chain:type:e1,key:enter");
+    assert.match(evaluateTool(chain, config()).summary, /key Enter/);
+  });
+
+  test("链里全是只读动作（wait/scroll）仍然直接放行——key 不在其列", () => {
+    assert.equal(
+      assessToolRisk({ toolName: "browser_act", args: { actions: [{ action: "wait" }, { action: "scroll" }] } }, ROOT)
+        .risk,
+      "safe",
+    );
+    assert.equal(
+      assessToolRisk({ toolName: "browser_act", args: { actions: [{ action: "key", key: "Enter" }] } }, ROOT).risk,
+      "moderate",
+    );
+  });
 });
 
 describe("电脑控制工具判定", () => {

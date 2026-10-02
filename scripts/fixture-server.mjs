@@ -54,6 +54,24 @@ const MAIN_PAGE = `<!doctype html>
   <!-- 可见性过滤靶：隐藏元素不该进 snapshot 清单；视口下方 800px 阈值内的保留、外的剔除。
        下方按钮用绝对定位钉坐标——若用撑高 spacer，按钮位置 = 内容高度 + spacer，
        会随页面上方内容多少漂移（首版就因此把「视口下方 400px」钉到了约 1000px 处）。 -->
+  <h2>真实输入</h2>
+  <!-- 点击 / 输入 / 按键的靶子。判据都取页面自己的记录：工具只说「事件发出去了」，
+       页面收到什么才算事实。md 把 pointerdown/mousedown 与 click **分开计数**——
+       合成 el.click() 只会有 click，真鼠标点击两条都涨。 -->
+  <button id="md" type="button">按下探针</button>
+  <div id="mdLog">尚未按下</div>
+  <input id="kb" aria-label="键盘靶输入框" value="初始值">
+  <div id="kbLog">尚未按键</div>
+  <label><input type="checkbox" id="agree" aria-label="已勾选靶" checked>已勾选靶</label>
+  <button id="disabledBtn" type="button" disabled>禁用按钮靶</button>
+  <!-- 遮挡靶：遮罩用 inset:0 完全盖住按钮，且它自己是 div（不在 snapshot 的交互元素集里），
+       于是「命中测试判为被遮挡」与「清单里不会出现遮挡者」两条都能验 -->
+  <div id="coverWrap" style="position:relative; display:inline-block">
+    <button id="covered" type="button">被遮挡的靶</button>
+    <div id="cover" style="position:absolute; inset:0; background:rgba(220,0,0,.25)">遮罩靶</div>
+  </div>
+  <div id="coveredLog">尚未点击</div>
+
   <h2>可见性过滤</h2>
   <button id="hiddenBtn" type="button" style="display:none">隐藏不应出现的按钮</button>
   <a href="/payload.txt" download style="visibility:hidden">隐藏不应出现的链接</a>
@@ -92,6 +110,35 @@ const MAIN_PAGE = `<!doctype html>
       setTimeout(function () {
         document.getElementById('lateBox').textContent = '延迟内容已出现';
       }, 1500);
+    });
+
+    // 真实输入靶：pointerdown/mousedown 与 click 分开计数。合成 el.click() 只会让 click 涨，
+    // 真鼠标点击两条都涨——这就是「走输入管线」与「注入合成事件」的判据。
+    var mdCount = { down: 0, click: 0 };
+    var md = document.getElementById('md');
+    var bumpDown = function () { mdCount.down += 1; };
+    md.addEventListener('pointerdown', bumpDown);
+    md.addEventListener('mousedown', bumpDown);
+    md.addEventListener('click', function () {
+      mdCount.click += 1;
+      document.getElementById('mdLog').textContent =
+        'pointerdown/mousedown=' + mdCount.down + ' click=' + mdCount.click;
+    });
+
+    // 键盘靶：记录 keydown（value 由 snapshot 里 = "..." 那段读）。
+    // 「type 是替换而非追加」与「insertText 不派发 keydown」两条都靠它——后者是**如实记录的
+    // 能力边界**（依赖按键联想的控件不会触发），不是缺陷，所以也要有断言钉住。
+    var kb = document.getElementById('kb');
+    kb.addEventListener('keydown', function (event) {
+      document.getElementById('kbLog').textContent =
+        'keydown=' + event.key + ' value=' + kb.value;
+    });
+
+    // 遮挡靶：点了才算数——用来证明「被拒绝时页面一个事件都没收到」
+    var coveredCount = 0;
+    document.getElementById('covered').addEventListener('click', function () {
+      coveredCount += 1;
+      document.getElementById('coveredLog').textContent = '被点到 ' + coveredCount + ' 次';
     });
 
     // 可见性过滤靶：nearBelow 钉在视口下方 400px（阈值 800 内，应保留），

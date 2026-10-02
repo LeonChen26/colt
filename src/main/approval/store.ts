@@ -54,8 +54,23 @@ export class ApprovalStore {
    */
   #analyzeAllowlist?: readonly string[];
 
+  /**
+   * 可选的前置否决：返回非空字符串即**直接拒绝**（不进队列、不放行、不分析）。
+   *
+   * 它否决的是「主进程侧的环境状态」，不是工具本身的风险（风险仍归 policy）——目前唯一
+   * 接线是「用户已接管浏览器 ⇒ 改动类动作」。放在这里而非 policy，是因为 policy 是不持
+   * 运行期状态的纯函数，而接管态的真源在宿主（BrowserHost）。返回的理由直接回给模型，
+   * 要说清「为什么被拒」与「怎么办」。
+   */
+  #precheck?: (sessionId: string, invocation: ToolInvocation) => string | undefined;
+
   constructor(analyzeAllowlist?: readonly string[]) {
     this.#analyzeAllowlist = analyzeAllowlist;
+  }
+
+  /** 安装前置否决（宿主启动时接线一次；不装则等同无此步） */
+  setPrecheck(fn: (sessionId: string, invocation: ToolInvocation) => string | undefined): void {
+    this.#precheck = fn;
   }
 
   /** 覆盖分析器命令白名单（设置变更时由宿主调用） */
@@ -163,6 +178,14 @@ export class ApprovalStore {
     const parsedArgs = parseArgs(input.argsJson);
     const args = parsedArgs ?? {};
     const invocation: ToolInvocation = { toolName: input.toolName, args };
+
+    // 环境态前置否决（如「用户已接管浏览器 ⇒ 改动类动作」）：不进队列、不放行、不分析，
+    // 理由直接回给模型。放在 deny 规则之前——它比「本会话已拒绝该操作」的记忆更硬。
+    const blocked = this.#precheck?.(input.sessionId, invocation);
+    if (blocked !== undefined) {
+      return { decision: { approved: false, reason: blocked } };
+    }
+
     const signature = buildSignature(invocation);
 
     // 命中会话内的拒绝记忆 → 直接拒绝，不再打扰用户

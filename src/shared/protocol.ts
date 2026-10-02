@@ -65,11 +65,24 @@ export interface FirstRunReport {
 /** 用户对首启历史数据的选择 */
 export type FirstRunChoice = "import" | "fresh";
 
+/**
+ * 项目的两类身份。
+ *
+ * - `workspace`：用户显式「打开」的目录，进侧栏「空间」栏；
+ * - `task`：**任务工作区**——不指定空间（目录）新建的会话都落在这一个固定目录上
+ *   （`~/.colt/tasks/workspace`），侧栏把它们归进「任务」栏，而不是「空间」栏。
+ *   它是一条真实的项目行（会话必须落在真实目录上，worker 的 cwd 由它推出），
+ *   只是不进「空间」列表、也没有移除入口。
+ */
+export type ProjectKind = "workspace" | "task";
+
 /** 项目 */
 export interface Project {
   id: string;
   name: string;
   rootPath: string;
+  /** 项目身份：普通工作区（空间）还是任务工作区（任务栏的落点），见 ProjectKind */
+  kind: ProjectKind;
   createdAt: number;
   lastOpenedAt: number;
 }
@@ -154,6 +167,24 @@ export interface BrowserViewState {
    * 界面据此判断「缩完还装不下吗」：`contentWidth * zoom > 区域宽` 才是真的还看不到。
    */
   zoom: number;
+  /**
+   * agent 是否**最近**操作过这个浏览器（主进程按时间窗口算好，渲染层不自己计时）。
+   *
+   * 为什么要有它：真实输入之后页面会不会「动」取决于页面自己——有的按钮点下去毫无反馈，
+   * 用户看到「闪了一下」分不清是 agent 干的还是自己误触。这个标记回答的是**归属**。
+   *
+   * 窗口不取「正在请求中」那种粒度：agent 两步操作之间隔着模型思考（几秒到几十秒），
+   * 按请求粒度算会闪断成一片噪声。窗口到点由主进程再推一次新状态，渲染层只按字段渲染。
+   */
+  agentActing: boolean;
+  /**
+   * 用户是否已**显式接管**这个浏览器（点头部的「接管」进入、点「交还」退出）。
+   *
+   * 接管期间 agent 的**改动类**动作被拒，只读动作照常。
+   * 它与「面板不可见就拒绝」的区别是决定性的：这一条的依据是用户**明确表达过**的意图，
+   * 而不是我们替他推断的状态（切个页签不等于不要 agent 操作——那条做过，当天就撤了）。
+   */
+  controlledByUser: boolean;
 }
 
 /**
@@ -241,6 +272,12 @@ export interface SessionInfo {
   updatedAt: number;
   messageCount: number;
   status: "active" | "archived";
+  /**
+   * 会话自己的工作目录（worker cwd / 审批边界 / 记忆隔离都从它读）。
+   * null = 跟随项目 rootPath（普通空间会话与草稿）；任务会话是 `<任务基目录>/<时间戳>`，
+   * 落库时算好存下，之后不再变。
+   */
+  cwd: string | null;
 }
 
 /** 会话运行态 */
@@ -260,6 +297,7 @@ export const IPC_CHANNELS = [
   "project.pick",
   "project.list",
   "project.createScratch",
+  "project.ensureTask",
   "project.delete",
   "session.create",
   "session.list",
@@ -321,6 +359,7 @@ export const IPC_CHANNELS = [
   "browser.navigate",
   "browser.viewport.reset",
   "browser.zoom",
+  "browser.control",
   "file.read",
   "file.netDiff",
   "file.list",
@@ -415,6 +454,18 @@ export interface IpcInvokeMap {
    * 环境变量 `COLT_WORKSPACE_ROOT` 可把位置指到别处（指了就用它本身，不再拼时间戳）。
    */
   "project.createScratch": {
+    request: void;
+    response: Project;
+  };
+  /**
+   * 取（必要时创建）**任务工作区**——「任务」栏背后的那个固定目录。
+   *
+   * 不指定空间（目录）新建的会话都归到它名下：会话必须落在真实目录上（worker 的 cwd），
+   * 故任务栏不是纯 UI 分组，而是一条 `kind='task'` 的项目行。幂等：已存在就直接返回，
+   * 目录也只在缺失时才创建。默认 `~/.colt/tasks/workspace`；`COLT_WORKSPACE_ROOT`
+   * 指了就用 `<override>/tasks`（冒烟靠它把产物钉在 out/ 下）。
+   */
+  "project.ensureTask": {
     request: void;
     response: Project;
   };
@@ -868,6 +919,17 @@ export interface IpcInvokeMap {
    */
   "browser.viewport.reset": {
     request: { sessionId: string };
+    response: BrowserViewState;
+  };
+  /**
+   * 用户接管 / 交还浏览器（两端都显式）。
+   *
+   * 与 `browser.navigate` 同源：发起方是用户、不走审批（没有模型给的入参可裁）。
+   * 但它**会改变 agent 的动作权限**——接管期间 agent 的改动类动作被拒，
+   * 所以主进程同时把这件事告知正在跑的 agent（否则它只会反复撞墙，不知道为什么）。
+   */
+  "browser.control": {
+    request: { sessionId: string; byUser: boolean };
     response: BrowserViewState;
   };
   /**

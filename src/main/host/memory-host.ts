@@ -9,7 +9,7 @@
  * 检索只放行本项目 + 用户级条目，其它项目的历史记忆一律不可见。
  */
 import type { HostResult } from "@shared/worker-protocol";
-import { normalizeRootKey } from "../db/index";
+import { normalizeRootKey } from "../db";
 import { searchMemory, type MemoryHit } from "../db/memory-index";
 
 export function formatMemoryHits(hits: MemoryHit[], query: string): string {

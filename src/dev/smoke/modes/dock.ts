@@ -2443,13 +2443,14 @@ export async function runDock(
 
     // 点「恢复」也走命中测试取到的那个元素：跟真人点击同一条路径，
     // 而不是直接对隐藏节点调 `el.click()`（那样即使标记被挤出可视区也会"通过"）。
+    // 点击用原生事件派发（同 hitAndClick）：万一命中的是 svg，`svg.click` 根本不存在。
     const clickedReset = await run<boolean>(`(() => {
       const el = document.querySelector("[data-browser-viewport-reset]");
       if (!el) return false;
       const r = el.getBoundingClientRect();
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       if (hit === null || !(hit === el || el.contains(hit))) return false;
-      hit.click();
+      hit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       return true;
     })()`);
     checks.push(["点「恢复」命中", clickedReset]);
@@ -2537,6 +2538,80 @@ export async function runDock(
     checks.push(["刷新后仍停在同一页", navUrl().endsWith("/popup.html")]);
     log(`  B1 结束时真实 URL：${navUrl()}`);
 
+    // ---- 控制态：接管 / 交还（**两端显式**）与「Agent 正在操作」----
+    // 与 B1 同源（用户点击 → IPC → 主进程），但它比导航重：接管会**改变 agent 的动作权限**。
+    // 判据取 DOM 上那个标记（它由主进程推回的状态驱动），而不是本地 state——
+    // 本地一改就变样的话，它只能证明「按钮画对了」，证明不了「状态真的走了一趟主进程」。
+    const controlState = (): Promise<string | null> =>
+      run<string | null>(`(() => {
+        const el = document.querySelector("[data-browser-control]");
+        return el ? el.getAttribute("data-browser-control") : null;
+      })()`);
+    /**
+     * 命中测试 + 点击（与真人同一条路径）：先把那个点上的最顶层元素问出来，是它（或它的子元素）
+     * 才真点。
+     *
+     * ⚠️ 点击用**原生 click 事件**派发，不用 `hit.click()`：窄栏下这几个出口按钮内部只剩图标，
+     * `elementFromPoint` 命中的是 `<svg>`——`SVGElement` 没有 `click()` 方法，调它会抛
+     * 「Script failed to execute」（看着像装置坏了，其实是用例以 HTML 元素为前提写的）。
+     * `dispatchEvent` 对 svg 同样有效，且冒泡到 root 后 React 的 onClick 照常触发。
+     */
+    const hitAndClick = (selector: string): Promise<boolean> =>
+      run<boolean>(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (hit === null || !(hit === el || el.contains(hit))) return false;
+        hit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        return true;
+      })()`);
+    const clickControl = (): Promise<boolean> => hitAndClick("[data-browser-control]");
+
+    checks.push(["浏览器头部有接管出口（未接管时是 take）", (await controlState()) === "take"]);
+
+    // 「状态 → UI 映射」这一环单独验一次，**不经命中测试**：
+    // 这样以后红的时候能分辨是「映射坏了」还是「这个小目标点不到」——两者的处置完全不同。
+    hostBridge.browserSetControl(sessionId, true);
+    await sleep(250);
+    checks.push([
+      "主进程推接管态 → 头部标记翻成 release（映射那一环单独验）",
+      (await controlState()) === "release",
+    ]);
+    hostBridge.browserSetControl(sessionId, false);
+    await sleep(250);
+    checks.push(["推回未接管 → 标记回到 take", (await controlState()) === "take"]);
+
+    // 让 agent「刚操作过」：真驱动一次改动类动作。
+    // 用 `scroll` 而不是 `click`：B1 段结束时页面停在 `/popup.html`，那里没有可点的靶子——
+    // 「拿一个更早的读数当当前事实」正是这个仓库里反复踩过的坑，所以这里选一个
+    // **不依赖页面内容**的动作（滚动同样在改动类动作里，会点亮同一个标记）。
+    await hostBridge.handle({
+      sessionId,
+      capability: "browser",
+      action: "scroll",
+      params: { direction: "down" },
+    });
+    await sleep(400);
+    checks.push([
+      "改动类动作后头部出现「Agent 正在操作」（归属提示）",
+      (await run<boolean>(`!!document.querySelector("[data-browser-agent-acting]")`)) === true,
+    ]);
+
+    checks.push(["点「接管」命中", await clickControl()]);
+    await sleep(400);
+    checks.push([
+      "接管后按钮翻成「交还」（状态可见，不是静默生效）",
+      (await controlState()) === "release",
+    ]);
+    checks.push([
+      "接管后「Agent 正在操作」让位（现在是你）",
+      (await run<boolean>(`!document.querySelector("[data-browser-agent-acting]")`)) === true,
+    ]);
+    checks.push(["点「交还」命中", await clickControl()]);
+    await sleep(400);
+    checks.push(["交还后回到「接管」入口", (await controlState()) === "take"]);
+
     // ---- 最窄右栏下也必须逐像素相等 ----
     // 用户实测「把右栏拖窄后载入页面，内容超出 / 被窗口边缘切掉」。此前对齐断言只在 823 这种
     // 宽栏下跑过，而窄栏是几个独立变量（上报频率、抽屉占比、原生视图尺寸都不同），必须单独验。
@@ -2561,6 +2636,21 @@ export async function runDock(
       "最窄右栏下「恢复」标记仍在可视区内且可点",
       narrowBadge?.resetHittable === true,
     ]);
+
+    // 接管出口在最窄栏里也得点得到：它和「恢复」抢的是同一行的**末尾**位置，而它更长
+    //（接管态是「你在操作 · 交还」）。用命中测试点击（与真人同一条路径），点进去再验一次——
+    // 只验未接管态的话，「长文案那条分支」就永远没人走过。
+    // 顺序上必须先交还再往下走：接管期间 agent 的改动类动作会被拒（下一步恰好是恢复视口）。
+    checks.push(["最窄右栏下「接管」仍在可视区内且可点", await clickControl()]);
+    await sleep(400);
+    checks.push(["最窄右栏下点下去真的进了接管态", (await controlState()) === "release"]);
+    checks.push([
+      "最窄右栏下接管态「恢复」标记仍可点（这行最挤的组合）",
+      (await viewportBadge())?.resetHittable === true,
+    ]);
+    checks.push(["窄栏下点「交还」命中", await clickControl()]);
+    await sleep(400);
+    checks.push(["窄栏下交还后回到「接管」入口", (await controlState()) === "take"]);
     await hostBridge.handle({
       sessionId,
       capability: "browser",
@@ -2670,16 +2760,7 @@ export async function runDock(
           hittable: r.width > 0 && r.height > 0 && hit !== null && (hit === el || el.contains(hit)),
         };
       })()`);
-    const clickHittable = (selector: string): Promise<boolean> =>
-      run<boolean>(`(() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return false;
-        const r = el.getBoundingClientRect();
-        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        if (hit === null || !(hit === el || el.contains(hit))) return false;
-        hit.click();
-        return true;
-      })()`);
+    const clickHittable = hitAndClick;
 
     await gotoPage("narrow.html");
     await sleep(700);

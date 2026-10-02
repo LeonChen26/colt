@@ -11,7 +11,7 @@
  *
  * 配置形态：JSON 的 `mcpServers`，每个条目二选一：
  * - stdio：`command`（+ `args` / `env`）——本地子进程
- * - 远程：`url`（+ `headers` / `transport`，缺省 Streamable HTTP）——HTTP / SSE
+ * - 远程：`url`（+ `headers` / `transport`，缺省 Streamable HTTP）
  *
  * **两级**，与技能 / 记忆同一条「用户目录 + 项目」的心智（见 `loadMcpConfig`）：
  * - 用户级 `<home>/.colt/mcp.json`——对**全部项目**生效（常见 server 只配一次）；
@@ -20,15 +20,17 @@
  * 值里的 `${VAR}` 按进程环境变量展开（见 `interpolateConfig`）；只支持
  * `${NAME}` 这一种写法，不做 shell 式的 `$NAME` / 默认值语法——MCP 配置不是 shell。
  *
- * 调用超时：`timeout`（按 server）/ `toolTimeouts`（按工具名覆盖）。不写就走 SDK 默认的
- * 60s——编译、下载、浏览器自动化这类**正当的长工具**会被就地掐断，这里给一个放宽的出口。
+ * 调用超时：`timeout`（按 server）/ `toolTimeouts`（按工具名覆盖）。不写时**调用方**
+ * 钉 60s 兜底（pi-mcp 自身默认是 30s，直接透传会把长工具静默缩水；见 mcp-tools 的
+ * `MCP_CALL_DEFAULT_TIMEOUT_MS`）——编译、下载、浏览器自动化这类**正当的长工具**会被
+ * 就地掐断，这里给一个放宽的出口。
  */
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** 传输类型：stdio 子进程 / Streamable HTTP / 旧式 SSE */
-export type McpTransport = "stdio" | "http" | "sse";
+/** 传输类型：stdio 子进程 / Streamable HTTP（旧式 SSE 已移除，见 parseServerConfig） */
+export type McpTransport = "stdio" | "http";
 
 /** `.colt/mcp.json` 里单个 server 的声明 */
 export interface McpServerConfig {
@@ -39,10 +41,17 @@ export interface McpServerConfig {
   /** 远程：server 地址；与 `command` 二选一 */
   url?: string;
   headers?: Record<string, string>;
-  /** 远程传输方式；缺省 http（Streamable HTTP），仅远程有意义 */
-  transport?: "http" | "sse";
   /**
-   * 单次**调用**的超时（毫秒），覆盖 SDK 默认的 60s。
+   * 远程传输方式；缺省 http（Streamable HTTP），仅远程有意义。
+   *
+   * 旧式 SSE 已不再支持（2026-09-30，随 MCP 客户端核心换用 `@earendil-works/pi-mcp`——
+   * 它只做 stdio 与 Streamable HTTP；pi 的立场：绝大多数声称 SSE 的 server 同时提供
+   * Streamable HTTP 端点，通常在 `/mcp`）。配置里写 `"sse"` 在**解析层**就被拒成诊断
+   * （该 server 整条跳过、其余照常），而不是静默当 http 连——静默改行为等于撒谎。
+   */
+  transport?: "http";
+  /**
+   * 单次**调用的超时（毫秒），覆盖调用侧 60s 兜底（pi-mcp 自身默认 30s）。
    * 只影响调用（callTool / readResource / getPrompt 等），不影响连接与列工具。
    */
   timeout?: number;
@@ -79,7 +88,7 @@ export function mcpUserHome(): string {
 /** 一份合法配置的传输方式；未声明 command / url 时返回 undefined */
 export function transportOf(config: McpServerConfig): McpTransport | undefined {
   if (config.command !== undefined) return "stdio";
-  if (config.url !== undefined) return config.transport === "sse" ? "sse" : "http";
+  if (config.url !== undefined) return "http";
   return undefined;
 }
 
@@ -91,7 +100,8 @@ export function targetOf(config: McpServerConfig): string {
 
 /**
  * 一次调用的超时（毫秒）：先看该工具的单独覆盖（`toolTimeouts[toolName]`），
- * 再回落 server 级的 `timeout`；都没配就返回 `undefined`——交给 SDK 默认的 60s。
+ * 再回落 server 级的 `timeout`；都没配就返回 `undefined`——调用方钉 60s 兜底
+ * （pi-mcp 自身默认 30s，见 mcp-tools 的 `MCP_CALL_DEFAULT_TIMEOUT_MS`）。
  * 传 `toolName` 省略时只取 server 级值（能力工具如 `read_resource` 也走这条）。
  */
 export function callTimeoutOf(config: McpServerConfig, toolName?: string): number | undefined {
@@ -206,8 +216,14 @@ export function parseServerConfig(name: string, raw: unknown): McpServerConfig |
   if (headers !== undefined) config.headers = headers;
 
   if (candidate.transport !== undefined) {
-    if (candidate.transport !== "http" && candidate.transport !== "sse") {
-      return `server "${name}" 的 transport 只能是 "http" 或 "sse"`;
+    if (candidate.transport === "sse") {
+      return (
+        `server "${name}" 的 transport "sse" 已不再支持（旧式 SSE 传输已移除）：` +
+        `绝大多数声称 SSE 的 server 同时提供 Streamable HTTP 端点（通常是 /mcp），请改用 "http"`
+      );
+    }
+    if (candidate.transport !== "http") {
+      return `server "${name}" 的 transport 只能是 "http"`;
     }
     config.transport = candidate.transport;
   }

@@ -27,11 +27,22 @@ const readSchema = Type.Object({
 
 const screenshotSchema = Type.Object({});
 
+/** 修饰键：与宿主侧 browser-keys.ts 的 MODIFIERS 同源（那里是唯一真源，这里只是给模型看的枚举） */
+const modifierSchema = Type.Array(
+  Type.Union([
+    Type.Literal("alt"),
+    Type.Literal("ctrl"),
+    Type.Literal("meta"),
+    Type.Literal("shift"),
+  ]),
+);
+
 const actSchema = Type.Object({
   action: Type.Union([
     Type.Literal("navigate"),
     Type.Literal("click"),
     Type.Literal("type"),
+    Type.Literal("key"),
     Type.Literal("scroll"),
     Type.Literal("wait"),
     Type.Literal("viewport"),
@@ -40,6 +51,8 @@ const actSchema = Type.Object({
   url: Type.Optional(Type.String()),
   ref: Type.Optional(Type.String()),
   text: Type.Optional(Type.String()),
+  key: Type.Optional(Type.String()),
+  modifiers: Type.Optional(modifierSchema),
   direction: Type.Optional(Type.Union([Type.Literal("up"), Type.Literal("down")])),
   mode: Type.Optional(Type.Union([Type.Literal("load"), Type.Literal("text"), Type.Literal("idle")])),
   timeoutMs: Type.Optional(Type.Number()),
@@ -48,7 +61,7 @@ const actSchema = Type.Object({
   paths: Type.Optional(Type.Array(Type.String())),
   /**
    * 动作链：一次调用依次执行多个同页动作（填表场景不用逐字段往返）。
-   * 只允许 click / type / scroll / wait——navigate 会换页（链的前提没了）、
+   * 只允许 click / type / key / scroll / wait——navigate 会换页（链的前提没了）、
    * upload / viewport 涉及审批粒度与本地磁盘，v1 都让模型单发。
    */
   actions: Type.Optional(
@@ -57,11 +70,14 @@ const actSchema = Type.Object({
         action: Type.Union([
           Type.Literal("click"),
           Type.Literal("type"),
+          Type.Literal("key"),
           Type.Literal("scroll"),
           Type.Literal("wait"),
         ]),
         ref: Type.Optional(Type.String()),
         text: Type.Optional(Type.String()),
+        key: Type.Optional(Type.String()),
+        modifiers: Type.Optional(modifierSchema),
         direction: Type.Optional(Type.Union([Type.Literal("up"), Type.Literal("down")])),
         mode: Type.Optional(Type.Union([Type.Literal("load"), Type.Literal("text"), Type.Literal("idle")])),
         timeoutMs: Type.Optional(Type.Number()),
@@ -71,9 +87,11 @@ const actSchema = Type.Object({
 });
 
 type ChainItem = {
-  action: "click" | "type" | "scroll" | "wait";
+  action: "click" | "type" | "key" | "scroll" | "wait";
   ref?: string;
   text?: string;
+  key?: string;
+  modifiers?: ("alt" | "ctrl" | "meta" | "shift")[];
   direction?: "up" | "down";
   mode?: "load" | "text" | "idle";
   timeoutMs?: number;
@@ -179,8 +197,20 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
     label: "Browser Act",
     description:
       "操作浏览器页面（wait 与 viewport 除外，其余会改变页面状态）。" +
-      "navigate：打开 url；click：点击 snapshot 返回的 ref；" +
-      "type：向 ref 输入 text；scroll：按 direction（up/down）滚动；" +
+      "这些动作是**真实输入**（走浏览器输入管线）：click 是真鼠标点击、type 是真文本输入、" +
+      "key 是真按键——监听 mousedown/pointerdown 的控件、点击后的焦点转移、:hover 都与真人一致。" +
+      "navigate：打开 url；" +
+      "click：点击 snapshot 返回的 ref。点击前会做命中测试，**被遮挡 / 点不到时如实报错且不会真的点**" +
+      "（报错会指出挡住它的是什么），请先关掉遮挡层或换一个入口；" +
+      "type：向 ref 输入 text——先聚焦并**全选**，语义是**替换**原有内容（要追加就把原文一起传）；" +
+      "只支持 input / textarea / contenteditable；" +
+      "key：按一次键。key 传键名（Enter / Escape / Tab / Space / Backspace / Delete / " +
+      "ArrowUp|ArrowDown|ArrowLeft|ArrowRight / Home / End / PageUp|PageDown / 单个字母或数字），" +
+      "modifiers 传修饰键数组（如 [\"ctrl\"]；Ctrl+A 就是 key:\"a\"、modifiers:[\"ctrl\"]）。" +
+      "⚠️ 字母 / 数字只用于**组合键**（Ctrl+A、Ctrl+C 等）：key 只发物理按键、不产生字符，" +
+      "单独 key:\"a\" 不会输入字母 a——要写字符请用 type。" +
+      "按键发给**当前聚焦的元素**：要往某个输入框里回车（搜索、提交），先 type 或 click 它把焦点放上去；" +
+      "scroll：按 direction（up/down）滚动；" +
       "wait：等待页面就绪（只等不改），mode=load 等加载完成、mode=text 等 text 出现、" +
       "mode=idle 等 DOM 停止变化；省略 mode 时给了 text 按 text，否则按 idle。" +
       "SPA 页面导航或点击后先 wait 再 snapshot/text，否则容易读到半渲染状态；" +
@@ -189,8 +219,9 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
       "upload：向 ref（必须是 file 类型的 input）选择本地文件，paths 传绝对路径数组，" +
       "用于验证页面的文件上传流程；" +
       "点击 target=_blank 的链接时新窗口会被拦截并在当前窗口打开，不会另开窗口。" +
-      "actions：动作链——同一页面上依次执行 click/type/scroll/wait（如多字段表单一次填完提交），" +
-      "页面一旦跳转（含表单提交成功）链会自动中止并报告进度，跳转后请 wait + 重新 snapshot；" +
+      "actions：动作链——同一页面上依次执行 click/type/key/scroll/wait" +
+      "（如多字段表单一次填完再回车提交），页面一旦跳转（含表单提交成功）链会自动中止并报告进度，" +
+      "跳转后请 wait + 重新 snapshot；" +
       "navigate / upload / viewport 不能进链，需要时单发。action 与 actions 二选一。",
     parameters: actSchema,
     async execute(_toolCallId, params) {
@@ -203,6 +234,10 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
         params.actions.forEach((item, index) => {
           if (item.action === "type" && item.text === undefined) {
             throw new Error(`actions[${index}] 的 type 动作缺少 text（要清空请显式传 text:""）`);
+          }
+          // key 同理：缺键名会在宿主侧报错，但错误指不到「链里第几个」
+          if (item.action === "key" && item.key === undefined) {
+            throw new Error(`actions[${index}] 的 key 动作缺少 key（键名，如 "Enter"、"Escape"）`);
           }
         });
         return { content: hostResultToContent(await runActionChain(bridge, params.actions)), details: undefined };

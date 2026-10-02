@@ -29,7 +29,7 @@ import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
 import { todoStore } from "./todo-store";
 import { getSession, listSessions, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed, recordSessionEvent, recordApprovalAudit } from "./db/repo";
-import { normalizeRootKey } from "./db/index";
+import { normalizeRootKey } from "./db";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
 import { ApprovalStore } from "./approval/store";
@@ -294,6 +294,12 @@ export class SessionManager {
         if (this.#workers.has(sessionId)) this.#post(sessionId, { type: "todoSnapshot", todos });
       },
     });
+    // 用户接管浏览器后，改动类 browser_act 在**弹卡之前**就被否决（判据见 BrowserHost.controlBlock）：
+    // 否则用户会先看到一张「是否允许点击」的卡、批准后才被告知「你已接管」，等于让他为一个
+    // 注定失败的动作做决定。只读动作不拦，正常放行。
+    this.approvals.setPrecheck((sessionId, invocation) =>
+      hostBridge.browserControlBlock(sessionId, invocation.toolName, invocation.args),
+    );
   }
 
   attachWindow(window: BrowserWindow): void {
@@ -1205,7 +1211,14 @@ export class SessionManager {
    * **只在 agent 正在跑时转**：这条提示的全部意义，是保护一个在飞的运行不被过期页面误导；
    * 空闲时没有任何操作会踩到这个坑，留一条提示反而会在很久以后的一轮里凭空出现、变成噪声。
    */
-  notifyUserBrowserNavigation(sessionId: string, text: string): void {
+  /**
+   * 把「用户在浏览器里做了什么」告知正在跑的 agent。
+   *
+   * 两个调用方共用这条出口：手动导航（B1）与接管 / 交还。
+   * 只发给**正在跑**的 worker——没在跑就没人需要知道（等它下次开跑，
+   * 接管态会随 browser.state 一起被渲染层读到，而 agent 真要用浏览器时会先 snapshot）。
+   */
+  notifyBrowserNotice(sessionId: string, text: string): void {
     const entry = this.#workers.get(sessionId);
     if (!entry || !entry.running) return;
     entry.child.postMessage({ type: "browserNotice", text } satisfies WorkerCommand);

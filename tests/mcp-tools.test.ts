@@ -26,8 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
-import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { McpClient, StdioTransport } from "@earendil-works/pi-mcp";
 import type {
   AgentHarness,
   AgentHarnessTool,
@@ -66,7 +65,6 @@ const HTTP_FIXTURE = fileURLToPath(new URL("./helpers/mcp-http-fixture-server.mj
 const CRASH_FIXTURE = fileURLToPath(
   new URL("./helpers/mcp-crash-fixture-server.mjs", import.meta.url),
 );
-const SSE_FIXTURE = fileURLToPath(new URL("./helpers/mcp-sse-fixture-server.mjs", import.meta.url));
 const CAPS_FIXTURE = fileURLToPath(
   new URL("./helpers/mcp-capabilities-fixture-server.mjs", import.meta.url),
 );
@@ -127,13 +125,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
  * 并行 / 转后台这两组会同时起多个子进程，正中最容易撞上的那一段，故这两组走这里。
  */
 async function removeDir(dir: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
+  // 退避重试：固定 100ms × 6 在高负载（全量单测并行跑）下不够用——Windows 释放
+  // 「刚被 kill 的子进程的 cwd 锁」没有上限保证，实测抖到过 >1.4s。指数退避
+  // 100ms 起步、封顶 400ms，15 次总窗口 ≈ 3.6s；再不行就是真问题，让它红。
+  for (let attempt = 0, delay = 100; ; attempt += 1, delay = Math.min(delay * 1.3, 400)) {
     try {
       await rm(dir, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (attempt >= 6) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (attempt >= 14) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
@@ -455,7 +456,7 @@ describe("远程配置解析（纯函数）", () => {
   test("transportOf / targetOf：stdio 与远程分流", () => {
     assert.equal(transportOf({ command: "x" }), "stdio");
     assert.equal(transportOf({ url: "https://h/mcp" }), "http");
-    assert.equal(transportOf({ url: "https://h/mcp", transport: "sse" }), "sse");
+    assert.equal(transportOf({ url: "https://h/mcp", transport: "http" }), "http");
     assert.equal(transportOf({}), undefined);
     assert.equal(targetOf({ command: "npx", args: ["-y", "pkg"] }), "npx -y pkg");
     assert.equal(targetOf({ url: "https://h/mcp" }), "https://h/mcp");
@@ -468,10 +469,15 @@ describe("远程配置解析（纯函数）", () => {
       /不能同时声明/,
     );
     assert.deepEqual(parseServerConfig("c", { url: "https://h/mcp" }), { url: "https://h/mcp" });
-    assert.deepEqual(parseServerConfig("d", { url: "https://h/mcp", transport: "sse" }), {
-      url: "https://h/mcp",
-      transport: "sse",
-    });
+    // 旧式 SSE 已移除：写 "sse" 整条成诊断（跳过该 server），而不是静默当 http 连
+    assert.match(
+      parseServerConfig("d", { url: "https://h/sse", transport: "sse" }) as string,
+      /"sse" 已不再支持/,
+    );
+    assert.match(
+      parseServerConfig("d", { url: "https://h/sse", transport: "sse" }) as string,
+      /Streamable HTTP/,
+    );
     assert.match(
       parseServerConfig("e", { url: "https://h", transport: "ws" }) as string,
       /transport 只能是/,
@@ -524,20 +530,22 @@ describe("listTools 分页", () => {
     }
   });
 
-  test("单次 listTools()（不传 cursor）就拿回全部 5 个、nextCursor 为空——我们据此不写循环", async () => {
+  test("单次 listTools()（不传 cursor）就拿回全部 5 个——我们据此不写循环", async () => {
     // 这条钉的是**依赖的契约**（同 validateToolArguments 那条）：生产代码 `listAllTools`
-    // 只调一次 `listTools()`，成不成全看 v2 这句「不传 cursor 就自己翻完所有页」。
-    // 哪天 SDK 改成不聚合，这条先红，而不是等到线上只剩第一页工具。夹具 5 个工具 / 每页 2 个。
-    const client = new Client({ name: "paged-probe", version: "0.0.1" }, { listMaxPages: 100 });
+    // 只调一次 `listTools()`，成不成全看 pi-mcp 的 listAll 跟着 nextCursor 翻完所有页。
+    // 哪天 pi-mcp 改成不聚合，这条先红，而不是等到线上只剩第一页工具。夹具 5 个工具 / 每页 2 个。
+    const client = new McpClient({ name: "paged-probe", version: "0.0.1" });
     await client.connect(
-      new StdioClientTransport({ command: process.execPath, args: [PAGED_FIXTURE] }),
+      new StdioTransport({ command: process.execPath, args: [PAGED_FIXTURE] }),
     );
     try {
       const all = await client.listTools();
-      assert.equal(all.tools.length, 5);
-      assert.equal(all.nextCursor, undefined);
+      assert.equal(all.length, 5);
       // 反面：显式给 cursor 才回单页（证明上面那 5 条真是「翻完聚合」，不是 server 一页给全）
-      const page = await client.listTools({ cursor: "0" });
+      const page = (await client.request("tools/list", { cursor: "0" })) as {
+        tools: unknown[];
+        nextCursor?: string;
+      };
       assert.equal(page.tools.length, 2);
       assert.equal(page.nextCursor, "2");
     } finally {
@@ -587,17 +595,17 @@ describe("传输：远程（Streamable HTTP）", () => {
     }
   });
 
-  test("连不上（死端口）成 error 态，不抛穿装载；SSE 传输同样走通这条分支", async () => {
+  test("连不上（死端口）成 error 态，不抛穿装载", async () => {
     const port = await freePort();
     const dir = await fixtureProject({
-      mcpServers: { dead: { url: `http://127.0.0.1:${port}/mcp`, transport: "sse" } },
+      mcpServers: { dead: { url: `http://127.0.0.1:${port}/mcp` } },
     });
     const notices: string[] = [];
     try {
       const runtime = await createMcpRuntime(dir, (message) => notices.push(message));
       try {
         assert.deepEqual(runtime.tools, []);
-        assert.equal(runtime.status()[0]?.transport, "sse");
+        assert.equal(runtime.status()[0]?.transport, "http");
         assert.equal(runtime.status()[0]?.status, "error");
         assert.match(notices.join("；"), /server "dead" 连接失败/);
       } finally {
@@ -607,34 +615,28 @@ describe("传输：远程（Streamable HTTP）", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-});
 
-describe("传输：远程（旧式 SSE）", () => {
-  test("transport: sse 真的连上并往返（此前只验过失败路径）", async () => {
-    const port = await freePort();
-    const child = spawn(process.execPath, [SSE_FIXTURE, String(port)], { stdio: "ignore" });
+  test("transport: \"sse\" 的条目在解析层整条跳过，并给出改用 http 的指引", async () => {
     const dir = await fixtureProject({
-      mcpServers: { legacy: { url: `http://127.0.0.1:${port}/sse`, transport: "sse" } },
+      mcpServers: { legacy: { url: "https://example.com/sse", transport: "sse" } },
     });
+    const notices: string[] = [];
     try {
-      await waitForPort(port);
-      const runtime = await createMcpRuntime(dir, () => undefined);
+      // 解析层：条目不进 servers，只留诊断
+      const { servers, diagnostics } = await loadMcpConfig(dir);
+      assert.deepEqual(servers, {});
+      assert.equal(diagnostics.length, 1);
+      assert.match(diagnostics[0]!, /"sse" 已不再支持/);
+      // 装载层：不连接、无状态条目，摘要（notice）里说清为什么
+      const runtime = await createMcpRuntime(dir, (message) => notices.push(message));
       try {
-        assert.equal(runtime.status()[0]?.transport, "sse");
-        assert.equal(runtime.status()[0]?.status, "connected");
-        assert.deepEqual(runtime.tools.map((tool) => tool.name).sort(), [
-          "mcp__legacy__echo",
-          "mcp__legacy__ping",
-        ]);
-        const echo = runtime.tools.find((tool) => tool.name === "mcp__legacy__echo")!;
-        assert.deepEqual((await callTool(echo, { text: "SSE" })).content, [
-          { type: "text", text: "sse-echo:SSE" },
-        ]);
+        assert.deepEqual(runtime.tools, []);
+        assert.deepEqual(runtime.status(), []);
+        assert.match(notices.join("；"), /"sse" 已不再支持/);
       } finally {
         await runtime.close();
       }
     } finally {
-      child.kill();
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -1040,7 +1042,7 @@ describe("展示名：注册名 → 人话", () => {
   });
 });
 
-describe("调用超时：按 server / 工具可配（默认仍是 SDK 的 60s）", () => {
+describe("调用超时：按 server / 工具可配（默认仍是客户端的 60s）", () => {
   test("callTimeoutOf：工具级覆盖 > server 级 > undefined（退回 60s）", () => {
     const config = parseServerConfig("s", {
       command: "x",
@@ -1078,7 +1080,7 @@ describe("调用超时：按 server / 工具可配（默认仍是 SDK 的 60s）
     assert.notEqual(configKey(base), configKey(perTool));
   });
 
-  test("server 级 timeout 真的掐断长调用（超时确实传到了 SDK，不只是解析了配置）", async () => {
+  test("server 级 timeout 真的掐断长调用（超时确实传到了客户端，不只是解析了配置）", async () => {
     const dir = await fixtureProject({
       mcpServers: {
         slow: { command: process.execPath, args: [SLOW_FIXTURE], timeout: 60 },

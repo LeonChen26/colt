@@ -29,6 +29,7 @@ function session(id: string, projectId = "p1", draft = false, archived = false):
     updatedAt: 1,
     messageCount: 0,
     status: archived ? "archived" : "active",
+    cwd: null,
   };
 }
 

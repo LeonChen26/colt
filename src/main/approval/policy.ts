@@ -22,6 +22,7 @@ import { READONLY_TOOLS } from "@shared/readonly-tools";
 import { mcpToolLabel } from "@shared/mcp-label";
 import { isSkillFilePath } from "@shared/skill-path";
 import { isWithinRoot, isWithinRootReal } from "../lib/path-guard";
+import { comboSignature, keyLabel } from "../host/browser-keys";
 
 /** 风险档位 */
 export type RiskLevel = "safe" | "moderate" | "dangerous";
@@ -312,11 +313,16 @@ export function buildSignature(invocation: ToolInvocation): string {
     return `${toolName}:${normalizePath(args[pathKey] as string)}`;
   }
   if (toolName === BROWSER_ACT_TOOL) {
-    // 动作链：逐动作生成（click/type 带 ref，与单动作同粒度），于是「本会话不再询问」
+    // 动作链：逐动作生成（click/type 带 ref，key 带键名，与单动作同粒度），于是「本会话不再询问」
     // 的记忆只覆盖同样的链，与单动作签名互不误放。
     if (Array.isArray(args.actions)) {
-      const parts = (args.actions as { action?: unknown; ref?: unknown }[]).map((item) => {
+      const parts = (
+        args.actions as { action?: unknown; ref?: unknown; key?: unknown; modifiers?: unknown }[]
+      ).map((item) => {
         const name = typeof item.action === "string" ? item.action : "";
+        // key 动作的签名必须落到**哪个键**上（且归一化）：只记「按了键」会让记忆覆盖之后任意按键，
+        // 而 Enter 提交与 Ctrl+A 全选根本不是一回事。
+        if (name === "key") return `key:${comboSignature(item.key, item.modifiers) ?? "?"}`;
         const ref = typeof item.ref === "string" ? item.ref : "";
         return `${name}${ref ? `:${ref}` : ""}`;
       });
@@ -325,6 +331,7 @@ export function buildSignature(invocation: ToolInvocation): string {
     const action = typeof args.action === "string" ? args.action : "";
     // 上传的签名必须带上文件本身：只按 ref 记忆，会让「本次会话不再询问」覆盖之后任意文件的传外
     if (action === "upload") return `browser_act:upload:${readUploadPaths(args).join(",")}`;
+    if (action === "key") return `browser_act:key:${comboSignature(args.key, args.modifiers) ?? "?"}`;
     const target = typeof args.url === "string" ? args.url : typeof args.ref === "string" ? args.ref : "";
     return `browser_act:${action}${target ? `:${target}` : ""}`;
   }
@@ -364,9 +371,10 @@ function buildSummary(invocation: ToolInvocation): string {
   }
   if (toolName === BROWSER_ACT_TOOL) {
     if (Array.isArray(args.actions)) {
-      const chain = args.actions as { action?: unknown; ref?: unknown }[];
+      const chain = args.actions as { action?: unknown; ref?: unknown; key?: unknown; modifiers?: unknown }[];
       const parts = chain.map((item) => {
         const name = typeof item.action === "string" ? item.action : "";
+        if (name === "key") return `key ${keyLabel(item.key, item.modifiers) ?? "?"}`;
         const ref = typeof item.ref === "string" ? item.ref : "";
         return `${name}${ref ? ` ${ref}` : ""}`;
       });
@@ -379,6 +387,9 @@ function buildSummary(invocation: ToolInvocation): string {
       return `browser: upload ${ref}${paths.length > 0 ? ` (${paths.join(", ")})` : ""}`.trim();
     }
     const target = typeof args.url === "string" ? args.url : typeof args.ref === "string" ? args.ref : "";
+    if (action === "key") {
+      return `browser: key ${keyLabel(args.key, args.modifiers) ?? "?"}`;
+    }
     return `browser: ${action}${target ? ` ${target}` : ""}`.trim();
   }
   if (BROWSER_READ_TOOLS.has(toolName)) {
@@ -580,7 +591,11 @@ export function assessToolRisk(
       const chain = args.actions as { action?: unknown }[];
       const known = chain.every(
         (item) =>
-          item.action === "click" || item.action === "type" || item.action === "scroll" || item.action === "wait",
+          item.action === "click" ||
+          item.action === "type" ||
+          item.action === "key" ||
+          item.action === "scroll" ||
+          item.action === "wait",
       );
       if (!known) return { risk: "dangerous", reason: "动作链含未知或越界动作，需单独确认" };
       if (chain.every((item) => item.action === "wait" || item.action === "scroll")) {

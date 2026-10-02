@@ -10,6 +10,7 @@ import {
   createSession,
   deleteProject,
   deleteSession,
+  ensureTaskProject,
   getFileBaseline,
   getProject,
   getSession,
@@ -77,6 +78,60 @@ describe("projects", () => {
   });
 });
 
+describe("任务工作区（ensureTaskProject）", () => {
+  test("幂等：已存在（按 kind 识别）就直接返回，不新增行", () => {
+    const first = ensureTaskProject("E:/colt-tasks");
+    const second = ensureTaskProject("E:/somewhere-else");
+    assert.equal(first.id, second.id, "任务工作区按 kind 识别，root 变了也沿用同一条");
+    assert.equal(listProjects().length, 1);
+  });
+
+  test("新建时 kind=task、名字固定为「任务」", () => {
+    const project = ensureTaskProject("E:/colt-tasks/workspace");
+    assert.equal(project.kind, "task");
+    assert.equal(project.name, "任务");
+  });
+
+  test("该目录此前被登记成普通项目时，原地转成任务工作区", () => {
+    const pre = upsertProject("E:/reused-dir");
+    assert.equal(pre.kind, "workspace");
+    const converted = ensureTaskProject("E:/reused-dir");
+    assert.equal(converted.id, pre.id, "按 root_key 命中同一条，不该另起一行");
+    assert.equal(converted.kind, "task");
+    assert.equal(getProject(pre.id)?.kind, "task");
+  });
+
+  test("根漂移收敛：旧行的根改到当前基目录，旧会话（无 cwd）回填旧根", () => {
+    // v1.93 旧格式行的场景：root 是 tasks/workspace，其下已有 cwd=null 的会话。
+    // v1.94 起基目录变了——行上的根要跟过来，否则新建会话的目录与行根对不上；
+    // 而旧会话的文件还在旧根，回落目标不能跟着漂，所以回填成各自的 cwd。
+    const stale = ensureTaskProject("E:/colt-tasks/workspace");
+    const legacy = createSession(stale.id, "E:/x/jsonl");
+    const withCwd = createSession(
+      stale.id,
+      "E:/x/jsonl",
+      undefined,
+      "E:/colt-tasks/workspace/20260930-120000",
+    );
+    const drifted = ensureTaskProject("E:/colt-tasks");
+    assert.equal(drifted.id, stale.id, "还是同一条任务行");
+    assert.equal(drifted.rootPath, "E:/colt-tasks", "行上的根收敛到当前基目录");
+    assert.equal(getSession(legacy.id)?.cwd, "E:/colt-tasks/workspace", "无 cwd 的旧会话回填旧根");
+    assert.equal(
+      getSession(withCwd.id)?.cwd,
+      "E:/colt-tasks/workspace/20260930-120000",
+      "已有自己 cwd 的会话不动（cwd 一旦写上就不再变）",
+    );
+  });
+
+  test("普通「打开目录」不会把已登记的任务工作区改回普通项目", () => {
+    const task = ensureTaskProject("E:/colt-tasks/workspace");
+    const reopened = upsertProject("E:/colt-tasks/workspace");
+    assert.equal(reopened.id, task.id);
+    assert.equal(reopened.kind, "task", "upsertProject 默认不回头改已有行的身份");
+  });
+});
+
 describe("sessions", () => {
   test("创建会话，初始字段符合预期", () => {
     const project = upsertProject("E:/demo");
@@ -108,6 +163,20 @@ describe("sessions", () => {
     assert.equal(session.id, draftId);
     assert.equal(getSession(draftId)?.id, draftId);
     assert.equal(listSessions(project.id).length, 1);
+  });
+
+  test("会话级 cwd：可随行落库，缺省为 null（跟随项目根）", () => {
+    const project = upsertProject("E:/demo");
+    const plain = createSession(project.id, "E:/demo/jsonl");
+    assert.equal(plain.cwd, null, "普通空间会话不写 cwd");
+    const withCwd = createSession(
+      project.id,
+      "E:/demo/jsonl",
+      undefined,
+      "E:/colt-tasks/20261001-090503",
+    );
+    assert.equal(withCwd.cwd, "E:/colt-tasks/20261001-090503");
+    assert.equal(getSession(withCwd.id)?.cwd, "E:/colt-tasks/20261001-090503", "重读一致");
   });
 
   test("持久化内核会话 ID 与选定模型", () => {

@@ -469,6 +469,28 @@ export function formatNavigationNotice(
   );
 }
 
+/**
+ * 用户**接管 / 交还**浏览器后写给 agent 的一句提示（与 `formatNavigationNotice` 同源：
+ * 环境提示而非用户发言，走内核的 transform_context，不进 transcript）。
+ *
+ * 接管时要说清「**为什么被拒**」与「**期间能做什么**」：只说「你不能再操作」，
+ * 模型会把它当成一次偶发失败然后反复重试——那是这套机制里最贵的一种错。
+ */
+export function formatControlNotice(byUser: boolean): string {
+  if (byUser) {
+    return (
+      "【系统提示】用户已**接管**浏览器操作（他在面板上点了「接管」）。" +
+      "从现在起，你对该页面的改动类动作（navigate / click / type / key / scroll / viewport / upload）会被拒绝，" +
+      "直到他点「交还」。期间你可以用只读动作（browser_read / browser_screenshot）查看页面现状，" +
+      "或者先做其它与这个浏览器无关的工作。"
+    );
+  }
+  return (
+    "【系统提示】用户已**交还**浏览器操作，你可以继续操作该页面了。" +
+    "他在接管期间可能改动过页面，继续之前请先用 browser_read 的 snapshot 重新确认页面状态。"
+  );
+}
+
 /** 下载列表：文件名、状态、落盘路径与来源，末尾给一句下一步提示 */
 export function formatDownloads(
   entries: readonly DownloadEntry[],

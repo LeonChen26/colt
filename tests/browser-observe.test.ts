@@ -18,6 +18,7 @@ import {
   formatConsole,
   formatDownloadNotice,
   formatDownloads,
+  formatControlNotice,
   formatNavigationNotice,
   formatNetwork,
   formatWaitResult,
@@ -323,6 +324,29 @@ describe("formatBytes", () => {
 function download(partial: Partial<DownloadEntry> & { filename: string }): DownloadEntry {
   return { path: `/dl/${partial.filename}`, url: "https://a.com/x", bytes: 1024, state: "completed", ...partial };
 }
+
+describe("formatControlNotice（用户接管 / 交还后告知 agent）", () => {
+  test("接管：点名「接管」、列出会被拒的动作、并给出期间能做什么", () => {
+    const text = formatControlNotice(true);
+    assert.match(text, /系统提示/);
+    assert.match(text, /接管/);
+    // 说不出「哪些会被拒」，模型只会把它当成一次偶发失败然后反复重试
+    assert.match(text, /click/);
+    assert.match(text, /交还/);
+    // 必须给出口：读还是可以的
+    assert.match(text, /browser_read/);
+  });
+
+  test("交还：提醒页面可能被改过，继续前先重新确认", () => {
+    const text = formatControlNotice(false);
+    assert.match(text, /交还/);
+    assert.match(text, /snapshot/);
+  });
+
+  test("两边都要能区分——否则模型分不清「现在能不能动」", () => {
+    assert.notEqual(formatControlNotice(true), formatControlNotice(false));
+  });
+});
 
 describe("formatNavigationNotice（用户手动导航后告知 agent）", () => {
   test("三种动作各自点名，并带上目的页地址与标题", () => {

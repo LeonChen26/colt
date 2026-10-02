@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import type { Project, ProjectFileChange, SessionEvent, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
+import type { Project, ProjectFileChange, ProjectKind, SessionEvent, SessionInfo, SessionUsage, ToolCallRecord, UsageRecord } from "@shared/protocol";
 import type { ViewFileChange } from "@shared/worker-protocol";
 import type { ViewTodo } from "@shared/todo";
 import { toStoredThinkingLevel } from "@shared/thinking-level";
@@ -17,6 +17,7 @@ interface ProjectRow {
   name: string;
   root_path: string;
   root_key: string;
+  kind: string;
   created_at: number;
   last_opened_at: number;
 }
@@ -33,6 +34,8 @@ interface SessionRow {
   updated_at: number;
   message_count: number;
   status: string;
+  /** 会话自己的工作目录；NULL = 跟随项目 rootPath（普通空间会话全是这样） */
+  cwd: string | null;
 }
 
 function toProject(row: ProjectRow): Project {
@@ -40,6 +43,7 @@ function toProject(row: ProjectRow): Project {
     id: row.id,
     name: row.name,
     rootPath: row.root_path,
+    kind: row.kind === "task" ? "task" : "workspace",
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
   };
@@ -58,11 +62,18 @@ function toSession(row: SessionRow): SessionInfo {
     updatedAt: row.updated_at,
     messageCount: row.message_count,
     status: row.status === "archived" ? "archived" : "active",
+    cwd: row.cwd,
   };
 }
 
-/** 按根路径登记项目；已存在（规范化后同一目录）则更新最近打开时间 */
-export function upsertProject(rootPath: string): Project {
+/**
+ * 按根路径登记项目；已存在（规范化后同一目录）则更新最近打开时间。
+ *
+ * `kind` 只在**新建行**时写入；对已存在的行，只有显式传 `'task'` 才会把它转成任务工作区
+ * （见 `ensureTaskProject`）——普通「打开目录」传默认值 `'workspace'`，**不回头改**已存在的
+ * 身份，否则用户重新打开某个目录会把已登记的任务工作区又变回普通项目。
+ */
+export function upsertProject(rootPath: string, kind: ProjectKind = "workspace"): Project {
   const db = getDatabase();
   const now = Date.now();
   const rootKey = normalizeRootKey(rootPath);
@@ -71,6 +82,10 @@ export function upsertProject(rootPath: string): Project {
 
   if (existing) {
     db.prepare("UPDATE projects SET last_opened_at = ? WHERE id = ?").run(now, existing.id);
+    if (kind === "task" && existing.kind !== "task") {
+      db.prepare("UPDATE projects SET kind = ? WHERE id = ?").run("task", existing.id);
+      existing.kind = "task";
+    }
     return toProject({ ...existing, last_opened_at: now });
   }
 
@@ -79,13 +94,53 @@ export function upsertProject(rootPath: string): Project {
     name: basename(rootPath) || rootPath,
     root_path: rootPath,
     root_key: rootKey,
+    kind,
     created_at: now,
     last_opened_at: now,
   };
   db.prepare(
-    "INSERT INTO projects (id, name, root_path, root_key, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(row.id, row.name, row.root_path, row.root_key, row.created_at, row.last_opened_at);
+    "INSERT INTO projects (id, name, root_path, root_key, kind, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(row.id, row.name, row.root_path, row.root_key, row.kind, row.created_at, row.last_opened_at);
   return toProject(row);
+}
+
+/**
+ * 取（必要时创建）任务工作区——「任务」栏背后的那条项目行，幂等。
+ *
+ * 查找顺序：先按 `kind='task'` 找（它就是任务工作区，root 变了也沿用）；
+ * 再按 root_key 找（该目录曾被当作普通工作区登记过 → 原地转成任务工作区）；
+ * 都没有才新建，名字固定为「任务」——它不出现在侧栏列表里，名字只用于确认框等兜底文案。
+ *
+ * 根**漂移收敛**（v1.94）：按 kind 复用旧行时，若它的 root 与当前基目录不一致（比如
+ * v1.93 的旧格式 `tasks/workspace`），把根改到当前基目录——此后新建的任务会话目录都
+ * 落在基目录下，行上的 root 必须跟它一致；同时把该行下**还没有自己 cwd** 的旧会话
+ * 回填成旧根：它们的文件在那儿，`resolveSessionRoot` 的回落目标不能跟着根漂移
+ * （会话级 cwd 一旦写上就不再变，见 materializeDraft）。
+ */
+export function ensureTaskProject(rootPath: string): Project {
+  const db = getDatabase();
+  const byKind = db.prepare("SELECT * FROM projects WHERE kind = 'task' LIMIT 1").get() as
+    | unknown as ProjectRow | undefined;
+  if (byKind) {
+    if (byKind.root_path !== rootPath) {
+      db.prepare("UPDATE sessions SET cwd = ? WHERE project_id = ? AND cwd IS NULL").run(
+        byKind.root_path,
+        byKind.id,
+      );
+      db.prepare("UPDATE projects SET root_path = ?, root_key = ? WHERE id = ?").run(
+        rootPath,
+        normalizeRootKey(rootPath),
+        byKind.id,
+      );
+      byKind.root_path = rootPath;
+      byKind.root_key = normalizeRootKey(rootPath);
+    }
+    return toProject(byKind);
+  }
+
+  const row = upsertProject(rootPath, "task");
+  db.prepare("UPDATE projects SET name = ? WHERE id = ?").run("任务", row.id);
+  return { ...row, name: "任务" };
 }
 
 export function listProjects(): Project[] {
@@ -98,8 +153,8 @@ export function listProjects(): Project[] {
 
 /**
  * 读取单个项目。
- * 用途：把会话解析到它的工作目录——`sessions` 表故意不存 cwd，根只在项目上，
- * 于是「读项目内文件」的根只能由主进程经 `sessionId → project_id → root_path` 推出。
+ * 用途：会话工作目录的**回落值**——`sessions.cwd` 为 NULL（普通空间会话、以及 v1.94
+ * 之前的旧行）时，根由主进程经 `sessionId → project_id → root_path` 推出，不经渲染层。
  */
 export function getProject(projectId: string): Project | undefined {
   const row = getDatabase()
@@ -118,6 +173,7 @@ export function createSession(
   projectId: string,
   jsonlPath: string,
   id?: string,
+  cwd: string | null = null,
 ): SessionInfo {
   const db = getDatabase();
   const now = Date.now();
@@ -133,10 +189,11 @@ export function createSession(
     updated_at: now,
     message_count: 0,
     status: "active",
+    cwd,
   };
   db.prepare(
-    `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (id, project_id, title, jsonl_path, created_at, updated_at, message_count, status, cwd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
     row.project_id,
@@ -146,6 +203,7 @@ export function createSession(
     row.updated_at,
     row.message_count,
     row.status,
+    row.cwd,
   );
   return toSession(row);
 }

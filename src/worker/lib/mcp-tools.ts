@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Colt
 // SPDX-License-Identifier: MIT
-import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
-import { Client, StreamableHTTPClientTransport, SSEClientTransport } from "@modelcontextprotocol/client";
+import { McpClient, StdioTransport, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import type { TSchema } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -42,25 +41,19 @@ export const MAX_TOOL_NAME_CHARS = 64;
 
 /**
  * 单个 server 的**连接 / 列工具**超时：挂死的 server 不许拖住会话启动。
- * 交给 SDK 原生的 `timeout` 选项（`RequestOptions.timeout`，超时会真取消请求并抛
- * `RequestTimeout`），**不用 `Promise.race`**——后者超时后底层请求还在跑，只是我们
- * 提前认输。
+ * 逐请求交给 pi-mcp 的 `McpRequestOptions.timeoutMs`（超时真取消请求并抛
+ * `McpTimeoutError`），**不用 `Promise.race`**——后者超时后底层请求还在跑，只是我们
+ * 提前认输。连接（握手）那步 `connect()` 不收请求选项，用 race 兜底，但**输掉时立刻
+ * `client.close()`**——close 会拒绝在途请求、杀掉 stdio 子进程，是真取消不是假超时。
  *
- * **调用**（`callTool` / `readResource` / `getPrompt` 等）是另一条线：不传就是 SDK
- * 默认的 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`），由配置的 `timeout` / `toolTimeouts`
+ * **调用**（`callTool` / `readResource` / `getPrompt` 等）是另一条线：不传时**我们显式钉
+ * 60s**（`MCP_CALL_DEFAULT_TIMEOUT_MS`，见下——pi-mcp 自身默认 30s，直接透传会让长工具
+ * 静默缩水），由配置的 `timeout` / `toolTimeouts`
  * 放宽（见 `callTimeoutOf`）——编译、下载这类正当长工具不该被 60s 就地掐断。
  *
  * 值定义在 `@shared/limits`：主进程「等 MCP 回话」的预算要按它算（那里记着为什么
  * 不能让两侧各写一份）。
  */
-
-/**
- * 自动翻页的页数上限，钉在 `Client` 上（`ClientOptions.listMaxPages`，触顶抛错、
- * 不缓存半份聚合）。v2 的 `listTools()` **不传 cursor 时会自己翻完所有页**，所以这个
- * 上限是唯一的分页兜底——留它是为了兜住「server 永远回同一个 cursor」这种坏实现。
- * 显式写出来是为了让人一眼看到这个数，而不是去翻 SDK 默认值（默认 64）。
- */
-const MAX_TOOL_PAGES = 100;
 
 /** callTool 返回里本模块关心的最小形状（SDK 的 zod 联合类型用起来反而绕） */
 interface McpCallResult {
@@ -85,14 +78,16 @@ interface ListedTool {
 }
 
 /** 活着的客户端：worker 退出时统一回收（正常 dispose 会走 runtime.close） */
-const liveClients = new Set<Client>();
+const liveClients = new Set<McpClient>();
 let exitHookArmed = false;
 
 function armExitHook(): void {
   if (exitHookArmed) return;
   exitHookArmed = true;
   process.on("exit", () => {
-    // exit 事件里不能 await；Client.close 内部 kill 子进程的信号发出是同步的，尽力而为
+    // exit 事件里不能 await；close 内部杀子进程的信号是同步发出的，尽力而为。
+    // stdio 那支 pi-mcp 自己也装了 exit hook（进程组 SIGTERM / Windows taskkill /T），
+    // 这里多兜一层：把 HTTP 连接与在途请求一并收掉。
     for (const client of liveClients) void client.close().catch(() => undefined);
   });
 }
@@ -153,57 +148,73 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type AnyTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
+type AnyTransport = StdioTransport | StreamableHttpTransport;
 
-/** 按**解析后**的配置造传输：stdio 走子进程，远程走 Streamable HTTP / SSE（headers 透传）。
+/** 按**解析后**的配置造传输：stdio 走子进程，远程走 Streamable HTTP（headers 透传）。
  *  入参必须是 `interpolateConfig` 的产物——`${VAR}` 在这里才被换成真实值，且**只**在这里。
  *
- *  `cwd` 是**会话的项目根**，作为 stdio 子进程的工作目录（`StdioServerParameters.cwd`；
- *  不传则「继承当前进程的 cwd」）。这一步不能省：worker 是
+ *  `cwd` 是**会话的项目根**，作为 stdio 子进程的工作目录；这一步不能省：worker 是
  *  `utilityProcess.fork(workerPath, [], {…})` 起的、**没带 `cwd`**，于是它自己的 cwd 是
  *  **应用进程的**（dev 下就是仓库根，打包后是应用目录），跟用户的项目毫无关系。而
  *  `args: ["."]` / `["src"]` / `["dist"]` 这类**相对路径正是最主流的写法**（官方
  *  `server-filesystem` 的例子就写着 `.`），用户把它写在项目里的 `.colt/mcp.json`，当然指望
  *  相对项目根解析。实测（2026-09-19 审计 ⑧）：相对参数被解析成 `E:\code\tests\…`（从仓库根
- *  退了两级），server 直接 `Cannot find module`、连不上——而设置页只会说「连接失败」。 */
+ *  退了两级），server 直接 `Cannot find module`、连不上——而设置页只会说「连接失败」。
+ *
+ *  环境变量：pi-mcp 的 stdio 默认**继承当前进程环境**再叠加 `config.env`（与 pi CLI、
+ *  Claude Code 同一口径）——server 要 `PATH` / `HOME` 才能跑起 `npx` / `uvx`。密钥仍建议
+ *  写 `${VAR}` 插值（见 `interpolateConfig`）：声明值不落盘明文，缺变量给诊断。
+ *  旧式 SSE 传输已随官方 SDK 一起移除（见 `shared/mcp-config.ts` 的 parseServerConfig）：
+ *  配置里写 `transport: "sse"` 在解析层就被拒，到不了这里。 */
 function buildTransport(config: McpServerConfig, cwd: string): AnyTransport {
   if (config.command !== undefined) {
-    return new StdioClientTransport({
+    return new StdioTransport({
       command: config.command,
       args: config.args ?? [],
-      env: { ...getDefaultEnvironment(), ...config.env },
+      env: config.env,
       cwd,
     });
   }
-  const url = new URL(config.url ?? "");
-  const requestInit = config.headers === undefined ? undefined : { headers: config.headers };
-  return config.transport === "sse"
-    ? new SSEClientTransport(url, { requestInit })
-    : new StreamableHTTPClientTransport(url, { requestInit });
+  return new StreamableHttpTransport({
+    url: new URL(config.url ?? ""),
+    headers: config.headers,
+  });
 }
 
 /**
  * 拉全量工具。
  *
- * v2 的 `listTools()` **不传 cursor 时会自己翻完所有页并聚合**（实测：夹具 5 工具 / 每页 2 个，
- * 一次调用拿回 5 条、`nextCursor` 为 undefined；只有显式传 `cursor` 才回单页）。所以这里
- * **不写循环**——客户端侧也没法「主动要第一页」（省略 cursor 就等于「全给我」），自己写循环
- * 只会得到一段**永远只跑一轮的死代码**（v2 迁移前那段按 `nextCursor` 翻页的循环正是如此，
- * `MAX_TOOL_PAGES` 根本没被读到）。非收敛（cursor 重复）停了、页数触顶抛错，都由 SDK 兜。
+ * pi-mcp 的 `listTools()` **自己跟着 `nextCursor` 翻完所有页并聚合**（`listAll` 内建，
+ * 重复 cursor 直接抛错——「server 永远回同一个 cursor」的坏实现兜住了）。所以这里
+ * **不写循环**——客户端侧也没法「主动要第一页」，自己写循环只会得到一段**永远只跑
+ * 一轮的死代码**（v2 迁移前那段按 `nextCursor` 翻页的循环正是如此）。哪天 pi-mcp 改了
+ * 这个契约，单测「单次 listTools() 就拿回全部」那条先红（tests/mcp-tools.test.ts）。
  */
-async function listAllTools(client: Client): Promise<ListedTool[]> {
-  const listed = await client.listTools(undefined, { timeout: MCP_STEP_TIMEOUT_MS });
-  return listed.tools as unknown as ListedTool[];
+async function listAllTools(client: McpClient): Promise<ListedTool[]> {
+  const listed = await client.listTools({ timeoutMs: MCP_STEP_TIMEOUT_MS });
+  return listed as unknown as ListedTool[];
 }
 
-/** 按 server 原始工具名解析调用超时（毫秒）；未配置返回 undefined（交给 SDK 默认 60s） */
+/**
+ * MCP 调用的默认超时，钉在 **60s**——**一个值只有一个名字**，两处共用这一个常量：
+ *   ① `McpClient` 构造时的 `requestTimeoutMs`（客户端级默认，握手与逐请求都兜住）；
+ *   ② 未配置 `timeout` / `toolTimeouts` 时，逐请求调用超时的兜底。
+ *
+ * ⚠️ 换客户端时差点静默缩水：v2 SDK 的未配置默认是 60s（`DEFAULT_REQUEST_TIMEOUT_MSEC`），
+ * pi-mcp 的默认是 **30s**（`DEFAULT_REQUEST_TIMEOUT_MS = 30_000`）——直接把 `undefined`
+ * 透传过去，所有没写 `timeout` 的长工具（编译、下载、浏览器自动化）会被悄悄提前掐断。
+ * 这里显式钉回 60s，保住「配置是**放宽**出口」的原语义；要改这个值是产品决定，不跟着客户端漂。
+ */
+const MCP_CALL_DEFAULT_TIMEOUT_MS = 60_000;
+
+/** 按 server 原始工具名解析调用超时（毫秒）；类型上允许 undefined，解析处用 60s 兜底 */
 type ToolTimeoutResolver = (toolName: string) => number | undefined;
 
 /** 把一个 MCP 工具包成内核工具（名字前缀、裸 schema 透传、失败要 throw） */
 function wrapTool(
   serverName: string,
   tool: ListedTool,
-  client: Client,
+  client: McpClient,
   timeout: number | undefined,
 ): AgentHarnessTool<ExecutionToolContext, TSchema, undefined> {
   return {
@@ -214,10 +225,12 @@ function wrapTool(
     // schema 有专门的 coercion + 编译路径（见文件头注释）
     parameters: tool.inputSchema as unknown as TSchema,
     async execute(_toolCallId, params) {
-      const result = (await client.callTool(
-        { name: tool.name, arguments: params as Record<string, unknown> },
-        { timeout },
-      )) as unknown as McpCallResult;
+      // MCP 把工具失败放在结果里（isError）而不是协议错误里；pi-mcp 原样透传 CallToolResult
+      const result = await client.callTool(
+        tool.name,
+        params as Record<string, unknown>,
+        { timeoutMs: timeout },
+      );
       // 内核约定：失败要 throw，由内核转成错误工具结果（与 host-bridge 同款）
       if (result.isError === true) throw new Error(resultText(result));
       return { content: mapMcpContent(result), details: undefined };
@@ -294,14 +307,17 @@ function promptMessagesText(messages: unknown): string {
  * **服务端**按类型化参数渲染的（`prompts/get`）——硬塞会得到一个「参数根本传不进服务端」的假接口。
  * 包成工具则天然过 `before_tool` 审批闸门，与 `tools` 面**同一套**安全模型（零例外）。
  *
- * 只在 server **主动声明**该能力时才加（`getServerCapabilities()`）：没声明就不往清单里塞
+ * 只在 server **主动声明**该能力时才加（`client.serverCapabilities`）：没声明就不往清单里塞
  * 用不上的入口——与技能/子代理同一条「别放死控件」的纪律（AGENTS.md §3.6）。
  * 调用超时同 `callTool`：走配置的 `timeout` / `toolTimeouts`（键就是能力工具名，
- * 如 `read_resource`），未配置退回 SDK 默认 60s——这些是**按需**发起的，不卡会话启动那条 15s 线。
+ * 如 `read_resource`），未配置退回客户端默认 60s——这些是**按需**发起的，不卡会话启动那条 15s 线。
+ *
+ * `prompts` 走通用 `client.request()`：pi-mcp 给 resources 备了专用助手、没备 prompts 的
+ * （协议方法 `prompts/list` / `prompts/get` 直接发，能力已由上面的声明检查把过一道）。
  */
 function capabilityTools(
   serverName: string,
-  client: Client,
+  client: McpClient,
   capabilities: { resources?: unknown; prompts?: unknown } | undefined,
   timeoutFor: ToolTimeoutResolver,
 ): AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] {
@@ -315,17 +331,18 @@ function capabilityTools(
       description: `列出 MCP server "${serverName}" 暴露的资源与资源模板（URI / 名称 / MIME 类型）。`,
       parameters: NO_ARGS_SCHEMA as unknown as TSchema,
       async execute() {
-        const timeout = timeoutFor("list_resources");
-        const listed = await client.listResources(undefined, { timeout });
+        const timeout = { timeoutMs: timeoutFor("list_resources") };
+        // pi-mcp 的 listResources / listResourceTemplates 自己翻完全部分页，直接给数组
+        const listed = await client.listResources(timeout);
         let templates: unknown = [];
         try {
-          templates = (await client.listResourceTemplates(undefined, { timeout })).resourceTemplates;
+          templates = await client.listResourceTemplates(timeout);
         } catch {
           // 有「声明了 resources 却不支持模板列举」的 server；模板是附加信息，取不到就留空
         }
         return {
           content: [
-            { type: "text", text: jsonText({ resources: listed.resources, resourceTemplates: templates }) },
+            { type: "text", text: jsonText({ resources: listed, resourceTemplates: templates }) },
           ],
           details: undefined,
         };
@@ -338,7 +355,7 @@ function capabilityTools(
       parameters: READ_RESOURCE_SCHEMA as unknown as TSchema,
       async execute(_toolCallId, params) {
         const { uri } = params as { uri: string };
-        const result = await client.readResource({ uri }, { timeout: timeoutFor("read_resource") });
+        const result = await client.readResource(uri, { timeoutMs: timeoutFor("read_resource") });
         const contents = Array.isArray(result.contents) ? result.contents : [];
         return {
           content:
@@ -357,8 +374,10 @@ function capabilityTools(
       description: `列出 MCP server "${serverName}" 提供的提示词（名称 / 说明 / 参数）。`,
       parameters: NO_ARGS_SCHEMA as unknown as TSchema,
       async execute() {
-        const listed = await client.listPrompts(undefined, { timeout: timeoutFor("list_prompts") });
-        return { content: [{ type: "text", text: jsonText(listed.prompts) }], details: undefined };
+        const listed = (await client.request("prompts/list", {}, {
+          timeoutMs: timeoutFor("list_prompts"),
+        })) as { prompts?: unknown };
+        return { content: [{ type: "text", text: jsonText(listed.prompts ?? []) }], details: undefined };
       },
     });
     tools.push({
@@ -371,10 +390,9 @@ function capabilityTools(
           name: string;
           arguments?: Record<string, string>;
         };
-        const result = await client.getPrompt(
-          { name, arguments: args },
-          { timeout: timeoutFor("get_prompt") },
-        );
+        const result = (await client.request("prompts/get", { name, arguments: args }, {
+          timeoutMs: timeoutFor("get_prompt"),
+        })) as { messages?: unknown };
         const text = promptMessagesText(result.messages);
         return {
           content: [{ type: "text", text: text === "" ? "[mcp] 该提示词没有内容" : text }],
@@ -400,12 +418,12 @@ interface ServerState {
    * 别落到这个字段上。
    */
   config: McpServerConfig;
-  client?: Client;
+  client?: McpClient;
   tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[];
   /** server 自报的用法说明（握手时的 `InitializeResult.instructions`）；没报就没有这项 */
   instructions?: string;
   error?: string;
-  /** 我们主动关的（reload / dispose）：此时 SDK 的 onclose 不算「掉线」 */
+  /** 我们主动关的（reload / dispose）：此时 onClose 不算「掉线」 */
   closing?: boolean;
 }
 
@@ -435,6 +453,14 @@ function lateSummary(settled: { name: string; error?: string }[]): string {
   return `MCP 后台连接结束：${parts.join("；")}`;
 }
 
+/**
+ * 连接握手（initialize → notifications/initialized）的单步超时文案。
+ * `connect()` 不收请求选项（与逐请求的 `timeoutMs` 不同路），用 race 兜底：
+ * 输掉时立刻 `client.close()`——pi-mcp 的 close 会拒绝在途请求、杀掉 stdio 子进程，
+ * 是**真取消**，不是「底层还在跑、我们提前认输」的假超时。
+ */
+const CONNECT_TIMEOUT_LABEL = "连接超时";
+
 async function connectServer(
   name: string,
   declared: McpServerConfig,
@@ -442,45 +468,66 @@ async function connectServer(
   cwd: string,
   notify: (message: string) => void,
 ): Promise<ServerState> {
-  const client = new Client({ name: "colt", version: "0.0.1" }, { listMaxPages: MAX_TOOL_PAGES });
+  // requestTimeoutMs 钉 60s：既兜住握手（connect 不收请求选项），也是调用的默认值
+  //（pi-mcp 自身默认 30s，配置层文档口径是 60s，见 MCP_CALL_DEFAULT_TIMEOUT_MS）
+  const client = new McpClient({
+    name: "colt",
+    version: "0.0.1",
+    requestTimeoutMs: MCP_CALL_DEFAULT_TIMEOUT_MS,
+  });
   // config 存声明值（见 ServerState.config）：resolved 只用于造传输
   const state: ServerState = { name, config: declared, client, tools: [] };
   try {
-    await client.connect(buildTransport(resolved, cwd), { timeout: MCP_STEP_TIMEOUT_MS });
+    const connectPromise = client.connect(buildTransport(resolved, cwd));
+    const timeoutPromise = sleep(MCP_STEP_TIMEOUT_MS).then(() => {
+      throw new Error(CONNECT_TIMEOUT_LABEL);
+    });
+    timeoutPromise.catch(() => undefined); // 输掉 race 后它仍会 reject，别炸 unhandled
+    await Promise.race([connectPromise, timeoutPromise]).catch(async (error: unknown) => {
+      if (error instanceof Error && error.message === CONNECT_TIMEOUT_LABEL) {
+        state.closing = true;
+        await client.close().catch(() => undefined);
+        throw new Error(
+          `${CONNECT_TIMEOUT_LABEL}（${MCP_STEP_TIMEOUT_MS / 1000}s 内未完成握手）`,
+        );
+      }
+      throw error;
+    });
     const listed = await listAllTools(client);
     // 调用超时按 server 的**声明值**解析（`timeout` / `toolTimeouts`）——连接用 15s 那条线，
-    // 与调用无关；这里解析一次，包进每个工具的 execute 里。
-    const timeoutFor: ToolTimeoutResolver = (toolName) => callTimeoutOf(declared, toolName);
+    // 与调用无关；这里解析一次，包进每个工具的 execute 里。未配置时钉 60s（pi-mcp 自身
+    // 默认 30s，直接透传 undefined 会让长工具静默缩水，见 MCP_CALL_DEFAULT_TIMEOUT_MS）。
+    const timeoutFor: ToolTimeoutResolver = (toolName) =>
+      callTimeoutOf(declared, toolName) ?? MCP_CALL_DEFAULT_TIMEOUT_MS;
     // 工具面 + 该 server **声明了**的 resources / prompts 能力面（没声明就不加，见 capabilityTools）
     state.tools = [
       ...listed.map((tool) => wrapTool(name, tool, client, timeoutFor(tool.name))),
-      ...capabilityTools(name, client, client.getServerCapabilities(), timeoutFor),
+      ...capabilityTools(name, client, client.serverCapabilities, timeoutFor),
     ];
     // server 自报的「怎么用我」。这里只**保留**；拼进系统提示词是另一处的事
-    // （见 `lib/mcp-reload.ts` 的 composeMcpInstructions）——SDK 只给取值口，不会替你塞。
-    const instructions = client.getInstructions()?.trim();
+    // （见 `lib/mcp-reload.ts` 的 composeMcpInstructions）——内核只给取值口，不会替你塞。
+    const instructions = client.instructions?.trim();
     if (instructions !== undefined && instructions !== "") state.instructions = instructions;
     // 连上**之后**掉线要如实反映：否则设置页会一直显示「已连接」、而工具调用早已失败——
     // 持续撒谎比没有信号更糟（AGENTS.md §四）。三个约束：
-    // ① SDK 的 `onclose` 在**我们主动 close() 时同样触发**，所以先看 closing 标记，
+    // ① pi-mcp 的 `onClose` 在**我们主动 close() 时同样触发**，所以先看 closing 标记，
     //    别把 reload / dispose 自己的关闭误报成「断开」；
-    // ② 刻意**不**接 `onerror`：SDK 明说那里的 error「不一定是致命的」，拿它翻状态
-    //    会把健康 server 误标成红点，那种假信号比没有信号更贵。掉线一律以 onclose 为准；
+    // ② 刻意**不**接 `onError`：pi-mcp 明说 transport error「只上报、请求在 close 时才失败」，
+    //    拿它翻状态会把健康 server 误标成红点，那种假信号比没有信号更贵。掉线一律以 onClose 为准；
     // ③ **同时作声**（`notify`）：光翻状态等于要用户自己打开设置页才知道。掉线时工具仍留在
     //    清单里（决策 11：不伪造成功结果），于是用户唯一的线索是「某个调用莫名失败」。
     //    这条走 security 类 notice：toast 之外**同时落 session_events**（与装载摘要同一条通道），
     //    所以 5 秒后仍能在「事件」里回查。
-    client.onclose = () => {
+    client.onClose(() => {
       if (state.closing === true) return;
-      // 只报一次：HTTP 传输会重复触发 onclose（SDK 自己注释：`HTTP transports re-fire onclose`），
-      // 而掉线是一次事件，不是一串
+      // 只报一次：onClose 文档保证只触发一次，这道闸是冗余兜底（同语义保两道，成本为零）
       if (state.error !== undefined) return;
       state.error = MCP_DROPPED;
       notify(
         `MCP server "${name}" 连上后掉线：${MCP_DROPPED}。` +
           `它的工具仍在清单里、调用会失败；在设置页点「重新加载」可恢复。`,
       );
-    };
+    });
     liveClients.add(client);
     armExitHook();
     return state;

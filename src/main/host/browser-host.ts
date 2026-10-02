@@ -25,8 +25,10 @@
  * 限制**单文件体积**（超限取消并提示）——接管本体在 browser-downloads.ts。
  * ⚠️ 观测列表那 5 条的 `MAX_DOWNLOADS_PER_SESSION` 只做**缓冲截断**，不是下载数量上限
  * ——目前**不限制一个会话能下几个文件**。新窗口请求一律在当前视图接管（browser-popups.ts）。
- * 上传是唯一需要 CDP 的动作——input[type=file] 出于安全无法用 JS 赋值，
- * 故用 Electron 内置的 webContents.debugger 调 DOM.setFileInputFiles（不新增依赖）。
+ * 输入：会改变页面的动作走 Chromium 的**真实输入管线**（CDP `Input.*`，见 browser-input.ts）
+ * ——合成 `el.click()` 只派发一条 click，对监听 pointerdown/mousedown 的组件是静默不响应。
+ * 与 upload 的 `DOM.setFileInputFiles` 共用同一条 debugger 通道（不新增依赖）。
+ * 注入页面的脚本只负责「读」与「定位」（snapshot / 命中测试 / 聚焦）。
  */
 import {
   session,
@@ -40,6 +42,7 @@ import type { HostResult } from "@shared/worker-protocol";
 import {
   CaptureBuffer,
   clampWaitTimeout,
+  formatControlNotice,
   formatNavigationNotice,
   formatWaitResult,
   isFileInput,
@@ -55,13 +58,25 @@ import {
 import { DownloadHook } from "./browser-downloads";
 import { PopupAdopter } from "./browser-popups";
 import {
-  clickScript,
+  confirmScript,
   CONTENT_WIDTH_SCRIPT,
+  focusScript,
+  highlightScript,
+  hitScript,
   OVERLAY_REMOVE_SCRIPT,
   OVERLAY_SCRIPT,
+  parseConfirmResult,
+  parseFocusResult,
+  parseHitResult,
   SNAPSHOT_SCRIPT,
-  typeScript,
 } from "./browser-scripts";
+import { clickAt, ensureInputChannel, insertText, pressKey } from "./browser-input";
+import { formatCombo, readModifiers, resolveKey } from "./browser-keys";
+import {
+  controlBlockedMessage,
+  controlBlockReason,
+  MUTATING_BROWSER_ACTIONS,
+} from "./browser-actions";
 import {
   BROWSER_PARTITION,
   DEFAULT_RECT,
@@ -105,10 +120,24 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   }
 }
 
+/**
+ * 「Agent 正在操作」的窗口：最后一次改动类动作之后多久内仍算在操作。
+ *
+ * 不按「请求正在进行」算：agent 两步之间隔着模型思考（几秒到几十秒），那样会闪断成一片噪声。
+ */
+const AGENT_ACTING_WINDOW_MS = 30_000;
+
 /** 用户手动导航的结果：给渲染层的新状态，以及（页面真变了时）给 agent 的提示 */
 export interface BrowserNavigation {
   state: BrowserViewState;
   /** 给 agent 的环境提示；没有实际导航（已到头）时为空串 */
+  notice: string;
+}
+
+/** 用户接管 / 交还的结果：给渲染层的新状态，以及（状态真变了时）给 agent 的提示 */
+export interface BrowserControl {
+  state: BrowserViewState;
+  /** 给 agent 的环境提示；重复点同一边（状态没变）时为空串 */
   notice: string;
 }
 
@@ -188,6 +217,9 @@ export class BrowserHost {
       viewport: entry.viewport === null ? null : { ...entry.viewport },
       contentWidth: entry.contentWidth,
       zoom: entry.zoom,
+      // 窗口到点会再推一次状态，界面因此不必自己计时
+      agentActing: Date.now() - entry.lastAgentActedAt < AGENT_ACTING_WINDOW_MS,
+      controlledByUser: entry.controlledByUser,
     };
   }
 
@@ -207,6 +239,46 @@ export class BrowserHost {
     // 推给界面：头部据此收起「视口 × 恢复」标记
     this.#emitState(sessionId, true);
     return this.#buildState(sessionId, entry);
+  }
+
+  /**
+   * 用户接管 / 交还浏览器（**两端都显式**：点头部的「接管」进入、点「交还」退出）。
+   *
+   * 接管态会**改变 agent 的动作权限**（改动类动作被拒），所以它不是纯界面状态：
+   * 真源放在这里、渲染层只是显示；同时由调用方（IPC 层）把这件事告知正在跑的 agent——
+   * 否则它只会反复撞墙，而不知道为什么。
+   *
+   * 为什么不自动接管：那与我们已经撤掉的「面板不可见就拦」是同一类错误——
+   * **替用户表达意愿**（他滚一下页面不等于要接管）。显式接管才站得住：拒绝的依据是
+   * 用户明确表达过的意图，而不是我们替他推断的状态。
+   */
+  setControl(sessionId: string, byUser: boolean): BrowserControl {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) throw new Error("浏览器尚未加载，无法接管 / 交还");
+    // 重复点同一边不产生提示：状态没变，就不该把同一句话再推给 agent 一次
+    // （与 browserNavigate「已到头就不提示」同一立场）
+    if (entry.controlledByUser === byUser) {
+      return { state: this.#buildState(sessionId, entry), notice: "" };
+    }
+    entry.controlledByUser = byUser;
+    this.#emitState(sessionId, true);
+    return { state: this.#buildState(sessionId, entry), notice: formatControlNotice(byUser) };
+  }
+
+  /**
+   * 审批**前置**判断：用户接管期间，改动类 `browser_act` 在**弹卡之前**就被否决的理由；
+   * 不构成否决时返回 undefined。
+   *
+   * 为什么要在审批前拦：`handle` 里的拦截发生在审批**之后**——用户会先看到一张「是否允许
+   * 点击 e12」的卡、批准后才被告知「你已接管」，等于让他为一个注定失败的动作做决定。
+   * 判据与 `handle` 同源（同一个 `MUTATING_BROWSER_ACTIONS`），不会两处漂。
+   */
+  controlBlock(sessionId: string, toolName: string, args: Record<string, unknown>): string | undefined {
+    return controlBlockReason(
+      this.#sessions.get(sessionId)?.controlledByUser === true,
+      toolName,
+      args,
+    );
   }
 
   /**
@@ -356,6 +428,8 @@ export class BrowserHost {
           viewport: null,
           contentWidth: 0,
           zoom: 1,
+          agentActing: false,
+          controlledByUser: false,
         } satisfies BrowserViewState);
     this.#onState(state);
   }
@@ -616,6 +690,8 @@ export class BrowserHost {
       fit: false,
       appliedWidth: -1,
       navSeq: 0,
+      controlledByUser: false,
+      lastAgentActedAt: 0,
     });
     owner.contentView.addChildView(view);
     return view;
@@ -626,7 +702,8 @@ export class BrowserHost {
    *
    * input[type=file].value 出于安全不允许用 JS 赋值，唯一可行路径是 CDP 的
    * DOM.setFileInputFiles —— 用 Electron 内置的 webContents.debugger（本身就是 CDP），
-   * 不引入额外依赖。挂载是按需的，用完即摘，避免长期占用调试通道。
+   * 不引入额外依赖。通道与点击/按键**共用**（browser-input.ts 的 ensureInputChannel）：
+   * 幂等挂载、常驻不摘，不再按需 attach/detach。
    *
    * 路径是否越界由审批层（policy.ts）把关，与本仓 write/edit 的既有分工一致。
    */
@@ -634,44 +711,122 @@ export class BrowserHost {
     const missing = paths.filter((file) => !existsSync(file));
     if (missing.length > 0) throw new Error(`文件不存在：${missing.join("、")}`);
 
+    // 通道与点击/按键共用：幂等挂载、常驻不摘。原注释担心的「可能已有 DevTools 打开」
+    // 经实测不成立——attach 与 DevTools 双向共存（见 browser-input.ts 的实测结论）。
+    ensureInputChannel(contents);
     const cdp = contents.debugger;
-    const attachedHere = !cdp.isAttached();
-    if (attachedHere) {
-      try {
-        cdp.attach("1.3");
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(`无法挂载调试协议（可能已有 DevTools 打开）：${reason}`);
-      }
+    await cdp.sendCommand("DOM.enable");
+    const document = await cdp.sendCommand("DOM.getDocument", { depth: 0 });
+    const found = await cdp.sendCommand("DOM.querySelector", {
+      nodeId: document.root.nodeId,
+      selector: `[data-colt-ref="${ref}"]`,
+    });
+    if (!found.nodeId) throw new Error(`未找到元素 ${ref}，请重新执行 snapshot`);
+
+    const described = await cdp.sendCommand("DOM.describeNode", { nodeId: found.nodeId });
+    const node = described.node as { nodeName: string; attributes?: string[] };
+    if (!isFileInput(node.nodeName, node.attributes)) {
+      throw new Error(`${ref} 不是 file 类型的 input（实际为 ${node.nodeName}），无法选择文件`);
     }
 
-    try {
-      await cdp.sendCommand("DOM.enable");
-      const document = await cdp.sendCommand("DOM.getDocument", { depth: 0 });
-      const found = await cdp.sendCommand("DOM.querySelector", {
-        nodeId: document.root.nodeId,
-        selector: `[data-colt-ref="${ref}"]`,
-      });
-      if (!found.nodeId) throw new Error(`未找到元素 ${ref}，请重新执行 snapshot`);
-
-      const described = await cdp.sendCommand("DOM.describeNode", { nodeId: found.nodeId });
-      const node = described.node as { nodeName: string; attributes?: string[] };
-      if (!isFileInput(node.nodeName, node.attributes)) {
-        throw new Error(`${ref} 不是 file 类型的 input（实际为 ${node.nodeName}），无法选择文件`);
-      }
-
-      await cdp.sendCommand("DOM.setFileInputFiles", { nodeId: found.nodeId, files: paths });
-      return `已向 ${ref} 选择 ${paths.length} 个文件：${paths.join("、")}`;
-    } finally {
-      if (attachedHere) cdp.detach();
-    }
+    await cdp.sendCommand("DOM.setFileInputFiles", { nodeId: found.nodeId, files: paths });
+    return `已向 ${ref} 选择 ${paths.length} 个文件：${paths.join("、")}`;
   }
 
+  /**
+   * 操作后的**归属提示**：把刚被操作的元素圈一下并标出动作类型，1 秒后自消失。
+   *
+   * ⚠️ 它是**增强**：注入失败不能影响动作结果（同截图叠框、同 pi 的 highlightActions），
+   * 所以这里吞掉错误——不能因为「画不出框」就把一次成功的点击报成失败。
+   */
+  #flash(contents: WebContents, target: string | null, label: string): void {
+    void contents.executeJavaScript(highlightScript(target, label), true).catch(() => undefined);
+  }
+
+  /**
+   * 取一个「稳定的点击坐标」：算完立刻验一次，位移了就重算，两次仍不稳就放弃。
+   *
+   * 为什么需要：`hitScript`（取 rect + 命中测试）与 `clickAt`（真的按下）之间隔着两次 CDP 往返，
+   * 用户在这期间滚动、或页面自己重排（懒加载图片插入），那个坐标就指向**别的元素**了。
+   * 合成 `el.click()` 不依赖坐标，从无此问题；换成真实输入后必须自己收这个口。
+   *
+   * 容差 1px：`hitScript` 与 `confirmScript` 都把中心取整后再报，页面本身没变时两者应当一致，
+   * 1px 是给子像素舍入留的余量。
+   */
+  async #stableClickPoint(
+    contents: WebContents,
+    ref: string,
+  ): Promise<{ ok: true; x: number; y: number; hit: string } | { ok: false; message: string }> {
+    const tolerance = 1;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const hit = parseHitResult(await contents.executeJavaScript(hitScript(ref), true), ref);
+      if (!hit.ok) return { ok: false, message: hit.message };
+      const confirm = parseConfirmResult(await contents.executeJavaScript(confirmScript(ref), true));
+      if (
+        confirm.found &&
+        Math.abs(confirm.x - hit.x) <= tolerance &&
+        Math.abs(confirm.y - hit.y) <= tolerance
+      ) {
+        return { ok: true, x: hit.x, y: hit.y, hit: hit.hit };
+      }
+      // 位移了：重算一次（用户刚滚过页面时，这一步通常就对了），再不稳就放弃
+    }
+    return {
+      ok: false,
+      message:
+        `元素 ${ref} 的位置在取坐标与点击之间连续两次发生变化（页面正在滚动或被重排），已中止本次点击。` +
+        `请重试；若一直如此，先用 browser_read 的 snapshot 确认页面当前状态。`,
+    };
+  }
+
+  /**
+   * 记一次「agent 刚操作过」：刷新窗口，并保证窗口到点时推一次状态把标记撤掉。
+   * 只读动作不记（看不算操作），失败也不记（`handle` 只在成功返回后调它——没发生的事不算发生）。
+   */
+  #markActed(sessionId: string): void {
+    const entry = this.#sessions.get(sessionId);
+    if (entry === undefined) return;
+    entry.lastAgentActedAt = Date.now();
+    if (entry.actingTimer !== undefined) clearTimeout(entry.actingTimer);
+    entry.actingTimer = setTimeout(() => {
+      entry.actingTimer = undefined;
+      this.#emitState(sessionId, true);
+    }, AGENT_ACTING_WINDOW_MS);
+    entry.actingTimer.unref?.();
+    this.#emitState(sessionId, true);
+  }
+
+  /**
+   * 宿主动作入口：先过**权限**这一道，再交给 `#dispatch` 执行。
+   *
+   * 目前唯一的前置判断是「用户是否已显式接管」。
+   * ⚠️ 这里**不**按「面板是否可见」拦（2026-10-01 做过又撤掉）：审批在前、拦在后，
+   * 等于事后往审批语义里塞一个用户没同意过的条件；而且它恰好只在用户**不看**时生效，
+   * 那时「页面是否与他以为的一致」没有意义。接管不同——那是用户明确点过的。
+   */
   async handle(sessionId: string, action: string, params: Record<string, unknown>): Promise<HostResult> {
+    const entry = this.#sessions.get(sessionId);
+    if (entry?.controlledByUser === true && MUTATING_BROWSER_ACTIONS.has(action)) {
+      throw new Error(controlBlockedMessage(action));
+    }
+    const result = await this.#dispatch(sessionId, action, params);
+    if (MUTATING_BROWSER_ACTIONS.has(action)) this.#markActed(sessionId);
+    return result;
+  }
+
+  async #dispatch(sessionId: string, action: string, params: Record<string, unknown>): Promise<HostResult> {
     const view = this.#viewFor(sessionId);
     const contents = view.webContents;
     const capture = this.#sessions.get(sessionId)?.capture;
 
+    // ⚠️ 这里**不**按「面板是否可见」拦写操作（2026-10-01 试过又撤掉，理由记在下面）：
+    // ① 每个写操作都过了审批，用户批准的是「agent 点这个元素」而不是「在我在场时点」；
+    //    批完再用「你不在看」否决一次，等于事后往审批语义里塞一个用户没同意过的条件。
+    // ② 它恰好只在用户**不看**时生效，而那时「页面是否与他以为的一致」没有意义
+    //    （他会重新看当前状态，不是「发现被人改了」）；他在看时面板可见，本就不拦。
+    // ③ 它惩罚最常见的用法：派活给 agent、自己切去看别的，agent 就被堵死在第一步。
+    // 技术上也不成立：CDP 输入不看可见性（实测）。若将来确实需要「用户离开期间 agent 动过
+    // 页面」这件事被知道，正确的做法是**告知**（回话附注 / 切回时给汇总），而不是拒绝。
     switch (action) {
       case "navigate": {
         const url = readString(params.url);
@@ -748,12 +903,45 @@ export class BrowserHost {
       }
       case "click": {
         const ref = readRef(params.ref);
-        return { text: String(await contents.executeJavaScript(clickScript(ref), true)) };
+        // 「点得到吗」与「那个坐标现在还是不是它」两件事一起判：前者判遮挡，后者判
+        // 「取坐标之后页面动过」（用户滚动 / 页面重排）——两者都会让点击落到别的元素上。
+        const point = await this.#stableClickPoint(contents, ref);
+        if (!point.ok) throw new Error(point.message);
+        await clickAt(contents, point.x, point.y);
+        this.#flash(contents, ref, "Agent 点击");
+        return { text: `已点击 ${ref}（命中 ${point.hit}）` };
       }
       case "type": {
         const ref = readRef(params.ref);
         const text = readString(params.text) ?? "";
-        return { text: String(await contents.executeJavaScript(typeScript(ref, text), true)) };
+        // 先聚焦并全选：insertText 是「插到光标处」，全选才能保住既有的**替换**语义。
+        // 聚焦失败（不是输入元素 / 焦点被页面抢走）一律中止——那时输入会写进别的元素。
+        const focus = parseFocusResult(await contents.executeJavaScript(focusScript(ref), true), ref);
+        if (!focus.ok) throw new Error(focus.message);
+        // 聚焦到插入之间同样有窗口：焦点被页面脚本或用户抢走，文本就会写进别的输入框。
+        // 这一步不重试——重试就是再抢一次焦点，只会把拉锯战拖长。
+        const confirm = parseConfirmResult(await contents.executeJavaScript(confirmScript(ref), true));
+        if (!confirm.found || !confirm.active) {
+          throw new Error(
+            `${ref} 在输入前失去了焦点（页面脚本或用户操作抢走了它），已中止——` +
+              `否则文本会写进别的元素。请先用 browser_read 的 snapshot 确认当前状态，再重试。`,
+          );
+        }
+        await insertText(contents, text);
+        this.#flash(contents, ref, "Agent 输入");
+        return {
+          text:
+            `已向 ${ref}（${focus.self}）输入 ${text.length} 个字符` +
+            (focus.previous > 0 ? `，替换原有 ${focus.previous} 个字符` : ""),
+        };
+      }
+      case "key": {
+        // 按键发给**当前聚焦的元素**（没有焦点时落到 body）：要按某个输入框，先用 type 或 click 聚焦它。
+        const spec = resolveKey(params.key);
+        const modifiers = readModifiers(params.modifiers);
+        await pressKey(contents, spec, modifiers);
+        this.#flash(contents, null, `Agent 按键 ${formatCombo(spec, modifiers)}`);
+        return { text: `已按键 ${formatCombo(spec, modifiers)}（发给当前聚焦的元素）` };
       }
       case "upload": {
         const ref = readRef(params.ref);
@@ -816,8 +1004,9 @@ export class BrowserHost {
     this.#sessions.delete(sessionId);
     this.#downloads.disposeSession(sessionId);
     // 去抖中的重量可能还没跑：撤掉定时器，在飞的那次由 #measureContentWidth 的
-    // 「条目还是不是它」守卫收尾
+    // 「条目还是不是它」守卫收尾；「正在操作」的到期定时器同理（会话都没了，不必再推状态）
     if (entry.measureTimer !== undefined) clearTimeout(entry.measureTimer);
+    if (entry.actingTimer !== undefined) clearTimeout(entry.actingTimer);
 
     const contents = entry.view.webContents;
     if (!contents.isDestroyed()) this.#webContentsToSession.delete(contents.id);

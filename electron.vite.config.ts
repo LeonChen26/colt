@@ -1,4 +1,4 @@
-import { cpSync, rmSync } from "node:fs";
+import { cpSync, realpathSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import type { Plugin } from "vite";
@@ -34,10 +34,54 @@ function builtinSkills(): Plugin {
   };
 }
 
+/**
+ * 把模块 id 规整成磁盘上的真实大小写（Windows）。
+ *
+ * 事故（2026-09-30）：同一份源码，换一个启动入口 `npm run dev` 就把 db/index.ts 打包成
+ * **两个模块实例**——模块图里同时出现 `E:/code/...` 与 `e:/code/...` 两种 id（盘符大小写
+ * 取决于**启动进程的 cwd 写法**：用户终端大写、agent shell 小写）。rollup 按字符串区分
+ * 模块，于是 `bootApp` 里 `openDatabase` 开的是 A 实例的库、`sessionManager` 读的是 B
+ * 实例的句柄，启动即抛「数据库尚未初始化」、窗口永远建不出来，冒烟卡死在 ready-to-show
+ * 之前——而**换台机器 / 换个终端启动就「好了」**，极难复现。所以必须在构建层把 id 规整掉，
+ * 而不是指望每个启动入口的 cwd 写法都一致。
+ *
+ * 做法：在 resolveId 里先走完 vite/rollup 自己的解析链（`skipSelf` 防递归），再用
+ * `realpathSync.native` 取磁盘真实大小写（它对大小写不敏感的输入返回规范形态），id 变了
+ * 就以规范形态返回。realpath 按原 id 缓存，每个模块只付一次系统调用。
+ */
+function normalizeModuleIds(): Plugin {
+  const cache = new Map<string, string>();
+  const canon = (id: string): string => {
+    const hit = cache.get(id);
+    if (hit !== undefined) return hit;
+    let out: string;
+    try {
+      out = realpathSync.native(id).replace(/\\/g, "/");
+    } catch {
+      // 文件尚不存在（虚拟 / 生成中）：退化为仅统一盘符
+      out = id.replace(/\\/g, "/").replace(/^([a-z]):/, (_, d: string) => d.toUpperCase() + ":");
+    }
+    cache.set(id, out);
+    return out;
+  };
+  return {
+    name: "colt-normalize-module-ids",
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (source.startsWith("\0") || source.startsWith("virtual:")) return null;
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (!resolved || resolved.external) return null;
+      const id = canon(resolved.id);
+      if (id === resolved.id) return null;
+      return { id, meta: resolved.meta, moduleSideEffects: resolved.moduleSideEffects };
+    },
+  };
+}
+
 // Colt 构建配置：main / preload / renderer 三端
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), builtinSkills()],
+    plugins: [externalizeDepsPlugin(), builtinSkills(), normalizeModuleIds()],
     build: {
       rollupOptions: {
         input: {
@@ -54,7 +98,7 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), normalizeModuleIds()],
     build: {
       rollupOptions: {
         input: {

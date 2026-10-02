@@ -428,6 +428,31 @@ body.resizing * {
   }
 }
 
+/* 浏览器头部工具条：按**右栏宽度**响应。
+   右栏是可拖的独立变量（同一窗口下可以是 219，也可以是 823），所以这里是容器查询，
+   不是窗口断点——`md:` 之类的变体在这里答非所问。 */
+.dock-browser-head {
+  container: browserhead / inline-size;
+}
+/* 窄栏下的让位顺序（最窄实测 219px）：一行里挤着导航三键 + 地址 + 联调标记 +
+   「Agent 正在操作」+ 接管出口，实测溢出 70px——末端的「接管」被挤出窗口右边、
+   「恢复」被压在别的标记底下点不到（两个都是出口）。
+   规则：**装饰与文案先走，出口只缩成图标、一个都不消失**。
+   （阈值取 320：栏宽到这一步，页面图标与那几段文案本来就已经占不到位置了。）
+   ⚠️ 地址栏**不在**隐藏之列：它在窄栏下早就被压成 0 宽（用户看不到任何字符），
+   隐藏它只省一个 gap，却会把「界面上还找得到当前地址」这条从边沿外抹掉。 */
+.bh-icon-only {
+  display: none;
+}
+@container browserhead (max-width: 320px) {
+  .bh-hide-narrow {
+    display: none;
+  }
+  .bh-icon-only {
+    display: inline-block;
+  }
+}
+
 /* 思考轨：半透明弱化、左侧描边，是「氛围组」而非必须阅读 */
 .thought {
   background: linear-gradient(180deg, rgba(201, 206, 214, 0.04), transparent);

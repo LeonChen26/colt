@@ -15,12 +15,14 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   WORKSPACE_LEAF,
   defaultScratchBase,
   scratchDirName,
   scratchRootPath,
+  taskBaseRoot,
+  taskSessionRoot,
 } from "../src/main/lib/scratch-dir.ts";
 
 const IPC_SOURCE = readFileSync(new URL("../src/main/ipc/index.ts", import.meta.url), "utf8");
@@ -115,6 +117,44 @@ describe("新建工作目录：project.createScratch", () => {
   });
 });
 
+describe("任务工作区：project.ensureTask", () => {
+  test("先建目录、再登记（与 createScratch 同一条纪律），且路径由纯函数算", () => {
+    const body = handlerBody("project.ensureTask");
+    const mkdirAt = body.indexOf("mkdirSync(");
+    const ensureAt = body.indexOf("ensureTaskProject(");
+    assert.notEqual(mkdirAt, -1, "找不到建目录");
+    assert.notEqual(ensureAt, -1, "找不到登记任务工作区");
+    assert.ok(mkdirAt < ensureAt, "目录必须先存在：任务会话马上会以它为 cwd 落地");
+    assert.match(body, /taskBaseRoot\(/, "路径要由纯函数算，别在 handler 里现拼");
+  });
+});
+
+describe("任务会话的会话级目录：materializeDraft", () => {
+  test("任务会话落库前先建自己的时间子目录，并作为 cwd 存进库行", () => {
+    const start = IPC_SOURCE.indexOf("function materializeDraft(");
+    const body = IPC_SOURCE.slice(start, IPC_SOURCE.indexOf("\n}", start));
+    const kindAt = body.indexOf('?.kind === "task"');
+    const mkdirAt = body.indexOf("mkdirSync(");
+    const createAt = body.indexOf("createSession(");
+    assert.notEqual(kindAt, -1, "任务会话的判定缺失");
+    assert.notEqual(mkdirAt, -1, "找不到建目录");
+    assert.ok(kindAt < mkdirAt && mkdirAt < createAt, "先判定、再建目录、最后落库——目录必须先于库行存在");
+    assert.match(body, /taskSessionRoot\(/, "目录路径要由纯函数算，别在 handler 里现拼时间戳");
+    // cwd 作为第 4 个参数传给 createSession（第 3 个仍是草稿 id，契约不变）
+    assert.match(
+      body,
+      /createSession\(draft\.projectId, jsonlPathFor\(draft\.projectId\), sessionId, cwd\)/,
+      "cwd 要跟着落库，否则 worker / 审批边界拿不到它",
+    );
+  });
+
+  test("普通空间会话不写 cwd（null = 跟随项目根）", () => {
+    const start = IPC_SOURCE.indexOf("function materializeDraft(");
+    const body = IPC_SOURCE.slice(start, IPC_SOURCE.indexOf("\n}", start));
+    assert.match(body, /let cwd: string \| null = null;/, "默认就是 null，只有任务会话才覆盖");
+  });
+});
+
 describe("注销工作区：project.delete", () => {
   test("「运行中」检查排在任何删除动作之前——拒绝时库与磁盘都还没动过", () => {
     const body = handlerBody("project.delete");
@@ -187,5 +227,39 @@ describe("起手区的目录算术（scratch-dir）", () => {
     assert.equal(scratchRootPath("/base", at, ""), expected);
     assert.equal(scratchRootPath("/base", at, "   "), expected);
     assert.equal(scratchRootPath("/base", at), expected);
+  });
+});
+
+describe("任务目录的路径算术（taskBaseRoot / taskSessionRoot）", () => {
+  test("默认是家目录 .colt 下的 tasks（基目录，无 workspace 叶子）", () => {
+    assert.equal(taskBaseRoot(join("/home", "u")), join("/home", "u", ".colt", "tasks"));
+  });
+
+  test("override 非空时用 <override>/tasks——不与「新建工作目录」的落点本身相撞", () => {
+    // COLT_WORKSPACE_ROOT 本身是「新建工作目录」的落点（会被登记成普通项目），
+    // 任务目录必须落在它的兄弟层，两者不能是同一个目录
+    assert.equal(taskBaseRoot("/home/u", "/out/smoke-workspace"), join("/out/smoke-workspace", "tasks"));
+    assert.equal(taskBaseRoot("/home/u", "  /out/smoke-workspace  "), join("/out/smoke-workspace", "tasks"));
+  });
+
+  test("override 空串 / 纯空白回落默认（与 scratchRootPath 同一条口径）", () => {
+    const expected = join("/home", "u", ".colt", "tasks");
+    assert.equal(taskBaseRoot("/home/u", ""), expected);
+    assert.equal(taskBaseRoot("/home/u", "   "), expected);
+  });
+
+  test("taskSessionRoot：基目录下的时间子目录，精确到秒（与 scratchDirName 同源）", () => {
+    // 月份从 0 起：9 = 十月
+    const at = new Date(2026, 9, 1, 9, 5, 3);
+    assert.equal(
+      taskSessionRoot(join("/home", "u", ".colt", "tasks"), at),
+      join("/home", "u", ".colt", "tasks", "20261001-090503"),
+    );
+  });
+
+  test("taskSessionRoot 不带 workspace 叶子：一个时间戳就是一个会话的全部", () => {
+    const at = new Date(2026, 9, 1, 9, 5, 3);
+    const dir = taskSessionRoot("/base", at);
+    assert.equal(basename(dir), "20261001-090503");
   });
 });

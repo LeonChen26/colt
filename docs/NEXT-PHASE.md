@@ -38,7 +38,7 @@
   **2026-09 全库缺陷审计**：按用户指令重新审读代码找 bug，确认并批量修复一批
   （工具卡展开态丢失 / 自动滚底抢滚动 / newSession 闭包 / 导航清缓冲时机等，清单见 `UI-REGIONS` v1.35）；
   3 处上报经核实不修（Esc 已有守卫 / 全量授权不清队列是刻意设计 / 并发投递常规路径不可达）。
-  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1158**） + `build` + `fixture` **25/25** + `dock` **255/255** + `model` **61 条（7/6/6/6/3/33）**。
+  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1314**） + `build` + `fixture` **61/61** + `dock` **308/308** + `model` **61 条（7/6/6/6/3/33）**。
 - **下一步做什么**：暂无排期——原 §3.1 的 **N1–N4 已按用户指令删除**（2026-09），
   新计划确定后再写回 §3.1。
 - **别重开**：§2 的「已定调」条目（尤其 ⑦ 的宽度是**全局统一值**、⑥ 的**四态**语义）。
@@ -142,7 +142,7 @@
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18；2026-09 加多题翻页与自由输入，见 `UI-REGIONS` v1.65） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）+ `tests/question-answer.test.ts`（10 条）；冒烟 `ask-user`（39 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
   | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
-  | ③ | MCP | **已实施**（2026-09-19） | 设计 `docs/DESIGN-mcp.md`；配置 `<cwd>/.colt/mcp.json` 与用户级 `~/.colt/mcp.json` **合并**（同名项目级覆盖）。传输 stdio + 远程（Streamable HTTP / SSE；SDK 已迁 `@modelcontextprotocol/*@2.0.0`）、`listTools` 分页、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重、`resources` / `prompts` 能力面（**未声明就不加**）、server 自报 `instructions` 拼进系统提示词、展示名 `shared/mcp-label.ts`、notice 按 `kind` 分流、调用超时按 server / 工具可配。工具名 `mcp__<server>__<tool>` 不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**。单测 `tests/mcp-tools.test.ts`（42 条，真实 stdio / HTTP / SSE 往返）；冒烟 `mcp-e2e`（打模型）+ `mcp-real`（真实第三方 server）+ `mcp-reload`（免费，接线）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（正常 dispose 走 `runtime.close()`） |
+  | ③ | MCP | **已实施**（2026-09-19；2026-09-30 客户端换核 pi-mcp，内核随升 0.99.1） | 设计 `docs/DESIGN-mcp.md`（决策 26 记换核）；配置 `<cwd>/.colt/mcp.json` 与用户级 `~/.colt/mcp.json` **合并**（同名项目级覆盖）。传输 stdio + 远程（Streamable HTTP；**旧式 SSE 已砍**，解析层即拒）；客户端核心 = **`@earendil-works/pi-mcp@0.99.1`**（官方 SDK 降为夹具专用 devDependency）、`listTools` 分页（pi-mcp 内建翻页）、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重、`resources` / `prompts` 能力面（**未声明就不加**）、server 自报 `instructions` 拼进系统提示词、展示名 `shared/mcp-label.ts`、notice 按 `kind` 分流、调用超时按 server / 工具可配（**未配置钉 60s**，不跟 pi-mcp 的 30s 默认漂）。工具名 `mcp__<server>__<tool>` 不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**。单测 `tests/mcp-tools.test.ts`（48 条，真实 stdio / HTTP 往返；换核后 typecheck + 全量 1228 全绿）；冒烟 `mcp-e2e`（打模型）+ `mcp-real`（真实第三方 server）+ `mcp-reload`（免费，接线；**换核后 13/13 实测通过**）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（换 pi-mcp 后顺带改善：其 stdio 树杀 + exit hook；正常 dispose 走 `runtime.close()`） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` / `agent-defs.test.ts` / `subagent-view.test.ts`；冒烟 `subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属 / `fresh` 隔离真实效果 / 清单真进提示词）由 `subagent-e2e`（打模型）覆盖，见 §5。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e；导航守卫（`worker/lib/navigate.ts` 的 `applyNavigate`）由 `tests/navigate.test.ts` 覆盖，仍**未**走真实内核 `navigateTree` |
   | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
@@ -211,7 +211,7 @@
 | 模式 | 覆盖什么 | 打模型 / 计费 | 关键前置 |
 |---|---|---|---|
 | `fixture` | **浏览器能力本体**（改浏览器能力必跑） | 否 | 另开一个终端 `npm run fixture`；先停掉占用 5173 的开发实例 |
-| `dock` | **右栏 ⑦ / ⑥ / 浏览器操作面**：主进程驱动渲染层**真派发鼠标事件**、并读原生视图状态（拖拽 / 折叠 / 宽度记忆 / 页签关闭与「+」新增 / 观测抽屉 / 原生视图与页面区域**逐像素对齐** / 任务摘要下钻 / 净值 / `/compact`·`/skill`·`/` 浮层） | 否 | 夹具站在进程内以 port 0 拉起；冒烟经 `pinVisibility` 把主窗口钉为「始终可见」并关掉后台节流 |
+| `dock` | **右栏 ⑦ / ⑥ / 浏览器操作面**：主进程驱动渲染层**真派发鼠标事件**、并读原生视图状态（拖拽 / 折叠 / 宽度记忆 / 页签关闭与「+」新增 / 观测抽屉 / 原生视图与页面区域**逐像素对齐** / 浏览器控制态（接管 / 交还 / 「Agent 正在操作」）与**最窄栏下出口的可点性**（命中测试，不是只查 DOM）/ 任务摘要下钻 / 净值 / `/compact`·`/skill`·`/` 浮层） | 否 | 夹具站在进程内以 port 0 拉起；冒烟经 `pinVisibility` 把主窗口钉为「始终可见」并关掉后台节流 |
 | `ask-user` | 提问**入队之后**的阻塞链路（卡片真出现 / 能点 / 多题翻页 / 自由输入 / 回车 / 超时收尾 / 不留悬空卡） | 否 | 走真实入队函数 `sessionManager.questions.enqueue()`；作成作答载荷用主进程打桩读回（只记账、不转发） |
 | `ask-user-e2e` | 提问**入队之前**（模型是否看得见并调用 `ask_user`、是否被 `before_tool` 跳过闸门、全权模式下仍弹卡） | **是** | worker 生死交渲染层（`window.reload()` 等自动打开）；**别**自己抢 `session.open`（`AGENTS.md` §五末条） |
 | `subagent` | 子代理呈现（④ 卡特化 + 有界预览 / 此刻动作只在 ④ / 「中止」在 ④ 卡面 / 不自动展开右栏 / 下钻子代理流） | 否 | 从主进程推**受控视图**驱动 |

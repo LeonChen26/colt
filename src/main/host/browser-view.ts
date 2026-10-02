@@ -82,4 +82,13 @@ export interface SessionBrowser {
    * ——序列号比 URL 可靠（同 URL 刷新、SPA 路由都会变 URL 之外的页面状态）。
    */
   navSeq: number;
+  /** 用户是否已**显式接管**（接管期间 agent 的改动类动作被拒）；真源在这里，渲染层只是显示 */
+  controlledByUser: boolean;
+  /** agent 最近一次改动类动作的时刻（0 = 从未）；界面上的 `agentActing` 由它按窗口算出来 */
+  lastAgentActedAt: number;
+  /**
+   * 「agentActing 窗口到期」的定时器：到点推一次状态，界面据此把「Agent 正在操作」撤掉。
+   * 没有它的话，界面只能靠自己的定时器轮询，或者永远不撤。
+   */
+  actingTimer?: NodeJS.Timeout;
 }

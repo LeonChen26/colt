@@ -11,7 +11,7 @@ import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 10;
+const LATEST = 12;
 
 let root: string;
 
@@ -265,6 +265,53 @@ describe("openDatabase 迁移", () => {
     assert.ok(table, "todos 表应已建立");
     const row = db.prepare("SELECT COUNT(*) AS c FROM todos").get() as { c: number };
     assert.equal(row.c, 0, "旧库没有任何清单行");
+  });
+
+  test("v11 为旧库补项目身份列，存量项目一律回填 workspace（任务工作区只在运行期写入）", () => {
+    seedLegacy(
+      root,
+      [
+        `CREATE TABLE projects (
+           id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL, root_key TEXT NOT NULL,
+           created_at INTEGER NOT NULL, last_opened_at INTEGER NOT NULL)`,
+        `CREATE TABLE sessions (
+           id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, jsonl_path TEXT NOT NULL,
+           kernel_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+           message_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active')`,
+        `INSERT INTO projects VALUES ('p1','colt','E:/code/colt','e:/code/colt',100,100)`,
+      ],
+      10,
+    );
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    assert.ok(columns(db, "projects").includes("kind"));
+    const row = db.prepare("SELECT kind FROM projects WHERE id = 'p1'").get() as { kind: string };
+    assert.equal(row.kind, "workspace", "旧项目全是显式打开的普通工作区");
+  });
+
+  test("v12 为旧库补会话级 cwd 列，存量会话一律 NULL（跟随项目根）", () => {
+    seedLegacy(
+      root,
+      [
+        `CREATE TABLE projects (
+           id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL, root_key TEXT NOT NULL,
+           kind TEXT NOT NULL DEFAULT 'workspace',
+           created_at INTEGER NOT NULL, last_opened_at INTEGER NOT NULL)`,
+        `CREATE TABLE sessions (
+           id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, jsonl_path TEXT NOT NULL,
+           kernel_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+           message_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active')`,
+        `INSERT INTO sessions VALUES ('s1','p1','旧会话','E:/x/jsonl',NULL,100,100,0,'active')`,
+      ],
+      11,
+    );
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    assert.ok(columns(db, "sessions").includes("cwd"));
+    const row = db.prepare("SELECT cwd FROM sessions WHERE id = 's1'").get() as {
+      cwd: string | null;
+    };
+    assert.equal(row.cwd, null, "旧行没有自己的目录，NULL 即正确语义，不用回填");
   });
 
   test("新库 projects 含 root_key 且唯一索引生效", () => {

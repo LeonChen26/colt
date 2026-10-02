@@ -54,7 +54,7 @@ const THEME_OPTIONS = [
   { value: "system" as const, label: "跟随系统", Icon: Monitor },
 ];
 
-/** M1 主界面：项目 → 会话 → 对话 */
+/** M1 主界面：空间 / 任务 → 会话 → 对话 */
 export default function App(): React.JSX.Element {
   const [env, setEnv] = useState<EnvReport | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -155,6 +155,16 @@ export default function App(): React.JSX.Element {
     if (!activeSession) return null;
     return projects.find((item) => item.id === activeSession.projectId) ?? activeProject;
   }, [projects, activeSession, activeProject]);
+  /**
+   * 任务工作区：任务栏背后的那条项目行（启动时 `project.ensureTask` 保证存在）。
+   * 不指定空间（目录）新建的会话都归到它名下；worker 的 cwd 就是那个固定目录。
+   */
+  const taskProject = useMemo(
+    () => projects.find((item) => item.kind === "task") ?? null,
+    [projects],
+  );
+  /** 「空间」栏要画的项目：全部登记项目除去任务工作区——它有自己的栏，不进空间列表 */
+  const spaceProjects = useMemo(() => projects.filter((item) => item.kind !== "task"), [projects]);
   const [now, setNow] = useState(() => Date.now());
 
   // 主题挂载到下 <html>，并在变更时持久化
@@ -168,20 +178,29 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      // 分开取值而不是 Promise.all：三者互不依赖，任何一个失败（如 env.check 在
-      // 探测 bash 时揽到异常）都不应该拖紧其余两项。
-      // 旧写法下三者共用一次 try，任一 reject 就让 setProviders 永不执行——
+      // 分开取值而不是串行：四者互不依赖，任何一个失败（如 env.check 在
+      // 探测 bash 时揽到异常）都不应该拖紧其余三项。
+      // 旧写法下共用一次 try，任一 reject 就让 setProviders 永不执行——
       // 模型下拉因 options 为空而**点开无任何反应**，用户看到的就是「选不了模型」。
-      const [envReport, projectList, providerList] = await Promise.all([
+      const [envReport, projectList, providerList, taskWorkspace] = await Promise.all([
         window.colt.invoke("env.check", undefined).catch(() => null),
         window.colt.invoke("project.list", undefined).catch(() => [] as Project[]),
         window.colt.invoke("providers.list", undefined).catch(() => [] as ProviderConfig[]),
+        // 任务工作区：不指定空间（目录）新建的会话都归到它名下（「任务」栏）。幂等，
+        // 已登记就直接返回；可能本来就在 projectList 里（上次运行创建过），合并时按 id 去重。
+        window.colt.invoke("project.ensureTask", undefined).catch(() => null),
       ]);
       if (envReport) setEnv(envReport);
-      setProjects(projectList);
+      const merged =
+        taskWorkspace && !projectList.some((item) => item.id === taskWorkspace.id)
+          ? [...projectList, taskWorkspace]
+          : projectList;
+      setProjects(merged);
       setProviders(providerList);
       setModelServiceReady(hasUsableProvider(providerList));
-      if (projectList.length > 0) setActiveProject(projectList[0]!);
+      // 启动默认选中第一个**空间**——任务工作区不算（它不在「空间」栏里，也不该在
+      // 启动时被当成当前空间；任务草稿由下方「无空间时的兜底」按需创建）。
+      setActiveProject(merged.find((item) => item.kind !== "task") ?? null);
 
       // 首启引导：仅在尚未完成引导时弹出（已完成则直接进主界面）
       try {
@@ -254,6 +273,13 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     void refreshArchived();
   }, [refreshArchived]);
+
+  // 任务栏的会话**不能**按「展开才拉」：它没有项目行、也没有展开态，启动即拉一次，
+  // 任务栏才能从一开始就如实显示列表（任务工作区存在时才拉；ensureTask 失败则为 null）。
+  useEffect(() => {
+    if (!taskProject) return;
+    void loadProjectSessions(taskProject.id);
+  }, [taskProject, loadProjectSessions]);
 
   /**
    * 手里那条**还没用起来**的草稿（id + 所属项目）。
@@ -599,12 +625,28 @@ export default function App(): React.JSX.Element {
    */
   useEffect(() => {
     if (mainView !== "chat" || !activeProject) return;
+    // 当前已有会话（哪怕是别处的任务草稿）就不动：这条 effect 的职责只是「中间区空着时
+    // 给一条草稿」，不是「把当前会话换成项目的」。v1.93 前判「当前会话是否属于本项目」，
+    // 代价是顶掉用户刚建的任务草稿（顶部「新建会话」→ 任务草稿 → 立刻被换成空间草稿，
+    // 冒烟 model 实测抓到）；跨空间切换时旧会话由「切项目」那条 effect 负责换成 list[0]。
+    if (activeSession) return;
     // 这份缓存只含常规会话（已归档的已由 loadProjectSessions 滤掉），所以「归档了不算还有会话」
     // 天然成立：只剩归档会话的项目照样会拿到一条草稿（`undefined` = 还没拉到，照旧要等）
     if (!shouldOfferDraft(activeProject.id, sessionsByProject.get(activeProject.id), activeSession))
       return;
     void newSession(activeProject.id);
   }, [mainView, activeProject, sessionsByProject, activeSession, newSession]);
+
+  /**
+   * 没有任何空间可选（一个空间都没有 / 刚移除了最后一个）时，给一条**任务**草稿：
+   * 中间区立刻是输入框，会话归「任务」栏——「不指定空间（目录）时，新建会话归任务栏」
+   * 在启动态的落点。有 activeProject 时走上面那个 effect，草稿建到那个空间里。
+   */
+  useEffect(() => {
+    if (mainView !== "chat" || activeProject || !taskProject) return;
+    if (activeSession) return;
+    void newSession(taskProject.id);
+  }, [mainView, activeProject, taskProject, activeSession, newSession]);
 
   /** 删除会话：确认 → 调后端 → 刷新列表并适时清空选中 */
   const deleteSession = useCallback(
@@ -694,8 +736,11 @@ export default function App(): React.JSX.Element {
         setProjects(list);
         // 该项目名下的**已归档**会话也一并被清了：底部那个跨项目列表要跟着刷新
         void refreshArchived();
-        // 删的正好是当前项目：切到列表里的下一条（没有就留空，中间区回到「还没有项目」）
-        setActiveProject((current) => (current?.id === project.id ? (list[0] ?? null) : current));
+        // 删的正好是当前项目：切到列表里的下一条**空间**（任务工作区不算，没有就留空，
+        // 「无空间时的兜底」那条 effect 会接着给一条任务草稿，中间区不落空）
+        setActiveProject((current) =>
+          current?.id === project.id ? (list.find((item) => item.kind !== "task") ?? null) : current,
+        );
         setActiveSession((current) =>
           current && current.projectId === project.id ? null : current,
         );
@@ -709,18 +754,19 @@ export default function App(): React.JSX.Element {
   const query = sidebarQuery.trim().toLowerCase();
   const searching = query !== "";
   /**
-   * 侧栏要画的「项目 → 会话」行：平时直接来自按项目懒加载的缓存；搜索时换成**过滤后**的集合。
+   * 侧栏「空间」栏要画的「空间 → 会话」行：平时直接来自按项目懒加载的缓存；搜索时换成
+   * **过滤后**的集合。任务工作区不在这里画（它有自己的「任务」栏，见 taskRows）。
    *
-   * 搜索两条规则（都按数据本身判，不猜）：① 项目命中 `name` / `rootPath` → 显示该项目行，
-   * 并给它的**全部**会话（你搜的就是这个项目）；② 项目没命中、但有会话命中 `title` → 同样
-   * 显示项目行，但只给命中的会话。搜索时一律展开（命中就得看得见），而 `expandedProjects`
+   * 搜索两条规则（都按数据本身判，不猜）：① 空间命中 `name` / `rootPath` → 显示该空间行，
+   * 并给它的**全部**会话（你搜的就是这个空间）；② 空间没命中、但有会话命中 `title` → 同样
+   * 显示空间行，但只给命中的会话。搜索时一律展开（命中就得看得见），而 `expandedProjects`
    * **不动**——清空后用户原来的展开态原样回来。
    */
   const sidebarRows = useMemo<
     { project: Project; sessions: SessionInfo[] | undefined; expanded: boolean }[]
   >(() => {
     if (!searching) {
-      return projects.map((project) => ({
+      return spaceProjects.map((project) => ({
         project,
         sessions: sessionsByProject.get(project.id),
         expanded: expandedProjects.has(project.id),
@@ -728,7 +774,7 @@ export default function App(): React.JSX.Element {
     }
     const all = searchSessions ?? [];
     const matched: { project: Project; sessions: SessionInfo[]; expanded: boolean }[] = [];
-    for (const project of projects) {
+    for (const project of spaceProjects) {
       const projectHit =
         project.name.toLowerCase().includes(query) ||
         project.rootPath.toLowerCase().includes(query);
@@ -741,7 +787,28 @@ export default function App(): React.JSX.Element {
       matched.push({ project, sessions: projectHit ? mine : hits, expanded: true });
     }
     return matched;
-  }, [searching, query, projects, searchSessions, sessionsByProject, expandedProjects]);
+  }, [searching, query, spaceProjects, searchSessions, sessionsByProject, expandedProjects]);
+
+  /**
+   * 「任务」栏要画的会话行（平铺，无分组）。平时来自任务工作区的缓存（启动即拉，
+   * 见上方常载 effect）；搜索时从全量会话里过滤，规则与「空间」栏一致——任务工作区的
+   * 名字 / 路径命中就给全部任务会话，否则只给标题命中的；归档的不进。
+   *
+   * 三态：`undefined` = 还没拉到（极短的启动窗口）；`null` = 搜索中（全量还没回来）；
+   * 数组 = 可直接画的列表。
+   */
+  const taskRows = useMemo<SessionInfo[] | null | undefined>(() => {
+    if (!taskProject) return undefined;
+    if (!searching) return sessionsByProject.get(taskProject.id);
+    if (searchSessions === null) return null;
+    const mine = searchSessions.filter(
+      (session) => session.projectId === taskProject.id && session.status !== "archived",
+    );
+    const projectHit =
+      taskProject.name.toLowerCase().includes(query) ||
+      taskProject.rootPath.toLowerCase().includes(query);
+    return projectHit ? mine : mine.filter((session) => session.title.toLowerCase().includes(query));
+  }, [taskProject, searching, query, searchSessions, sessionsByProject]);
 
   /**
    * 画一条会话行——**项目常规列表与底部「已归档」区共用**（两处只有 `archived` 不同，共用
@@ -797,8 +864,16 @@ export default function App(): React.JSX.Element {
                 window.colt.invoke("project.list", undefined),
                 window.colt.invoke("providers.list", undefined),
               ]);
-              setProjects(projectList);
-              setActiveProject(projectList[0] ?? null);
+              // 「清空重来」会把任务工作区连同库一起清掉：幂等地再保证一次
+              const taskWorkspace = await window.colt
+                .invoke("project.ensureTask", undefined)
+                .catch(() => null);
+              const merged =
+                taskWorkspace && !projectList.some((item) => item.id === taskWorkspace.id)
+                  ? [...projectList, taskWorkspace]
+                  : projectList;
+              setProjects(merged);
+              setActiveProject(merged.find((item) => item.kind !== "task") ?? null);
               setProviders(providerList);
               setModelServiceReady(hasUsableProvider(providerList));
               // 「清空重来」会把已归档会话一并清掉（沿用历史则不变）：跨项目归档列表跟着刷新
@@ -877,20 +952,21 @@ export default function App(): React.JSX.Element {
           data-sidebar
           className="flex w-[240px] shrink-0 flex-col border-r border-line bg-surface-raised"
         >
-          {/* 全局「新建会话」，常驻在项目列表上方：每个项目行自己的「+」是悬停才显形的，
-              多项目时想随手开一条得先找对行。按既有规则建到**当前选中的项目**（activeProject，
-              见上方 conversationProject 的注释）；一个项目都没有时如实置灰，不做成点了没反应。 */}
+          {/* 全局「新建会话」，常驻在侧栏上方：它**不指定空间**——按「不指定空间（目录）
+              时，新建会话归任务栏」的规则建到任务工作区（启动时 project.ensureTask 已保证
+              存在）。想建到某个空间里，用空间行悬停出现的「+」。ensureTask 失败（IO 错误）
+              时如实置灰，不做成点了没反应。 */}
           <div className="shrink-0 space-y-2 px-3 pt-3">
             <button
               type="button"
               onClick={() => {
-                if (!activeProject) return;
+                if (!taskProject) return;
                 setMainView("chat");
-                void newSession(activeProject.id);
+                void newSession(taskProject.id);
               }}
-              disabled={!activeProject}
+              disabled={!taskProject}
               data-sidebar-new-session
-              title={activeProject ? "新建会话" : "先打开一个项目"}
+              title={taskProject ? "新建会话（不指定空间，归入任务栏）" : "正在准备任务目录…"}
               className="flex w-full items-center justify-center gap-1.5 rounded-sm border border-line px-2 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus {...ICON.sm} />
@@ -909,8 +985,8 @@ export default function App(): React.JSX.Element {
                 onChange={(event) => setSidebarQuery(event.target.value)}
                 disabled={projects.length === 0}
                 data-sidebar-search
-                placeholder="搜索会话 / 项目"
-                aria-label="搜索会话或项目"
+                placeholder="搜索会话 / 空间"
+                aria-label="搜索会话或空间"
                 className="w-full rounded-sm border border-line bg-transparent py-1.5 pl-6 pr-7 text-xs text-text-primary outline-none transition placeholder:text-text-muted focus:border-line-strong disabled:cursor-not-allowed disabled:opacity-40"
               />
               {sidebarQuery !== "" && (
@@ -926,17 +1002,51 @@ export default function App(): React.JSX.Element {
               )}
             </div>
           </div>
+          {/*
+            「任务」栏：与「空间」栏平级。不指定空间（目录）新建的会话全落这里——
+            任务工作区是**一条真实的项目行**（会话必须落在真实目录上，worker 的 cwd 由它推出），
+            只是它不进「空间」列表、也没有项目行与移除入口。平铺不折叠到项目行：
+            任务之间不分组，列表自身限高可滚，不把「空间」栏挤没。
+          */}
+          {taskProject && (
+            <SidebarSection
+              title="任务"
+              fill={false}
+              action={{
+                label: "新建",
+                icon: <Plus {...ICON.xs} />,
+                onClick: () => {
+                  setMainView("chat");
+                  void newSession(taskProject.id);
+                },
+              }}
+            >
+              {searching && searchSessions === null ? (
+                <div className="px-2 py-1.5 text-xs text-text-muted">搜索中…</div>
+              ) : taskRows == null ? (
+                <div className="px-2 py-1.5 text-xs text-text-muted">加载中…</div>
+              ) : taskRows.length === 0 ? (
+                searching ? (
+                  <div className="px-2 py-1.5 text-xs text-text-muted">没有匹配的任务会话</div>
+                ) : (
+                  <Empty>不指定空间的新会话会落在这里，点上方「新建会话」开始</Empty>
+                )
+              ) : (
+                taskRows.map((session) => renderSessionRow(session, false))
+              )}
+            </SidebarSection>
+          )}
           <SidebarSection
-            title="项目"
+            title="空间"
             action={{ label: "打开", icon: <FolderOpen {...ICON.xs} />, onClick: () => void pickProject() }}
           >
-            {projects.length === 0 ? (
-              <Empty>还没有项目，点「打开」选择目录</Empty>
+            {spaceProjects.length === 0 ? (
+              <Empty>还没有空间，点「打开」选择目录</Empty>
             ) : searching && searchSessions === null ? (
               <div className="px-2 py-1.5 text-xs text-text-muted">搜索中…</div>
             ) : searching && sidebarRows.length === 0 ? (
               <div className="px-2 py-1.5 text-xs text-text-muted">
-                没有匹配「{sidebarQuery.trim()}」的会话或项目
+                没有匹配「{sidebarQuery.trim()}」的会话或空间
               </div>
             ) : (
               sidebarRows.map(({ project, sessions, expanded: rowExpanded }) => {
@@ -1006,9 +1116,9 @@ export default function App(): React.JSX.Element {
             )}
           </SidebarSection>
           {/*
-            「已归档」区：**钉在侧栏底部**（`shrink-0`，在 `flex-1` 的项目列表之后），
-            跨项目汇总——归档的从上面的项目列表里收走、全落这里，默认收起。
-            只有确实有归档会话时才出现（没有就不占地方）。展开后限高可滚，别把项目列表挤没。
+            「已归档」区：**钉在侧栏底部**（`shrink-0`，在任务 / 空间两栏之后），
+            跨空间汇总——归档的从上面的列表里收走、全落这里，默认收起。
+            只有确实有归档会话时才出现（没有就不占地方）。展开后限高可滚，别把上面的栏挤没。
             收起状态下的条数也要如实，故 `archivedSessions` 在挂载时就拉好（见 refreshArchived）。
           */}
           {archivedSessions.length > 0 && (
@@ -1075,7 +1185,9 @@ export default function App(): React.JSX.Element {
               <Conversation
                 key={activeSession.id}
                 sessionId={activeSession.id}
-                cwd={conversationProject.rootPath}
+                // 会话有自己的目录（任务会话的时间子目录）就显示它；null 回落项目根。
+                // 草稿 cwd 恒为 null——目录要等首条消息落库才建，草稿态先显示任务基目录
+                cwd={activeSession.cwd ?? conversationProject.rootPath}
                 sessionModelRef={activeSession.modelRef}
                 sessionThinkingLevel={activeSession.thinkingLevel}
                 runStartedAt={runningSessions.get(activeSession.id)}
@@ -1108,16 +1220,22 @@ function SidebarSection({
   title,
   action,
   collapsible = true,
+  fill = true,
   children,
 }: {
   title: string;
   action?: { label: string; icon: React.ReactNode; onClick: () => void };
   collapsible?: boolean;
+  /**
+   * 是否吃满剩余高度（flex-1）。「空间」栏吃满；「任务」栏自适应内容、限高可滚
+   * （max-h-[40vh]）——任务通常不多，不该平白占掉半个侧栏把「空间」栏挤没。
+   */
+  fill?: boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className={cn("flex min-h-0 flex-col", fill ? "flex-1" : "shrink-0")}>
       <div className="group flex shrink-0 items-center gap-1.5 px-3.5 py-2">
         <button
           type="button"
@@ -1148,7 +1266,16 @@ function SidebarSection({
           </button>
         )}
       </div>
-      {!collapsed && <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">{children}</div>}
+      {!collapsed && (
+        <div
+          className={cn(
+            "min-h-0 overflow-y-auto px-2 pb-2",
+            fill ? "flex-1" : "max-h-[40vh]",
+          )}
+        >
+          {children}
+        </div>
+      )}
     </div>
   );
 }
@@ -1159,7 +1286,7 @@ function formatElapsed(startedAt: number, now: number): string {
   return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
 }
 
-/** 项目行：折叠三角 + 项目名 + 新建会话 + 移除工作区 */
+/** 空间行：折叠三角 + 空间名 + 新建会话 + 移除工作区 */
 function ProjectRow({
   project,
   active,

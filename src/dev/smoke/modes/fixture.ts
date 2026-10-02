@@ -9,6 +9,7 @@
 import { app, BrowserWindow } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { hostBridge } from "../../../main/host";
+import { sessionManager } from "../../../main/session-manager";
 import { runActionChain } from "../../../worker/lib/browser-tool";
 import { join } from "node:path";
 import type { HostResult } from "@shared/worker-protocol";
@@ -123,6 +124,156 @@ export async function runFixture(projectRoot: string, log: (message: string) => 
     await call("viewport", {});
     await sleep(400);
     checks.push(["viewport 恢复宽屏", (await call("text")).text.includes("宽屏")]);
+
+    // ---- 真实输入：点击 / 输入 / 按键走 Chromium 的输入管线（不是注入合成事件）----
+    // 判据一律取**页面自己的记录**，不看工具返回值：「已点击 / 已输入」只能说明事件发出去了，
+    // 页面收到了什么才算事实（§五⑫：探针量的那个量必须真的会变）。
+    const refIn = (text: string, label: string, role: string): string | undefined =>
+      new RegExp(`\\[(e\\d+)\\] ${role} "${label}"`).exec(text)?.[1];
+    const snapshotIn = await call("snapshot");
+    const mdRef = refIn(snapshotIn.text, "按下探针", "button");
+    const kbRef = refIn(snapshotIn.text, "键盘靶输入框", "input");
+    const coveredRef = refIn(snapshotIn.text, "被遮挡的靶", "button");
+    log(`真实输入靶：md=${mdRef} kb=${kbRef} covered=${coveredRef}`);
+    checks.push([
+      "snapshot 找到真实输入靶元素",
+      mdRef !== undefined && kbRef !== undefined && coveredRef !== undefined,
+    ]);
+
+    // 状态位：勾没勾 / 灰没灰 / 当前值——不看这些，模型只能靠截图猜（这一版的主要补强）
+    checks.push(["snapshot 报出 checked 状态", /\[e\d+\] input "已勾选靶" \(checked\)/.test(snapshotIn.text)]);
+    checks.push(["snapshot 报出 disabled 状态", /\[e\d+\] button "禁用按钮靶" \(disabled\)/.test(snapshotIn.text)]);
+    checks.push([
+      "snapshot 报出输入框当前值",
+      /\[e\d+\] input "键盘靶输入框" = "初始值"/.test(snapshotIn.text),
+    ]);
+
+    if (mdRef !== undefined && kbRef !== undefined && coveredRef !== undefined) {
+      // 点击：真鼠标序列——pointerdown / mousedown **和** click 都到（合成 el.click() 只有 click）
+      const clicked = await call("click", { ref: mdRef });
+      await sleep(250);
+      const mdLog = (await call("text")).text;
+      log(`click（真实输入）：${clicked.text}｜页面记录：${/point[^\n]*/.exec(mdLog)?.[0] ?? "无"}`);
+      checks.push(["click 回话报出命中的元素", clicked.text.includes("命中")]);
+      checks.push([
+        "真点击派发了 pointerdown/mousedown（合成 click 做不到）",
+        /pointerdown\/mousedown=[1-9]/.test(mdLog),
+      ]);
+      checks.push(["真点击同时派发了 click", /click=[1-9]/.test(mdLog)]);
+
+      // 归属提示：操作后页面上出现「Agent 点击」角标，1 秒后自行消失。
+      // 它回答的是「这一步是谁做的」——页面向不向应取决于页面自己，光看“闪了一下”分不出归属。
+      checks.push([
+        "操作后有「Agent 点击」角标（归属提示）",
+        (await call("text")).text.includes("Agent 点击"),
+      ]);
+      await sleep(1200);
+      checks.push([
+        "角标自行消失（不堆在页面上）",
+        !(await call("text")).text.includes("Agent 点击"),
+      ]);
+
+      // 被遮挡：如实拒绝，且页面一个事件都没收到——比「报了成功却没反应」诚实
+      let blocked = "";
+      try {
+        await call("click", { ref: coveredRef });
+      } catch (error) {
+        blocked = error instanceof Error ? error.message : String(error);
+      }
+      log(`click（被遮挡）：${blocked}`);
+      checks.push([
+        "被遮挡的点击被拒绝且点名遮挡者",
+        blocked.includes("遮挡") && blocked.includes("遮罩靶"),
+      ]);
+      checks.push(["被拒绝时没有真的点下去（页面零事件）", (await call("text")).text.includes("尚未点击")]);
+
+      // 输入：
+      // ① 替换语义（不是追加）；② insertText **不派发 keydown**——后者是如实记录的能力边界
+      // （依赖按键联想的控件不会触发），不是缺陷，所以也要有断言钉住。
+      const typed = await call("type", { ref: kbRef, text: "替换后" });
+      await sleep(250);
+      const afterType = (await call("snapshot")).text;
+      log(`type：${typed.text}`);
+      checks.push([
+        "type 是替换而非追加（先全选再插入）",
+        /\[e\d+\] input "键盘靶输入框" = "替换后"/.test(afterType),
+      ]);
+      checks.push(["type 回话如实报出替换掉的字符数", typed.text.includes("替换原有")]);
+      checks.push([
+        "insertText 不派发 keydown（如实的能力边界）",
+        (await call("text")).text.includes("尚未按键"),
+      ]);
+
+      // 按键：发给当前聚焦元素（上一步的 type 刚把它聚焦了）
+      const pressed = await call("key", { key: "Enter" });
+      await sleep(250);
+      const kbLog = (await call("text")).text;
+      log(`key：${pressed.text}｜页面记录：${/keydown=[^\n]*/.exec(kbLog)?.[0] ?? "无"}`);
+      checks.push(["key 派发了 keydown 且键名正确", kbLog.includes("keydown=Enter")]);
+      checks.push(["key 回话写清组合", pressed.text.includes("Enter")]);
+
+      // 未知键名：拒绝并列出可用键（不能默默按成另一个键）
+      let badKey = "";
+      try {
+        await call("key", { key: "F5" });
+      } catch (error) {
+        badKey = error instanceof Error ? error.message : String(error);
+      }
+      log(`key（未知键名）：${badKey}`);
+      checks.push(["未知键名被拒绝且给出可用键", badKey.includes("未知") && /enter/i.test(badKey)]);
+
+      const actedState = hostBridge.browserState(sessionId);
+      checks.push([
+        "改动类动作后状态标记为「agent 正在操作」",
+        actedState !== null && actedState.agentActing,
+      ]);
+
+      // 接管态：**两端都显式**（与已撤掉的「面板不可见就拦」不同：依据是用户点过）
+      const taken = hostBridge.browserSetControl(sessionId, true);
+      checks.push(["接管会给 agent 一条提示（说清为什么被拒）", taken.notice.includes("接管")]);
+      checks.push(["接管态随状态一并报给界面", taken.state.controlledByUser]);
+
+      // 审批层前置否决：这条验的是 **session-manager 把 BrowserHost.controlBlock 接进了
+      // ApprovalStore.setPrecheck**——若没接，下面这发 click 会变成一张「是否允许点击」的待审卡，
+      // 让用户为一个注定失败的动作做决定。直接问审批存储，不惊动 worker/渲染层，无副作用；
+      // 断言「是 decision 且被拒」而不是「有 request」，才钉得住「在弹卡之前」。
+      const preRejected = sessionManager.approvals.evaluate({
+        sessionId,
+        toolCallId: "smoke-taken",
+        toolName: "browser_act",
+        argsJson: JSON.stringify({ action: "click", ref: mdRef }),
+        now: Date.now(),
+      });
+      checks.push([
+        "接管期间改动类动作在**审批前**就被拒（不是先弹卡再拒）",
+        "decision" in preRejected && preRejected.decision.approved === false,
+      ]);
+      checks.push([
+        "被前置否决的接管动作没有留下待审卡",
+        sessionManager.approvals.listPending(sessionId).length === 0,
+      ]);
+
+      let blockedWrite = "";
+      try {
+        await call("click", { ref: mdRef });
+      } catch (error) {
+        blockedWrite = error instanceof Error ? error.message : String(error);
+      }
+      log(`click（接管中）：${blockedWrite}`);
+      checks.push([
+        "接管期间拒绝改动类动作，并指出怎么恢复",
+        blockedWrite.includes("接管") && blockedWrite.includes("交还"),
+      ]);
+      checks.push([
+        "接管期间只读动作照常（看还是可以看）",
+        (await call("snapshot")).text.includes("夹具页"),
+      ]);
+      const released = hostBridge.browserSetControl(sessionId, false);
+      checks.push(["交还给 agent 一条提示（提醒页面可能被改过）", released.notice.includes("交还")]);
+      const afterRelease = await call("click", { ref: mdRef });
+      log(`click（交还后）：${afterRelease.text}`);
+      checks.push(["交还后照常可操作", afterRelease.text.includes("命中")]);
+    }
 
     // 上传：真实文件交给 input，页面回调再把文件名写回 DOM——两端都能查证
     const upload = await call("upload", { ref: uploadRef, paths: [uploadPath] });

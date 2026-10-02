@@ -393,6 +393,20 @@ export function Conversation({
   );
 
   /**
+   * 用户接管 / 交还浏览器（**两端显式**）。
+   *
+   * 与 `browserNav` 同一形态：不写回返回值——新状态由主进程经 `browser.state` 推回来。
+   * 但它比导航重：接管会**改变 agent 的动作权限**（改动类动作被拒），
+   * 主进程同时会把这件事告知正在跑的 agent（否则它只会反复撞墙，而不知道为什么）。
+   */
+  const browserControl = useCallback(
+    (byUser: boolean) => {
+      void window.colt.invoke("browser.control", { sessionId, byUser }).catch(() => undefined);
+    },
+    [sessionId],
+  );
+
+  /**
    * 撤销 agent 留下的「视口联调」覆盖（用户点浏览器头部的「恢复」）。
    *
    * 覆盖是持久状态，只有显式撤销才结束；不给这个出口，用户就只能看着一个
@@ -1730,6 +1744,7 @@ export function Conversation({
           highlightPath={hoveredFile}
           browser={browser}
           onBrowserNav={browserNav}
+          onBrowserControl={browserControl}
           onResetViewport={resetBrowserViewport}
           onBrowserZoom={browserZoom}
           fileRequest={dockFile}
