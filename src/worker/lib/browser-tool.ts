@@ -222,7 +222,9 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
       "actions：动作链——同一页面上依次执行 click/type/key/scroll/wait" +
       "（如多字段表单一次填完再回车提交），页面一旦跳转（含表单提交成功）链会自动中止并报告进度，" +
       "跳转后请 wait + 重新 snapshot；" +
-      "navigate / upload / viewport 不能进链，需要时单发。action 与 actions 二选一。",
+      "navigate / upload / viewport 不能进链，需要时单发。action 与 actions 二选一。" +
+      "⚠️ 遇到登录 / 验证环节（登录表单、验证码、短信码、扫码、二次验证）：**不要猜账号密码、不要反复试错**；" +
+      "用户给过凭据就直接输入，没给就停下浏览器操作，请用户在浏览器面板点「接管」自行输入，他点「交还」后再继续。",
     parameters: actSchema,
     async execute(_toolCallId, params) {
       if (params.actions !== undefined) {

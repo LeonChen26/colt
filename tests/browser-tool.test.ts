@@ -9,6 +9,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { createBrowserTools } from "../src/worker/lib/browser-tool";
+import { systemPrompt } from "../src/worker/lib/system-prompt";
 import { HostBridge } from "../src/worker/lib/host-bridge";
 import type { HostResult } from "@shared/worker-protocol";
 
@@ -128,5 +129,32 @@ describe("browser_act 动作链分派校验", () => {
     const first = result.content[0];
     assert.ok(first !== undefined && first.type === "text");
     assert.match(first.text, /动作链完成/);
+  });
+});
+
+describe("登录 / 验证环节：不猜密码；用户给过凭据才可直接输入", () => {
+  // 防的是「模型在登录页反复猜账号密码 / 试错」。规则落在模型能读到的**两处**文本上：
+  // 基础系统提示词（总则）与 browser_act 描述（动作级须知）——任一被删都会让规则悄悄消失。
+  // 注意不是「一律禁代填」：用户给过凭据时要允许直接输入，别把合法路径也堵死。
+  const ruleTexts = (): string[] => {
+    const tool = createBrowserTools(recordingBridge().bridge).find(
+      (item) => item.name === "browser_act",
+    );
+    assert.ok(tool !== undefined, "browser_act 工具存在");
+    return [systemPrompt("E:/proj"), tool.description];
+  };
+
+  test("两处都写明：不猜账号密码、用户给过凭据就直接输入、没给则请用户「接管」", () => {
+    for (const text of ruleTexts()) {
+      assert.match(text, /登录/, "必须点到「登录」这个场景");
+      assert.match(text, /不要猜/, "必须明确禁止猜账号密码");
+      assert.match(
+        text,
+        /用户给过凭据就直接输入/,
+        "用户给了凭据要允许直接输入，别一刀切禁掉",
+      );
+      assert.match(text, /接管/, "没有凭据时给出出口：让用户接管输入");
+      assert.match(text, /交还/, "必须说明交还后如何继续");
+    }
   });
 });
