@@ -196,7 +196,7 @@ export async function analyzeToolCall(input: AnalyzeInput): Promise<AnalyzeResul
   let model: ReturnType<ReturnType<typeof createModels>["getModel"]>;
   try {
     models = createModels();
-    models.setProvider(buildProvider(input.provider));
+    models.setProvider(buildProvider(input.provider, input.apiKey));
     model = models.getModel(input.provider.id, input.modelId);
   } catch (error) {
     return {

@@ -16,6 +16,7 @@ import {
   splitCommands,
   type PolicyConfig,
 } from "../src/main/approval/policy.ts";
+import { READONLY_TOOLS } from "../src/shared/readonly-tools.ts";
 
 const ROOT = "E:/proj";
 
@@ -244,6 +245,39 @@ describe("evaluateTool", () => {
 
   test("只读工具直接放行", () => {
     assert.equal(evaluateTool({ toolName: "read", args: { path: "x" } }, config()).decision, "allow");
+  });
+
+  /**
+   * 检索工具（grep / glob）的免审批是**功能承诺**，不是顺带效果：
+   * 它们存在的理由就是「检索不再走 bash、不再弹卡」（`docs/architecture-agent-review-2026-10.md` A3）。
+   * 名字一旦漂出白名单，行为会**静默退化**成每次检索弹一张卡——没有任何断言会红，
+   * 只是用户体验变差（这正是 A 当初要修的病）。故在此逐名钉住。
+   */
+  test("检索工具 grep / glob 走只读通道直接放行（免审批是承诺，不是顺带效果）", () => {
+    for (const toolName of ["grep", "glob"]) {
+      const verdict = evaluateTool(
+        toolName === "grep"
+          ? { toolName, args: { pattern: "setActiveTools", path: "src" } }
+          : { toolName, args: { pattern: "**/*.ts" } },
+        config(),
+      );
+      assert.equal(verdict.decision, "allow", `${toolName} 必须免审批`);
+      assert.equal(verdict.risk, "safe");
+      assert.match(verdict.reason, /只读工具/);
+    }
+  });
+
+  /**
+   * 名单 ↔ 判据的一致性（`shared/readonly-tools.ts` 文件头点名的那条漂移风险）：
+   * 那份名单是**唯一真源**，`evaluateTool` 只按名字查它。逐个成员跑一遍，
+   * 「谁被加进名单却仍要人工确认」这种矛盾会当场红。
+   */
+  test("只读白名单里的每个工具都真的被放行（名单与判据不许漂移）", () => {
+    for (const toolName of READONLY_TOOLS) {
+      const verdict = evaluateTool({ toolName, args: {} }, config());
+      assert.equal(verdict.decision, "allow", `${toolName} 在只读白名单里却没被放行`);
+      assert.match(verdict.reason, /只读工具/);
+    }
   });
 
   test("只读命令直接放行", () => {

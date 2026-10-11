@@ -74,7 +74,10 @@ import { createBrowserTools } from "./lib/browser-tool";
 import { createComputerTools } from "./lib/computer-tool";
 import { createMemoryTools } from "./lib/memory-tool";
 import { createTodoTools } from "./lib/todo-tool";
+import { createSearchTools } from "./lib/search-tools";
+import { ProviderRegistry } from "./lib/provider-registry";
 import { ToolCallTracker, MAIN_LANE, handleUsageEvent } from "./lib/telemetry";
+import { clearLaneModels, laneModelRef, noteModelConfig, recordLaneModelFrom } from "./lib/lane-model";
 import {
   compactDoneMessage,
   describeCompactError,
@@ -297,7 +300,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   } = command;
 
   const models = createModels();
-  models.setProvider(buildProvider(providerConfig));
+  models.setProvider(buildProvider(providerConfig, command.apiKey));
   const model = models.getModel(providerConfig.id, modelId);
   if (!model) throw new Error(`模型不可用：${providerConfig.id}/${modelId}`);
 
@@ -387,6 +390,12 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     onLoaded: (content) => reportMemoryIndex("user", content),
   });
 
+  // provider 目录 + 按需注册（工作包 C）：子代理定义里写 `model: 另一家/模型` 时，
+  // 靠它现装那一家。目录（非密钥）随 init 下发；密钥在真要切过去时经 `providerKey`
+  // 宿主能力取一次——两者都不进环境变量（见 shared/worker-protocol.ts）。
+  const providers = new ProviderRegistry(models, hostBridge);
+  providers.setDirectory(command.providers);
+
   // 子代理编排。工具在 `AgentHarness.create` **之前**就要交出去，而那时 `state` 还不存在，
   // 故 harness 用惰性取值器——`execute` 真正被调用时 state 必然已经建好了。
   const subagents = new Subagents({
@@ -394,6 +403,17 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     defs: agents.agents,
     harness: () => state?.harness,
     onUpdate: () => scheduleFlush(),
+    // 先确保能装配那一家（按需取密钥），再确认模型真的在它的表里。
+    // 两件事都失败即抛结构化错误——调用方（子代理 spawn）会把它冒给主代理模型，
+    // 让它换定义或报告用户，**不许静默回落会话模型**。
+    ensureModel: async (providerId, modelId) => {
+      const entry = await providers.ensure(providerId);
+      if (models.getModel(providerId, modelId) !== undefined) return;
+      const available = entry.models.map((item) => item.id).join("、") || "（没有模型）";
+      throw new Error(
+        `模型「${providerId}/${modelId}」不存在于该服务的模型表里。${entry.name} 现有：${available}。`,
+      );
+    },
   });
 
   const mcp = await createMcpRuntime(cwd, (message) => send({ type: "notice", message, kind: "security" }), mcpUserHome());
@@ -417,6 +437,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createComputerTools(hostBridge),
         ...createMemoryTools(hostBridge),
         ...createTodoTools(hostBridge),
+        // 检索工具（grep / glob）：纯 fs、无原生依赖，故留在 worker 侧，不走宿主通道。
+        // 只读白名单已预留这两个名字（shared/readonly-tools.ts），自动免审批。
+        ...createSearchTools(cwd),
         ...createAskUserTools(questions),
         ...subagents.tools(), ...mcp.tools,
       ],
@@ -612,11 +635,17 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     return undefined;
   });
 
+  // 每条 lane 跑在哪个模型上——**用量记账的口径**（见 lib/lane-model.ts）。
+  // 必须装在用量监听**之前**：用量事件按 lane 报，而内核的 usage 行里没有 provider/model，
+  // 只能靠这份账（子代理被定义路由到别的服务后，一律用会话模型记账会记错服务名）。
+  harness.events.on("config_update", (event) => noteModelConfig(event));
+
   // 用量落库：每产生一条 usage 行上报一次；过滤（非主 lane、adjustment 行）与占用写回
   // 见 handleUsageEvent——占用写回触发 view 推送让进度条实时更新；会话未就绪时跳过副作用。
   harness.events.on("usage", (event) => {
     const upload = handleUsageEvent(event, {
-      modelRef: state?.meta.model ?? `${providerConfig.id}/${modelId}`,
+      // 按**这条 lane 自己的**模型记账，取不到才回落会话模型
+      modelRef: laneModelRef(event.lane) ?? state?.meta.model ?? `${providerConfig.id}/${modelId}`,
       fallbackProvider: providerConfig.id,
       now: Date.now(),
       onContextUsed: state
@@ -649,6 +678,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   if ((await lane.getModel(context)) === undefined) {
     await lane.setModel({ provider: providerConfig.id, modelId }, context);
   }
+  // 记下主 lane 实际用的模型（用量记账口径，见 lib/lane-model.ts）。放在愈合**之后**：
+  // 恢复旧会话时它可能沿用自己持久化的模型，未必等于 init 报的那个——问 lane 才准。
+  await recordLaneModelFrom(lane, context);
 
   // 思考等级同理，但**不能**只靠 create 的种子：内核只在新 lane 时套用种子，
   // 已有会话会原样采纳自己持久化的值。老会话存的 off 是当年的默认值（谁都没选过），
@@ -875,9 +907,9 @@ async function handle(command: WorkerCommand): Promise<void> {
     case "setModel": {
       if (!state) throw new Error("会话尚未初始化");
       const targetProviderId = command.provider.id;
-      // provider 可能尚未注册（跨 provider 切换），先按需装配
+      // provider 可能尚未注册（跨 provider 切换），先按需装配（密钥随命令一起来）
       if (targetProviderId !== state.providerId && !state.models.getProvider(targetProviderId)) {
-        state.models.setProvider(buildProvider(command.provider));
+        state.models.setProvider(buildProvider(command.provider, command.apiKey));
       }
       const next = state.models.getModel(targetProviderId, command.modelId);
       if (!next) throw new Error(`模型不可用：${targetProviderId}/${command.modelId}`);
@@ -1052,6 +1084,8 @@ async function handle(command: WorkerCommand): Promise<void> {
       hostBridge.dispose();
       // 提问同理：还挂着的话，工具要收到「已取消」才能收尾，不能干等到超时
       questions.dispose();
+      // lane 的模型账随之作废：进程反正要退出，清掉是为了不留下「跨会话的假事实」
+      clearLaneModels();
       process.exit(0);
     }
   }

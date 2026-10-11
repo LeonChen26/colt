@@ -18,7 +18,9 @@ import { closeDatabase, openDatabase } from "../src/main/db/index.ts";
 import { setSetting } from "../src/main/db/repo.ts";
 import {
   getAnalyzeCommandAllowlist,
+  getAnalyzerModelRef,
   setAnalyzeCommandAllowlist,
+  setAnalyzerModelRef,
 } from "../src/main/approval/config.ts";
 import { DEFAULT_ANALYZE_COMMAND_ALLOWLIST } from "../src/main/approval/policy.ts";
 
@@ -84,5 +86,43 @@ describe("setAnalyzeCommandAllowlist", () => {
   test("非数组入参归一化成空表，且读回来是空表（没有被当成脏数据退回默认）", () => {
     assert.deepEqual(setAnalyzeCommandAllowlist({ nope: 1 }), []);
     assert.deepEqual(getAnalyzeCommandAllowlist(), []);
+  });
+});
+
+/**
+ * 分析器专用模型引用（工作包 C）。与白名单同一类链路：读的是 settings 表里的裸字符串，
+ * 而它的失败方式是**静默**的——一条坏记录不该让自动审批整条链路变形，
+ * 也不该让用户以为「已经配了专用模型」。
+ */
+describe("getAnalyzerModelRef / setAnalyzerModelRef", () => {
+  test("从未配置 → null（= 沿用会话模型，历史行为）", () => {
+    assert.equal(getAnalyzerModelRef(), null);
+  });
+
+  test("存过就原样读回", () => {
+    assert.equal(setAnalyzerModelRef("cheap/small"), "cheap/small");
+    assert.equal(getAnalyzerModelRef(), "cheap/small");
+  });
+
+  test("传 null / undefined / 空串 = 清空（回到沿用会话模型）", () => {
+    setAnalyzerModelRef("cheap/small");
+    for (const cleared of [null, undefined, "", "   "]) {
+      assert.equal(setAnalyzerModelRef(cleared), null);
+      assert.equal(getAnalyzerModelRef(), null);
+    }
+  });
+
+  test("格式不合法**抛错**，不把「看着配过、其实没生效」的状态留在库里", () => {
+    for (const bad of [42, {}, "deepseek-v4-flash", "deepseek/", "/flash"]) {
+      assert.throws(() => setAnalyzerModelRef(bad), /providerId\/modelId|必须是字符串/);
+    }
+    assert.equal(getAnalyzerModelRef(), null);
+  });
+
+  test("脏数据（手改库塞进去的）→ 当「没配」，不让自动审批变形", () => {
+    for (const dirty of ["", "  ", "没有斜杠", "/x", "x/"]) {
+      setSetting("approval.analyzerModelRef", dirty);
+      assert.equal(getAnalyzerModelRef(), null, `脏值 ${JSON.stringify(dirty)} 未被当成「没配」`);
+    }
   });
 });

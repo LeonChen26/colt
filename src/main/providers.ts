@@ -23,7 +23,8 @@ function builtinModels(): ModelOption[] {
     name: model.name,
     contextWindow: model.contextWindow,
     // 能力声明直接取自 pi-ai 目录数据（真源就是它），仅供界面展示与一致性；
-    // 装配时内置走 deepseekProvider() 自带的元数据，不经这份声明。
+    // 装配时内置走 `DEEPSEEK_MODELS` 原表（含 compat / thinkingLevelMap / 价格），
+    // 不经这份界面投影——用投影会静默丢掉思考等级与计价（见 shared/provider-factory.ts）。
     // 不映射价格：装配侧用不到，拷一份只会多一处漂移点。
     imageInput: model.input?.includes("image") ?? false,
     reasoning: model.reasoning === true,

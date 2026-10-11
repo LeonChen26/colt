@@ -3,6 +3,11 @@
  * 必须来自用户的显式声明（设置页表单 → ModelOption），缺省值即历史行为
  * （纯文本、无推理、零计价、maxTokens 钳 min(上下文, 8192)）。
  *
+ * 另有一条**安全契约**（工作包 B）：密钥只能从**第二个参数**进来。
+ * 这里直接把 provider 的 ApiKeyAuth 解出来验「给什么就是什么」，
+ * 并验「环境变量里放了密钥也读不到」——后者是本包要消灭的那条路，
+ * 只靠读代码很容易在别处再被接上。
+ *
  * pi-ai 无 electron 依赖，可在 node 测试里真实装配并读取模型元数据，
  * 这里直接断言装配产物，防止装配端与声明契约分叉。
  */
@@ -20,11 +25,31 @@ const BASE: ProviderBuildConfig = {
   models: [],
 };
 
+/** 装配用的假密钥：走参数而非环境变量（见文件头的安全契约） */
+const TEST_KEY = "test-key-not-a-real-secret";
+
 function buildModel(option: ProviderBuildConfig["models"][number]) {
-  const provider = buildProvider({ ...BASE, models: [option] });
+  const provider = buildProvider({ ...BASE, models: [option] }, TEST_KEY);
   const model = provider.getModels().find((item) => item.id === option.id);
   assert.ok(model, "装配后的 provider 应包含声明的模型");
   return model;
+}
+
+/** 把装配产物的 ApiKeyAuth 解一次，看它到底会拿哪个密钥去请求 */
+async function resolveApiKey(
+  provider: ReturnType<typeof buildProvider>,
+  env: Record<string, string> = {},
+): Promise<string | undefined> {
+  const auth = provider.auth?.apiKey;
+  assert.ok(auth, "每个 provider 都必须有 apiKey auth");
+  const result = await auth.resolve({
+    ctx: {
+      env: async (name: string) => env[name],
+      fileExists: async () => false,
+    },
+    signal: new AbortController().signal,
+  });
+  return result?.auth.apiKey;
 }
 
 describe("buildProvider 按声明装配自定义模型", () => {
@@ -60,16 +85,20 @@ describe("buildProvider 按声明装配自定义模型", () => {
     assert.equal(model.maxTokens, 4_000);
   });
 
-  test("deepseek 内置仍走官方工厂，模型表来自 pi-ai 目录", () => {
-    const provider = buildProvider({
-      ...BASE,
-      id: "deepseek",
-      kind: "deepseek",
-      baseUrl: "https://api.deepseek.com",
-    });
+  test("deepseek 内置的模型表仍取 pi-ai 原表（装配换成 createProvider 后不缩水）", () => {
+    const provider = buildProvider(
+      {
+        ...BASE,
+        id: "deepseek",
+        kind: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+      },
+      TEST_KEY,
+    );
 
-    // 与静态目录逐项对齐，而不是「有几个就行」：工厂走的是运行时 `deepseekProvider()`，
-    // 目录走的是 pi-ai 的静态数据模块，两条路径必须给出同一份模型表。
+    // 与静态目录逐项对齐，而不是「有几个就行」：内置分支不再调 `deepseekProvider()`，
+    // 但必须仍取 `DEEPSEEK_MODELS` **原表**——兼容层要的 `compat` / `thinkingLevelMap` /
+    // 价格都在原表里，换成 config.models 那份界面投影会静默丢掉思考等级与计价。
     // 不写死 id 清单——来源模块的注释已说明「不手写常量，避免 pi-ai 升表后此处漂移」。
     const fromCatalog = Object.values(DEEPSEEK_MODELS)
       .map((model) => model.id)
@@ -83,5 +112,33 @@ describe("buildProvider 按声明装配自定义模型", () => {
         .sort(),
       fromCatalog,
     );
+  });
+});
+
+describe("密钥只从参数进来（工作包 B 的安全契约）", () => {
+  test("装配时给的密钥会被原样解析出来（内置与自定义两条装配路径都是）", async () => {
+    const custom = buildProvider({ ...BASE, models: [] }, TEST_KEY);
+    assert.equal(await resolveApiKey(custom), TEST_KEY);
+
+    const builtin = buildProvider(
+      { ...BASE, id: "deepseek", kind: "deepseek", baseUrl: "https://api.deepseek.com" },
+      "deepseek-key",
+    );
+    assert.equal(await resolveApiKey(builtin), "deepseek-key");
+  });
+
+  test("环境变量里放了密钥也读不到——「回落 env」这条路已经拆掉", async () => {
+    const provider = buildProvider({ ...BASE, models: [] }, undefined);
+    const hostile = { COLT_PROVIDER_KEY: "leaked", DEEPSEEK_API_KEY: "leaked" };
+    assert.equal(
+      await resolveApiKey(provider, hostile),
+      undefined,
+      "密钥必须只能来自装配参数；能从 env 读到就等于 worker 环境里那个洞还在",
+    );
+  });
+
+  test("密钥为空串时不当作「已配置」（与「环境变量没配」同一语义）", async () => {
+    const provider = buildProvider({ ...BASE, models: [] }, "");
+    assert.equal(await resolveApiKey(provider), undefined);
   });
 });

@@ -91,6 +91,55 @@ describe("parseAgentFile：frontmatter 是极简解析，不认识就报错", ()
     assert.deepEqual(result.tools, ["read", "memory_search"]);
     assert.equal(result.body, "正文");
   });
+
+  test("不认识 frontmatter key 报错——`modle:` 这种笔误不许静默少生效一项", () => {
+    const result = parseAgentFile(
+      "---\ndescription: 调研\ntools: read\nmodle: deepseek/deepseek-v4-flash\n---\n正文",
+    );
+    assert.ok(!result.ok);
+    if (result.ok) return;
+    assert.match(result.reason, /不认识的 key：modle/);
+    // 报错必须点出正确写法，否则用户只知道「错了」不知道「该写什么」
+    assert.match(result.reason, /description/);
+  });
+});
+
+describe("parseAgentFile：模型路由字段（工作包 C）", () => {
+  test("写了 model 就取到，且是原样的 providerId/modelId", () => {
+    const result = parseAgentFile(
+      "---\ndescription: 便宜调研\ntools: read\nmodel: deepseek/deepseek-v4-flash\n---\n正文",
+    );
+    assert.ok(result.ok);
+    if (!result.ok) return;
+    assert.equal(result.model, "deepseek/deepseek-v4-flash");
+  });
+
+  test("省略 model 时为 null（= 沿用会话模型，现状语义）", () => {
+    const result = parseAgentFile(OK_FILE);
+    assert.ok(result.ok);
+    if (!result.ok) return;
+    assert.equal(result.model, null);
+  });
+
+  test("model 空值按省略处理（不产生空串这种第三种状态）", () => {
+    const result = parseAgentFile(
+      "---\ndescription: 调研\ntools: read\nmodel:\n---\n正文",
+    );
+    assert.ok(result.ok);
+    if (!result.ok) return;
+    assert.equal(result.model, null);
+  });
+
+  test("model 少了 provider 段报错（差一段的写法到 spawn 才失败就太远了）", () => {
+    for (const bad of ["deepseek-v4-flash", "deepseek/", "/deepseek-v4-flash"]) {
+      const result = parseAgentFile(
+        `---\ndescription: 调研\ntools: read\nmodel: ${bad}\n---\n正文`,
+      );
+      assert.ok(!result.ok, `应拒绝：${bad}`);
+      if (result.ok) continue;
+      assert.match(result.reason, /providerId\/modelId/);
+    }
+  });
 });
 
 describe("agentDirs / builtinAgentDefs", () => {
@@ -118,6 +167,7 @@ describe("dedupeAgents：同名只留第一个，被遮蔽的名字如实收集"
     name,
     description: `${name} 的描述`,
     tools: ["read"],
+    model: null,
     body: "",
     source,
     path: `${name}.md`,
@@ -144,6 +194,7 @@ describe("renderAgentCatalog：有界、如实、最终产物上看得见", () =
     name,
     description,
     tools: ["read"],
+    model: null,
     body: "",
     source: "builtin",
     path: "内置",

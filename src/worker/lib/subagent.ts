@@ -36,11 +36,13 @@ import {
   type LaneSnapshot,
 } from "@earendil-works/pi-agent-core";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
+import { splitModelRef } from "@shared/model-ref";
 import type { ViewSubagent } from "@shared/worker-protocol";
 import type { AgentDef } from "./agent-defs";
 import { projectSubagent, type SubagentProjectionInput } from "./subagent-view";
 import { isQuestionTool } from "./ask-user-tool";
 import { toolDurations } from "./tool-bookkeeping";
+import { forgetLaneModel, recordLaneModelFrom } from "./lane-model";
 import { promptTokensOf } from "./prompt-tokens";
 import { createHandoffTimer, handoffInstruction, type HandoffLimits } from "./subagent-handoff";
 
@@ -106,6 +108,12 @@ export interface SubagentDeps {
   harness: () => AgentHarness<ExecutionToolContext> | undefined;
   /** 状态有变（开始 / 结束 / 流式推进）→ 推一次视图（实现方自己合并节流） */
   onUpdate: () => void;
+  /**
+   * 确保某个 provider/model **可用**（工作包 C）：
+   * 需要时注册目标 provider（跨 provider 时要向主进程取一次密钥），并确认模型存在。
+   * 实现方在失败时必须**抛结构化错误**（给模型看的一句话），不许静默回落会话模型。
+   */
+  ensureModel: (providerId: string, modelId: string) => Promise<void>;
   /**
    * 收尾时序的可覆盖值（毫秒）：生产不传，取 `subagent-handoff.ts` 的三个常量。
    * 存在的理由：30 分钟的墙钟不可能在测试里等，而「到点先要交接、窗口过了才中止」
@@ -557,12 +565,37 @@ export class Subagents {
       throw new Error(`子代理「${agentName}」没有任何可用工具（定义里的 tools 全是不可用的）。`);
     }
 
+    // 模型路由（工作包 C）：定义里写了 `model:` 就把它当成本 lane 的模型。
+    //
+    // 「确保 provider 可用」这一步**必须排在建 lane 之前**：它失败（没配那家的密钥、
+    // 模型不在表里）是这个定义根本跑不起来的信号，而 `harness.lane(...)` 会**真的建出一条 lane**
+    // 并持久化进会话——先建后抛，每失败一次就在会话里留一条空 lane 当垃圾（界面上看不见，
+    // 只会越攒越多）。顺序调过来之后，失败发生在**什么都没创建**的时刻。
+    const modelRef = def.model === null ? null : splitModelRef(def.model);
+    if (modelRef !== null) {
+      await this.#deps.ensureModel(modelRef.provider, modelRef.model);
+    }
+
     const id = `${SUBAGENT_LANE_PREFIX}${def.name}:${randomUUID().slice(0, 8)}`;
     const lane = await harness.lane(id, { createAt: null }, context);
     const current = await lane.getActiveTools(context);
     if (current.join("\u0000") !== allowed.join("\u0000")) {
       await lane.setActiveTools(allowed, context);
     }
+    // setModel 只能在 lane 拿到之后（它是 lane 的方法）。失败**不回落到会话模型**——
+    // 静默回落会让委托方以为路由生效了，而实际跑的是另一个模型，于是同样的 task
+    // 花着不同的钱、给出不同的质量，谁都看不出发生了什么。
+    // 抛出的错误会经 `#run` 冒到工具调用上（isError），模型由此看到「换定义或报告用户」的指引。
+    if (modelRef !== null) {
+      await lane.setModel({ provider: modelRef.provider, modelId: modelRef.model }, context);
+    }
+    // 记下这条 lane 现在用的模型——**用量记账的口径**（见 `lane-model.ts`）。
+    //
+    // 必须在这里记，而不能等 `config_update`：定义里**没写** `model:` 的子代理不会触发
+    // setModel，它继承的是**创建这一刻**的会话模型，而用户完全可能在它跑着的时候切模型
+    // （`setModelOrReconnect` 允许）——那时「回落当前会话模型」会拿**现在的**模型去解释
+    // **过去的** lane，正是本模块要修的那类错。直接问 lane 就没有这个问题。
+    await recordLaneModelFrom(lane, context);
     const watch = await lane.watch(context);
     const run: SubagentRun = {
       id,
@@ -703,6 +736,9 @@ export class Subagents {
 
     run.endedAt = Date.now();
     run.unsubscribe();
+    // 这条 lane 跑完了 → 它的模型账也该卸掉（用量在运行期间已全部产生，
+    // 留着只会让「这条 lane 还在用这个模型」一直为真）。见 `lane-model.ts`。
+    forgetLaneModel(run.id);
     this.#evictFinished();
     this.#deps.onUpdate();
     return buildResultText(

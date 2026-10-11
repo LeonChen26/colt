@@ -13,12 +13,11 @@ import type { BrowserWindow } from "electron";
 import { BrowserHost, type BrowserControl, type BrowserNavigation } from "./browser-host";
 import { ComputerHost } from "./computer-host";
 import { MemoryHost } from "./memory-host";
-import {
-  TerminalHost,
-  type TerminalExitEvent,
-  type TerminalOutputEvent,
-} from "../terminal-host";
+import { TerminalHost, type TerminalExitEvent, type TerminalOutputEvent } from "../terminal-host";
 import { todoStore } from "../todo-store";
+import { getProvider, listProviders } from "../providers";
+import { getSecret } from "../secrets";
+import { KEYLESS_PLACEHOLDER } from "@shared/provider-factory";
 
 export interface HostRequest {
   sessionId: string;
@@ -153,6 +152,8 @@ export class HostBridge {
         // 待办清单的**唯一写入方**在 `todo-store.ts`（真源是 SQLite 的 todos 表）；
         // 这里只是一跳转发，与 browser / computer / memory 保持同一形态
         return todoStore.handle(request.sessionId, request.action, request.params);
+      case "providerKey":
+        return providerKeyResult(request.action, request.params);
       default:
         throw new Error(`未知的宿主能力：${String(request.capability)}`);
     }
@@ -176,3 +177,33 @@ export class HostBridge {
 }
 
 export const hostBridge = new HostBridge();
+
+/**
+ * `providerKey` 宿主能力：给 worker 回某家 provider 的密钥（工作包 C）。
+ *
+ * 三条纪律：① **只从 secrets 读**（主进程内存 → 消息体，不落盘、不进 shell env）；
+ * ② 无密钥的本地服务回占位符（与装配层 `KEYLESS_PLACEHOLDER` 同一语义），
+ *    真需要密钥却没配则**抛错**——静默回一个空串会让模型请求以一个看不懂的
+ *    鉴权错误失败，用户看不到「你还没配这家的 key」；
+ * ③ 未知 providerId 也抛错（worker 只该按 init 下发的目录来问）。
+ *
+ * ⚠️ 它是 `HostCapability` 的一员，因此**有能力接收模型传入的 action/params**——
+ * 所以这里刻意不信任任何参数语义之外的东西：providerId 只用于查目录与 secrets，
+ * 不认识的一律拒绝。它也不在任何工具清单里，模型无法以工具形式发起它（见 worker-protocol）。
+ */
+function providerKeyResult(action: string, params: Record<string, unknown>): HostResult {
+  if (action !== "get") throw new Error(`providerKey 不支持的动作：${action}`);
+  const providerId = typeof params.providerId === "string" ? params.providerId.trim() : "";
+  if (providerId === "") throw new Error("providerKey 缺少 providerId。");
+  const provider = getProvider(providerId);
+  if (provider === undefined) {
+    const known = listProviders().map((item) => item.id).join("、");
+    throw new Error(`未知的模型服务：${providerId}（现有：${known}）。`);
+  }
+  const secret = getSecret(providerId);
+  if (secret !== undefined && secret !== "") return { text: secret };
+  if (provider.requiresKey !== false) {
+    throw new Error(`尚未配置 ${provider.name} 的 API Key，无法使用它。`);
+  }
+  return { text: KEYLESS_PLACEHOLDER };
+}

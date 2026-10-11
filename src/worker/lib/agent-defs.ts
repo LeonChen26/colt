@@ -14,26 +14,36 @@
  * ---
  * description: 只读的代码调研员——在大范围文件里定位事实，给出带出处的结论
  * tools: read, memory_search
+ * model: deepseek/deepseek-v4-flash
  * ---
  * （正文 = 该子代理的系统提示词）
  * ```
+ *
+ * `model` 可选，格式与协议里的模型引用同源（`shared/model-ref.ts`）：
+ * `providerId/modelId`，省略 = 沿用会话当前模型。它决定这个子代理**跑在哪家服务上**——
+ * 于是「便宜的调研活交给小模型」这类路由不必改代码。
  *
  * ⚠️ **frontmatter 是极简解析，不是完整 YAML**：只认 `key: value` 与逗号分隔的数组。
  * 内核**没有导出**它的 frontmatter 解析器（`loadSkills` 内部用了，但不出现在包里），
  * 而为一个 `description` + 一行工具名去引一个 YAML 依赖，代价远大于收益。
  * 因此这里对不认识的写法**报错**而不是猜（见 `parseAgentFile`）——静默猜错会让
- * 「工具白名单」这个安全边界变成一团模糊。
+ * 「工具白名单」这个安全边界变成一团模糊，而 `modle:` 这种笔误则会让一个
+ * 「看起来已经路由」的定义其实跑在会话模型上（本仓最贵的一类错误：持续撒谎）。
  *
  * 与技能同一条隐式信任通道：定义来自磁盘、会决定子代理的系统提示词与工具面，
  * 故装载了什么、跳过了什么都要**如实报出来**（`docs/SECURITY.md`）。
  */
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { splitModelRef } from "@shared/model-ref";
 
 /** agent 定义目录（**项目级在前**，同名时它胜出） */
 export function agentDirs(cwd: string, home: string): string[] {
   return [join(cwd, ".agents", "agents"), join(home, ".agents", "agents")];
 }
+
+/** frontmatter 里认得的 key。其余一律报错——见文件头对「不猜」的说明 */
+const KNOWN_KEYS: readonly string[] = ["description", "tools", "model"];
 
 export interface AgentDef {
   /** 名字取**文件名**（去掉 `.md`），目录内唯一 */
@@ -45,6 +55,11 @@ export interface AgentDef {
    * 内建 `general` 用它。空数组不是合法定义（见 `parseAgentFile`）。
    */
   tools: string[] | null;
+  /**
+   * 这个子代理跑在哪个模型上（`providerId/modelId`）；`null` = 沿用会话当前模型。
+   * 目标服务不存在 / 没配密钥 / 模型下线都在 spawn 时以结构化错误报出来（见 `subagent.ts`）。
+   */
+  model: string | null;
   /** 正文 = 该子代理的系统提示词 */
   body: string;
   source: "project" | "user" | "builtin";
@@ -54,7 +69,13 @@ export interface AgentDef {
 
 /** 解析结果：失败时给一句**可照着改**的中文说明（别只说「格式错」） */
 export type ParseAgentResult =
-  | { ok: true; description: string; tools: string[]; body: string }
+  | {
+      ok: true;
+      description: string;
+      tools: string[];
+      model: string | null;
+      body: string;
+    }
   | { ok: false; reason: string };
 
 /**
@@ -63,6 +84,8 @@ export type ParseAgentResult =
  * 三步都在这里定死：① frontmatter 必须存在且闭合；② `description` 必填非空；
  * ③ `tools` 必须列出至少一个名字（**不能省**——白名单是安全边界，
  * 省略就等于把「能干什么」交给默认值，那种默认值没人能在评审里看见）。
+ * `model` 可选，但写了就必须是能解析的模型引用（写错宁可让这个定义**不生效**，
+ * 也不要让它静默落回会话模型）。
  */
 export function parseAgentFile(text: string): ParseAgentResult {
   const normalized = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
@@ -83,6 +106,12 @@ export function parseAgentFile(text: string): ParseAgentResult {
       return { ok: false, reason: `frontmatter 里这一行不是 key: value：${trimmed}` };
     }
     const key = trimmed.slice(0, at).trim().toLowerCase();
+    if (!KNOWN_KEYS.includes(key)) {
+      return {
+        ok: false,
+        reason: `frontmatter 不认识的 key：${key}。只支持 ${KNOWN_KEYS.join(" / ")}（拼错的话定义会静默少生效一项）`,
+      };
+    }
     meta.set(key, trimmed.slice(at + 1).trim());
   }
 
@@ -104,7 +133,29 @@ export function parseAgentFile(text: string): ParseAgentResult {
     return { ok: false, reason: "frontmatter 的 tools 是空的：至少要列一个工具名" };
   }
 
-  return { ok: true, description, tools, body: lines.slice(end + 1).join("\n").trim() };
+  const rawModel = (meta.get("model") ?? "").trim();
+  let model: string | null = null;
+  if (rawModel !== "") {
+    // 模型引用必须带 provider 段：只写 `deepseek-v4-flash` 的话没人知道是哪家服务上的它，
+    // 而这种「差一段」的写法若被放行，spawn 时会以「未知 provider」失败——那时
+    // 报错离写错的那一行已经很远了。
+    const ref = splitModelRef(rawModel);
+    if (ref.provider === "" || ref.model === "") {
+      return {
+        ok: false,
+        reason: `model 要写成 providerId/modelId（如 deepseek/deepseek-v4-flash），收到的是：${rawModel}`,
+      };
+    }
+    model = rawModel;
+  }
+
+  return {
+    ok: true,
+    description,
+    tools,
+    model,
+    body: lines.slice(end + 1).join("\n").trim(),
+  };
 }
 
 /** 装载结果：与技能同形——装到的 + 被遮蔽的名字 + 逐目录计数 + 告警 */
@@ -129,6 +180,7 @@ export function builtinAgentDefs(): AgentDef[] {
       name: "researcher",
       description: "只读调研：在大范围文件里定位事实，给出带路径与行号的结论，不做任何改动",
       tools: ["read", "memory_search"],
+      model: null,
       body:
         "你是一个只读的代码调研子代理。你的任务是在这个项目里把事实查清楚并给出**带出处**的结论。\n" +
         "规矩：只读（没有写/执行能力）；结论里给出文件路径与关键片段；查不到就说查不到，" +
@@ -140,6 +192,7 @@ export function builtinAgentDefs(): AgentDef[] {
       name: "general",
       description: "通用子代理：默认工具集（可读写、可执行），适合整包交出去的独立任务",
       tools: null,
+      model: null,
       body:
         "你是一个被委派了独立任务的子代理。你看不到主对话的历史，只有下面这段任务描述。\n" +
         "规矩：先把任务描述读清；需要的信息自己用工具查；完成后用一段话给出结论与" +
@@ -206,6 +259,7 @@ async function loadAgentDir(dir: string, source: "project" | "user"): Promise<{
       name: entry.name.slice(0, entry.name.length - ".md".length),
       description: parsed.description,
       tools: parsed.tools,
+      model: parsed.model,
       body: parsed.body,
       source,
       path,

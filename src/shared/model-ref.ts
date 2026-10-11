@@ -27,8 +27,13 @@ export const BUILTIN_PROVIDER_ID = "deepseek";
 /** 内置默认模型引用：会话从未选过模型时用它 */
 export const BUILTIN_DEFAULT_MODEL_REF = `${BUILTIN_PROVIDER_ID}/deepseek-v4-flash`;
 
-/** 在 provider 列表里校验一个 "providerId/modelId" 是否仍然有效（服务还在、模型还在） */
-function findModelRef(
+/**
+ * 在 provider 列表里校验一个 "providerId/modelId" 是否仍然有效（服务还在、模型还在）。
+ *
+ * 导出给「按配置的模型引用去解析实际目标」的调用方用（审批分析器的独立模型设置）：
+ * 解析失败要说清是「设置写错了」还是「服务/模型被删了」，不能静默落到别的模型上。
+ */
+export function findModelRef(
   modelRef: string,
   providers: ProviderConfig[],
 ): { providerId: string; modelId: string } | undefined {

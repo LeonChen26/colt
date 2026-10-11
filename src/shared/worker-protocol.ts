@@ -6,7 +6,7 @@
  * worker 侧持有 harness/lane，向 main 投影稳定 DTO（渲染层零 pi 依赖）
  */
 
-import type { ProviderBuildConfig } from "./provider-factory";
+import type { ProviderBuildConfig, ProviderDirectoryEntry } from "./provider-factory";
 import type { ThinkingLevel } from "./thinking-level";
 import type { ViewTodo } from "./todo";
 import type { McpTransport } from "./mcp-config";
@@ -422,8 +422,12 @@ export interface ConversationView {
 /**
  * 宿主能力标识：由主进程（Electron GUI 侧）实现，worker 通过 toolRpc 远程调用。
  * 浏览器/桌面这类能力必须由宿主进程持有（窗口与 OS 权限），故 worker 只能发命令。
+ *
+ * `providerKey` 是**内部控制通道**，不是给模型用的能力：worker 要切到另一个 provider 时
+ * 由代码路径发起（子代理 spawn），主进程从加密 secrets 读密钥后原样回在 `HostResult.text` 里。
+ * 它**不出现在任何工具清单里**，模型无法以工具形式触达；也不走审批闸门（它不操作工作区）。
  */
-export type HostCapability = "browser" | "computer" | "memory" | "todo";
+export type HostCapability = "browser" | "computer" | "memory" | "todo" | "providerKey";
 
 /** 一次宿主能力的调用返回：文本 + 可选图片（截图等） */
 export interface HostResult {
@@ -472,6 +476,24 @@ export type WorkerCommand =
       kernelSessionId?: string;
       provider: ProviderBuildConfig;
       model: string;
+      /**
+       * 会话所用 provider 的 API Key，**只在消息体里走一趟**（工作包 B）。
+       *
+       * 为什么不放环境变量：worker fork 时继承环境，而内核 bash 工具是
+       * `inheritEnv: true`（`harness/env/nodejs.js` 的 `getShellEnv`）——密钥一旦进 env，
+       * 模型一条 `env` 命令就能读回去。走消息体则只存在于两端的内存里。
+       * 无需密钥的本地服务传 `KEYLESS_PLACEHOLDER`（下游装配层要一个非空值）。
+       */
+      apiKey: string;
+      /**
+       * 全部 provider 的**非密钥**配置（工作包 C）。子代理定义里可以写
+       * `model: providerId/modelId` 切到别的服务上，worker 就是靠这份目录去装配那家的。
+       *
+       * 密钥**不在这里**：目录只回答「有哪几家、各有哪些模型」，真要切过去时经
+       * `providerKey` 宿主能力按需取一次（同一会话内只取一次，只走内存）。
+       * 投影必须是白名单手法（见 `shared/provider-directory.ts` 的 `toDirectoryEntry`）。
+       */
+      providers: ProviderDirectoryEntry[];
       /** 思考等级；主进程已按「会话存值 → 默认值」收敛过，worker 原样下发 */
       thinkingLevel: ThinkingLevel;
       /**
@@ -491,7 +513,11 @@ export type WorkerCommand =
   | { type: "prompt"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "steer"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "abort" }
-  | { type: "setModel"; provider: ProviderBuildConfig; modelId: string }
+  /**
+   * 切到另一个 provider/model。`apiKey` 与 init 同一条理由（密钥不进环境变量）——
+   * 跨 provider 切换时 worker 要**现装**一个 provider，它手里必须拿到那家的密钥。
+   */
+  | { type: "setModel"; provider: ProviderBuildConfig; apiKey: string; modelId: string }
   | { type: "setThinkingLevel"; level: ThinkingLevel }
   | { type: "compact" }
   /**

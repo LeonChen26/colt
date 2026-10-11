@@ -322,7 +322,12 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 
 ## 七、密钥与隐私
 
-- 密钥用 Electron **`safeStorage` 加密后落盘**；**明文只存在于内存与 worker 进程的环境变量**里。
+- 密钥用 Electron **`safeStorage` 加密后落盘**；**明文只存在于主进程内存与 worker 进程内存**里，
+  经 `init` / `setModel` 命令的**消息体**传递（2026-10-11 前的旧行为是把明文写进 worker 的环境变量，
+  而内核 bash 工具 `inheritEnv: true` 会把 worker 环境整份铺进子 shell——模型一条 `env` 就能读回去，
+  这就是 `docs/architecture-review-2026-10.md` 的 🔴1）。worker 的环境变量现在是一份**白名单投影**
+  （`main/lib/worker-env.ts`），里面没有任何密钥；`providerKey` 宿主能力按需把某家的密钥
+  经消息体回给 worker 一次（只走内存，不落盘、不进 env）。
 - 界面里**密钥只上行、不下行**——设置页看得到「是否已设置」，看不到明文。
 - 不需要鉴权的本地服务（`requiresKey === false`）启动 worker 时会填一个**占位假密钥**——因为 pi-ai 的
   `openai-completions` 层无法表达「这个服务不需要鉴权」，`apiKey` 为空会直接抛错。

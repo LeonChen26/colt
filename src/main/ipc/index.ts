@@ -41,7 +41,12 @@ import {
 import { sessionManager } from "../session-manager";
 import { dropSessionPin, listPinnedSessions, setSessionPinned } from "../session-pins";
 import { readToolImage, removeToolOutput } from "../tool-output";
-import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
+import {
+  getAnalyzeCommandAllowlist,
+  getAnalyzerModelRef,
+  setAnalyzeCommandAllowlist,
+  setAnalyzerModelRef,
+} from "../approval/config";
 import { getDiagnoseEnabled, setDiagnoseEnabled } from "../diagnose-config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
@@ -612,6 +617,16 @@ export function registerIpcHandlers(): void {
     sessionManager.reloadAnalyzeCommandAllowlist();
     return { commands };
   });
+
+  // 分析器专用模型（工作包 C）：没有设置界面之前靠 IPC 直接读写。
+  // 存储即生效——每次分析现读（`#analyzeThenReply`），不需要推送或重启。
+  handle("approval.analyzerModel.get", () => ({
+    modelRef: getAnalyzerModelRef(),
+  }));
+
+  handle("approval.analyzerModel.set", (request) => ({
+    modelRef: setAnalyzerModelRef(request.modelRef),
+  }));
 
   handle("diagnose.config.get", () => ({
     enabled: getDiagnoseEnabled(),

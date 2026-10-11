@@ -4,14 +4,17 @@
 /**
  * 审批策略的可配置项（持久化在 settings 表）。
  *
- * 目前只有一项：**分析器可自动放行的命令白名单**。
- * 语义：自动审批模式下，只有首词命中该白名单的 bash 调用才允许交给分析器裁决；
- * 其余 moderate 操作一律转为人工确认。把它做成可配置，是为了让「自研脚本 / 内部工具」
- * 这类项目特定入口能被用户显式纳入，而不必被迫切到 full-access。
+ * 目前两项：
+ *   1. **分析器可自动放行的命令白名单**。语义：自动审批模式下，只有首词命中该白名单的
+ *      bash 调用才允许交给分析器裁决；其余 moderate 操作一律转为人工确认。把它做成可配置，
+ *      是为了让「自研脚本 / 内部工具」这类项目特定入口能被用户显式纳入，而不必被迫切到 full-access。
+ *   2. **分析器专用的模型引用**（`approval.analyzerModelRef`，工作包 C）。空 = 沿用会话模型
+ *      （现状）。它只影响自动审批这一次复核用哪家服务，不影响会话本身。
  *
  * 未配置过 → 使用内置默认；显式保存空列表 → 关闭分析器自动放行（等同全人工）。
  */
 import { getSetting, setSetting } from "../db/repo";
+import { splitModelRef } from "@shared/model-ref";
 import { DEFAULT_ANALYZE_COMMAND_ALLOWLIST, normalizeAnalyzeAllowlist } from "./policy";
 
 const ALLOWLIST_KEY = "approval.analyzeCommandAllowlist";
@@ -51,4 +54,48 @@ export function setAnalyzeCommandAllowlist(list: unknown): string[] {
   const normalized = normalizeAnalyzeAllowlist(list);
   setSetting(ALLOWLIST_KEY, JSON.stringify(normalized));
   return normalized;
+}
+
+const ANALYZER_MODEL_KEY = "approval.analyzerModelRef";
+
+/**
+ * 读取分析器专用模型引用；`null` = 未配置 / 已清空 = 沿用会话模型。
+ *
+ * 与白名单同一口径：读的是 settings 表里的裸字符串，故**脏数据一律当「没配」**——
+ * 一条手改坏的记录不该让自动审批整条链路失效（那会表现为「怎么每条命令都要问我」，
+ * 而用户看不出原因）。格式校验放在这里，语义校验（服务还在不在）在 `analyzer-model.ts`。
+ */
+export function getAnalyzerModelRef(): string | null {
+  const raw = getSetting(ANALYZER_MODEL_KEY);
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const ref = splitModelRef(trimmed);
+  if (ref.provider === "" || ref.model === "") return null;
+  return trimmed;
+}
+
+/**
+ * 保存分析器模型引用。传 `null` / 空串 = 清空（回到「沿用会话模型」）。
+ *
+ * 格式不合法**抛错**而不是静默存下：写入侧只有 IPC（将来的设置界面），
+ * 存一个连解析都不行的字符串，等于把一个「看起来设过、其实没生效」的状态留在库里。
+ */
+export function setAnalyzerModelRef(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    setSetting(ANALYZER_MODEL_KEY, "");
+    return null;
+  }
+  if (typeof value !== "string") throw new Error("analyzerModelRef 必须是字符串或 null");
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    setSetting(ANALYZER_MODEL_KEY, "");
+    return null;
+  }
+  const ref = splitModelRef(trimmed);
+  if (ref.provider === "" || ref.model === "") {
+    throw new Error(`模型引用要写成 providerId/modelId（如 deepseek/deepseek-v4-flash）：${trimmed}`);
+  }
+  setSetting(ANALYZER_MODEL_KEY, trimmed);
+  return trimmed;
 }

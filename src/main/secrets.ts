@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 密钥存储：safeStorage 加密后落盘，明文只在内存与 worker 进程环境变量中存在
- * 绝不写入日志、不入数据库、不跨 IPC 明文传给渲染层
+ * 密钥存储：safeStorage 加密后落盘，明文只在**主进程内存与 worker 进程内存**中存在
+ * （经 `init` / `setModel` 的消息体传递，不进任何环境变量——worker env 是白名单投影，
+ * 见 `main/lib/worker-env.ts`，2026-10-11 起）。绝不写入日志、不入数据库、不跨 IPC 明文传给渲染层
  */
 import { app, safeStorage } from "electron";
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, rmSync } from "node:fs";

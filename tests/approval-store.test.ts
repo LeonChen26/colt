@@ -327,6 +327,31 @@ describe("ApprovalStore 判定", () => {
     assert.equal(instance.listPending(SESSION).length, 0);
   });
 
+  /**
+   * 检索工具同样**一步都不能进待审队列**——「放行」与「不进队」是两件事：
+   * 前者决定模型能不能继续跑，后者决定用户会不会看到一张卡（卡一闪也是打扰）。
+   * 用真实的 grep/glob 入参形状跑，避免「名字对但参数形状让判定走到别处」这类漏网。
+   */
+  test("检索工具 grep / glob 放行且不留待审条目", () => {
+    const instance = store();
+    const cases: [string, string][] = [
+      ["grep", JSON.stringify({ pattern: "setActiveTools", path: "src", glob: "*.ts" })],
+      ["glob", JSON.stringify({ pattern: "**/*.ts" })],
+    ];
+    for (const [toolName, argsJson] of cases) {
+      const outcome = instance.evaluate({
+        sessionId: SESSION,
+        toolCallId: `c-${toolName}`,
+        toolName,
+        argsJson,
+        now: 1,
+      });
+      assert.ok("decision" in outcome, `${toolName} 应当直接给结论而不是入队`);
+      assert.equal(outcome.decision.approved, true);
+    }
+    assert.deepEqual(instance.listPending(SESSION), []);
+  });
+
   test("写入类调用进入待审并带上判定依据", () => {
     const instance = store();
     const outcome = instance.evaluate({

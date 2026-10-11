@@ -345,6 +345,9 @@ export const IPC_CHANNELS = [
   "approval.rules.clear",
   "approval.analyzeConfig.get",
   "approval.analyzeConfig.set",
+  /** 审批分析器专用的模型引用（空 = 沿用会话模型，见工作包 C） */
+  "approval.analyzerModel.get",
+  "approval.analyzerModel.set",
   "diagnose.config.get",
   "diagnose.config.set",
   "session.branches",
@@ -693,6 +696,19 @@ export interface IpcInvokeMap {
   "approval.analyzeConfig.set": {
     request: { commands: string[] };
     response: { commands: string[] };
+  };
+  /**
+   * 读取审批分析器专用的模型引用（`"providerId/modelId"`，全局设置）。
+   * `null` = 未配置 = 沿用会话当前模型（历史行为）。
+   */
+  "approval.analyzerModel.get": {
+    request: void;
+    response: { modelRef: string | null };
+  };
+  /** 保存分析器专用模型；传 `null` 即清空（回到「沿用会话模型」） */
+  "approval.analyzerModel.set": {
+    request: { modelRef: string | null };
+    response: { modelRef: string | null };
   };
   /** 读取写后诊断开关（全局设置，`docs/archive/DESIGN-afterwrite.md` D5；从未配置过 = 开） */
   "diagnose.config.get": {

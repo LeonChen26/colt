@@ -26,6 +26,13 @@ import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from 
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getDiagnoseEnabled } from "./diagnose-config";
 import { getSecret } from "./secrets";
+import { buildWorkerEnv, collectWorkerControl } from "./lib/worker-env";
+import { listProviders } from "./providers";
+import { toProviderDirectory } from "@shared/provider-directory";
+// 无需密钥的服务（requiresKey === false）装配时占位用的假密钥：pi-ai 的 openai-completions
+// 层无法表达「这个服务不需要鉴权」，apiKey 为空会直接抛「No API key for provider」。
+// 真源在 shared（`providerKey` 宿主能力也要用同一份），这里直接用它的名字。
+import { KEYLESS_PLACEHOLDER } from "@shared/provider-factory";
 import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
 import { todoStore } from "./todo-store";
@@ -35,7 +42,8 @@ import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
 import { ApprovalStore } from "./approval/store";
 import { notifyApproval, notifyQuestion } from "./approval/notify";
-import { getAnalyzeCommandAllowlist } from "./approval/config";
+import { getAnalyzeCommandAllowlist, getAnalyzerModelRef } from "./approval/config";
+import { resolveAnalyzerTarget } from "./approval/analyzer-model";
 import { analyzeToolCall } from "./approval/analyzer";
 import { createDeferred } from "./lib/deferred";
 import { isDev } from "./lib/app-mode";
@@ -105,13 +113,6 @@ const SKILLS_QUERY_TIMEOUT_MS = READY_TIMEOUT_MS + 30_000;
  */
 const DISPOSE_GRACE_MS = 3 * 1000;
 /**
- * 无需密钥的服务（ProviderConfig.requiresKey === false）启动 worker 时占位用的假密钥。
- * 仅仅是喂给 pi-ai 的 openai-completions 层，它无法表达「这个服务不需要鉴权」，
- * apiKey 为空会直接抛「No API key for provider」。本地服务一般不校验该请求头。
- */
-const KEYLESS_PLACEHOLDER = "colt-local-no-key";
-
-/**
  * MCP 现状查询的一个等待方。
  *
  * 带**两条**收场口子（兑现 / 失败）而不是只有一个 `settle`，是因为 worker 崩掉或被回收时
@@ -144,6 +145,15 @@ export interface WorkerEntry {
   /** 当前会话的 provider 配置与模型 id，审批分析器需要据此装配模型 */
   provider: ProviderConfig;
   modelId: string;
+  /**
+   * 已经提示过「分析器模型设置失效」的那个引用。
+   *
+   * 为什么必须记：失效的引用**每次分析都会重新解析一遍**，而自动审批在一次任务里可能
+   * 触发几十次——每次都发一条 notice 就是一个刷屏的 toast。落库那侧虽有 5 分钟同文去重
+   * （`recordSessionEvent`），但 toast 的去重不在那里。记成「已提示过的那个引用」而不是
+   * 一个布尔：用户改了设置（换成另一个也失效的引用）时要能再提示一次。
+   */
+  analyzerDriftNotified?: string;
   /**
    * 主动销毁原因（undefined 表示未主动销毁，即崩溃）。
    * exit 回调靠它三分：
@@ -435,21 +445,46 @@ export class SessionManager {
     const { toolCallId, toolName, argsJson } = message;
     const abortEpoch = entry.abortEpoch;
     const modeEpoch = entry.modeEpoch;
-    const apiKey = getSecret(entry.provider.id);
+    // 分析器可能配了**专用模型**（工作包 C）：缺省 = 会话模型（现状），
+    // 配了但已失效（服务被删 / 模型下线）则回落到会话模型并如实告知——不静默。
+    const configuredRef = getAnalyzerModelRef();
+    const target = resolveAnalyzerTarget({
+      session: {
+        provider: entry.provider,
+        modelId: entry.modelId,
+        apiKey: getSecret(entry.provider.id),
+      },
+      configuredRef,
+      // providers 惰性求值：未配置专用模型时**一次库都不查**（分析器是热路径，
+      // 自动审批一次任务可能跑几十次，白查一遍 provider 目录纯属浪费）
+      providers: () => listProviders(),
+      apiKeyOf: (providerId) => getSecret(providerId),
+    });
+    if (target.driftedFrom !== undefined) {
+      // 只在「换了一个失效的引用」时提示一次：同一条失效引用每次分析都提示会刷屏
+      // （`recordSessionEvent` 有 5 分钟同文去重，但 toast 没有）。
+      if (entry.analyzerDriftNotified !== target.driftedFrom) {
+        entry.analyzerDriftNotified = target.driftedFrom;
+        this.#emit("session.notice", {
+          sessionId: options.sessionId,
+          message:
+            `审批分析器设置的模型「${target.driftedFrom}」已不可用，本次起回落到会话模型` +
+            `${target.provider.id}/${target.modelId}。请改设置或恢复那个服务。`,
+          kind: "security",
+        });
+      }
+    } else {
+      // 引用重新有效（或用户清空了设置）：复位，好让下次真的失效时还能提示一次
+      entry.analyzerDriftNotified = undefined;
+    }
     const result = await analyzeToolCall({
       toolName: context.invocation.toolName,
       args: context.invocation.args,
       projectRoot: context.projectRoot,
       policyReason: context.reason,
-      provider: {
-        id: entry.provider.id,
-        name: entry.provider.name,
-        kind: entry.provider.kind,
-        baseUrl: entry.provider.baseUrl,
-        models: entry.provider.models,
-      },
-      modelId: entry.modelId,
-      apiKey,
+      provider: target.provider,
+      modelId: target.modelId,
+      apiKey: target.apiKey,
       // 分析器不走内核，必须显式带上等级：否则这条不带工具的请求会以「关闭思考」发出，
       // 被「始终思考」的模型 400 掉，自动放行永远是兜底拒绝
       thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
@@ -488,8 +523,10 @@ export class SessionManager {
         recordUsage({
           sessionId: options.sessionId,
           kernelUsageId: `approval-analyze:${randomUUID()}`,
-          provider: entry.provider.id,
-          model: entry.modelId,
+          // 记**实际用的**那一家：分析器可能配了专用模型，按会话模型记账会把这笔钱
+          // 记到没用过它的服务上（费用归属错会让「哪个服务在花钱」这个问题永远答不准）
+          provider: target.provider.id,
+          model: target.modelId,
           input: result.usage.input,
           output: result.usage.output,
           cacheRead: result.usage.cacheRead,
@@ -799,13 +836,10 @@ export class SessionManager {
     const child = utilityProcess.fork(workerPath, [], {
       serviceName: `colt-session-${options.sessionId.slice(0, 8)}`,
       stdio: "pipe",
-      env: {
-        ...process.env,
-        // 明文密钥只存在于 worker 进程环境中
-        // 内置 DeepSeek 用官方约定的变量名，自定义 provider 用统一变量名
-        DEEPSEEK_API_KEY: options.provider.kind === "deepseek" ? providerKey : "",
-        COLT_PROVIDER_KEY: providerKey,
-      },
+      // 环境**白名单投影**，不是 `...process.env`：内核 bash 工具 `inheritEnv: true`
+      // 会把 worker 的环境整份铺进子 shell，全量继承等于「模型一条 env 就能读到密钥」。
+      // 名单与排除项见 `main/lib/worker-env.ts`（含 Windows 定位 Git Bash 与代理变量）。
+      env: buildWorkerEnv(process.env, collectWorkerControl(process.env)),
     });
     // 记忆检索的项目隔离依据：cwd 由主进程登记，不信任 worker 报值（见 memory-host.ts）
     hostBridge.setMemoryContext(options.sessionId, options.cwd);
@@ -1145,6 +1179,14 @@ export class SessionManager {
         models: options.provider.models,
       },
       model: options.model,
+      // 密钥经**消息体**下发（不进环境变量，见 shared/worker-protocol.ts 的 init.apiKey）：
+      // 消息体不落盘、不进 shell env，暴露面从「任何子进程可读」收敛到「进程内存」
+      apiKey: providerKey,
+      // 全部 provider 的**非密钥**配置（工作包 C）：子代理定义里写 `model: 另一家/模型`
+      // 时，worker 得有那家的 baseUrl 与模型表才能现装。密钥不在里面——要用时经
+      // `providerKey` 宿主能力按需取一次（见 shared/worker-protocol.ts 的 HostCapability）。
+      // 投影用白名单手法（`toProviderDirectory`），别用「删掉密钥字段」那种写法。
+      providers: toProviderDirectory(listProviders()),
       // 会话存值 → 默认值。**不能**让内核的默认（off）兜底：off 会被兼容层翻译成
       // 「显式关闭思考」，对「始终思考」的模型必然 400（详见 shared/thinking-level.ts）
       thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
@@ -1243,6 +1285,12 @@ export class SessionManager {
         baseUrl: provider.baseUrl,
         models: provider.models,
       },
+      // 目标 provider 的密钥必须**跟着命令走**：worker 侧要现装一个 provider，
+      // 而环境变量那条路已经拆掉（见 shared/worker-protocol.ts 的 init.apiKey）。
+      // 这里不抛「缺密钥」：本方法的调用方把「切换已落库」当成成功（见 setModelOrReconnect
+      // 的注释），真缺密钥时会在第一次真实请求上以该 provider 自己的鉴权错误暴露出来；
+      // 界面侧另有 isUsableProvider 拦着，选不到没密钥的服务。
+      apiKey: getSecret(provider.id) ?? KEYLESS_PLACEHOLDER,
       modelId,
     });
   }
