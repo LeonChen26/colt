@@ -230,6 +230,21 @@ async function scanFile(
   regex: RegExp,
   tally: GrepTally,
 ): Promise<void> {
+  // **先问大小，再读内容**：`readFile` 会把整份文件读进内存，而「太大就跳过」只需要一个
+  // `stat`。顺序反了就是「白读一遍再丢掉」——实测本仓 `release/` 下有 2.1GB 的大二进制，
+  // 全仓检索因此要 2～3 秒，而其中绝大部分时间花在把注定要丢掉的字节读进内存。
+  let size: number;
+  try {
+    size = (await stat(abs)).size;
+  } catch {
+    // 取不到大小（权限 / 竞态删除）只跳过该文件，不打断整次检索
+    return;
+  }
+  if (size > MAX_FILE_BYTES) {
+    tally.largeSkipped += 1;
+    return;
+  }
+
   let buffer: Buffer;
   try {
     buffer = await readFile(abs);
@@ -237,6 +252,8 @@ async function scanFile(
     // 读失败（权限 / 编码 / 竞态删除）只跳过该文件，不打断整次检索
     return;
   }
+  // stat 与 read 之间文件可能被换掉（构建产物目录里很常见），再判一次：
+  // 这一次是「已经读进来了才发现太大」，只能丢，但至少不让它进扫描循环。
   if (buffer.byteLength > MAX_FILE_BYTES) {
     tally.largeSkipped += 1;
     return;

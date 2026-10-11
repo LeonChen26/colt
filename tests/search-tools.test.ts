@@ -18,6 +18,7 @@ import { makeTempDir, removeTempDir } from "./helpers/temp";
 import {
   GLOB_TOOL_NAME,
   GREP_TOOL_NAME,
+  MAX_FILE_BYTES,
   MAX_GREP_MATCHES,
   createSearchTools,
   globToRegExp,
@@ -49,6 +50,12 @@ before(() => {
   writeFileSync(
     join(root, "many.ts"),
     Array.from({ length: MANY_LINES }, (_item, index) => `MANY line ${index}`).join("\n"),
+    "utf8",
+  );
+  // 超过单文件上限的那个（8MB+）：内容里也有 needle，但必须整份跳过并**计数**
+  writeFileSync(
+    join(root, "huge.log"),
+    `needle at the very start\n${"x".repeat(MAX_FILE_BYTES + 1024)}`,
     "utf8",
   );
 });
@@ -216,6 +223,26 @@ describe("grep：噪声与二进制", () => {
     const text = await run(GREP_TOOL_NAME, { pattern: "needle" });
     assert.doesNotMatch(text, /bin\.dat/);
     assert.match(text, /已跳过 1 个二进制文件/);
+  });
+
+  /**
+   * 超过单文件上限的要**整份跳过并计数**，而不是读进来再丢。
+   *
+   * 这一条盯的是「说的和做的一致」：跳过是承诺，计数是「如实」（不静默丢）。
+   * ⚠️ 它**测不出**「先 stat 再 read」这个顺序本身——顺序只影响耗时，两种写法都跳过该文件。
+   * 那个顺序由 `scanFile` 的注释与这次的实测基准（全仓 3618ms → 1342ms）守着；
+   * 想用单测钉住它，得有「文件读得慢」这种可观测假设，那会变成脆弱的计时断言。
+   */
+  test(`超过 ${MAX_FILE_BYTES / 1024 / 1024}MB 的文件整份跳过并计入「已跳过」`, async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "needle" });
+    assert.doesNotMatch(text, /huge\.log/, "超大文件不该出现在结果里");
+    assert.match(text, /已跳过 1 个超过 8MB 的文件/);
+  });
+
+  test("超大文件里的匹配**不计入**「共 N 条」（它根本没被扫）", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "needle at the very start" });
+    assert.match(text, /没有匹配/, "唯一含这行的是那个被跳过的超大文件");
+    assert.match(text, /已跳过 1 个超过 8MB 的文件/, "跳过的事实要跟着说出来");
   });
 });
 
