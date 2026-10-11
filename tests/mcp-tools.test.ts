@@ -14,7 +14,7 @@
  * 6. 声明值与解析值分离、`instructions` 拼进提示词——都在**最终产物**上断言
  *    （与 `renderAgentCatalog` / `renderTodoBlock` 同款：渲染函数验拼出的串）。
  *    注意：`entry.ts` 那**一行调用**本身没有结构断言覆盖（本仓库惯例如此）——
- *    见 `docs/DESIGN-mcp.md` 决策 14 末条的「已知未覆盖」。
+ *    见 `docs/archive/DESIGN-mcp.md` 决策 14 末条的「已知未覆盖」。
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";

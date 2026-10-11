@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS file_baselines (
  * 待办清单（todo 工具）。**主进程是唯一写入方**，真源就在这张表里——
  * 不学参考实现「不落盘、靠工具结果的 details 从会话分支重放」：worker 会被空闲回收重启，
  * 重启后进程内存归零，而压缩之后分支里那条 toolResult 还在不在我们没验证过。
- * 落库把这个前提整个去掉（见 DESIGN-todo.md §3 决策一）。
+ * 落库把这个前提整个去掉（见 docs/archive/DESIGN-todo.md §3 决策一）。
  */
 CREATE TABLE IF NOT EXISTS todos (
   session_id TEXT NOT NULL,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 写后诊断的全局开关（持久化在 settings 表，`docs/DESIGN-afterwrite.md` D5）。
+ * 写后诊断的全局开关（持久化在 settings 表，`docs/archive/DESIGN-afterwrite.md` D5）。
  *
  * 默认开。关掉是给「检查慢 / 输出吵」的项目的退路——不是安全开关：
  * 免审批窄通道的正当性不依赖这个开关（论证见 `docs/SECURITY.md` §写后诊断）。

@@ -194,7 +194,7 @@ function ApprovalPolicySettings({
 }
 
 /**
- * 写后诊断开关（`docs/DESIGN-afterwrite.md` D5，全局设置）。
+ * 写后诊断开关（`docs/archive/DESIGN-afterwrite.md` D5，全局设置）。
  *
  * 助手每次写完代码文件会自动跑项目检查（eslint / tsc / ruff / go vet / cargo check），
  * 结论直接跟在写入结果里。检查慢或输出吵的项目可以整体关掉。

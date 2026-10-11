@@ -9,7 +9,7 @@
  * 它只有一行字符串比较，删掉或写错不会有别的东西变红；标题截断同理（schema 里承诺
  * ≤60 字符，不截就是撒谎，而界面上只会表现为「那一行被撑爆」，不报错）。
  *
- * 执行侧（真的开 lane、跑模型、并发上限）不在这里——见 `docs/DESIGN-subagents.md` §10。
+ * 执行侧（真的开 lane、跑模型、并发上限）不在这里——见 `docs/archive/DESIGN-subagents.md` §10。
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

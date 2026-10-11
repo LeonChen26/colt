@@ -7,7 +7,7 @@
  * 体例照 `question-store.ts`：**状态机在一个文件里读完，副作用交给宿主**
  * （`TodoStoreHost` 两个回调都是一行委托，由 session-manager 接线）。
  *
- * 三条结构性决定（见 `DESIGN-todo.md` §3、§5）：
+ * 三条结构性决定（见 `docs/archive/DESIGN-todo.md` §3、§5）：
  *
  * 1. **主进程是唯一写入方**，真源是 SQLite 的 `todos` 表。worker 被空闲回收重启后
  *    进程内存归零，靠「从会话分支重放工具结果」的参考实现方案要求「最后一条快照还在

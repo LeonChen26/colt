@@ -305,7 +305,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot });
   const session = await openSession(repo, command.kernelSessionId, cwd);
 
-  // 写后诊断（⑥，docs/DESIGN-afterwrite.md）：write/edit 成功后按检查器表跑检查，
+  // 写后诊断（⑥，docs/archive/DESIGN-afterwrite.md）：write/edit 成功后按检查器表跑检查，
   // fast 结论追加进当次工具结果、slow 走防抖经 ephemeral notice 注入下一请求。
   // 免审批窄通道的正当性论证在 docs/SECURITY.md §写后诊断；开关运行中可改（diagnoseEnabled）。
   const diagnose = createDiagnoseController({
@@ -453,7 +453,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     // ask_user 不受审批管辖：它是「向人要信息」，走审批通道会被 auto / full-access
     // 模式静默批准成「已通过」——模型拿到的是假答案
     if (isQuestionTool(event.toolName)) return undefined;
-    // subagent 自身同样豁免闸门（理由与 ask_user 不同，见 docs/DESIGN-subagents.md 决策四）：
+    // subagent 自身同样豁免闸门（理由与 ask_user 不同，见 docs/archive/DESIGN-subagents.md 决策四）：
     // 否则同一件事弹两次卡（委派一次 + 子代理内部工具各一次），用户会去关审批——那更糟。
     // 安全性不降：委派的副作用**全部落在子代理的工具调用上**，那里照样过本闸门。
     if (isSubagentTool(event.toolName)) return undefined;

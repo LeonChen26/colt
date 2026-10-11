@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 写后诊断（`docs/DESIGN-afterwrite.md`）的单测。
+ * 写后诊断（`docs/archive/DESIGN-afterwrite.md`）的单测。
  *
  * 这条链路最危险的两个静默失败，测不到就会变成「看起来在诊断、其实什么都没查」：
  * ① 「检查器坏了」伪装成「检查过了」——execCheck 的三态归一（skipped / problems / clean）

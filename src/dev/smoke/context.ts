@@ -34,7 +34,7 @@ export type Run = <T>(expression: string) => Promise<T>;
  * 把「用户级配置家目录」这条环境前提**显式固定**成一个空目录（设 `COLT_MCP_HOME`）。
  *
  * 挂在它下面、且**都**对全部项目生效的有两族配置，两族都得清：
- * - `<home>/.colt/mcp.json`——MCP server 清单（`docs/DESIGN-mcp.md`）；
+ * - `<home>/.colt/mcp.json`——MCP server 清单（`docs/archive/DESIGN-mcp.md`）；
  * - `<home>/.agents/skills` 与 `<home>/.colt/skills.json`——用户级技能（`docs/SECURITY.md`）。
  *
  * 本机若配过一台 server、或装过一个技能，冒烟里那些「只有 N 台 / 只有这几个技能」的精确断言

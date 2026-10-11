@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 写后诊断的编排入口（DESIGN-afterwrite.md）——`entry.ts` 只 import 这一个门面。
+ * 写后诊断的编排入口（docs/archive/DESIGN-afterwrite.md）——`entry.ts` 只 import 这一个门面。
  *
  * 职责：after_tool 里识别「写成功的 write/edit」→ 生成诊断计划 → fast 同步执行并把
  * 结论**追加进当次工具结果**（模型当轮就能修）→ slow 交给防抖器，批结果经

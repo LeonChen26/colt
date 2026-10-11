@@ -113,7 +113,7 @@ export function renderTodoSnapshot(todos: readonly ViewTodo[]): string {
 /**
  * 提示词注入块：**每请求**拼进系统提示词（见 `worker/entry.ts` 的 `transform_context`）。
  *
- * 三条口径（都来自 `DESIGN-todo.md` §8，别自己发明）：
+ * 三条口径（都来自 `docs/archive/DESIGN-todo.md` §8，别自己发明）：
  * 1. **空清单不产出任何东西**——宁可少一段，也不要一段「（无待办）」的常态噪声；
  * 2. 只铺开 `in_progress` + `pending`（进行中排在最前），`completed` 折成一行；
  * 3. 超出行数预算时**先丢已完成那行、最后才截断未完成**，并如实写出还剩多少。

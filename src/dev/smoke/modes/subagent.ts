@@ -23,7 +23,7 @@
  * 明确不覆盖（写明，免得被当成验过了）：
  *   - 「`subagent` 调用不弹卡、它内部的写弹卡」是决策四 D6 的**执行侧**，本模式不打模型 ⇒
  *     未覆盖；它由 `COLT_SMOKE_MODE=subagent-e2e`（打模型、计费）覆盖，运行手册见
- *     `docs/NEXT-PHASE.md` §5 3-f、`docs/DESIGN-subagents.md` §12。
+ *     `docs/NEXT-PHASE.md` §5 3-f、`docs/archive/DESIGN-subagents.md` §12。
  *   - **分支树排除与导航守卫**是 worker 侧会话级数据（`session.findEntries` + `harness.lanes()`），
  *     受控视图驱动不到它；纯函数侧由 `tests/lane-ownership.test.ts` 覆盖。
  *   - 子代理**生命周期**里的时序语义（并发上限的占位、崩溃恢复不 resume 子 lane、超时中止）

@@ -31,4 +31,4 @@ MCP（Model Context Protocol）server 的工具会以**普通内核工具**的�
 
 ---
 
-设计取舍（为什么是「普通内核工具」而不是旁路、传输与超时怎么定的、掉线怎么告知）见 `docs/DESIGN-mcp.md`；安全边界见 `docs/SECURITY.md`。
+设计取舍（为什么是「普通内核工具」而不是旁路、传输与超时怎么定的、掉线怎么告知）见 `docs/archive/DESIGN-mcp.md`；安全边界见 `docs/SECURITY.md`。

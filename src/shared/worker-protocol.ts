@@ -483,7 +483,7 @@ export type WorkerCommand =
        */
       toolOutputDir: string;
       /**
-       * 写后诊断开关的全局初值（`docs/DESIGN-afterwrite.md` D5，设置页可改）。
+       * 写后诊断开关的全局初值（`docs/archive/DESIGN-afterwrite.md` D5，设置页可改）。
        * 运行中变更走 `diagnoseEnabled` 命令补发，不经会话重启。
        */
       diagnoseEnabled: boolean;
@@ -562,7 +562,7 @@ export type WorkerCommand =
    *
    * 为什么要有这条：worker 侧 `transform_context` 是**同步**的，要在每请求前把清单拼进
    * 系统提示词就必须手里有一份现成的——若改成在模型请求的热路径上现拉一次 RPC，
-   * 延迟与失败模式都更差（`DESIGN-todo.md` §3 决策四）。故主进程每次写入后整份推一遍，
+   * 延迟与失败模式都更差（`docs/archive/DESIGN-todo.md` §3 决策四）。故主进程每次写入后整份推一遍，
    * worker 只做覆盖。**它只是缓存，真源是主进程的库**。
    *
    * worker（重）启动时由主进程在 `ready` 之后补发一次——否则模型看不到已有清单，
@@ -590,7 +590,7 @@ export type WorkerCommand =
   /** 主进程对一次宿主能力调用的答复（失败） */
   | { type: "toolRpcResult"; requestId: string; ok: false; error: string }
   /**
-   * 写后诊断开关的实时下发（`docs/DESIGN-afterwrite.md` D5）。
+   * 写后诊断开关的实时下发（`docs/archive/DESIGN-afterwrite.md` D5）。
    * init 时随引导命令带一次初值；会话开着时改设置从这里补发。
    */
   | { type: "diagnoseEnabled"; enabled: boolean }

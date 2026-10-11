@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 写后诊断的检查器表与计划构造（纯函数，`docs/DESIGN-afterwrite.md` D6）。
+ * 写后诊断的检查器表与计划构造（纯函数，`docs/archive/DESIGN-afterwrite.md` D6）。
  *
  * 通道安全性由两条不变量支撑，缺一不可：
  * 1. **命令不是模型给的**——命令模板写死在这张表里，模型的唯一输入是文件路径
@@ -38,7 +38,7 @@ export const SLOW_TIMEOUT_SEC = 120;
 export const DIAGNOSE_OUTPUT_LIMIT_BYTES = 8 * 1024;
 export const DIAGNOSE_OUTPUT_LIMIT_LINES = 200;
 
-/** 慢检查防抖：写入停止 2s 后才执行（DESIGN-afterwrite.md D3） */
+/** 慢检查防抖：写入停止 2s 后才执行（docs/archive/DESIGN-afterwrite.md D3） */
 export const SLOW_DEBOUNCE_MS = 2000;
 
 /** TS 系扩展名：tsc 与 eslint 的适用面 */

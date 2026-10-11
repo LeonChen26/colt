@@ -60,7 +60,7 @@ npm run dev
 | `docs/MCP.md` | 接 MCP server 时（配置格式、两个位置、`${VAR}` 与热重载） |
 | `docs/UI-REGIONS.md` | 改界面区域时。**界面现状的真源**（逐区域定义 + 版本表） |
 | `docs/NEXT-PHASE.md` | 想知道现状基线、哪些明确不做、怎么验收 |
-| `docs/DESIGN-todo.md` · `docs/DESIGN-mcp.md` · `docs/DESIGN-subagents.md` | 动这三条线之前。设计决策记录（**均已实施**，含未覆盖项的如实标注） |
+| `docs/archive/DESIGN-todo.md` · `docs/archive/DESIGN-mcp.md` · `docs/archive/DESIGN-subagents.md` | 动这三条线之前。设计决策记录（**均已实施**，含未覆盖项的如实标注） |
 | `docs/GLOSSARY.md` | 看不懂某处的编号（`⑦`、`A3-4`、`N1`、`事 B`）时 |
 | `docs/archive/` | 已完结的历史文档与概念稿，只在追溯历史时看 |
 

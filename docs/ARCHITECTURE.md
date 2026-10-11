@@ -149,7 +149,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 6. 单独一个提交，消息里写明升到哪个版本、改了什么。
 
 > 这三个包**全部精确 pin，不用 `^`**（与 pi 自己的做法一致：它把 `diff` / `typebox` / `yaml` / `ignore`
-> 都钉死）。两条具体理由：① 0.x 的 `^0.85.1` 虽然只放开补丁位，但「谁跑一次 `npm update` 就静默升」
+> 都钉死）。两条具体理由：① 0.x 的 `^0.99.1` 虽然只放开补丁位，但「谁跑一次 `npm update` 就静默升」
 > 比看上去危险——升级应当是一个**动作**，不是一个**意外**；② **`typebox` 必须与 pi 完全同版**：
 > 我们在 `browser-tool.ts` / `computer-tool.ts` 里用 `Type` 构造工具入参 schema 交给 pi 校验，
 > 而 TypeBox schema 是**运行时对象**——一旦出现两份实例，校验分歧极难定位。
