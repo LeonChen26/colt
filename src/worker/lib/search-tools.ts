@@ -31,12 +31,22 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { IgnoreFilter } from "./search-ignore";
 
 /** 工具名即只读白名单的键（`shared/readonly-tools.ts`），改名会脱白名单 */
 export const GREP_TOOL_NAME = "grep";
 export const GLOB_TOOL_NAME = "glob";
 
-/** 永远跳过的目录：检索噪声与体积都不该算进来 */
+/**
+ * **永远**跳过的目录名——与 gitignore 过滤**两回事**，两条都生效。
+ *
+ * 留这一张名单的理由不是省时间（`.gitignore` 已经覆盖了 `node_modules/`、`out/` 这类），
+ * 而是两类它管不到的情况：
+ *   ① `.git` —— 它**几乎不会**出现在 `.gitignore` 里（那是在自己忽略自己），但没有它
+ *      遍历会进对象库，既慢又全是不该给模型看的二进制；
+ *   ② `includeIgnored: true`（模型明确要求连被忽略的也搜）时，gitignore 这层被关掉了，
+ *      而 `.git` 与依赖目录仍然不该被翻——那是一次「搜到几十万个文件」的必然后果。
+ */
 const SKIP_DIRS: ReadonlySet<string> = new Set([".git", "node_modules", "out", "dist", ".next"]);
 
 export const MAX_GREP_MATCHES = 200;
@@ -66,6 +76,14 @@ interface WalkBudget {
   scanned: number;
   limit: number;
   exhausted: boolean;
+  /** 被 gitignore 挡掉、因而**没有扫**的条目数（如实报给模型，别静默少给结果） */
+  ignoredFiles: number;
+  ignoredDirs: number;
+}
+
+/** 读一个文本文件（ignore 文件用）；读不到返回空串，调用方按「没有这个文件」处理 */
+async function readTextFile(path: string): Promise<string> {
+  return readFile(path, "utf8");
 }
 
 /** Windows 的文件名比较不区分大小写；检索结果按同一口径匹配（路径本身仍原样返回） */
@@ -173,16 +191,23 @@ function looksBinary(buffer: Buffer): boolean {
  *
  * `budget` 到顶即**停**（见 `MAX_SCANNED_FILES`）：遍历顺序确定（每层按名排序、文件先于子目录），
  * 所以「前 N 个文件」在两次调用之间是同一批——截断才是可复现的。
+ *
+ * `filter` 为 `undefined` 时**不做 gitignore 过滤**（`includeIgnored`），只保留写死的跳过名单。
  */
 async function walkFiles(
   startAbs: string,
   startRel: string,
   budget: WalkBudget,
+  filter: IgnoreFilter | undefined,
   visit: (abs: string, rel: string) => Promise<void> | void,
 ): Promise<void> {
   const stack: { abs: string; rel: string }[] = [{ abs: startAbs, rel: startRel }];
   while (stack.length > 0) {
     const current = stack.pop()!;
+    // 每进一层，就把该层的 ignore 文件装进来：规则是**逐层累积**的，
+    // 于是任何文件被判定时，其祖先链上的规则都已经在里面。装完再 readdir，
+    // 这样本层就能立刻用上本层的规则。
+    if (filter !== undefined) await filter.loadDirectory(current.abs, current.rel, readTextFile);
     let entries;
     try {
       entries = await readdir(current.abs, { withFileTypes: true });
@@ -198,10 +223,20 @@ async function walkFiles(
       const childRel = current.rel === "" ? entry.name : `${current.rel}/${entry.name}`;
       const childAbs = join(current.abs, entry.name);
       if (entry.isDirectory()) {
+        // 被 gitignore 的目录**不下沉**：这是过滤能省下大头时间的地方
+        // （`node_modules/`、`release/` 这类规则命中后，整棵子树一次都不会被 readdir）
+        if (filter?.ignoresDir(childRel) === true) {
+          budget.ignoredDirs += 1;
+          continue;
+        }
         subdirs.push({ abs: childAbs, rel: childRel });
         continue;
       }
       if (!entry.isFile()) continue;
+      if (filter?.ignoresFile(childRel) === true) {
+        budget.ignoredFiles += 1;
+        continue;
+      }
       if (budget.scanned >= budget.limit) {
         budget.exhausted = true;
         return;
@@ -285,11 +320,18 @@ async function scanFile(
 
 async function runGrep(
   root: string,
-  params: { pattern: string; path?: string; glob?: string; ignoreCase?: boolean },
+  params: {
+    pattern: string;
+    path?: string;
+    glob?: string;
+    ignoreCase?: boolean;
+    includeIgnored?: boolean;
+  },
   limit: number,
 ): Promise<string> {
   const window = resolveInRoot(root, params.path);
   if (!window.ok) return `错误：${window.error}`;
+  const includeIgnored = params.includeIgnored === true;
 
   let regex: RegExp;
   try {
@@ -317,7 +359,15 @@ async function runGrep(
     return `错误：路径不存在：${window.rel === "" ? "." : window.rel}`;
   }
 
-  const budget: WalkBudget = { scanned: 0, limit, exhausted: false };
+  const budget: WalkBudget = {
+    scanned: 0,
+    limit,
+    exhausted: false,
+    ignoredFiles: 0,
+    ignoredDirs: 0,
+  };
+  // 过滤器只在「遍历一个目录」时才需要；单文件检索不过滤（模型点名要看的文件就该看到）。
+  const filter = startIsFile || includeIgnored ? undefined : new IgnoreFilter();
   const tally: GrepTally = {
     lines: [],
     total: 0,
@@ -332,7 +382,7 @@ async function runGrep(
     budget.scanned = 1;
     if (allowed(window.rel)) await scanFile(window.abs, window.rel, regex, tally);
   } else {
-    await walkFiles(window.abs, window.rel, budget, async (abs, rel) => {
+    await walkFiles(window.abs, window.rel, budget, filter, async (abs, rel) => {
       if (!allowed(rel)) return;
       await scanFile(abs, rel, regex, tally);
     });
@@ -354,6 +404,16 @@ async function runGrep(
   if (tally.largeSkipped > 0) {
     notes.push(`已跳过 ${tally.largeSkipped} 个超过 ${MAX_FILE_BYTES / 1024 / 1024}MB 的文件`);
   }
+  // 「被 gitignore 挡掉」必须说出来：否则模型看到一份空结果时，**分不清是「项目里没有」
+  // 还是「被过滤了」**——那两种结论指向完全不同的下一步（一个换思路，一个换搜索方式）。
+  // 业界同样这么做（Gemini CLI 会报「在门口拒了多少个文件」）。且附上逃生口的名字。
+  const ignored = budget.ignoredFiles + budget.ignoredDirs;
+  if (ignored > 0) {
+    notes.push(
+      `已按 .gitignore 等忽略文件跳过 ${ignored} 项` +
+        `（其中目录 ${budget.ignoredDirs} 个）；要找被忽略的文件请传 includeIgnored: true`,
+    );
+  }
   if (tally.total === 0) {
     const scope = window.rel === "" ? "." : window.rel;
     const suffix = notes.length === 0 ? "" : `\n\n(${notes.join("；")})`;
@@ -365,7 +425,7 @@ async function runGrep(
 
 async function runGlob(
   root: string,
-  params: { pattern: string; path?: string },
+  params: { pattern: string; path?: string; includeIgnored?: boolean },
   limit: number,
 ): Promise<string> {
   const pattern = params.pattern.trim();
@@ -378,6 +438,7 @@ async function runGlob(
   }
   const window = resolveInRoot(root, params.path);
   if (!window.ok) return `错误：${window.error}`;
+  const includeIgnored = params.includeIgnored === true;
 
   const matcher = globToRegExp(pattern);
   const hits: string[] = [];
@@ -387,12 +448,19 @@ async function runGlob(
   } catch {
     return `错误：路径不存在：${window.rel === "" ? "." : window.rel}`;
   }
-  const budget: WalkBudget = { scanned: 0, limit, exhausted: false };
+  const budget: WalkBudget = {
+    scanned: 0,
+    limit,
+    exhausted: false,
+    ignoredFiles: 0,
+    ignoredDirs: 0,
+  };
+  const filter = startIsFile || includeIgnored ? undefined : new IgnoreFilter();
   if (startIsFile) {
     budget.scanned = 1;
     if (matcher.test(window.rel)) hits.push(window.rel);
   } else {
-    await walkFiles(window.abs, window.rel, budget, (_abs, rel) => {
+    await walkFiles(window.abs, window.rel, budget, filter, (_abs, rel) => {
       if (matcher.test(rel)) hits.push(rel);
     });
   }
@@ -403,12 +471,27 @@ async function runGlob(
     );
   }
 
-  if (hits.length === 0) return `没有匹配的文件：${pattern}`;
+  // 与 grep 同一口径：过滤掉多少必须说出来，否则「空结果」有两种完全不同的含义。
+  const ignored = budget.ignoredFiles + budget.ignoredDirs;
+  const ignoredNote =
+    ignored > 0
+      ? `已按 .gitignore 等忽略文件跳过 ${ignored} 项` +
+        `（其中目录 ${budget.ignoredDirs} 个）；要找被忽略的文件请传 includeIgnored: true`
+      : "";
+  if (hits.length === 0) {
+    const suffix = ignoredNote === "" ? "" : `\n\n(${ignoredNote})`;
+    return `没有匹配的文件：${pattern}${suffix}`;
+  }
   // 排序后再截断：否则「前 500 个」是遍历顺序决定的，同一份仓库两次结果可能不同
   hits.sort((left, right) => left.localeCompare(right));
   const shown = hits.slice(0, MAX_GLOB_RESULTS);
-  if (hits.length <= shown.length) return shown.join("\n");
-  return `${shown.join("\n")}\n\n(已截断：共 ${hits.length} 个文件，仅显示前 ${MAX_GLOB_RESULTS} 个)`;
+  const truncation =
+    hits.length <= shown.length
+      ? ""
+      : `已截断：共 ${hits.length} 个文件，仅显示前 ${MAX_GLOB_RESULTS} 个`;
+  const notes = [truncation, ignoredNote].filter((note) => note !== "");
+  const body = shown.join("\n");
+  return notes.length === 0 ? body : `${body}\n\n(${notes.join("；")})`;
 }
 
 const grepSchema = Type.Object({
@@ -422,6 +505,13 @@ const grepSchema = Type.Object({
     }),
   ),
   ignoreCase: Type.Optional(Type.Boolean({ description: "忽略大小写（缺省区分大小写）" })),
+  includeIgnored: Type.Optional(
+    Type.Boolean({
+      description:
+        "连被 .gitignore 忽略的文件一起搜（缺省 false）。默认会跳过被忽略的文件；" +
+        "结果里若提示「已按 .gitignore 跳过 N 项」而你要找的正是那些文件，就传 true",
+    }),
+  ),
 });
 
 const globSchema = Type.Object({
@@ -430,6 +520,9 @@ const globSchema = Type.Object({
   }),
   path: Type.Optional(
     Type.String({ description: "起始目录（项目内相对路径，缺省=项目根）；不支持绝对路径与 .." }),
+  ),
+  includeIgnored: Type.Optional(
+    Type.Boolean({ description: "连被 .gitignore 忽略的文件一起列（缺省 false），语义同 grep" }),
   ),
 });
 
@@ -452,8 +545,11 @@ export function createSearchTools(
       "**检索代码优先用它**，不要用 bash 里的 find / grep / Select-String（那些要走审批，这里是免审批的）。",
       "参数：pattern 必填（JS 正则）；path 为项目内相对路径（缺省=项目根，可为目录或单个文件），",
       "不支持绝对路径与 ..；glob 只看匹配的文件（`*.ts` 比文件名、`src/**/*.tsx` 比相对路径）；",
-      "ignoreCase 忽略大小写。",
-      "自动跳过 .git / node_modules / out / dist / .next 与二进制文件；结果最多 200 条、64KB，",
+      "ignoreCase 忽略大小写；includeIgnored 连被忽略的文件一起搜。",
+      "**默认跳过 .gitignore / .ignore / .fdignore 里被忽略的文件与目录**（构建产物、依赖、日志、",
+      "本地配置等），外加 .git node_modules out dist .next 与二进制文件；跳过了多少会在末尾如实标注",
+      "——看到「已按 .gitignore 跳过 N 项」而你要找的正是那些文件，就加 includeIgnored: true。",
+      "结果最多 200 条、64KB，",
       `超出会在末尾标注「已截断」并给出匹配总数；一次最多扫 ${limit} 个文件，超出会标注「结果不完整」`,
       "（那时总数只是下限）——看到任何标注就请缩小 path 或 glob 再搜一次。",
       "没有匹配不是错误，会如实回一句「没有匹配」。",
@@ -473,7 +569,8 @@ export function createSearchTools(
       "**找文件优先用它**，不要用 bash 里的 find / dir（那些要走审批，这里是免审批的）。",
       "模式最小集：`**` 跨目录、`*` 单段内任意、`?` 单段内一个字符、`{a,b}` 分支；",
       "例如 `**/*.ts`、`src/*.tsx`、`*.{json,md}`。path 为起始目录（缺省=项目根）。",
-      "自动跳过 .git / node_modules / out / dist / .next；结果最多 500 条，超出会在末尾标注。",
+      "默认跳过 .gitignore 等忽略文件里的条目与 .git node_modules out dist .next（跳过多少会标注；",
+      "要找被忽略的文件就加 includeIgnored: true）。结果最多 500 条，超出会在末尾标注。",
       "仓库过大时可能扫不完，那时会明确报错让你缩小范围，而不是回一份不完整的清单。",
     ].join("\n"),
     parameters: globSchema,

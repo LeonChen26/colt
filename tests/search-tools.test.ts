@@ -58,6 +58,22 @@ before(() => {
     `needle at the very start\n${"x".repeat(MAX_FILE_BYTES + 1024)}`,
     "utf8",
   );
+  // —— gitignore 过滤的夹具（用独立的词 `ignoredword`，免得污染上面的匹配数）——
+  writeFileSync(join(root, ".gitignore"), "ignored-dir/\n*.ignored.txt\n!keep.ignored.txt\n", "utf8");
+  mkdirSync(join(root, "ignored-dir"), { recursive: true });
+  writeFileSync(join(root, "ignored-dir", "inside.ts"), "ignoredword inside dir\n", "utf8");
+  writeFileSync(join(root, "drop.ignored.txt"), "ignoredword in ignored file\n", "utf8");
+  // 反选：同一后缀但以 ! 放行，必须仍被搜到
+  writeFileSync(join(root, "keep.ignored.txt"), "ignoredword in kept file\n", "utf8");
+  // `.ignore` 的优先级高于 .gitignore：这里把上面忽略掉的一个文件重新放行
+  writeFileSync(join(root, ".ignore"), "!again.ignored.txt\n", "utf8");
+  writeFileSync(join(root, "again.ignored.txt"), "ignoredword via .ignore override\n", "utf8");
+  // 子目录里的 ignore 文件：只作用于该子树
+  mkdirSync(join(root, "sub"), { recursive: true });
+  writeFileSync(join(root, "sub", ".gitignore"), "local.txt\n", "utf8");
+  writeFileSync(join(root, "sub", "local.txt"), "ignoredword sub-local\n", "utf8");
+  writeFileSync(join(root, "sub", "kept.txt"), "ignoredword sub-kept\n", "utf8");
+  writeFileSync(join(root, "local.txt"), "ignoredword at root (不该被子目录规则影响)\n", "utf8");
 });
 
 after(() => {
@@ -243,6 +259,77 @@ describe("grep：噪声与二进制", () => {
     const text = await run(GREP_TOOL_NAME, { pattern: "needle at the very start" });
     assert.match(text, /没有匹配/, "唯一含这行的是那个被跳过的超大文件");
     assert.match(text, /已跳过 1 个超过 8MB 的文件/, "跳过的事实要跟着说出来");
+  });
+});
+
+describe("gitignore 过滤（默认开、可关、且如实报数）", () => {
+  test("被忽略的**目录**不下沉：`.gitignore` 里的 `ignored-dir/` 命中的文件搜不到", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
+    assert.doesNotMatch(text, /ignored-dir\//, "被忽略的目录整棵不该出现");
+    assert.doesNotMatch(text, /drop\.ignored\.txt/, "被 *.ignored.txt 命中的文件不该出现");
+  });
+
+  test("反选（`!`）生效：被 .gitignore 放行的同名文件照样搜得到", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
+    assert.match(text, /^keep\.ignored\.txt:1:/m, "`!keep.ignored.txt` 必须把它救回来");
+  });
+
+  test("`.ignore` 的优先级高于 `.gitignore`（内核与 ripgrep 同一口径）", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
+    assert.match(text, /^again\.ignored\.txt:1:/m, "`.ignore` 的反选应盖过 .gitignore 的忽略");
+  });
+
+  test("子目录里的 ignore 规则只作用于该子树", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
+    assert.doesNotMatch(text, /^sub\/local\.txt:/m, "sub/.gitignore 的 local.txt 应被忽略");
+    assert.match(text, /^sub\/kept\.txt:1:/m, "同一子目录里的别的文件不受影响");
+    assert.match(
+      text,
+      /^local\.txt:1:/m,
+      "根目录同名文件不该被**子目录**的规则连坐（前缀化就是为这件事）",
+    );
+  });
+
+  test("跳过多少会**如实报数**，并指出逃生口的名字", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
+    assert.match(text, /已按 \.gitignore 等忽略文件跳过 \d+ 项/);
+    assert.match(text, /其中目录 \d+ 个/);
+    assert.match(text, /includeIgnored: true/, "要给出下一步怎么做，否则模型不知道还能打开");
+  });
+
+  test("没有命中、且确实被过滤过时，「没有匹配」也要带上过滤说明", async () => {
+    // 这个词只在被忽略的文件里出现：默认搜不到，但必须说明「是被过滤了，不是不存在」
+    const text = await run(GREP_TOOL_NAME, { pattern: "只在drop文件里出现的词" });
+    assert.match(text, /没有匹配/);
+    assert.match(text, /已按 \.gitignore 等忽略文件跳过/);
+  });
+
+  test("includeIgnored: true 连被忽略的一起搜", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword", includeIgnored: true });
+    assert.match(text, /^drop\.ignored\.txt:1:/m);
+    assert.match(text, /^ignored-dir\/inside\.ts:1:/m);
+    assert.doesNotMatch(text, /已按 \.gitignore/, "全搜时不该再报「跳过了多少」");
+  });
+
+  test("glob 同样过滤，且报数口径一致", async () => {
+    const filtered = await run(GLOB_TOOL_NAME, { pattern: "**/*.ignored.txt" });
+    assert.doesNotMatch(filtered, /drop\.ignored\.txt/);
+    assert.match(filtered, /^keep\.ignored\.txt$/m, "反选放行的要留下");
+    assert.match(filtered, /已按 \.gitignore 等忽略文件跳过/);
+
+    const all = await run(GLOB_TOOL_NAME, {
+      pattern: "**/*.ignored.txt",
+      includeIgnored: true,
+    });
+    assert.match(all, /^drop\.ignored\.txt$/m);
+  });
+
+  test("单文件检索不过滤（模型点名要看的文件就该看到）", async () => {
+    const text = await run(GREP_TOOL_NAME, {
+      pattern: "ignoredword",
+      path: "drop.ignored.txt",
+    });
+    assert.match(text, /^drop\.ignored\.txt:1:/m, "显式指定被忽略的文件时仍然要搜");
   });
 });
 
