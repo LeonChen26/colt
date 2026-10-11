@@ -172,6 +172,19 @@ describe("grep：路径边界（只读白名单放行时不看路径，边界只
     assert.equal(resolveInRoot(root, "/etc").ok, false);
   });
 
+  test("根下合法文件 `..foo` 要放行——「越界」必须按路径段判，不能看前缀", () => {
+    // 原先用 `rel.startsWith("..")` 判越界，于是根下的 `..foo` 被误报「越出项目根」，
+    // 而同一个名字在子目录里（`src/..foo`）反而放行——同名不同层给出相反结论，说不通。
+    const top = resolveInRoot(root, "..foo");
+    assert.equal(top.ok, true, "`..foo` 是合法文件名，不是越界");
+    if (top.ok) assert.equal(top.rel, "..foo");
+    const nested = resolveInRoot(root, "src/..foo");
+    assert.equal(nested.ok, true);
+    // 但真正的越界一个都不能放过
+    assert.equal(resolveInRoot(root, "../foo").ok, false);
+    assert.equal(resolveInRoot(root, "src/../../foo").ok, false);
+  });
+
   test("路径不存在时给一句能照着改的错误，而不是空结果", async () => {
     const text = await run(GREP_TOOL_NAME, { pattern: "needle", path: "nope" });
     assert.match(text, /^错误：路径不存在/);

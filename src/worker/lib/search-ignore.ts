@@ -65,7 +65,8 @@ export const IGNORE_FILE_NAMES: readonly string[] = [".gitignore", ".ignore", ".
  */
 export const SKIP_DIRS: ReadonlySet<string> = new Set([".git", "node_modules", "out", "dist", ".next"]);
 
-/** 一条规则的行处理：与内核 `prefixIgnorePattern` 同语义（见文件头） */function prefixIgnorePattern(line: string, prefix: string): string | null {
+/** 一条规则的行处理：与内核 `prefixIgnorePattern` 同语义（见文件头） */
+function prefixIgnorePattern(line: string, prefix: string): string | null {
   const trimmed = line.trim();
   if (trimmed === "") return null;
   // 注释：整行 `#` 开头丢掉；`\#` 是「字面量 #」的转义，要留着

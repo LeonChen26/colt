@@ -34,18 +34,48 @@
  *      用一条路径换掉一整类不一致风险，划算。
  *   ⑥ **单文件检索也走 JS**：`path` 指到具体文件时不需要遍历，JS 本来就快，
  *      而且「点名要看的文件」不该被任何过滤规则挡住。
+ *   ⑦ **`cwd` 必须是项目根**：rg 的 `-g` 是相对**进程 cwd** 匹配的，而 JS 那侧一律用
+ *      「相对项目根的路径」去匹配（`window.rel`）。两边能对上**只因为** `spawn` 的 `cwd`
+ *      传的是 `root`——这不是巧合而是前提。改动 `runRipgrep(..., cwd)` 的入参（例如「顺手」
+ *      换成搜索子目录看起来更自然）会让**所有含 `/` 的 glob** 悄悄给出不同结果：
+ *      实测 `{path:"src", glob:"src/*.tsx"}` 在 `cwd=root` 下两边都命中 `src/b.tsx`，
+ *      若 cwd 改成 `<root>/src` 则 rg 一条都不返回。已由 `tests/search-rg.test.ts` 的
+ *      「含目录前缀的 glob」用例钉住。
+ *   ⑧ **以 `!` 开头的 glob 不走这条路**（见 `runGrep` 的闸门）：我们的 glob 是「只看匹配的
+ *      文件」、`!` 是字面量，而 rg 的 `-g '!x'` 是**排除**。同一个入参两种语义实测会分叉。
  *
  * ## 与 rg 的已知残余差异（写在明处，别当没有）
  *
- * - **截断时展示的是哪 200 条**：两边都会截到 `MAX_GREP_MATCHES`，且**报告的总数相同**
- *   （实测本仓：578/578、752/752、6597/6597），但选中哪 200 条可能不同——rg 多线程遍历
- *   的顺序与 JS 那侧「按目录名排序的深度优先」不是同一个顺序。模型看到的总数与建议
- *   （「缩小范围」）两边一致，故这个差异可以接受；**但别把「排序后输出」当成两边全等**
- *   （我一开始就是这么写注释的，是错的）。
+ * - **命中数超过 `MAX_GREP_KEPT_HITS`（5000）时，截断展示的那 200 条可能不同**：两边都做了
+ *   **先排序、再截断**（`capHits` 是共用实现），但 JS 那侧为了排序得先握住命中，于是它
+ *   只能保留前 5000 条——超过这个量时，两边排序所用的集合就不是同一批了。
+ *   **报告的总数仍然一致**（实测本仓：582/582、759/759、1121/1121），而总数才是模型
+ *   据此判断「该不该缩小范围」的依据。
+ *   ⚠️ 别把「排序后输出」当成两边全等——我一开始就是这么写注释的，是错的。
  * - **被忽略的条目数**：rg 不告诉调用方它忽略了多少，JS 能。故「过滤说明」两边都有，
  *   但 JS 那侧多一个数目（见 `search-tools.ts` 的 `FILTER_NOTE`）。
+ * - **以 `!` 开头的 glob 根本不走这条路**（见 `runGrep` 的闸门）：我们的 glob 是「只看
+ *   匹配的文件」、`!` 是字面量，而 rg 的 `-g '!x'` 是**排除**。同一个入参两种语义，
+ *   实测会分叉（`glob: "!*.md"` 在 rg 上返回除 .md 外的全部命中、在内置实现上返回「没有匹配」），
+ *   所以这一路宁可走慢的那条。
  * - **全局 gitignore**（`~/.config/git/ignore`、`core.excludesFile`）与 `.git/info/exclude`：
  *   rg 认，JS 那侧不认 → JS 可能**多搜**几个文件。方向是「多搜」而不是「漏搜」。
+ *
+ * ## 失败要**分性质**，否则一个坏正则就能让整个会话降级
+ *
+ * `runRipgrep` reject 的 Error 带 `kind`（`spawn` / `exit` / `timeout`），调用方据此决定
+ * 要不要 latch。原先三种失败一律被当成「ripgrep 不可用」：
+ *   - `spawn`（起不来）才是环境事实，该 latch；
+ *   - `exit` 是**这次查询**的错——模型写 `(?=x)`（JS 正则合法、Rust 正则不支持）就触发，
+ *     实测后果是**之后连搜普通词都退化到纯 JS**，而日志写着「ripgrep 不可用」——那句话是假的；
+ *   - `timeout` 说明范围太大，同理只该影响这一次。
+ * 别图省事把三者合并：它们的**恢复方式完全不同**（换机器 / 换正则 / 缩小范围）。
+ *
+ * ⚠️ 不 latch 超时是**有代价**的，写在这里免得被当成疏漏：真遇到「这台机器上 rg 就是跑不出来」
+ * 的情况（比如项目放在很慢的网络盘），那每次检索都要先等满 30 秒再回落内置实现——
+ * 因为从一次超时里区分不出「这次范围太大」和「这台机器一直慢」。
+ * 取舍方向是**宁可有代价，也不要错误的永久降级**（永久降级正是这一轮修掉的缺陷）。
+ * 若日后确认这成了常态，正解是按规模择引擎（见上一节末），而不是把 timeout 也 latch 掉。
  *
  * ## 速度：不是「装了 rg 就一定更快」（实测）
  *
@@ -111,7 +141,8 @@ export function buildRgArgs(input: {
   ];
   if (input.ignoreCase === true) args.push("-i");
   if (input.glob !== undefined && input.glob.trim() !== "") {
-    // rg 的 -g 语义与我们的 glob 一致（`*` 不跨目录、`**` 跨目录），直接透传
+    // rg 的 -g 语义与我们的 glob 一致 **有个前提**：它是相对进程 cwd 匹配的，而我们的 glob
+    // 相对**项目根**匹配。所以 `runRipgrep` 的 cwd 必须传项目根——见文件头 ⑦。
     args.push("-g", input.glob.trim());
   }
   // SKIP_DIRS 是 JS 那侧的**硬跳过**名单，rg 不认识它，必须显式翻译成排除 glob——
@@ -169,6 +200,63 @@ export function parseRgJson(stdout: string): RgMatch[] {
  */
 export const MAX_RG_STDOUT_BYTES = 8 * 1024 * 1024;
 
+/** 留多少 stderr 作诊断（够装下 rg 的一行报错，例如「look-around is not supported」） */
+const STDERR_KEEP_BYTES = 4 * 1024;
+
+/**
+ * 跑 rg 的墙钟上限。
+ *
+ * 为什么必须有：纯 JS 那侧有 `MAX_SCANNED_FILES` 兜底，**rg 这侧原本一点上界都没有**——
+ * 卡在慢盘 / 网络盘上的一次检索能挂到天荒地老，而工具**没有取消信号**，lane 只能干等
+ * （那是本仓的已知缺口，不该再由一个外部进程放大一次）。
+ * 超时后杀掉并**回落 JS**：那条路有扫描上限，一定能终止，并给出「结果不完整」的诚实答案。
+ * 30 秒对正常仓库极度宽松（本仓 0.2 秒），真撞上只说明范围太大。
+ */
+export const DEFAULT_RG_TIMEOUT_MS = 30_000;
+
+/**
+ * rg 调用**失败的原因**。
+ *
+ * 三种的处理方式完全不同，**混成一种会让一个坏正则永久关掉整个会话的快路径**（实测踩到）：
+ *   - `spawn`：二进制起不来（缺失 / 没执行权限 / 平台不对）→ 这台机器上就是没有它，
+ *     该 **latch** 住不再重试；
+ *   - `exit`：rg 起来了但拒绝了这个查询（退出码 2，典型是模型写了 lookahead / 反向引用
+ *     ——JS 正则合法、Rust 正则不支持）→ 只该影响**这一次**；
+ *   - `timeout`：跑太久被我们杀掉（范围太大）→ 同样只影响这一次，且**不 latch**。
+ */
+export type RgFailureKind = "spawn" | "exit" | "timeout";
+
+/** 失败原因作为**普通属性**挂在 Error 上，而不是靠 `instanceof` 认类型——理由见 `rgFailureKind` */
+export interface RgFailure {
+  kind: RgFailureKind;
+}
+
+/**
+ * 从错误里读出失败原因；不是我们抛的就返回 `undefined`。
+ *
+ * ⚠️ 刻意**不用 `instanceof`**：本仓出过「同一个模块被卷进两次模块图」的事故
+ * （见 `AGENTS.md` §五的盘符大小写一节）。那种情况下 `instanceof` 会静默失效——
+ * 错误对象来自另一个实例，判断为假，于是 `exit` 被当成 `spawn` 处理，
+ * 又回到「一个坏正则关掉整个会话」。结构判别不受影响。
+ */
+export function rgFailureKind(error: unknown): RgFailureKind | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const kind = (error as { kind?: unknown }).kind;
+  return kind === "spawn" || kind === "exit" || kind === "timeout" ? kind : undefined;
+}
+
+function failRg(kind: RgFailureKind, message: string): Error & RgFailure {
+  const error = new Error(message) as Error & RgFailure;
+  error.kind = kind;
+  return error;
+}
+
+/** 把 stderr 压成一行附到消息里（rg 的报错就在那儿，且常跨行——别只取第一行丢掉原因） */
+function stderrDetail(stderr: string): string {
+  const collapsed = stderr.replace(/\s+/g, " ").trim();
+  return collapsed === "" ? "" : `：${collapsed.slice(0, 200)}`;
+}
+
 export interface RgRunResult {
   matches: RgMatch[];
   /** stdout 撞到上限：命中总数**只是下限**，调用方必须据此改变措辞 */
@@ -180,14 +268,23 @@ export interface RgRunResult {
 /**
  * 跑一次 rg，读 stdout 到上限为止。
  *
+ * 失败时 reject 的是**带 `kind` 的 Error**（见 `RgFailureKind`）：调用方要据此决定
+ * 「这台机器上没有它（latch 掉）」还是「这次查询它不干（只回落这一次）」。
+ *
  * ⚠️ `stdio` 的 stdin **必须是 `"ignore"`**。踩过三次的坑：给子进程一个管道 stdin 时，
  * rg / tar 这类程序会「检测到 stdin 可读 → 去读它 → 等一个永远不来的输入」，
  * 表现为挂死或 `spawnSync ... EBUSY`。这与「沙箱禁止 spawn」毫无关系，纯粹是 stdio 配错。
+ *
+ * ⚠️ `cwd` 必须是**项目根**（见文件头 ⑦：`-g` 相对 cwd 匹配）。
+ *
+ * 超时是真的**杀掉**子进程（`tests/search-rg.test.ts` 用「子进程在超时之后再写一个文件」验证了
+ * 它没活下来），不是「我们不再听它」——否则每次超时都会漏一个孤儿进程。
  */
 export function runRipgrep(
   rgPath: string,
   args: string[],
   cwd: string,
+  timeoutMs: number = DEFAULT_RG_TIMEOUT_MS,
 ): Promise<RgRunResult> {
   return new Promise<RgRunResult>((resolve, reject) => {
     const child = spawn(rgPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -195,6 +292,7 @@ export function runRipgrep(
     let bytes = 0;
     let truncatedByBytes = false;
     let settled = false;
+    let stderrText = "";
 
     const finish = (code: number | null): void => {
       if (settled) return;
@@ -202,6 +300,16 @@ export function runRipgrep(
       const stdout = Buffer.concat(chunks).toString("utf8");
       resolve({ matches: parseRgJson(stdout), truncatedByBytes, code });
     };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      // 杀掉它再 reject：不杀的话进程继续跑，我们这边已经放弃了，等于漏了一个子进程
+      child.kill();
+      reject(
+        failRg("timeout", `ripgrep 超过 ${Math.round(timeoutMs / 1000)} 秒未返回，已终止`),
+      );
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
       if (truncatedByBytes) return;
@@ -215,17 +323,30 @@ export function runRipgrep(
       }
     });
 
-    // rg 没有匹配时退出码是 1，那是**正常结果**不是错误；2 才是真出错
+    // stderr **必须读**（哪怕只是收着）：不读它，管道写满后子进程会阻塞在写 stderr 上，
+    // 而我们等它的 close —— 双向死等到超时。顺带把内容留作诊断，rg 的正则报错就在这里。
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrText.length < STDERR_KEEP_BYTES) {
+        stderrText += chunk.toString("utf8").slice(0, STDERR_KEEP_BYTES - stderrText.length);
+      }
+    });
+
+    // 起不来（缺失 / 没权限）是**环境事实**，与「这次查询不被接受」是两回事，故分 kind
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
-      reject(error);
+      clearTimeout(timer);
+      reject(failRg("spawn", `ripgrep 启动失败：${error.message}`));
     });
+    // rg 没有匹配时退出码是 1，那是**正常结果**不是错误；2 才是真出错（如正则不被接受）
     child.on("close", (code) => {
+      if (settled) return;
+      clearTimeout(timer);
+      // ⚠️ 这里**不能**先置 settled 再调 finish——finish 开头就是 `if (settled) return`，
+      // 那样 Promise 永远不会 settle，整条检索静默挂死（我第一版就是这么写的）。
       if (code !== null && code > 1) {
-        if (settled) return;
         settled = true;
-        reject(new Error(`ripgrep 退出码 ${code}`));
+        reject(failRg("exit", `ripgrep 退出码 ${code}${stderrDetail(stderrText)}`));
         return;
       }
       finish(code);

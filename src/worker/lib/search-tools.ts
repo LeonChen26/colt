@@ -31,8 +31,16 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { escapesRoot } from "@shared/path-boundary";
 import { IgnoreFilter, SKIP_DIRS } from "./search-ignore";
-import { MAX_RG_STDOUT_BYTES, buildRgArgs, runRipgrep, type RgRunResult } from "./search-rg";
+import {
+  DEFAULT_RG_TIMEOUT_MS,
+  MAX_RG_STDOUT_BYTES,
+  buildRgArgs,
+  rgFailureKind,
+  runRipgrep,
+  type RgRunResult,
+} from "./search-rg";
 
 /** 工具名即只读白名单的键（`shared/readonly-tools.ts`），改名会脱白名单 */
 export const GREP_TOOL_NAME = "grep";
@@ -82,6 +90,22 @@ export interface SearchToolOptions {
   maxScannedFiles?: number;
   /** ripgrep 可执行文件绝对路径；缺省 = 不用它 */
   rgPath?: string;
+  /** 只为可测：rg 的墙钟上限，缺省 `DEFAULT_RG_TIMEOUT_MS` */
+  rgTimeoutMs?: number;
+}
+
+/**
+ * 快路径的装配参数：二进制路径 + 墙钟上限 + 本实例的「起不来」标记。
+ *
+ * `disabled` 挂在**工具实例**上而不是模块级全局：它描述的是「这个 rgPath 在这台机器上
+ * 能不能跑」，而 rgPath 是 `createSearchTools` 的入参——两个不同路径的实例不该互相影响，
+ * 单测里更是每个用例都该拿到一颗干净的状态（模块级全局会让一个用例的失败污染后面所有用例）。
+ */
+interface RgEngine {
+  path: string;
+  timeoutMs: number;
+  /** spawn 失败过一次（二进制缺失 / 没权限）→ 本实例后续不再尝试它 */
+  disabled: boolean;
 }
 
 /** 遍历预算：`scanned` 是本轮已访问的文件数，`exhausted` 表示撞上了上限 */
@@ -129,11 +153,11 @@ export function resolveInRoot(root: string, rel: string | undefined): InRoot {
     }
   }
   const abs = resolve(root, toPosix(raw));
-  const relOut = relative(root, abs);
-  if (relOut.startsWith("..") || isAbsolute(relOut)) {
+  const relOut = toPosix(relative(root, abs));
+  if (escapesRoot(relOut)) {
     return { ok: false, error: `path 越出项目根，已拒绝：${raw}` };
   }
-  return { ok: true, abs, rel: toPosix(relOut) };
+  return { ok: true, abs, rel: relOut };
 }
 
 /** 正则特殊字符转义（单字符用） */
@@ -334,8 +358,7 @@ async function scanFile(
   }
 }
 
-/** rg 在这个进程里已被判定不可用（latch 住，避免每条查询都重试一次注定失败的 spawn） */
-let rgUnavailable = false;
+/** rg 在这台机器上已被判定起不来（latch 住，避免每条查询都重试一次注定失败的 spawn） */
 
 /**
  * 命中的**全局排序**：按相对路径、再按行号。
@@ -398,6 +421,12 @@ const FILTER_NOTE = "已按 .gitignore 等忽略文件过滤；要找被忽略�
  *      （读完 stdout 就是真总数；stdout 撞上限则降级成「至少 N 条」）；
  *   ③ 越界兜底：rg 返回的路径必须仍落在项目根内（正常情况下必然如此，但别把
  *      「工具自己守边界」这条唯一防线托付给另一个程序的行为）。
+ *
+ * ⚠️ 上面 ① 靠的是「rg 会打印**绝对路径**」——实测：给它绝对搜索路径时它回
+ * `C:/...\sub\f.ts`（盘符段是正斜杠、遍历出的是反斜杠，`resolve` + `toPosix` 都能收）。
+ * 这也意味着**绝不能给它相对搜索路径**：那时它回的是 `.\sub\f.ts`，而 `resolve()` 会按
+ * **worker 进程的 cwd** 展开——那个 cwd 未必等于项目根，于是所有命中会被判成「根之外」
+ * 而丢掉。搜索路径一律用 `window.abs`（由 `resolveInRoot` 算出的绝对路径）。
  */
 function formatRgResult(
   root: string,
@@ -405,17 +434,20 @@ function formatRgResult(
   pattern: string,
   scopeRel: string,
 ): string {
-  // **先排序、再截断**：与 JS 那侧同一顺序（见 compareHits）。
-  // 顺序反了的话「前 200 条」会是 rg 的遍历顺序决定的——那正是两引擎结果不同的由来。
+  // 排序与截断都在 capHits 里一次做完（同一份顺序、同一份上限，与 JS 那侧共用）
   const hits: GrepHit[] = [];
+  let outOfRoot = 0;
   for (const match of result.matches) {
     const abs = resolve(match.path);
     const rel = toPosix(relative(root, abs));
-    // 越界兜底：别把「工具自己守边界」这条唯一防线托付给另一个程序的行为
-    if (rel.startsWith("..") || isAbsolute(rel)) continue;
+    // 越界兜底：别把「工具自己守边界」这条唯一防线托付给另一个程序的行为。
+    // **但必须计数**：静默丢结果正是本仓最忌的那种「撒谎」——宁可如实说一句「有 N 条在根之外」。
+    if (escapesRoot(rel)) {
+      outOfRoot += 1;
+      continue;
+    }
     hits.push({ rel, lineNumber: match.lineNumber, text: match.text });
   }
-  hits.sort(compareHits);
 
   const total = hits.length;
   // 与 JS 那侧**同一个函数**（排序 → 取前若干条），否则两条路会各自漂移
@@ -440,6 +472,11 @@ function formatRgResult(
   if (total === 0 || result.truncatedByBytes || cappedByCount) {
     notes.push(FILTER_NOTE);
   }
+  if (outOfRoot > 0) {
+    // 这条**不该出现**（rg 只被喂了项目内的路径），出现即说明我们的相对化假设错了。
+    // 如实报出来，别让它变成「结果少了几条而没人知道」。
+    notes.push(`另有 ${outOfRoot} 条命中的路径在项目根之外，已丢弃`);
+  }
   if (total === 0) {
     const scope = scopeRel === "" ? "." : scopeRel;
     const suffix = notes.length === 0 ? "" : `\n\n(${notes.join("；")})`;
@@ -459,7 +496,7 @@ async function runGrep(
     includeIgnored?: boolean;
   },
   limit: number,
-  rgPath: string | undefined,
+  rg: RgEngine | undefined,
 ): Promise<string> {
   const window = resolveInRoot(root, params.path);
   if (!window.ok) return `错误：${window.error}`;
@@ -494,12 +531,17 @@ async function runGrep(
   // 快路径：交给 ripgrep（只在**默认那条**路上——见 search-rg.ts 对「引擎一致性」的说明：
   // 单文件检索 JS 本来就快，`includeIgnored` 那串参数只会把两边拉远）。
   // 正则合法性已经在上面用 JS 的 RegExp 校过一遍——rg 用的是 Rust 正则，语法**不完全相同**
-  // （如 `(?P<name>)` vs `(?<name>)`），所以两边都过一遍能挡掉最明显的错法；
-  // 真遇到 rg 独有的语法差异，rg 会以退出码 2 报错，下面的 catch 会回落 JS 并留痕。
-  if (rgPath !== undefined && !includeIgnored && !startIsFile && !rgUnavailable) {
+  // （如 `(?=x)` 这种 lookahead、反向引用 Rust 都不支持，rg 会以退出码 2 拒绝），
+  // 那种情况由下面的 catch 按 kind 处理：**回落这一次**，但不关掉快路径。
+  //
+  // ⚠️ 以 `!` 开头的 glob 也**不能**交给 rg：我们的 glob 是「只看匹配的文件」（`!` 是字面量），
+  // 而 rg 的 `-g '!x'` 是**排除**。同一个入参两种语义，实测会分叉：`glob: "!*.md"` 在 rg 上
+  // 返回除 .md 之外的全部命中，在内置实现上返回「没有匹配」。宁可让这一路走慢的，也不分叉。
+  let fallbackNote = "";
+  if (rg !== undefined && !includeIgnored && !startIsFile && !rg.disabled && !rawGlob.startsWith("!")) {
     try {
       const result = await runRipgrep(
-        rgPath,
+        rg.path,
         buildRgArgs({
           pattern: params.pattern,
           absolutePath: window.abs,
@@ -507,16 +549,33 @@ async function runGrep(
           ignoreCase: params.ignoreCase,
         }),
         root,
+        rg.timeoutMs,
       );
       return formatRgResult(root, result, params.pattern, window.rel);
     } catch (error) {
-      // 回落不是错误（两条路结果一致），但**降级本身要留痕一次**：
-      // 静默降级会让「某台机器上一直慢着」永远查不出原因。latch 住，只报一次。
-      rgUnavailable = true;
-      console.error(
-        `[search] ripgrep 不可用（${error instanceof Error ? error.message : String(error)}），` +
-          `已改用内置实现（本次会话内不再尝试）`,
-      );
+      // 回落不是错误（两条路结果一致），但**降级要留痕**——静默降级会让「某台机器上一直慢着」
+      // 永远查不出原因。关键是 latch 的判据要**分性质**：
+      //   - spawn 失败 = 这台机器上没有它 → latch，之后不再重试；
+      //   - exit / timeout = 这次查询的问题（正则不被 Rust 接受、范围太大）→ **只影响这一次**。
+      // 原先把三者一律 latch，实测后果是**一个 `(?=x)` 就把整个会话的快路径关掉**，
+      // 而且日志说「ripgrep 不可用」——那句话是假的（它好好的，只是不认这个正则）。
+      const kind = rgFailureKind(error);
+      const reason = error instanceof Error ? error.message : String(error);
+      if (kind === "spawn") {
+        rg.disabled = true;
+        console.error(`[search] ripgrep 不可用（${reason}），已改用内置实现（本次会话内不再尝试）`);
+        fallbackNote = "已由内置实现完成本次检索：随包的 ripgrep 未能启动（本会话后续检索也不再尝试它）";
+      } else if (kind === "exit") {
+        console.error(`[search] ripgrep 本次未完成（${reason}），已改用内置实现，快路径未关闭`);
+        fallbackNote =
+          "已由内置实现完成本次检索：ripgrep 不接受该正则写法（lookahead / 反向引用等），结果不受影响";
+      } else if (kind === "timeout") {
+        console.error(`[search] ripgrep 本次未完成（${reason}），已改用内置实现，快路径未关闭`);
+        fallbackNote = "已由内置实现完成本次检索：ripgrep 超时（范围可能太大）；若结果不完整请缩小 path / glob";
+      } else {
+        console.error(`[search] ripgrep 本次未完成（${reason}），已改用内置实现，快路径未关闭`);
+        fallbackNote = "已由内置实现完成本次检索：ripgrep 未跑成";
+      }
     }
   }
 
@@ -554,6 +613,8 @@ async function runGrep(
   const truncated = tally.total > shown.length;
 
   const notes: string[] = [];
+  // 快路径这次没跑成的说明放最前（那次调用的结果其实是内置实现给的，先说清楚再谈别的）
+  if (fallbackNote !== "") notes.push(fallbackNote);
   // 「扫到一半停了」与「匹配条数超了」是**两件事**，都要说，且不能混成一句：
   // 前者意味着总数只是下限（有文件根本没看），后者意味着总数是准的、只是没全列出来。
   if (budget.exhausted) {
@@ -709,6 +770,16 @@ export function createSearchTools(
 ): AgentHarnessTool<ExecutionToolContext>[] {
   // 生产不传 options（走默认上限）；测试用它造「仓库过大」的前提
   const limit = options.maxScannedFiles ?? MAX_SCANNED_FILES;
+  // 快路径的实例状态**在这里建一次**（含 disabled latch）：与 rgPath 同生命周期，
+  // 不做模块级全局——那样两个实例会互相影响，单测之间也会串味（见 RgEngine 的注释）。
+  const rg: RgEngine | undefined =
+    options.rgPath === undefined
+      ? undefined
+      : {
+          path: options.rgPath,
+          timeoutMs: options.rgTimeoutMs ?? DEFAULT_RG_TIMEOUT_MS,
+          disabled: false,
+        };
   const grep: AgentHarnessTool<ExecutionToolContext, typeof grepSchema, undefined> = {
     name: GREP_TOOL_NAME,
     label: "搜索内容",
@@ -728,7 +799,7 @@ export function createSearchTools(
     ].join("\n"),
     parameters: grepSchema,
     async execute(_toolCallId, params) {
-      const text = await runGrep(projectRoot, params, limit, options.rgPath);
+      const text = await runGrep(projectRoot, params, limit, rg);
       return { content: [{ type: "text" as const, text }], details: undefined };
     },
   };

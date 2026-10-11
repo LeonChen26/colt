@@ -29,7 +29,8 @@
  * 真正的越界（前缀不同的兄弟目录、跨盘、`..` 逃逸）不受这条影响。
  */
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
+import { escapesRoot } from "@shared/path-boundary";
 
 /**
  * target 是否落在 root 内（**纯字符串**，不访问磁盘）。
@@ -39,9 +40,10 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 export function isWithinRoot(root: string, target: string): boolean {
   const base = resolve(root);
   const absolute = resolve(base, target);
-  const rel = relative(base, absolute);
-  if (rel === "") return true;
-  return !rel.startsWith("..") && !isAbsolute(rel);
+  // 判据本身放在 `@shared/path-boundary`：那是**全仓唯一一份**（本文件头就写了这条约定），
+  // 而原先这里的 `startsWith("..")` 会把根下合法的 `..foo` 误判成越界——
+  // 与 worker 侧检索工具对同一个名字给出相反结论。详见那个模块的文件头。
+  return !escapesRoot(relative(base, absolute));
 }
 
 /**

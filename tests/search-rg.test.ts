@@ -17,12 +17,25 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeTempDir, removeTempDir } from "./helpers/temp";
 import {
+  DEFAULT_RG_TIMEOUT_MS,
   MAX_RG_STDOUT_BYTES,
   buildRgArgs,
   parseRgJson,
   parseRgJsonLine,
+  rgFailureKind,
+  runRipgrep,
 } from "../src/worker/lib/search-rg";
 import { GREP_TOOL_NAME, createSearchTools } from "../src/worker/lib/search-tools";
+
+/** 随包（开发机上是 `npm run rg:fetch` 拉进 vendor 的）rg 路径 */
+function vendoredRgPath(): string {
+  return fileURLToPath(
+    new URL(
+      `../vendor/ripgrep/${process.platform}-${process.arch}/${process.platform === "win32" ? "rg.exe" : "rg"}`,
+      import.meta.url,
+    ),
+  );
+}
 
 /** 工具的 execute 只用到前两个参数；测试里直接按宽松形状调它 */
 type LooseTool = {
@@ -257,6 +270,30 @@ describe("两个引擎结果一致（装了 rg 才跑）", () => {
     assert.doesNotMatch(withRipgrep, /hidden-file/, "点文件在两个引擎里都该被跳过");
   });
 
+  test("含目录前缀的 glob + 子目录 path：两边必须一致（钉住「-g 相对 cwd」这个前提）", async (t) => {
+    if (!hasRg) {
+      t.diagnostic("跳过：没有 rg 二进制");
+      return;
+    }
+    // 这一条的真正作用是钉住 **spawn 的 cwd 必须是项目根**：
+    // rg 的 `-g` 相对进程 cwd 匹配，我们的 glob 相对项目根匹配（`window.rel`）。
+    // 两边现在一致，只因为 `runRipgrep(..., cwd)` 传的是 root ——那不是巧合，是前提。
+    // 若有人把 cwd 改成搜索的子目录（看起来更「自然」），rg 会对 `src/*.tsx` 一条都不返回，
+    // 而 JS 照旧命中 `src/b.tsx` —— 本用例会红。
+    for (const glob of ["src/*.ts", "src/**/*.ts", "**/a.ts"]) {
+      const withRipgrep = await run("needle", { path: "src", glob }, true);
+      const pureJs = await run("needle", { path: "src", glob }, false);
+      assert.equal(
+        splitBodyAndNotes(withRipgrep).body,
+        splitBodyAndNotes(pureJs).body,
+        `path=src + glob=${glob} 两个引擎给出了不同结果（cwd 锚定变了？）`,
+      );
+    }
+    // 反向确认：不是「两边都为空」凑出来的一致
+    const hit = await run("needle", { path: "src", glob: "src/**/*.ts" }, true);
+    assert.match(hit, /^src\/a\.ts:1:/m, "该形态必须真的命中，否则上面的一致性断言是空转");
+  });
+
   test("空结果时两边都说明「过滤过」并给出逃生口（数目允许不同）", async (t) => {
     if (!hasRg) {
       t.diagnostic("跳过：没有 rg 二进制");
@@ -297,6 +334,20 @@ describe("两个引擎结果一致（装了 rg 才跑）", () => {
     }
   });
 
+  test('以 `!` 开头的 glob 两边必须一致（我们对它是字面量，rg 对它是排除）', async (t) => {
+    if (!hasRg) {
+      t.diagnostic("跳过：没有 rg 二进制");
+      return;
+    }
+    // `!*.md`：内置实现按字面量匹配（没有文件叫这个名字 → 没有匹配），
+    // rg 会把 -g '!*.md' 当成「排除 .md」→ 返回其余全部命中。实测分叉过，
+    // 现在的做法是这一路**不走快路径**，于是两边都按字面量语义给答案。
+    const withRipgrep = await run("needle", { glob: "!*.md" }, true);
+    const pureJs = await run("needle", { glob: "!*.md" }, false);
+    assert.equal(splitBodyAndNotes(withRipgrep).body, splitBodyAndNotes(pureJs).body);
+    assert.match(withRipgrep, /没有匹配/, "两边都该是「没有匹配」，而不是 rg 那套「排除 .md」的语义");
+  });
+
   test("rg 的路径以 - 开头也没问题（-e 生效的实证）", async (t) => {
     if (!hasRg) {
       t.diagnostic("跳过：没有 rg 二进制");
@@ -304,5 +355,187 @@ describe("两个引擎结果一致（装了 rg 才跑）", () => {
     }
     const text = await run("--needs-dash", {}, true);
     assert.match(text, /没有匹配/, "不该把模式当成选项而报错");
+  });
+});
+
+/**
+ * 失败要**分性质**——这是这一轮 review 抓出来的实质缺陷。
+ *
+ * 原先三种失败（进程起不来 / 这次查询不被接受 / 跑太久）一律 latch 成「ripgrep 不可用」。
+ * 实测后果：**一个 `(?=x)`（JS 正则合法、Rust 正则不支持）就把整个会话的快路径关掉**，
+ * 之后连搜普通词都退化到纯 JS；而日志写着「ripgrep 不可用」——它在撒谎，rg 好好的。
+ */
+describe("调用失败的原因要分开（kind），别让一次坏查询变成永久降级", () => {
+  let root = "";
+
+  before(() => {
+    root = makeTempDir("colt-rg-fail-");
+  });
+  after(() => {
+    removeTempDir(root);
+  });
+
+  test("二进制不存在 → kind = spawn（三种里唯一该 latch 的一种）", async () => {
+    await assert.rejects(
+      () => runRipgrep(join(root, "no-such-dir", "rg.exe"), ["--version"], root, 5_000),
+      (error: unknown) => rgFailureKind(error) === "spawn",
+    );
+  });
+
+  test("超时 → kind = timeout，且**有界**（子进程还要跑 30 秒，我们必须早于它返回）", async () => {
+    const started = Date.now();
+    await assert.rejects(
+      // 用 node 自己扮「一个永不返回的程序」：跨平台，且不依赖机器上真有 rg
+      () => runRipgrep(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], root, 300),
+      (error: unknown) => rgFailureKind(error) === "timeout",
+    );
+    assert.ok(Date.now() - started < 5_000, "该在上限附近就返回，而不是陪着子进程等完");
+  });
+
+  test("超时必须**真的杀掉**子进程，而不是「我们不再听它」", async () => {
+    // 判据：让子进程在「超时之后」写一个文件。若它还能写出来，说明我们只是不再听它，
+    // 每次超时都会漏一个孤儿进程 —— 而工具没有取消信号，这些孤儿会一直占着 I/O。
+    const marker = join(root, "child-survived.txt");
+    const script =
+      `setTimeout(() => require("fs").writeFileSync(${JSON.stringify(marker)}, "x"), 1200);` +
+      `setTimeout(() => {}, 8000);`;
+    await assert.rejects(
+      () => runRipgrep(process.execPath, ["-e", script], root, 300),
+      (error: unknown) => rgFailureKind(error) === "timeout",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    assert.equal(existsSync(marker), false, "子进程活过了超时（没被杀掉）");
+  });
+
+  test("rg 拒绝该查询（退出码 2）→ kind = exit，**不是** spawn", async (t) => {
+    const rgPath = vendoredRgPath();
+    if (!existsSync(rgPath)) {
+      t.diagnostic("跳过：没有 rg 二进制");
+      return;
+    }
+    // lookahead：JS 正则接受、Rust 正则不支持（实测退出码 2）
+    await assert.rejects(
+      () => runRipgrep(rgPath, buildRgArgs({ pattern: "(?=needle)", absolutePath: root }), root, 10_000),
+      (error: unknown) => rgFailureKind(error) === "exit",
+    );
+  });
+
+  test("不是我们抛的错就读不出 kind（结构判别，刻意不用 instanceof）", () => {
+    assert.equal(rgFailureKind(new Error("别的错")), undefined);
+    assert.equal(rgFailureKind(undefined), undefined);
+    assert.equal(rgFailureKind({ kind: "随便一个值" }), undefined);
+    assert.equal(DEFAULT_RG_TIMEOUT_MS > 0, true);
+  });
+});
+
+/**
+ * 降级的**作用范围**：只该影响该影响的东西。
+ *
+ * 两条都走同一个工具实例（`createSearchTools` 建的那个）——用「新建实例」来断言等于没测：
+ * 新实例天然是干净的，模块级 latch 也会「看起来正常」。用附注文本分辨引擎：
+ * 内置实现会说明「未启动 / 不接受该写法」，快路径没跑成时才会出现那句。
+ */
+describe("快路径降级的范围", () => {
+  let root = "";
+
+  before(() => {
+    root = makeTempDir("colt-rg-scope-");
+    writeFileSync(join(root, "a.ts"), "needle one\n", "utf8");
+  });
+  after(() => {
+    removeTempDir(root);
+  });
+
+  /** 同一个工具实例上的多次检索（这正是 latch 语义能被观察到的前提） */
+  function toolWith(options: Record<string, unknown>): (pattern: string) => Promise<string> {
+    const tools = createSearchTools(root, options) as unknown as LooseTool[];
+    const tool = tools.find((item) => item.name === GREP_TOOL_NAME);
+    assert.ok(tool);
+    return async (pattern: string) => {
+      const result = await tool.execute("c", { pattern }, undefined, undefined, {}, {});
+      return result.content.map((b) => b.text ?? "").join("");
+    };
+  }
+
+  test("起不来 → 只留一次痕（latch 的意义），且结果照样给得出来", async () => {
+    const original = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    let results: string[] = [];
+    try {
+      const run = toolWith({ rgPath: join(root, "no-such-dir", "rg.exe") });
+      results = [await run("needle"), await run("needle"), await run("needle")];
+    } finally {
+      console.error = original;
+    }
+    assert.equal(lines.length, 1, "三次检索只该报一次「不可用」——否则每次都白等一次注定失败的 spawn");
+    assert.match(lines[0]!, /不可用/);
+    for (const text of results) assert.match(text, /needle one/, "降级不是错误：结果必须照给");
+  });
+
+  test("rg 拒绝某次查询之后，**同一实例**的后续查询仍走快路径", async (t) => {
+    const rgPath = vendoredRgPath();
+    if (!existsSync(rgPath)) {
+      t.diagnostic("跳过：没有 rg 二进制");
+      return;
+    }
+    const run = toolWith({ rgPath });
+    const bad = await run("(?=needle)");
+    assert.match(bad, /内置实现/, "这次该由内置实现补上，并说明原因");
+    assert.match(bad, /needle one/, "内置实现照样处理 lookahead——结果不该丢");
+    const next = await run("needle");
+    assert.doesNotMatch(
+      next,
+      /内置实现/,
+      "后续查询必须还走快路径：一个坏正则不该换来整个会话的降级（修复前这条会红）",
+    );
+  });
+
+  test("latch 只属于出问题的那个实例，不是模块级全局", async (t) => {
+    const rgPath = vendoredRgPath();
+    if (!existsSync(rgPath)) {
+      t.diagnostic("跳过：没有 rg 二进制");
+      return;
+    }
+    const broken = toolWith({ rgPath: join(root, "no-such-dir", "rg.exe") });
+    await broken("needle");
+    await broken("needle");
+    const healthy = toolWith({ rgPath });
+    assert.doesNotMatch(
+      await healthy("needle"),
+      /内置实现/,
+      "另一个实例该重新尝试 rg（latch 写成模块级全局时这条会红：单测之间也会互相污染）",
+    );
+  });
+
+  test("stdout 上限真的生效：超量时提前收工、总数降级成「至少 N 条」", async (t) => {
+    const rgPath = vendoredRgPath();
+    if (!existsSync(rgPath)) {
+      t.diagnostic("跳过：没有 rg 二进制");
+      return;
+    }
+    // 这是全工具**唯一一处读入无上界**的路径：为了报出「共 N 条」得读完 rg 的输出，
+    // 而一次宽泛查询能吐几十万条。所以必须有这条端到端验证（此前只有常量断言）。
+    // 量要够：rg 的 JSON 约是原始文本的 4～5 倍，故取上限的一半做原始文本，留一倍余量。
+    const line = `needle ${"x".repeat(60)}\n`;
+    const lines = Math.ceil(MAX_RG_STDOUT_BYTES / 2 / Buffer.byteLength(line));
+    const bulk = join(root, "bulk.ts");
+    writeFileSync(bulk, line.repeat(lines), "utf8");
+    try {
+      const text = await toolWith({ rgPath })("needle");
+      assert.match(text, /结果不完整：输出过大/, "该走「读不完」那条诚实措辞，而不是假装扫完了");
+      assert.match(text, /至少 \d+ 条匹配/, "总数必须降级成下限（它没有读完 stdout）");
+      assert.match(text, /仅显示前 200 条/);
+      const shown = text.split("\n\n(")[0].split("\n").filter((l) => l !== "");
+      assert.equal(shown.length, 200, "展示条数仍受 MAX_GREP_MATCHES 约束");
+      assert.ok(
+        Buffer.byteLength(text) < 200 * 1024,
+        `返回给模型的文本必须仍然很小（实测 ${(Buffer.byteLength(text) / 1024).toFixed(0)}KB）`,
+      );
+    } finally {
+      rmSync(bulk, { force: true });
+    }
   });
 });
