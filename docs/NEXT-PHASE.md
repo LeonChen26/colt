@@ -1,8 +1,9 @@
-# Colt · 下一阶段计划（开发交接）
+# Colt · 开发交接（现状基线 + 未做事项档案）
 
 > 上一阶段（2026-09）已把设计稿与代码的差异**全部收敛**，批次 A / B / C 均已收口。原 `DESIGN-TO-CODE.md`
 > （差异收敛清单）随之完成使命并删除，其中仍然有约束力的「已定调」条目转记于 §2。
-> **本文档是下一阶段的待办来源**，也是新会话的交接书。
+> 本文档是新会话的交接书。**当前没有排期中的计划**（§3.1 暂空，2026-10-11）；
+> §3.2 / §3.3 是**搁置 / 不排期档案**——重启任何一项按行内留档方案直接接，别当它们是现成待办。
 
 **新会话接手阅读顺序**
 
@@ -141,7 +142,7 @@
   | # | 能力 | 状态 | 落点 |
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18；2026-09 加多题翻页与自由输入，见 `UI-REGIONS` v1.65） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）+ `tests/question-answer.test.ts`（10 条）；冒烟 `ask-user`（39 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
-  | ② | web 搜索 / 抓取 | **搁置**（2026-10-11 用户拍板）：用户环境**无代理**——DDG 免 key、Tavily 免费档、SearXNG 公共实例等**免费路径国内直连全不通**，付费路径（博查等）暂不愿接；「读网页」browser 工具可兜底，真缺口只在**搜索**，等有可用的免费搜索方案再回来做。调研结论留档：SSRF 防线抄 `.workbuddy/pi-ext-review/pi-web-access-0.29.0/ssrf-protection.ts` 的设计（DNS 逐地址校验 + 重定向逐跳复验 + `allowRanges` 给 TUN fake-IP 代理留逃生口）；HTML 提取栈 = linkedom + @mozilla/readability + turndown | 只读白名单免审批；provider 进设置 |
+  | ② | web 搜索 / 抓取 | **搁置**（2026-10-11 用户拍板）：用户环境**无代理**——DDG 免 key、Tavily 免费档、SearXNG 公共实例等**免费路径国内直连全不通**，付费路径（博查等）暂不愿接；「读网页」browser 工具可兜底，真缺口只在**搜索**，等有可用的免费搜索方案再回来做。调研结论留档（出处 `.workbuddy/pi-ext-review/pi-web-access-0.29.0/` 为**本机解包、未入库**，新克隆没有；结论本身已写在行内）：SSRF 防线抄其 `ssrf-protection.ts` 的设计（DNS 逐地址校验 + 重定向逐跳复验 + `allowRanges` 给 TUN fake-IP 代理留逃生口）；HTML 提取栈 = linkedom + @mozilla/readability + turndown | 只读白名单免审批；provider 进设置 |
   | ③ | MCP | **已实施**（2026-09-19；2026-09-30 客户端换核 pi-mcp，内核随升 0.99.1） | 设计 `docs/archive/DESIGN-mcp.md`（决策 26 记换核）；配置 `<cwd>/.colt/mcp.json` 与用户级 `~/.colt/mcp.json` **合并**（同名项目级覆盖）。传输 stdio + 远程（Streamable HTTP；**旧式 SSE 已砍**，解析层即拒）；客户端核心 = **`@earendil-works/pi-mcp@0.99.1`**（官方 SDK 降为夹具专用 devDependency）、`listTools` 分页（pi-mcp 内建翻页）、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重、`resources` / `prompts` 能力面（**未声明就不加**）、server 自报 `instructions` 拼进系统提示词、展示名 `shared/mcp-label.ts`、notice 按 `kind` 分流、调用超时按 server / 工具可配（**未配置钉 60s**，不跟 pi-mcp 的 30s 默认漂）。工具名 `mcp__<server>__<tool>` 不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**。单测 `tests/mcp-tools.test.ts`（48 条，真实 stdio / HTTP 往返；换核后 typecheck + 全量 1228 全绿）；冒烟 `mcp-e2e`（打模型）+ `mcp-real`（真实第三方 server）+ `mcp-reload`（免费，接线；**换核后 13/13 实测通过**）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（换 pi-mcp 后顺带改善：其 stdio 树杀 + exit hook；正常 dispose 走 `runtime.close()`） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `todo`（26 条，免模型）；设计 `docs/archive/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/archive/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` / `agent-defs.test.ts` / `subagent-view.test.ts`；冒烟 `subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属 / `fresh` 隔离真实效果 / 清单真进提示词）由 `subagent-e2e`（打模型）覆盖，见 §5。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e；导航守卫（`worker/lib/navigate.ts` 的 `applyNavigate`）由 `tests/navigate.test.ts` 覆盖，仍**未**走真实内核 `navigateTree` |
