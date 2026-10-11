@@ -109,6 +109,7 @@ import {
 } from "./lib/memory";
 import { createMcpRuntime, mcpUserHome, type McpRuntime } from "./lib/mcp-tools";
 import { armLateMcpAttach, composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
+import { createDiagnoseController, type DiagnoseController } from "./lib/diagnose";
 import { systemPrompt } from "./lib/system-prompt";
 import { toImageContent } from "./lib/attachments";
 import {
@@ -177,6 +178,8 @@ interface WorkerState {
   subagents: Subagents;
   /** MCP 运行态（各 server 的连接 + 工具）；dispose 收尸与 mcpStatus/mcpReload 命令都用它 */
   mcp: McpRuntime;
+  /** 写后诊断控制器（开关 / after_tool 编排 / 慢检查防抖），dispose 时收尸 */
+  diagnose: DiagnoseController;
   /** 技能运行期（可变清单 + 设置页宿主）：命令分发也要读它，故挂在 state 上而不是 init 闭包里 */
   skills: SkillsRuntime;
   /** 结构性变更（分支跳转、压缩）后需要重建快照 */
@@ -301,6 +304,21 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const executionEnv = new NodeExecutionEnv({ cwd });
   const repo = new JsonlSessionRepo({ fileSystem: executionEnv, sessionsRoot });
   const session = await openSession(repo, command.kernelSessionId, cwd);
+
+  // 写后诊断（⑥，docs/DESIGN-afterwrite.md）：write/edit 成功后按检查器表跑检查，
+  // fast 结论追加进当次工具结果、slow 走防抖经 ephemeral notice 注入下一请求。
+  // 免审批窄通道的正当性论证在 docs/SECURITY.md §写后诊断；开关运行中可改（diagnoseEnabled）。
+  const diagnose = createDiagnoseController({
+    cwd,
+    exec: (cmd, opts, ctx) =>
+      executionEnv.exec(
+        cmd,
+        { cwd: opts.cwd, timeout: opts.timeout, capture: opts.capture, onUpdate: opts.onUpdate },
+        ctx,
+      ),
+    context,
+    onSlowResult: (message) => pendingEphemeralNotices.push(message),
+  });
 
   // 技能（Agent Skills，agentskills.io 标准）：按优先级扫三个目录——项目级 `.agents/skills`、
   // 用户级 `~/.agents/skills`、内置 `builtin-skills`（随包分发，排最后），同名时先到者胜出；
@@ -549,11 +567,16 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     return undefined;
   });
 
+  // 写后诊断钩子：返回非 undefined 时会**链式改写**工具结果（内核按注册序把上一个
+  // 处理器的输出作为下一个的输入，见内核 hooks.js afterTool）——本钩子排在文件改动
+  // 记账之前，记账那个恒返回 undefined，不受影响。内核会吞掉钩子异常并上报，
+  // 诊断自身的失败已在 execCheck 里归一成「跳过」，不会炸到工具执行。
+  harness.hooks.on("after_tool", (event) => diagnose.handleAfterTool(event));
+
   // 只观测不干预：记录文件改动，返回 undefined 表示不修改工具结果
   harness.hooks.on("after_tool", (event) => {
     if (event.isError) return undefined;
     if (event.toolName !== "edit" && event.toolName !== "write") return undefined;
-
     const rawPath = event.args.path;
     if (typeof rawPath !== "string") return undefined;
 
@@ -669,6 +692,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     reportMemoryIndex,
     subagents,
     mcp,
+    diagnose,
     skills,
     meta,
     unsubscribe: () => watch.unsubscribe(),
@@ -1007,11 +1031,18 @@ async function handle(command: WorkerCommand): Promise<void> {
       return;
     }
 
+    // 写后诊断开关：不依赖会话状态也能收下（与 todoSnapshot 同理，init 前主进程也可能推）
+    case "diagnoseEnabled": {
+      state?.diagnose.setEnabled(command.enabled);
+      return;
+    }
+
     case "dispose": {
       if (state) {
         state.unsubscribe();
         // 子代理的 watch 也要退订：否则事件会继续往已作废的快照上写，白烧 CPU
         state.subagents.dispose();
+        state.diagnose.dispose();
         await state.mcp.close().catch(() => undefined);
         await state.harness.close(context).catch(() => undefined);
         await state.repo.close(context).catch(() => undefined);

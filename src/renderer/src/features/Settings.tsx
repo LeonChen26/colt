@@ -111,6 +111,7 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
         </div>
 
         <ApprovalPolicySettings onSaved={notify} onError={fail} />
+        <DiagnoseSettings onSaved={notify} onError={fail} />
         <McpSettings project={project} />
         <SkillSettings project={project} />
       </div>
@@ -187,6 +188,71 @@ function ApprovalPolicySettings({
             保存
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 写后诊断开关（`docs/DESIGN-afterwrite.md` D5，全局设置）。
+ *
+ * 助手每次写完代码文件会自动跑项目检查（eslint / tsc / ruff / go vet / cargo check），
+ * 结论直接跟在写入结果里。检查慢或输出吵的项目可以整体关掉。
+ */
+function DiagnoseSettings({
+  onSaved,
+  onError,
+}: {
+  onSaved: (message: string) => void;
+  onError: (error: unknown) => void;
+}): React.JSX.Element {
+  const [enabled, setEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { enabled: current } = await window.colt.invoke("diagnose.config.get", undefined);
+        setEnabled(current);
+      } catch (e) {
+        onError(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [onError]);
+
+  const toggle = async (): Promise<void> => {
+    const next = !enabled;
+    setEnabled(next); // 乐观更新；失败回滚
+    try {
+      const saved = await window.colt.invoke("diagnose.config.set", { enabled: next });
+      setEnabled(saved.enabled);
+      onSaved(saved.enabled ? "写后诊断已开启" : "写后诊断已关闭");
+    } catch (e) {
+      setEnabled(enabled);
+      onError(e);
+    }
+  };
+
+  return (
+    <div className="mt-6">
+      <h3 className="mb-1 text-sm">写后诊断</h3>
+      <p className="mb-3 text-xs text-text-muted">
+        助手每次写完代码文件（.ts / .py / .go / .rs）自动运行对应的项目检查，结论跟在写入结果里；
+        全仓类型检查在写入停止后约 2 秒后台运行。检查慢或输出吵的项目可整体关闭。
+      </p>
+      <div className="rounded-lg border border-line bg-surface-raised p-3">
+        <label className="flex items-center gap-2 text-xs text-text-primary">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={loading}
+            onChange={() => void toggle()}
+            className="h-4 w-4 accent-[var(--accent)]"
+          />
+          写完文件后自动运行项目检查
+        </label>
       </div>
     </div>
   );

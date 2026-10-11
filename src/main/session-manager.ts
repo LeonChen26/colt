@@ -24,6 +24,7 @@ import type {
 import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
+import { getDiagnoseEnabled } from "./diagnose-config";
 import { getSecret } from "./secrets";
 import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
@@ -1149,6 +1150,8 @@ export class SessionManager {
       thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
       // 工具图片落盘目录：worker 写、主进程读，路径一律由这里算（渲染层无从指定）
       toolOutputDir: toolOutputDir(options.sessionId),
+      // 写后诊断开关：全局设置，worker 侧 after_tool 行为的初值（运行中变更走 diagnoseEnabled 命令）
+      diagnoseEnabled: getDiagnoseEnabled(),
     } satisfies WorkerCommand);
 
     await readyDeferred.promise;
@@ -1286,6 +1289,22 @@ export class SessionManager {
   setThinkingLevel(sessionId: string, level: ThinkingLevel): void {
     setSessionThinkingLevel(sessionId, level);
     if (this.#workers.has(sessionId)) this.#post(sessionId, { type: "setThinkingLevel", level });
+  }
+
+  /**
+   * 写后诊断开关变更（设置页）：落库由 ipc 层做（全局设置、非会话状态），
+   * 这里只负责把新值推给**池中全部** worker——开关是全局的，不是会话级的。
+   * 不在池中的会话下次 init 自会带上新值。
+   */
+  broadcastDiagnoseEnabled(enabled: boolean): void {
+    for (const sessionId of this.#workers.keys()) {
+      try {
+        this.#post(sessionId, { type: "diagnoseEnabled", enabled });
+      } catch (error) {
+        // 单个 worker 投递失败不拖累其余：它下次 init 会拿到正确值
+        console.error("[session] 下发写后诊断开关失败", sessionId, error);
+      }
+    }
   }
 
   /**

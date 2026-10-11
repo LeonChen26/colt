@@ -42,6 +42,7 @@ import { sessionManager } from "../session-manager";
 import { dropSessionPin, listPinnedSessions, setSessionPinned } from "../session-pins";
 import { readToolImage, removeToolOutput } from "../tool-output";
 import { getAnalyzeCommandAllowlist, setAnalyzeCommandAllowlist } from "../approval/config";
+import { getDiagnoseEnabled, setDiagnoseEnabled } from "../diagnose-config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
 import { listDirWithin } from "../file-list";
@@ -610,6 +611,17 @@ export function registerIpcHandlers(): void {
     // 立即生效：把新白名单推给审批中枢，无需重启
     sessionManager.reloadAnalyzeCommandAllowlist();
     return { commands };
+  });
+
+  handle("diagnose.config.get", () => ({
+    enabled: getDiagnoseEnabled(),
+  }));
+
+  handle("diagnose.config.set", (request) => {
+    setDiagnoseEnabled(request.enabled);
+    // 立即生效：推给池中全部 worker（开关是全局的，不是会话级的）
+    sessionManager.broadcastDiagnoseEnabled(request.enabled);
+    return { enabled: request.enabled };
   });
 
   handle("providers.list", () => listProviders());

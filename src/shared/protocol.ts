@@ -345,6 +345,8 @@ export const IPC_CHANNELS = [
   "approval.rules.clear",
   "approval.analyzeConfig.get",
   "approval.analyzeConfig.set",
+  "diagnose.config.get",
+  "diagnose.config.set",
   "session.branches",
   "session.navigate",
   /** 中止单个子代理（`ViewSubagent.id` = lane 名） */
@@ -691,6 +693,16 @@ export interface IpcInvokeMap {
   "approval.analyzeConfig.set": {
     request: { commands: string[] };
     response: { commands: string[] };
+  };
+  /** 读取写后诊断开关（全局设置，`docs/DESIGN-afterwrite.md` D5；从未配置过 = 开） */
+  "diagnose.config.get": {
+    request: void;
+    response: { enabled: boolean };
+  };
+  /** 保存写后诊断开关；运行中的会话由主进程即时下发，不必重启 */
+  "diagnose.config.set": {
+    request: { enabled: boolean };
+    response: { enabled: boolean };
   };
   /** 列出全部 provider */
   "providers.list": {

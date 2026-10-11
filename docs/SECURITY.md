@@ -216,6 +216,27 @@ dangerous、每次单独确认。**没有绕过 write/edit 的记忆写入入口
   （不动主对话、不动别的子代理）。子 lane 对主对话的 `watch` **天生不可见**，所以这些显式出口不是
   装饰，是「它正在花钱」这件事的唯一可观测面。
 
+### 写后诊断（after_tool 内部的免审批执行通道，2026-10-11）
+
+写完 `write` / `edit` 后自动跑项目检查（eslint / tsc / ruff / go vet / cargo check，
+`docs/DESIGN-afterwrite.md`）。设计上它**不走 before_tool**——审批闸门是「裁决模型给出的工具入参」，
+而检查发生在工具执行完之后，policy 层没有任何介入点。**免审批因此不是「加进白名单」，
+而是在闸门之下另开一条执行通道**，正当性必须自己站住，三条：
+
+1. **命令不是模型给的**。命令模板写死在检查器表（`worker/lib/diagnose-config.ts`），
+   模型唯一的输入是 `path`，且该 `path` 刚被审批闸门放行的 write/edit **成功写过**——
+   能被检查的路径必然先经过了「写入本身」这道审查。路径进命令的唯一通道是
+   `posixQuotePath`（POSIX 单引号转义），无转义文本拼不进命令。
+2. **检查类命令对用户工作区无写副作用**。eslint / ruff check / tsc --noEmit 只读；
+   cargo check / go vet 写的是 `target/`、构建缓存这类**项目内派生物**——与 `todo`
+   「写库仍免审批」同一条口径（写的是工具自有数据，不是用户的工作区语义）。
+3. **资源受控**。每条命令带超时（快 60s / 慢 120s）与输出上限（8KB / 200 行），
+   失败三态可区分（`skipped` / `problems` / `clean`），**检查器坏了绝不伪装成「检查过了」**。
+
+**UI 可见性兜底**：跑了什么命令、结果如何，追加在工具输出里、工具卡展开即可见——
+用户永远能回答「刚才到底执行了什么」。总开关在设置页（默认开），运行中可即时关闭。
+**不自动修**：诊断只报告，修复永远由模型或用户决定——自动修 = 写文件的写文件，递归口子。
+
 ---
 
 ## 二、只读工具白名单：唯一真源
@@ -331,6 +352,7 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 | 浏览器 / 电脑控制的限制 | `main/host/browser-host.ts`、`browser-observe.ts`、`computer-host.ts` |
 | 终端的限制 | `main/terminal-host.ts`、`main/terminal-pty.ts`（shell 候选与 PTY 选项，纯函数**记得补单测**：`tests/terminal-pty.test.ts`） |
 | 技能装载的目录与告知口径 | `worker/lib/skills.ts`（目录纯函数 + 文案，**记得补单测**：`tests/skills.test.ts`） |
+| 写后诊断的检查器表 / 命令构造 / 转义 | `worker/lib/diagnose-config.ts`（纯函数**记得补单测**：`tests/afterwrite-diagnose.test.ts`） |
 
 ---
 

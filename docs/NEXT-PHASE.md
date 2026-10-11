@@ -38,7 +38,7 @@
   **2026-09 全库缺陷审计**：按用户指令重新审读代码找 bug，确认并批量修复一批
   （工具卡展开态丢失 / 自动滚底抢滚动 / newSession 闭包 / 导航清缓冲时机等，清单见 `UI-REGIONS` v1.35）；
   3 处上报经核实不修（Esc 已有守卫 / 全量授权不清队列是刻意设计 / 并发投递常规路径不可达）。
-  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1315**） + `build` + `fixture` **61/61** + `dock` **308/308** + `model` **61 条（7/6/6/6/3/33）**。
+  验收基线：`typecheck` + **单测全绿**（条数以运行输出为准，当前 **1342**） + `build` + `fixture` **61/61** + `dock` **308/308** + `model` **61 条（7/6/6/6/3/33）**。
 - **下一步做什么**：暂无排期——原 §3.1 的 **N1–N4 已按用户指令删除**（2026-09），
   新计划确定后再写回 §3.1。
 - **别重开**：§2 的「已定调」条目（尤其 ⑦ 的宽度是**全局统一值**、⑥ 的**四态**语义）。
@@ -141,11 +141,11 @@
   | # | 能力 | 状态 | 落点 |
   |---|---|---|---|
   | ① | `ask_user` | **已实施**（2026-09-18；2026-09 加多题翻页与自由输入，见 `UI-REGIONS` v1.65） | 单测 `tests/ask-user.test.ts`（14 条）+ `tests/question-store.test.ts`（9 条）+ `tests/question-answer.test.ts`（10 条）；冒烟 `ask-user`（39 条，免模型）+ `ask-user-e2e`（11 条，**打模型**） |
-  | ② | web 搜索 / 抓取 | 未开工 | 只读白名单免审批；provider 进设置 |
+  | ② | web 搜索 / 抓取 | **搁置**（2026-10-11 用户拍板）：用户环境**无代理**——DDG 免 key、Tavily 免费档、SearXNG 公共实例等**免费路径国内直连全不通**，付费路径（博查等）暂不愿接；「读网页」browser 工具可兜底，真缺口只在**搜索**，等有可用的免费搜索方案再回来做。调研结论留档：SSRF 防线抄 `.workbuddy/pi-ext-review/pi-web-access-0.29.0/ssrf-protection.ts` 的设计（DNS 逐地址校验 + 重定向逐跳复验 + `allowRanges` 给 TUN fake-IP 代理留逃生口）；HTML 提取栈 = linkedom + @mozilla/readability + turndown | 只读白名单免审批；provider 进设置 |
   | ③ | MCP | **已实施**（2026-09-19；2026-09-30 客户端换核 pi-mcp，内核随升 0.99.1） | 设计 `docs/DESIGN-mcp.md`（决策 26 记换核）；配置 `<cwd>/.colt/mcp.json` 与用户级 `~/.colt/mcp.json` **合并**（同名项目级覆盖）。传输 stdio + 远程（Streamable HTTP；**旧式 SSE 已砍**，解析层即拒）；客户端核心 = **`@earendil-works/pi-mcp@0.99.1`**（官方 SDK 降为夹具专用 devDependency）、`listTools` 分页（pi-mcp 内建翻页）、`${VAR}` 插值、配置热重载（设置页「重新加载」，**不必重启会话**）、工具重名去重、`resources` / `prompts` 能力面（**未声明就不加**）、server 自报 `instructions` 拼进系统提示词、展示名 `shared/mcp-label.ts`、notice 按 `kind` 分流、调用超时按 server / 工具可配（**未配置钉 60s**，不跟 pi-mcp 的 30s 默认漂）。工具名 `mcp__<server>__<tool>` 不在任何豁免名单 ⇒ **天然过 `before_tool` 审批闸门**。单测 `tests/mcp-tools.test.ts`（48 条，真实 stdio / HTTP 往返；换核后 typecheck + 全量 1228 全绿）；冒烟 `mcp-e2e`（打模型）+ `mcp-real`（真实第三方 server）+ `mcp-reload`（免费，接线；**换核后 13/13 实测通过**）。**仅剩**：worker 被强杀时**正在启动**的 MCP 子进程成孤儿（换 pi-mcp 后顺带改善：其 stdio 树杀 + exit hook；正常 dispose 走 `runtime.close()`） |
   | ④ | todo | **已实施**（2026-09-19） | 单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `todo`（26 条，免模型）；设计 `docs/DESIGN-todo.md`；界面归属见 `UI-REGIONS.md` v1.48（⑦ 默认视图**任务摘要**，清单是它的第一段） |
   | ⑤ | 子代理 | **已实施**（2026-09-19） | 设计 `docs/DESIGN-subagents.md`（决策 D1–D10）；worker 侧 `lib/subagent.ts` + `lib/agent-defs.ts` + `lib/subagent-view.ts` + `lib/lane-ownership.ts`（新逻辑压进新文件，大户只留接线）；单测 `tests/lane-ownership.test.ts` / `agent-defs.test.ts` / `subagent-view.test.ts`；冒烟 `subagent`（免模型）。**执行侧三事实**（`subagent` 免闸门 / 内部写弹卡带归属 / `fresh` 隔离真实效果 / 清单真进提示词）由 `subagent-e2e`（打模型）覆盖，见 §5。**仍未覆盖**：子代理中止 / 超时墙钟的 e2e；导航守卫（`worker/lib/navigate.ts` 的 `applyNavigate`）由 `tests/navigate.test.ts` 覆盖，仍**未**走真实内核 `navigateTree` |
-  | ⑥ | 写后诊断 | 建议后置 | `after_tool` 钩子；要先定「自动跑检查要不要过审批」 |
+  | ⑥ | 写后诊断 | **已实施**（2026-10-11） | 设计 `docs/DESIGN-afterwrite.md`（D2「免审批、窄通道」/ D3「快慢分治」经用户拍板；免审批的安全论证见 `docs/SECURITY.md` §写后诊断）。worker 侧 `lib/diagnose-config.ts`（检查器表 + 命令构造 + POSIX 引号转义，纯函数）、`lib/diagnose-run.ts`（exec 封装三态归一 + 慢检查防抖器）、`lib/diagnose-format.ts`（追加段格式化）、`lib/diagnose.ts`（编排门面，`entry.ts` 只留接线）；fast（eslint/ruff 单文件）同步追加进 write/edit 工具结果，slow（tsc / go vet / cargo check）防抖 2s 后台跑、结论经 ephemeral notice 注入下一请求；开关进设置页（`main/diagnose-config.ts` + `diagnose.config.get/set` IPC，运行中经 `diagnoseEnabled` worker 命令即时生效）。单测 `tests/afterwrite-diagnose.test.ts`（27 条）；真实模型 e2e 后置（同 todo-e2e 待遇） |
 
   **① 的入口级遗留**（别当成验过了）：worker 侧跳过闸门那条守卫与「全权模式下提问仍要弹」已由 `ask-user-e2e`（打模型）覆盖；仍未覆盖的是 worker **意外崩溃**那一支的收尾、以及提问的桌面通知（`notifyQuestion`）。
 
@@ -161,8 +161,14 @@
 >
 > ⚠️ 一处**部分落地**：§10 的「授权卡（**四档 + 可见超时 + 取消**）」里，**「取消」是缺的**——
 > 卡片上只有四个决定档位与倒计时，没有「取消这次请求」的入口；实际取消只能靠**中断整轮运行**
-> （`session-manager.cancelPending` 在 `abort` 里被调）。若将来要补，走**键盘中断**（`Esc` / `⌘.`）
-> 而不是往卡片上再加一个按钮——卡片上的四个档位已经够满，多一个控件反而更慢做决定。
+> （`session-manager.cancelPending` 在 `abort` 里被调）。
+> **2026-10-11 复核后用户拍板：暂不做。** 复核结论留档（重启时别从头摸）：
+> ① 收益有限——阻塞期间停止按钮**依然可用**（挂起不隐藏按钮），缺的只是「不出手也能停」；
+> ② 卡片加第五个按钮已被否（与「拒绝一次」并排拖慢决定；双卡队列时「取消」歧义更大）；
+> ③ 若将来补，走 **Ctrl+. / ⌘.**（全应用零消费者、不误触、无需读状态），**别用 Esc**——
+> Esc 已被 6 处浮层各自挂在 document 上消费且互不协调（历史搜索 / 下拉菜单 / 「+」菜单 /
+> 下钻 / `/` 浮层等），直接加全局监听会双触发（关浮层同时核掉整轮运行）；
+> 要上 Esc 必须先做一层「Esc 消费协调栈」，那是单独一批的活。
 
 | 项 | v3 依据 | 现状（实测） |
 |---|---|---|

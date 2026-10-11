@@ -482,6 +482,11 @@ export type WorkerCommand =
        * 主进程据此读回、会话删除时整目录清掉。
        */
       toolOutputDir: string;
+      /**
+       * 写后诊断开关的全局初值（`docs/DESIGN-afterwrite.md` D5，设置页可改）。
+       * 运行中变更走 `diagnoseEnabled` 命令补发，不经会话重启。
+       */
+      diagnoseEnabled: boolean;
     }
   | { type: "prompt"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "steer"; text: string; images?: { data: string; mimeType: string }[] }
@@ -584,6 +589,11 @@ export type WorkerCommand =
   | { type: "toolRpcResult"; requestId: string; ok: true; result: HostResult }
   /** 主进程对一次宿主能力调用的答复（失败） */
   | { type: "toolRpcResult"; requestId: string; ok: false; error: string }
+  /**
+   * 写后诊断开关的实时下发（`docs/DESIGN-afterwrite.md` D5）。
+   * init 时随引导命令带一次初值；会话开着时改设置从这里补发。
+   */
+  | { type: "diagnoseEnabled"; enabled: boolean }
   | { type: "dispose" };
 
 /** worker → main */
