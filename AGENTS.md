@@ -181,6 +181,8 @@ const px = startVal - dx;
 
   铁律：`--version` 打出 Node 版本号时**先查环境变量**，别去翻 `out/`、也别怀疑打包配置。
 
+- **`spawn` / `spawnSync` 子进程时，stdin 一律写 `"ignore"`**（2026-10-11，三次踩中才定位）。症状有三种面孔：`spawnSync rg EBUSY`、命令「一直跑、零输出」最后被 SIGTERM、`tar` 报 `Cannot connect to C: resolve failed`。根因**不是沙箱**（我先后两次把它当成「这个环境禁止 spawn 外部程序」，都是错的）：`stdio: "pipe"` 会给子进程一个**永不关闭的 stdin 管道**，而 rg / tar 这类程序会「检测到 stdin 可读 → 去读它 → 等一个永远不来的输入」——于是永久挂起。铁律：① 写 `stdio: ["ignore", "pipe", "pipe"]`，别用 `stdio: "pipe"`；② `spawnSync` 报 `EBUSY` 或命令无输出地挂住时，**先查 stdin**，别归因环境；③ 与之独立的第二个坑：PATH 上的 `tar` 可能是 **MSYS 的 GNU tar**，它把 `C://...` 当远程主机（`Cannot connect to C: resolve failed`）——所以构建脚本宁可**不 spawn**（`scripts/fetch-rg.mjs` 里手写了一个最小 zip 读取器，只用 `node:zlib`）。
+
 - **跑单测要用仓库自己的加载器**：`npx tsx --test tests/x.test.ts` **不认** tsconfig 里的 `@shared/*` 路径别名（会 `ERR_MODULE_NOT_FOUND: Cannot find package '@shared/...'`），看起来很像是「别名写错了 / 文件没了」。用仓库的方式跑：
 
   ```bash

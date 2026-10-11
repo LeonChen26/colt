@@ -29,20 +29,43 @@
  * ⚠️ 已知局限（与内核同款）：单实例 + 前缀意味着**子目录里的反选规则会影响全树**
  * （ripgrep 用每层独立 matcher 避免这一点）。这个差异只在「父目录忽略、子目录反选」的
  * 交叉场景下可见，罕见且方向是「多搜了而不是少搜了」——比漏搜安全，故接受。
+ *
+ * ⚠️ **点文件不在这里管**：rg 默认跳过名字以 `.` 开头的文件与目录，而 JS 那侧要在遍历里
+ * 同样跳过（见 `search-tools.ts` 的 `walkFiles`）。两处必须一起改，否则引擎之间会分叉。
  */
 import ignore from "ignore";
 
 /**
  * 认哪几个 ignore 文件名，**顺序即优先级**（后 `add()` 的覆盖先 `add()` 的）。
  *
- * 与内核 `harness/skills.js` 的 `IGNORE_FILE_NAMES` **逐字相同**（`.gitignore` < `.ignore`
- * < `.fdignore`，即后两者可覆盖 `.gitignore`）。这个顺序同时与 ripgrep 一致
- * （rg 的 `.ignore` 优先级高于 `.gitignore`）。
+ * ⚠️ 与内核 `harness/skills.js` 的 `IGNORE_FILE_NAMES`（`.gitignore`/`.ignore`/`.fdignore`）
+ * **有意不同**：这里是 `.rgignore` 而不是 `.fdignore`，为的是与 **ripgrep 的原生集合和优先级
+ * 逐字一致**（rg 是 `.rgignore` > `.ignore` > `.gitignore`）。
+ *
+ * 为什么这个一致性比「和内核一样」更重要：`grep` 有**两个引擎**（rg 快路径 / 纯 JS 回落），
+ * 引擎不同而结果不同是**最糟的一类不确定性**（同一台机器装了 rg 就搜得到、没装就搜不到）。
+ * 内核的技能装载读不读 `.fdignore` 与检索结果无关；引擎之间必须一致。
+ * `.fdignore` 是 fd 的配置，实际项目里极少见；真要用也可以在 `.ignore` 里写同样的规则。
  */
-export const IGNORE_FILE_NAMES: readonly string[] = [".gitignore", ".ignore", ".fdignore"];
+export const IGNORE_FILE_NAMES: readonly string[] = [".gitignore", ".ignore", ".rgignore"];
 
-/** 一条规则的行处理：与内核 `prefixIgnorePattern` 同语义（见文件头） */
-function prefixIgnorePattern(line: string, prefix: string): string | null {
+/**
+ * **永远**跳过的目录名——与 ignore 文件**两回事**，两条都生效。
+ *
+ * 留这一张名单的理由不是省时间（`.gitignore` 已经覆盖了 `node_modules/`、`out/` 这类），
+ * 而是两类它管不到的情况：
+ *   ① `.git` —— 它**几乎不会**出现在 `.gitignore` 里（那是在自己忽略自己），但没有它
+ *      遍历会进对象库，既慢又全是不该给模型看的二进制；
+ *   ② `includeIgnored: true`（模型明确要求连被忽略的也搜）时，ignore 这层被关掉了，
+ *      而 `.git` 与依赖目录仍然不该被翻——那是一次「搜到几十万个文件」的必然后果。
+ *
+ * ⚠️ 放在这里而不是 `search-tools.ts`：**两个引擎都要用**它——JS 那侧在遍历里判，
+ *   rg 那侧要把它翻译成 `-g '!<名字>'`（rg 不认识这张表，不传就会去搜 `node_modules`，
+ *   而 JS 会跳过 → 引擎分叉。实测踩到过）。放在共用的模块里，加一个名字两边一起生效。
+ */
+export const SKIP_DIRS: ReadonlySet<string> = new Set([".git", "node_modules", "out", "dist", ".next"]);
+
+/** 一条规则的行处理：与内核 `prefixIgnorePattern` 同语义（见文件头） */function prefixIgnorePattern(line: string, prefix: string): string | null {
   const trimmed = line.trim();
   if (trimmed === "") return null;
   // 注释：整行 `#` 开头丢掉；`\#` 是「字面量 #」的转义，要留着

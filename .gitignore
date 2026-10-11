@@ -8,6 +8,9 @@ release-*/
 .DS_Store
 .vite/
 
+# ripgrep 二进制（npm run rg:fetch 按固定 URL+sha256 拉取，不进版本库）
+/vendor/
+
 # 冒烟测试产物
 .smoke-*.png
 

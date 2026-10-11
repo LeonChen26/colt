@@ -52,6 +52,18 @@ asarUnpack:
   # node-pty 是原生模块（.node 二进制）：asar 里 dlopen 不了，必须解包（同上先例）
   - node_modules/@homebridge/**
 
+# 随包的**外部可执行文件**：ripgrep（`grep` 工具的快路径，找不到时回落纯 JS 实现）。
+# 走 extraResources 而不是 asar：asar 里的文件**无法直接执行**（不是可 dlopen 的库，
+# 是独立进程），必须落到磁盘上。目标目录是 `<resources>/ripgrep/<platform>-<arch>/`，
+# 与 `main/lib/rg-path.ts` 解析、`scripts/fetch-rg.mjs` 写下的结构一致。
+# 二进制不在版本库里（`.gitignore` 排除了 `vendor/`）：`npm run dist` 会先跑 `rg:fetch`，
+# 按固定 URL + sha256 拉取；拉不到就让打包失败（要带 rg 的包却不带它，是配置错误）。
+extraResources:
+  - from: vendor/ripgrep
+    to: ripgrep
+    filter:
+      - "**/*"
+
 win:
   icon: build/icon.ico
   target:

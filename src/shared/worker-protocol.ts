@@ -505,6 +505,13 @@ export type WorkerCommand =
        */
       toolOutputDir: string;
       /**
+       * 随包分发的 ripgrep 可执行文件绝对路径（由主进程解析，见 `main/lib/rg-path.ts`）。
+       *
+       * 缺省 = 不带它（开发机没跑 `npm run rg:fetch`、或包里没打进），
+       * 那时检索走纯 JS 实现——**两条件都受支持**，结果一致，只有耗时不同。
+       */
+      rgPath?: string;
+      /**
        * 写后诊断开关的全局初值（`docs/archive/DESIGN-afterwrite.md` D5，设置页可改）。
        * 运行中变更走 `diagnoseEnabled` 命令补发，不经会话重启。
        */

@@ -27,6 +27,7 @@ import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level
 import { getDiagnoseEnabled } from "./diagnose-config";
 import { getSecret } from "./secrets";
 import { buildWorkerEnv, collectWorkerControl } from "./lib/worker-env";
+import { resolveRgPath } from "./lib/rg-path";
 import { listProviders } from "./providers";
 import { toProviderDirectory } from "@shared/provider-directory";
 // 无需密钥的服务（requiresKey === false）装配时占位用的假密钥：pi-ai 的 openai-completions
@@ -1192,6 +1193,9 @@ export class SessionManager {
       thinkingLevel: resolveThinkingLevel(getSession(options.sessionId)?.thinkingLevel),
       // 工具图片落盘目录：worker 写、主进程读，路径一律由这里算（渲染层无从指定）
       toolOutputDir: toolOutputDir(options.sessionId),
+      // ripgrep 二进制的绝对路径（找不到就是 undefined → worker 回落纯 JS 实现）。
+      // 与上面同一个分工：路径只由主进程算，worker 不猜自己跑在什么形态下。
+      rgPath: resolveRgPath(),
       // 写后诊断开关：全局设置，worker 侧 after_tool 行为的初值（运行中变更走 diagnoseEnabled 命令）
       diagnoseEnabled: getDiagnoseEnabled(),
     } satisfies WorkerCommand);

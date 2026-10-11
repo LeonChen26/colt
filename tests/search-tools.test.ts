@@ -290,18 +290,37 @@ describe("gitignore 过滤（默认开、可关、且如实报数）", () => {
     );
   });
 
-  test("跳过多少会**如实报数**，并指出逃生口的名字", async () => {
-    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
-    assert.match(text, /已按 \.gitignore 等忽略文件跳过 \d+ 项/);
-    assert.match(text, /其中目录 \d+ 个/);
-    assert.match(text, /includeIgnored: true/, "要给出下一步怎么做，否则模型不知道还能打开");
+  /**
+   * 说明的出现条件被**刻意收窄**成「结果为空 或 被截断」。
+   *
+   * 为什么不是「每次检索都挂一句」：那是噪声，模型会开始忽略它；而它的用处只在
+   * 模型可能误读的时候——一份空结果到底是「项目里没有」还是「被过滤了」。
+   * 这条同时钉住两个方向：有结果时不带样板（否则退化成噪声）、空结果时必须带（否则静默）。
+   * 收窄的直接原因是 **rg 快路径报不出被忽略的条数**，而「说明有没有」两边必须一致
+   * （见 search-tools.ts 的 FILTER_NOTE）。
+   */
+  test("说明只在「结果为空 / 被截断」时出现，有结果时不挂样板", async () => {
+    const nonEmpty = await run(GREP_TOOL_NAME, { pattern: "ignoredword" });
+    assert.match(nonEmpty, /^keep\.ignored\.txt:1:/m, "先说前提：这次是有结果的");
+    assert.doesNotMatch(nonEmpty, /已按 \.gitignore/, "有结果时不该挂过滤样板（那是噪声）");
+
+    const empty = await run(GREP_TOOL_NAME, { pattern: "只在drop文件里出现的词" });
+    assert.match(empty, /没有匹配/);
+    assert.match(empty, /已按 \.gitignore 等忽略文件跳过 \d+ 项/, "空结果时必须说明过滤过");
+    assert.match(empty, /includeIgnored: true/, "并给出逃生口的名字");
   });
 
-  test("没有命中、且确实被过滤过时，「没有匹配」也要带上过滤说明", async () => {
-    // 这个词只在被忽略的文件里出现：默认搜不到，但必须说明「是被过滤了，不是不存在」
-    const text = await run(GREP_TOOL_NAME, { pattern: "只在drop文件里出现的词" });
-    assert.match(text, /没有匹配/);
-    assert.match(text, /已按 \.gitignore 等忽略文件跳过/);
+  test("被截断时也要说明过滤过（那同样是会被误读的时刻）", async () => {
+    const text = await run(GREP_TOOL_NAME, { pattern: "ignoredword", path: "sub" });
+    // sub 下有结果且不截断 → 不带样板；换一个必然截断的场景（大量匹配）
+    assert.doesNotMatch(text, /已按 \.gitignore/);
+    const many = await run(GREP_TOOL_NAME, { pattern: "MANY" });
+    assert.match(many, /已截断/);
+    assert.match(
+      many,
+      /已按 \.gitignore|要找被忽略的文件请传 includeIgnored/,
+      "截断时也要给出过滤说明（与 rg 那侧同条件）",
+    );
   });
 
   test("includeIgnored: true 连被忽略的一起搜", async () => {
@@ -311,17 +330,22 @@ describe("gitignore 过滤（默认开、可关、且如实报数）", () => {
     assert.doesNotMatch(text, /已按 \.gitignore/, "全搜时不该再报「跳过了多少」");
   });
 
-  test("glob 同样过滤，且报数口径一致", async () => {
+  test("glob 同样过滤（说明只在空/截断时出现，口径与 grep 一致）", async () => {
     const filtered = await run(GLOB_TOOL_NAME, { pattern: "**/*.ignored.txt" });
     assert.doesNotMatch(filtered, /drop\.ignored\.txt/);
     assert.match(filtered, /^keep\.ignored\.txt$/m, "反选放行的要留下");
-    assert.match(filtered, /已按 \.gitignore 等忽略文件跳过/);
+    assert.doesNotMatch(filtered, /已按 \.gitignore/, "有结果时不挂样板");
+
+    const empty = await run(GLOB_TOOL_NAME, { pattern: "**/*.zzz-none" });
+    assert.match(empty, /没有匹配的文件/);
+    assert.match(empty, /已按 \.gitignore 等忽略文件跳过/, "空结果时要说明过滤过");
 
     const all = await run(GLOB_TOOL_NAME, {
       pattern: "**/*.ignored.txt",
       includeIgnored: true,
     });
     assert.match(all, /^drop\.ignored\.txt$/m);
+    assert.doesNotMatch(all, /已按 \.gitignore/, "全搜时不该再提过滤");
   });
 
   test("单文件检索不过滤（模型点名要看的文件就该看到）", async () => {

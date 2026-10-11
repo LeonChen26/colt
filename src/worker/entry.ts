@@ -439,7 +439,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         ...createTodoTools(hostBridge),
         // 检索工具（grep / glob）：纯 fs、无原生依赖，故留在 worker 侧，不走宿主通道。
         // 只读白名单已预留这两个名字（shared/readonly-tools.ts），自动免审批。
-        ...createSearchTools(cwd),
+        ...createSearchTools(cwd, { rgPath: command.rgPath }),
         ...createAskUserTools(questions),
         ...subagents.tools(), ...mcp.tools,
       ],

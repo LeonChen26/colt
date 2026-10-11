@@ -18,7 +18,8 @@
     "test": "node --import ./tests/ts-resolve.mjs --test \"tests/**/*.test.ts\"",
     "probe": "electron scripts/probe-runtime.cjs",
     "fixture": "node scripts/fixture-server.mjs",
-    "dist": "npm run build && electron-builder --win --publish never"
+    "rg:fetch": "node scripts/fetch-rg.mjs",
+    "dist": "npm run rg:fetch && npm run build && electron-builder --win --publish never"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.99.1",

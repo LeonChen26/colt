@@ -31,25 +31,29 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
-import { IgnoreFilter } from "./search-ignore";
+import { IgnoreFilter, SKIP_DIRS } from "./search-ignore";
+import { MAX_RG_STDOUT_BYTES, buildRgArgs, runRipgrep, type RgRunResult } from "./search-rg";
 
 /** 工具名即只读白名单的键（`shared/readonly-tools.ts`），改名会脱白名单 */
 export const GREP_TOOL_NAME = "grep";
 export const GLOB_TOOL_NAME = "glob";
 
-/**
- * **永远**跳过的目录名——与 gitignore 过滤**两回事**，两条都生效。
- *
- * 留这一张名单的理由不是省时间（`.gitignore` 已经覆盖了 `node_modules/`、`out/` 这类），
- * 而是两类它管不到的情况：
- *   ① `.git` —— 它**几乎不会**出现在 `.gitignore` 里（那是在自己忽略自己），但没有它
- *      遍历会进对象库，既慢又全是不该给模型看的二进制；
- *   ② `includeIgnored: true`（模型明确要求连被忽略的也搜）时，gitignore 这层被关掉了，
- *      而 `.git` 与依赖目录仍然不该被翻——那是一次「搜到几十万个文件」的必然后果。
- */
-const SKIP_DIRS: ReadonlySet<string> = new Set([".git", "node_modules", "out", "dist", ".next"]);
+// SKIP_DIRS 现在住在 search-ignore.ts：**两个引擎都要用**（JS 在遍历里判、rg 翻译成 -g '!name'）
 
 export const MAX_GREP_MATCHES = 200;
+/**
+ * JS 那侧**保留**多少条命中（只为排序）。
+ *
+ * 为什么需要一个「保留数」而不是直接用 `MAX_GREP_MATCHES`：两个引擎要给出同一份
+ * 「前 200 条」，前提是**两边都先握住全部命中再排序**。rg 那侧天然如此（stdout 一次读完，
+ * 上限 `MAX_RG_STDOUT_BYTES`）；JS 那侧原本是「按遍历顺序取前 200 再排序」——那与
+ * 「排序后取前 200」是**不同的 200 条**（实测：578 条匹配时两边各差几十行）。
+ *
+ * 取 5000：覆盖住绝大多数的截断场景（本仓最宽的查询是 6597 条，差一点点；
+ * 常规查询都在几百条），内存代价是一个小对象数组。超过它时两边仍可能有差异，
+ * 但**总数一致**（模型据此缩小范围的那条依据不受影响），这一点在测试里单独钉住。
+ */
+export const MAX_GREP_KEPT_HITS = 5000;
 /** 单次 grep 的正文字节上限（按 UTF-8 计），超出即截断并如实标注 */
 export const MAX_GREP_BYTES = 64 * 1024;
 export const MAX_GLOB_RESULTS = 500;
@@ -66,9 +70,18 @@ export const MAX_FILE_BYTES = 8 * 1024 * 1024;
  */
 export const MAX_SCANNED_FILES = 20_000;
 
-/** 检索可调参数（只为可测：生产中一律用默认值） */
+/**
+ * 检索工具的装配参数。
+ *
+ * `rgPath` 由**主进程**算好传进来（它才知道 dev 与打包两种形态下二进制各在哪），
+ * 与 `toolOutputDir` 同一个分工。`undefined` = 没带 ripgrep（开发机没拉取、或包里没有），
+ * 那就走纯 JS 实现——**那是受支持的形态，不是错误**。
+ */
 export interface SearchToolOptions {
+  /** 只为可测：生产中走默认上限 */
   maxScannedFiles?: number;
+  /** ripgrep 可执行文件绝对路径；缺省 = 不用它 */
+  rgPath?: string;
 }
 
 /** 遍历预算：`scanned` 是本轮已访问的文件数，`exhausted` 表示撞上了上限 */
@@ -199,6 +212,7 @@ async function walkFiles(
   startRel: string,
   budget: WalkBudget,
   filter: IgnoreFilter | undefined,
+  includeIgnored: boolean,
   visit: (abs: string, rel: string) => Promise<void> | void,
 ): Promise<void> {
   const stack: { abs: string; rel: string }[] = [{ abs: startAbs, rel: startRel }];
@@ -219,6 +233,10 @@ async function walkFiles(
     entries.sort((left, right) => left.name.localeCompare(right.name));
     const subdirs: { abs: string; rel: string }[] = [];
     for (const entry of entries) {
+      // **点文件/点目录一律跳过**（`includeIgnored` 时除外）——这是与 ripgrep 的默认行为对齐：
+      // rg 快路径不看它们，JS 回落也得不看，否则「装没装 rg」会给出不同结果。
+      // 注意只判**子项**：模型显式把 path 指到 `.github` 时，那个目录本身不是子项，照搜。
+      if (!includeIgnored && entry.name.startsWith(".")) continue;
       if (SKIP_DIRS.has(entry.name)) continue;
       const childRel = current.rel === "" ? entry.name : `${current.rel}/${entry.name}`;
       const childAbs = join(current.abs, entry.name);
@@ -248,12 +266,18 @@ async function walkFiles(
   }
 }
 
+/** 一条命中的三个字段（排序用，渲染成 `路径:行号:内容` 是最后一步） */
+interface GrepHit {
+  rel: string;
+  lineNumber: number;
+  text: string;
+}
+
 /** 一次 grep 的累计状态（截断与跳过都要如实统计，别静默丢） */
 interface GrepTally {
-  lines: string[];
+  hits: GrepHit[];
+  /** 匹配总数（**不受保留上限影响**，故它才是「共 N 条」的真值） */
   total: number;
-  bytes: number;
-  truncated: boolean;
   binarySkipped: number;
   largeSkipped: number;
   budget: WalkBudget;
@@ -301,21 +325,128 @@ async function scanFile(
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (!regex.test(line)) continue;
+    // 总数**始终**照数（截断提示里的「共 N 条」必须是真的总数）；
+    // 保留则封顶——排序需要握住全部命中，而那是有界的内存代价（见 MAX_GREP_KEPT_HITS）。
     tally.total += 1;
-    // 超预算后**继续扫**：截断提示里的「共 N 条」必须是真的总数
-    if (tally.truncated || tally.lines.length >= MAX_GREP_MATCHES) {
-      tally.truncated = true;
-      continue;
+    if (tally.hits.length < MAX_GREP_KEPT_HITS) {
+      tally.hits.push({ rel, lineNumber: index + 1, text: line });
     }
-    const rendered = `${rel}:${index + 1}:${line}`;
-    const size = Buffer.byteLength(rendered, "utf8") + 1;
-    if (tally.bytes + size > MAX_GREP_BYTES) {
-      tally.truncated = true;
-      continue;
-    }
-    tally.bytes += size;
-    tally.lines.push(rendered);
   }
+}
+
+/** rg 在这个进程里已被判定不可用（latch 住，避免每条查询都重试一次注定失败的 spawn） */
+let rgUnavailable = false;
+
+/**
+ * 命中的**全局排序**：按相对路径、再按行号。
+ *
+ * 为什么非排不可：两个引擎的**遍历顺序天然不同**（rg 多线程；JS 是按目录名排序的深度优先），
+ * 不排的话同一份查询会给出不同的行序——实测 `-g '*.ts'` 那个用例就是这么红的。
+ * 排序把「展示顺序」这件事从引擎手里拿回来，非截断的结果因此**逐字一致**。
+ * （截断时选中的是哪 200 条仍可能不同——那需要两边都持有全部命中，见 search-rg.ts 的说明。）
+ */
+function compareHits(left: { rel: string; lineNumber: number }, right: { rel: string; lineNumber: number }): number {
+  return left.rel === right.rel ? left.lineNumber - right.lineNumber : left.rel.localeCompare(right.rel);
+}
+
+/**
+ * 「排序 → 按条数与字节上限取前若干条」——**两个引擎共用**，保证选出的是同一批。
+ *
+ * 顺序不能反：先取后排会按**遍历顺序**挑，而两个引擎的遍历顺序不同（rg 多线程、
+ * JS 目录序 DFS），于是同一查询给出不同的 200 条。实测踩到过。
+ */
+function capHits(hits: readonly GrepHit[]): GrepHit[] {
+  const sorted = [...hits].sort(compareHits);
+  let bytes = 0;
+  const shown: GrepHit[] = [];
+  for (const hit of sorted) {
+    if (shown.length >= MAX_GREP_MATCHES) break;
+    const size = Buffer.byteLength(`${hit.rel}:${hit.lineNumber}:${hit.text}`, "utf8") + 1;
+    if (bytes + size > MAX_GREP_BYTES) break;
+    bytes += size;
+    shown.push(hit);
+  }
+  return shown;
+}
+
+/** 命中 → `路径:行号:内容` 文本（两个引擎共用同一份渲染，别再各写一遍） */
+function renderHits(hits: readonly GrepHit[]): string {
+  return [...hits]
+    .sort(compareHits)
+    .map((hit) => `${hit.rel}:${hit.lineNumber}:${hit.text}`)
+    .join("\n");
+}
+
+/**
+ * 「过滤过」这件事的说明，两个引擎**共用一个常量的前半句**。
+ *
+ * 出现条件刻意收窄成「结果为空 或 被截断」：那才是模型会误读的时刻——
+ * 一份空结果到底是「项目里没有」还是「被过滤了」，指向完全不同的下一步。
+ * 每次检索都挂一句样板反而会被忽略。
+ *
+ * rg 那侧拿不到「跳过了多少项」，故它的说明**少一个数目**（JS 有）。这点差异是有意的：
+ * 让「有没有说明」两边一致，比让「数目有没有」一致重要得多——前者会误导模型，后者只是精度。
+ */
+const FILTER_NOTE = "已按 .gitignore 等忽略文件过滤；要找被忽略的文件请传 includeIgnored: true";
+
+/**
+ * 把 rg 的结果收口成与 JS 那侧**同形**的文本。
+ *
+ * 三件事必须与 JS 路径一致，否则「装没装 rg」会让模型看到不同的东西：
+ *   ① 路径格式：`相对项目根、正斜杠`（rg 给的是它自己的路径写法，Windows 上是反斜杠）；
+ *   ② 上限：200 条 / 64KB，且**截断时给出的总数口径**要与 JS 对齐
+ *      （读完 stdout 就是真总数；stdout 撞上限则降级成「至少 N 条」）；
+ *   ③ 越界兜底：rg 返回的路径必须仍落在项目根内（正常情况下必然如此，但别把
+ *      「工具自己守边界」这条唯一防线托付给另一个程序的行为）。
+ */
+function formatRgResult(
+  root: string,
+  result: RgRunResult,
+  pattern: string,
+  scopeRel: string,
+): string {
+  // **先排序、再截断**：与 JS 那侧同一顺序（见 compareHits）。
+  // 顺序反了的话「前 200 条」会是 rg 的遍历顺序决定的——那正是两引擎结果不同的由来。
+  const hits: GrepHit[] = [];
+  for (const match of result.matches) {
+    const abs = resolve(match.path);
+    const rel = toPosix(relative(root, abs));
+    // 越界兜底：别把「工具自己守边界」这条唯一防线托付给另一个程序的行为
+    if (rel.startsWith("..") || isAbsolute(rel)) continue;
+    hits.push({ rel, lineNumber: match.lineNumber, text: match.text });
+  }
+  hits.sort(compareHits);
+
+  const total = hits.length;
+  // 与 JS 那侧**同一个函数**（排序 → 取前若干条），否则两条路会各自漂移
+  const shown = capHits(hits);
+  const cappedByCount = shown.length < total;
+
+  const notes: string[] = [];
+  if (result.truncatedByBytes) {
+    // stdout 都没读完 → 连总数都只是下限，措辞必须与 JS 的「扫不完」同一档诚实度
+    notes.push(
+      `结果不完整：输出过大（超过 ${MAX_RG_STDOUT_BYTES / 1024 / 1024}MB），已提前停止读取` +
+        `——至少 ${total} 条匹配，仅显示前 ${shown.length} 条。请用更具体的 path / glob 缩小范围后重搜`,
+    );
+  } else if (cappedByCount) {
+    notes.push(`已截断：共 ${total} 条匹配，仅显示前 ${shown.length} 条`);
+  }
+  // 过滤说明：与 JS 那侧**在同样的条件下**出现（结果为空 / 被截断），措辞少一个数目。
+  //
+  // 为什么 rg 给不出那个数目：它不会告诉调用方「我忽略了多少个文件」，
+  // 而那正是 JS 那侧唯一多出来的东西。让它变成「有没有说明」的差别（那会误导模型），
+  // 比让它变成「数目有没有」的差别（只是精度不同）糟得多——所以保留说明、放弃数目。
+  if (total === 0 || result.truncatedByBytes || cappedByCount) {
+    notes.push(FILTER_NOTE);
+  }
+  if (total === 0) {
+    const scope = scopeRel === "" ? "." : scopeRel;
+    const suffix = notes.length === 0 ? "" : `\n\n(${notes.join("；")})`;
+    return `没有匹配：${pattern}（范围：${scope}）${suffix}`;
+  }
+  const body = renderHits(shown);
+  return notes.length === 0 ? body : `${body}\n\n(${notes.join("；")})`;
 }
 
 async function runGrep(
@@ -328,6 +459,7 @@ async function runGrep(
     includeIgnored?: boolean;
   },
   limit: number,
+  rgPath: string | undefined,
 ): Promise<string> {
   const window = resolveInRoot(root, params.path);
   if (!window.ok) return `错误：${window.error}`;
@@ -359,6 +491,35 @@ async function runGrep(
     return `错误：路径不存在：${window.rel === "" ? "." : window.rel}`;
   }
 
+  // 快路径：交给 ripgrep（只在**默认那条**路上——见 search-rg.ts 对「引擎一致性」的说明：
+  // 单文件检索 JS 本来就快，`includeIgnored` 那串参数只会把两边拉远）。
+  // 正则合法性已经在上面用 JS 的 RegExp 校过一遍——rg 用的是 Rust 正则，语法**不完全相同**
+  // （如 `(?P<name>)` vs `(?<name>)`），所以两边都过一遍能挡掉最明显的错法；
+  // 真遇到 rg 独有的语法差异，rg 会以退出码 2 报错，下面的 catch 会回落 JS 并留痕。
+  if (rgPath !== undefined && !includeIgnored && !startIsFile && !rgUnavailable) {
+    try {
+      const result = await runRipgrep(
+        rgPath,
+        buildRgArgs({
+          pattern: params.pattern,
+          absolutePath: window.abs,
+          glob: rawGlob === "" ? undefined : rawGlob,
+          ignoreCase: params.ignoreCase,
+        }),
+        root,
+      );
+      return formatRgResult(root, result, params.pattern, window.rel);
+    } catch (error) {
+      // 回落不是错误（两条路结果一致），但**降级本身要留痕一次**：
+      // 静默降级会让「某台机器上一直慢着」永远查不出原因。latch 住，只报一次。
+      rgUnavailable = true;
+      console.error(
+        `[search] ripgrep 不可用（${error instanceof Error ? error.message : String(error)}），` +
+          `已改用内置实现（本次会话内不再尝试）`,
+      );
+    }
+  }
+
   const budget: WalkBudget = {
     scanned: 0,
     limit,
@@ -369,10 +530,8 @@ async function runGrep(
   // 过滤器只在「遍历一个目录」时才需要；单文件检索不过滤（模型点名要看的文件就该看到）。
   const filter = startIsFile || includeIgnored ? undefined : new IgnoreFilter();
   const tally: GrepTally = {
-    lines: [],
+    hits: [],
     total: 0,
-    bytes: 0,
-    truncated: false,
     binarySkipped: 0,
     largeSkipped: 0,
     budget,
@@ -382,11 +541,17 @@ async function runGrep(
     budget.scanned = 1;
     if (allowed(window.rel)) await scanFile(window.abs, window.rel, regex, tally);
   } else {
-    await walkFiles(window.abs, window.rel, budget, filter, async (abs, rel) => {
+    await walkFiles(window.abs, window.rel, budget, filter, includeIgnored, async (abs, rel) => {
       if (!allowed(rel)) return;
       await scanFile(abs, rel, regex, tally);
     });
   }
+
+  // 排序 → 按上限取（与 rg 那侧同一个函数、同一批结果；见 capHits 的注释）。
+  // 截断与否由**总数 vs 展示数**决定，而不是由 capHits 的返回值——总数才是「有没有被截」
+  // 的真值（保留上限可能先于展示上限生效）。
+  const shown = capHits(tally.hits);
+  const truncated = tally.total > shown.length;
 
   const notes: string[] = [];
   // 「扫到一半停了」与「匹配条数超了」是**两件事**，都要说，且不能混成一句：
@@ -394,11 +559,11 @@ async function runGrep(
   if (budget.exhausted) {
     notes.push(
       `结果不完整：仓库文件过多，只扫描了前 ${budget.scanned} 个文件（上限 ${limit}）` +
-        `——至少 ${tally.total} 条匹配，仅显示前 ${tally.lines.length} 条。` +
+        `——至少 ${tally.total} 条匹配，仅显示前 ${shown.length} 条。` +
         `请用更具体的 path / glob 缩小范围后重搜`,
     );
-  } else if (tally.truncated) {
-    notes.push(`已截断：共 ${tally.total} 条匹配，仅显示前 ${tally.lines.length} 条`);
+  } else if (truncated) {
+    notes.push(`已截断：共 ${tally.total} 条匹配，仅显示前 ${shown.length} 条`);
   }
   if (tally.binarySkipped > 0) notes.push(`已跳过 ${tally.binarySkipped} 个二进制文件`);
   if (tally.largeSkipped > 0) {
@@ -406,12 +571,15 @@ async function runGrep(
   }
   // 「被 gitignore 挡掉」必须说出来：否则模型看到一份空结果时，**分不清是「项目里没有」
   // 还是「被过滤了」**——那两种结论指向完全不同的下一步（一个换思路，一个换搜索方式）。
-  // 业界同样这么做（Gemini CLI 会报「在门口拒了多少个文件」）。且附上逃生口的名字。
+  // 条件与 rg 那侧**刻意保持一致**（结果为空 / 被截断），差别只在「有没有数目」：
+  // rg 给不出被忽略的条数，JS 能。让说明本身两边都有，比让数目两边都有重要（见 FILTER_NOTE）。
   const ignored = budget.ignoredFiles + budget.ignoredDirs;
-  if (ignored > 0) {
+  if ((tally.total === 0 || budget.exhausted || truncated) && filter !== undefined) {
     notes.push(
-      `已按 .gitignore 等忽略文件跳过 ${ignored} 项` +
-        `（其中目录 ${budget.ignoredDirs} 个）；要找被忽略的文件请传 includeIgnored: true`,
+      ignored > 0
+        ? `已按 .gitignore 等忽略文件跳过 ${ignored} 项（其中目录 ${budget.ignoredDirs} 个）；` +
+          `要找被忽略的文件请传 includeIgnored: true`
+        : FILTER_NOTE,
     );
   }
   if (tally.total === 0) {
@@ -419,7 +587,7 @@ async function runGrep(
     const suffix = notes.length === 0 ? "" : `\n\n(${notes.join("；")})`;
     return `没有匹配：${params.pattern}（范围：${scope}）${suffix}`;
   }
-  const body = tally.lines.join("\n");
+  const body = renderHits(shown);
   return notes.length === 0 ? body : `${body}\n\n(${notes.join("；")})`;
 }
 
@@ -460,7 +628,7 @@ async function runGlob(
     budget.scanned = 1;
     if (matcher.test(window.rel)) hits.push(window.rel);
   } else {
-    await walkFiles(window.abs, window.rel, budget, filter, (_abs, rel) => {
+    await walkFiles(window.abs, window.rel, budget, filter, includeIgnored, (_abs, rel) => {
       if (matcher.test(rel)) hits.push(rel);
     });
   }
@@ -471,12 +639,16 @@ async function runGlob(
     );
   }
 
-  // 与 grep 同一口径：过滤掉多少必须说出来，否则「空结果」有两种完全不同的含义。
+  // 与 grep 同一口径：**结果为空 或 清单被截断**时才说明「过滤过」——那是模型会误读的时刻
+  // （空结果到底是「没有」还是「被过滤了」）。顺带把被跳过的条数给出来（rg 那侧给不出）。
   const ignored = budget.ignoredFiles + budget.ignoredDirs;
+  const hitLimit = hits.length > MAX_GLOB_RESULTS;
   const ignoredNote =
-    ignored > 0
-      ? `已按 .gitignore 等忽略文件跳过 ${ignored} 项` +
-        `（其中目录 ${budget.ignoredDirs} 个）；要找被忽略的文件请传 includeIgnored: true`
+    filter !== undefined && (hits.length === 0 || hitLimit)
+      ? ignored > 0
+        ? `已按 .gitignore 等忽略文件跳过 ${ignored} 项（其中目录 ${budget.ignoredDirs} 个）；` +
+          `要找被忽略的文件请传 includeIgnored: true`
+        : FILTER_NOTE
       : "";
   if (hits.length === 0) {
     const suffix = ignoredNote === "" ? "" : `\n\n(${ignoredNote})`;
@@ -546,7 +718,7 @@ export function createSearchTools(
       "参数：pattern 必填（JS 正则）；path 为项目内相对路径（缺省=项目根，可为目录或单个文件），",
       "不支持绝对路径与 ..；glob 只看匹配的文件（`*.ts` 比文件名、`src/**/*.tsx` 比相对路径）；",
       "ignoreCase 忽略大小写；includeIgnored 连被忽略的文件一起搜。",
-      "**默认跳过 .gitignore / .ignore / .fdignore 里被忽略的文件与目录**（构建产物、依赖、日志、",
+      "**默认跳过 .gitignore / .ignore / .rgignore 里被忽略的文件与目录**（构建产物、依赖、日志、",
       "本地配置等），外加 .git node_modules out dist .next 与二进制文件；跳过了多少会在末尾如实标注",
       "——看到「已按 .gitignore 跳过 N 项」而你要找的正是那些文件，就加 includeIgnored: true。",
       "结果最多 200 条、64KB，",
@@ -556,7 +728,7 @@ export function createSearchTools(
     ].join("\n"),
     parameters: grepSchema,
     async execute(_toolCallId, params) {
-      const text = await runGrep(projectRoot, params, limit);
+      const text = await runGrep(projectRoot, params, limit, options.rgPath);
       return { content: [{ type: "text" as const, text }], details: undefined };
     },
   };
