@@ -1325,7 +1325,12 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
     });
     await runtime.close(); // 后台那一支还在飞
     try {
-      await new Promise((resolve) => setTimeout(resolve, 600)); // 让它落定并被就地回收
+      // ⚠️ 这里**不能**用固定的 `setTimeout(600)` 赌「后台那支已经 spawn 出来了」：
+      // 下面是真起子进程（`bootServer(300)` 由它写 startLog），而 spawn 的耗时随机器负载浮动——
+      // 全量并行跑（本仓默认多文件并行）时实测会超过 600ms，于是 countStarts 读到 0，
+      // 报成 `expected: 1, actual: 0`。这条**看着像功能回归，其实是测试自己在赌时间**。
+      // 改成轮询「条件真的成立」：语义不变（后台那支最终恰好起一个），但不再随负载抖动。
+      await waitFor(() => countStarts(startLog) >= 1);
       assert.equal(countStarts(startLog), 1, "后台那一支本该只起一个进程");
       await runtime.reload();
       assert.equal(countStarts(startLog), 1, "关掉之后 reload 不该再起进程");
@@ -1343,7 +1348,10 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
     });
     await runtime.close();
     try {
-      // 让后台那台跑完（它睡 700ms）：关掉之后它不该再冒出来
+      // 让后台那台跑完（它睡 700ms）：关掉之后它不该再冒出来。
+      //
+      // 与上面那条不同，这里是**负向**断言——等久一点是**安全方向**（最坏情况是漏报一个 bug，
+      // 不会误报）。所以固定 sleep 可以留；上面那条是正向断言（等不够就假红），必须轮询。
       await new Promise((resolve) => setTimeout(resolve, 900));
       assert.deepEqual(runtime.status(), []);
       assert.deepEqual(runtime.tools.map((tool) => tool.name), []);
