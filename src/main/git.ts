@@ -43,10 +43,20 @@ function resolveGitDir(cwd: string): string | null {
   }
 }
 
+/**
+ * 「这里不是 git 仓库」的答案（会话头据此隐藏分支 chip）。
+ *
+ * 单独导出是因为**调用方也会用到它**：`git.status` 在「会话不存在、草稿也查不到」时
+ * 必须给出这个答案，而**不能**把空串/undefined 丢给 `readGitStatus`——`resolve("")`
+ * 会得到**主进程自己的 cwd**，在开发态那就是仓库根，于是向上找到真的 `.git` 并显示
+ * 一个与用户会话毫不相干的分支。宁可复用这个常量，也不要让调用方各写一份。
+ */
+export const NOT_A_REPO_STATUS: GitStatus = { isRepo: false, branch: null, detached: false };
+
 /** 读取工作目录的 git 状态；非仓库或读取失败时隐藏分支而非报错 */
 export function readGitStatus(cwd: string): GitStatus {
   const gitDir = resolveGitDir(cwd);
-  if (!gitDir) return { isRepo: false, branch: null, detached: false };
+  if (!gitDir) return NOT_A_REPO_STATUS;
   try {
     const { branch, detached } = parseHeadContent(readFileSync(join(gitDir, "HEAD"), "utf8"));
     return { isRepo: true, branch, detached };

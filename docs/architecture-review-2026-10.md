@@ -146,11 +146,21 @@ worker 工具（browser_act 等）→ HostBridge.callHost → "toolRpc"
 - 密钥改经 **`init` 消息体的 `apiKey` 字段**传入（`shared/worker-protocol.ts`）；`setModel` 同样带 `apiKey`（跨 provider 切换要现装）。`provider-factory.ts` 不再有 `envApiKeyAuth`，改闭包内存密钥 `memoryApiKeyAuth`——**任何环境变量都读不回密钥**（`tests/provider-factory.test.ts` 有对抗用例）。
 - 回归钉子：`tests/worker-env.test.ts`（白名单 / 缺键不产 `undefined` / 控制变量塞密钥名直接抛错）。
 
-### 🔴 2. `git.status` 破坏统一的信任边界
+### ✅ 2. `git.status` 破坏统一的信任边界 —— **已闭环（2026-10-11 晚）**
 
 **证据**：`ipc/index.ts:821` —— `handle("git.status", (request) => readGitStatus(request.cwd))`，cwd **直接来自渲染层**。
 
-同文件里 `resolveSessionRoot`（80-88 行）明确写着「绝不接受渲染层传入——渲染层会渲染 agent 生成的 Markdown，是不可信来源」，且 `file.read` / `git.committed` / `terminal.open` 全都遵守；唯独 `git.status` 让渲染层自己报路径。虽然 git status 只读、直接危害小，但它破坏了「根只能由主进程反查」这条不变量——下一个照抄这条通道写法的人未必只读。渲染层本来就持有 sessionId，改成 `resolveSessionRoot(request.sessionId)` 即可对齐。
+同文件里 `resolveSessionRoot`（80-88 行）明确写着「绝不接受渲染层传入——渲染层会渲染 agent 生成的 Markdown，是不可信来源」，且 `file.read` / `git.committed` / `terminal.open` 全都遵守；唯独 `git.status` 让渲染层自己报路径。虽然 git status 只读、直接危害小，但它破坏了「根只能由主进程反查」这条不变量——下一个照抄这条通道写法的人未必只读。
+
+**落地情况**：请求形状改为 `{ sessionId }`（`shared/protocol.ts`），主进程按 `resolveSessionRootOrDraft` 反查——渲染层不再提供任何路径。
+
+⚠️ **原文说的「改成 `resolveSessionRoot(request.sessionId)` 即可」低估了改动面**，实施时发现两件事：
+1. **契约里没有 sessionId**（只有 `cwd`），所以要动三处：契约请求形状 / ipc handler / 渲染层调用点（`Conversation/index.tsx`）；
+2. **草稿会话必须单独处理**：会话要等首条消息才落库（`materializeDraft`），而「新建后还没发消息」恰是最想看「我在哪个仓库」的时刻——直接用 `resolveSessionRoot` 会抛「会话不存在」，git 分支 chip 在草稿态**静默消失**。故新增 `resolveSessionRootOrDraft`：查库落空时按草稿的 `projectId` 取项目根（与渲染层对草稿显示的 `cwd` 是**同一个值**），两者都没有才答「不是仓库」。
+
+**顺带排掉一个坑**：不能把空串/`undefined` 丢给 `readGitStatus` 当哨兵——`resolve("")` 是**主进程自己的 cwd**，开发态下会向上找到本仓的 `.git`，于是一个「未知会话」会显示成与用户毫不相干的分支。故 `git.ts` 导出 `NOT_A_REPO_STATUS` 常量，调用方复用它。
+
+**回归钉子**：`tests/contract.test.ts` 的「信任边界：文件系统根只由主进程反查」——三条断言（契约请求无路径字段 / handler 不收 `request.cwd` 且草稿感知真的读 `drafts` / 渲染层只传 sessionId）。已按本仓惯例验证过它**有牙**（把 `cwd` 放回契约即变红）。
 
 ### 🟠 3. 体量闸已退化为纯台账，god 对象无人看守
 
@@ -204,7 +214,41 @@ worker 工具（browser_act 等）→ HostBridge.callHost → "toolRpc"
 ## 五、做得对、值得保留的设计
 
 - **契约单一真源 + 编译期双向对齐断言**（protocol.ts 的 `ChannelParityChecked`）——白名单与类型不可能漂移。
-- **信任边界集中在主进程**：路径根一律由 sessionId 反查（除 🔴2 外贯彻得很干净）；图片/文件读盘按 id 推导路径，渲染层无从指定。
+- **信任边界集中在主进程**：路径根一律由 sessionId 反查（🔴2 闭环后**已无例外**）；图片/文件读盘按 id 推导路径，渲染层无从指定。这条不变量现在有守卫：`tests/contract.test.ts` 的「信任边界：文件系统根只由主进程反查」。
 - **审批链 fail-closed**：worker hook 抛错即 block、分析器失败转人工、双端独立超时、审计无条件落库。
 - **草稿延迟落库**、单实例锁防 JSONL 双写、dispose 宽限后强杀——都是从事故里长出来的正确形态。
 - **「如实呈现」原则在数据层有落点**：净值算不出写 NULL 而不是 0、MCP/技能的 `live: false` 区分「没开」与「没有」。
+
+---
+
+## 六、复核记录（2026-10-11 深夜）
+
+🔴1 与 🟡8 闭环的当天，把**其余每一条**重新拿代码证了一遍（不是照抄原判断）。
+
+**复核为「仍未解决」**（每条都重新看过代码，不是照抄原判断；🔴2 已在这次复核之后闭环，见其小节）：
+
+| 项 | 复核证据 |
+|---|---|
+| ~~🔴2 `git.status`~~ | ✅ **已闭环（同日更晚）**：契约改收 `sessionId`，主进程按 `resolveSessionRootOrDraft` 反查（含草稿态）；见 §四-2 的落地情况与钉子 |
+| 🟠3 体量闸退化为台账 | `App.tsx`（1545 行）原先**不在** `KNOWN_LARGE_FILES`——**同日已补登记**；棘轮仍是「与通用上限同值 2200」 |
+| 🟠4 待办三份镜像 | `entry.ts:254/555/846` 的 `todoMirror` 仍在（主进程推送整份 → worker 常驻注入） |
+| 🟡5 全量快照 + SHA-256 | `entry.ts:279`：`createHash("sha256").update(JSON.stringify(view))`——**每次 flush 仍全量序列化**，省掉的只是跨进程搬运 |
+| 🟡6 标题两处各算一遍 | ✅ **已闭环（同日更晚）**：收归 `@shared/session-title` 的 `deriveSessionTitle`，两处都调它（`session-title.test.ts` 有「不许再内联」的守卫）。**顺带修掉一个同源的显示缺陷**：技能调用（内核替用户发的）正文是原始标记 `<skill name=...>`，而标题直接取 text → 从 `/` 菜单选技能开一个会话，侧栏标题就是一串 XML。会话目录与分支树早就统一用 `skillInvocationLabel` 显示成「技能 pdf」，标题这处是漏的——现已三处同源。这是**行为变更**（标题内容变了），单独记一笔 |
+| 🟡7 FIFO 配对无关联键 | `pendingBranches` / `pendingMcp` / `pendingSkills` 仍是 FIFO；同 entry 上 `pendingTranscripts` 仍按 id 精确配对——两种范式并存 |
+
+**🟠3 的台账数字已过期**（当天两批交付合计改动了其中几个文件，复核时实测）：
+
+| 文件 | 报告快照 | 复核实测 |
+|---|---|---|
+| `Conversation/index.tsx` | 1780 行 / 42 hooks | 1784 行 / 47 hooks（计数口径见 `size-guard.test.ts` 注释） |
+| `session-manager.ts` | 1675 行 | **1755 行**（+80：三缺口 53 + 压缩设置 27） |
+| `worker/entry.ts` | 1069 行 | **1120 行**（+51：三缺口 35 + 压缩设置 16） |
+| `host/browser-host.ts` | 1026 行 | 1027 行 |
+| `App.tsx` | 1545 行 | 1548 行（标题派生收拢，+3）——**已登记进 `KNOWN_LARGE_FILES`** |
+| `features/Settings.tsx` | （原报告未列） | **1443 行**（压缩设置一节 +131）——也在向大户靠，值得盯 |
+
+> 快照本身不算错，但**这些数字被当作「净增行数」的基准在用**（`AGENTS.md` §1.4 要求碰大户前先算），
+> 所以标注出增量比保持旧数字更诚实。
+
+**顺带修掉的一处自相矛盾**：`docs/SECURITY.md` 与 `src/main/secrets.ts` 里「明文密钥存在于 worker 进程环境变量」的旧表述，已在 🔴1 闭环那一轮改掉；
+但**本文件 🔴1 的「修法」段保留着原文**——读的人容易只看那一段就以为密钥还在 env 里。以它下面的 `落地情况` 为准。

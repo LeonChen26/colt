@@ -463,4 +463,6 @@
 
 | v1.97 | **写后诊断**（`docs/archive/DESIGN-afterwrite.md`，NEXT-PHASE §3.2 能力 ⑥）：助手写完代码文件自动跑项目检查，**④ 工具卡输出里直接跟一段「写后诊断」**（fast 检查器结论当轮追加进 write/edit 结果；全仓慢检查防抖约 2s 后台跑，有问题才经 notice 告知，不新增任何界面元素）；设置页新增「写后诊断」分区（一个开关，默认开，`diagnose.config.get/set`，运行中即时生效）。检查器表与免审批的安全论证见 `SECURITY.md` §写后诊断 | 现行（`worker/lib/diagnose*.ts`；`Settings.tsx` 的 `DiagnoseSettings`；单测 `afterwrite-diagnose.test.ts` 27 条；真实模型 e2e 后置） |
 
+| v1.98 | **设置页新增「上下文压缩」分区**（架构评审 A2：压缩原先「看不见也调不了」）：自动压缩一直开着（吃内核默认 `reserveTokens: 16384` / `keepRecentTokens: 20000`），但应用层零感知——阈值不可见不可调，界面只能在压缩触发时靠 `runningOperation` 猜。新增一个开关 + 两个阈值输入框（**文本草稿**，失焦提交：直接绑数字的话输入框清空时会被 parse 成 NaN，用户没法把 16384 改成 8000）、「恢复默认」按钮（仅在非默认时出现）、以及一句**讲清当前行为**的说明（`describeCompaction`；关闭时明说「手动 /compact 仍然可用」，否则用户会以为压缩整个没了）。「跟随默认 / 使用你设置的阈值」单独标出——用户想知道的是「这是我设的还是内核默认」，光报数字答不了。改完即时下发（`compaction.config.set` → 主进程广播 `setCompaction`）、生效于**下一次操作**；保存失败或越界被钳制时，输入框回填**仍然生效**的那份值（不能让框里写着 999999 而下面说明还是 16384）。⚠️ 设置页 1298 → **1443 行**，正朝大户靠，下次碰它先算净增 | 现行（`shared/compaction-config.ts` + `main/compaction-config.ts` + `Settings.tsx` 的 `CompactionSettings`；单测 `compaction-config.test.ts` 13 条（含**读内核 dist 常量比对**与冻结断言）+ `compaction-wiring.test.ts` 12 条（四段接线的源契约）；`UI-TEST-CASES.md` 尚未补冒烟用例） |
+
 > **改本文档需记录**：改了什么区域、依据什么事实、影响哪些已有设计。

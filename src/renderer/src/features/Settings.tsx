@@ -21,6 +21,11 @@ import { ICON } from "@/lib/icon";
 import type { McpServerView, ModelOption, Project, ProviderConfig, SkillsStatus } from "@shared/protocol";
 import type { ViewSkillDetail } from "@shared/worker-protocol";
 import { DEFAULT_CONTEXT_WINDOW, LEGACY_MAX_TOKENS } from "@shared/model-option";
+import {
+  DEFAULT_COMPACTION_CONFIG,
+  describeCompaction,
+  type CompactionConfig,
+} from "@shared/compaction-config";
 import { contentStats } from "../lib/format";
 import { cn } from "../lib/utils";
 
@@ -111,6 +116,7 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
         </div>
 
         <ApprovalPolicySettings onSaved={notify} onError={fail} />
+        <CompactionSettings onSaved={notify} onError={fail} />
         <DiagnoseSettings onSaved={notify} onError={fail} />
         <McpSettings project={project} />
         <SkillSettings project={project} />
@@ -253,6 +259,159 @@ function DiagnoseSettings({
           />
           写完文件后自动运行项目检查
         </label>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 自动压缩（上下文管理）的设置，全局。
+ *
+ * 修的是「**看不见也调不了**」：自动压缩一直开着（吃内核默认值），但应用层对此零感知——
+ * 阈值不可见、不可调，界面只能在压缩触发时靠 `runningOperation` 猜。这里把当前生效值
+ * 摆出来，并说明它意味着什么。
+ *
+ * 「跟随默认」这个状态要**单独说**：用户想知道的是「这是我设的、还是内核默认」，
+ * 光报三个数字答不了这个问题。改完即时下发（不必重启会话，也不等下次压缩）。
+ */
+function CompactionSettings({
+  onSaved,
+  onError,
+}: {
+  onSaved: (message: string) => void;
+  onError: (error: unknown) => void;
+}): React.JSX.Element {
+  const [config, setConfig] = useState<CompactionConfig>(DEFAULT_COMPACTION_CONFIG);
+  const [isDefault, setIsDefault] = useState(true);
+  const [loading, setLoading] = useState(true);
+  // 两个阈值用**文本**存草稿：直接绑数字的话，输入框清空时会被 parse 成 NaN，
+  // 用户没法把「16384」改成「8000」（删到一半就跳回去了）。
+  const [draft, setDraft] = useState({ reserveTokens: "", keepRecentTokens: "" });
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const saved = await window.colt.invoke("compaction.config.get", undefined);
+        setConfig(saved.config);
+        setIsDefault(saved.isDefault);
+        setDraft({
+          reserveTokens: String(saved.config.reserveTokens),
+          keepRecentTokens: String(saved.config.keepRecentTokens),
+        });
+      } catch (e) {
+        onError(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [onError]);
+
+  /**
+   * 把两个阈值输入框的内容同步回**服务端确认的生效值**。
+   *
+   * 输入框与「生效值」是两份状态，不主动对齐就会出现「框里写着 999999，下面那行说明
+   * 还是 16384」这种自相矛盾的画面——而这份界面存在的全部意义就是让生效值可见。
+   * 所以保存成功后被主进程钳制过的值要回填，**保存失败时也要回填**（失败时更是不能留着
+   * 用户那份没生效的文本）。
+   */
+  const syncDraft = (from: CompactionConfig): void => {
+    setDraft({
+      reserveTokens: String(from.reserveTokens),
+      keepRecentTokens: String(from.keepRecentTokens),
+    });
+  };
+
+  const save = async (next: CompactionConfig): Promise<void> => {
+    try {
+      // 回值才是**真实生效值**（主进程会钳制越界输入），不能拿本地草稿当结果
+      const saved = await window.colt.invoke("compaction.config.set", { config: next });
+      setConfig(saved.config);
+      setIsDefault(saved.isDefault);
+      syncDraft(saved.config);
+      onSaved(describeCompaction(saved.config));
+    } catch (e) {
+      // 失败 → 输入框回到**仍然生效**的那份值，别让用户以为改成功了
+      syncDraft(config);
+      onError(e);
+    }
+  };
+
+  /** 阈值失焦时提交：与开关一样走同一条保存路径，输入非法时由主进程钳制后回填 */
+  const commitTokens = (): void => {
+    const parsedReserve = Number.parseInt(draft.reserveTokens, 10);
+    const parsedKeep = Number.parseInt(draft.keepRecentTokens, 10);
+    void save({
+      enabled: config.enabled,
+      reserveTokens: Number.isFinite(parsedReserve) ? parsedReserve : config.reserveTokens,
+      keepRecentTokens: Number.isFinite(parsedKeep) ? parsedKeep : config.keepRecentTokens,
+    });
+  };
+
+  return (
+    <div className="mt-6">
+      <h3 className="mb-1 text-sm">上下文压缩</h3>
+      <p className="mb-3 text-xs text-text-muted">
+        对话变长时，助手会把较早的历史摘要成一段，只保留最近的部分原文——这样长会话也能继续。
+        摘要**保大意、不保细节**（具体数值、路径可能丢），重要结论建议让它写进记忆文件。
+        {isDefault ? "当前使用默认阈值。" : "当前使用你设置的阈值。"}
+      </p>
+      <div className="space-y-3 rounded-lg border border-line bg-surface-raised p-3">
+        <label className="flex items-center gap-2 text-xs text-text-primary">
+          <input
+            type="checkbox"
+            checked={config.enabled}
+            disabled={loading}
+            onChange={() => void save({ ...config, enabled: !config.enabled })}
+            className="h-4 w-4 accent-[var(--accent)]"
+          />
+          上下文攒满时自动压缩
+        </label>
+        {config.enabled ? (
+          <div className="flex flex-wrap gap-4">
+            <label className="text-xs text-text-muted">
+              压缩后保留最近
+              <input
+                type="text"
+                inputMode="numeric"
+                value={draft.keepRecentTokens}
+                disabled={loading}
+                onChange={(e) => setDraft((d) => ({ ...d, keepRecentTokens: e.target.value }))}
+                onBlur={commitTokens}
+                className="mx-1 w-24 rounded border border-line bg-surface px-2 py-0.5 text-text-primary"
+              />
+              个 token
+            </label>
+            <label className="text-xs text-text-muted">
+              为摘要预留
+              <input
+                type="text"
+                inputMode="numeric"
+                value={draft.reserveTokens}
+                disabled={loading}
+                onChange={(e) => setDraft((d) => ({ ...d, reserveTokens: e.target.value }))}
+                onBlur={commitTokens}
+                className="mx-1 w-24 rounded border border-line bg-surface px-2 py-0.5 text-text-primary"
+              />
+              个 token
+            </label>
+          </div>
+        ) : null}
+        <p className="text-xs text-text-muted">{describeCompaction(config)}</p>
+        {isDefault ? null : (
+          <button
+            type="button"
+            onClick={() =>
+              void save({
+                enabled: DEFAULT_COMPACTION_CONFIG.enabled,
+                reserveTokens: DEFAULT_COMPACTION_CONFIG.reserveTokens,
+                keepRecentTokens: DEFAULT_COMPACTION_CONFIG.keepRecentTokens,
+              })
+            }
+            className="rounded border border-line px-2 py-0.5 text-xs text-text-muted hover:text-text-primary"
+          >
+            恢复默认
+          </button>
+        )}
       </div>
     </div>
   );

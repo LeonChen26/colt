@@ -15,6 +15,7 @@ import type {
   ViewToolResult,
 } from "./worker-protocol";
 import type { ThinkingLevel } from "./thinking-level";
+import type { CompactionConfig } from "./compaction-config";
 import type { ToolImageResult } from "./tool-output";
 
 /** MCP server 现状的契约定义在 `@shared/worker-protocol`，这里转出去方便界面一处 import */
@@ -350,6 +351,9 @@ export const IPC_CHANNELS = [
   "approval.analyzerModel.set",
   "diagnose.config.get",
   "diagnose.config.set",
+  /** 自动压缩的阈值与开关（A2：原先吃内核默认值、应用层零感知） */
+  "compaction.config.get",
+  "compaction.config.set",
   "session.branches",
   "session.navigate",
   /** 中止单个子代理（`ViewSubagent.id` = lane 名） */
@@ -720,6 +724,21 @@ export interface IpcInvokeMap {
     request: { enabled: boolean };
     response: { enabled: boolean };
   };
+  /**
+   * 读取当前生效的自动压缩配置（未配置过 = 与内核实默认值相同的那一份）。
+   *
+   * 响应里同时给 `isDefault`：设置界面据此显示「跟随默认（内核）」而不是把三个数字
+   * 复述一遍——用户要知道的是「这是我设的，还是内核默认」，只报数字答不了这个问题。
+   */
+  "compaction.config.get": {
+    request: void;
+    response: { config: CompactionConfig; isDefault: boolean };
+  };
+  /** 保存压缩配置；返回**归一化后**的值（调用方据此显示真实生效值，而不是回显用户输入） */
+  "compaction.config.set": {
+    request: { config: unknown };
+    response: { config: CompactionConfig; isDefault: boolean };
+  };
   /** 列出全部 provider */
   "providers.list": {
     request: void;
@@ -878,9 +897,16 @@ export interface IpcInvokeMap {
     request: { sessionId: string; id: string };
     response: { messages: ViewMessage[]; toolResults: ViewToolResult[] };
   };
-  /** 读取会话工作目录的 git 分支（会话头展示） */
+  /**
+   * 读取会话工作目录的 git 分支（会话头展示）。
+   *
+   * ⚠️ 请求里**只有 sessionId，没有路径**：根由主进程从 sessionId 反查（草稿会话则按其
+   * `projectId` 取项目根）。原先这里收的是渲染层给的 `cwd`，与同组的 `git.committed`
+   * （只看 sessionId）自相矛盾，也破坏了「根只能由主进程反查、渲染层是不可信来源」
+   * 这条不变量——下一个照抄这条通道写法的人未必只读。
+   */
   "git.status": {
-    request: { cwd: string };
+    request: { sessionId: string };
     response: GitStatus;
   };
   /**

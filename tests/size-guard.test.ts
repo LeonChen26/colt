@@ -91,6 +91,13 @@ const KNOWN_LARGE_FILES: { file: string[]; why: string }[] = [
     file: ["main", "host", "browser-host.ts"],
     why: "原生视图管理 + 下载 + CDP 上传（注入页面的脚本已搬到 browser-scripts.ts）",
   },
+  {
+    file: ["renderer", "src", "App.tsx"],
+    why:
+      "侧栏状态机（空间/任务两栏、搜索、归档、图钉）+ 全局事件监听 + 主区三视图 + " +
+      "会话侧栏缓存的跟踪全在一个组件里；2026-10-11 架构评审指出它 1545 行却**不在本名单**，" +
+      "是登记盲区（碰它之前先算净增行数）",
+  },
 ];
 
 /** Conversation 的 React 内建 hook 数不许涨（今天实测 50，一度 81） */

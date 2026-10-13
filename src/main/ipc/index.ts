@@ -15,7 +15,7 @@ import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { isSkillFilePath } from "@shared/skill-path";
 import { runEnvCheck } from "../env-check";
-import { readCommittedFiles, readGitStatus } from "../git";
+import { NOT_A_REPO_STATUS, readCommittedFiles, readGitStatus } from "../git";
 import { defaultScratchBase, scratchRootPath, taskBaseRoot, taskSessionRoot } from "../lib/scratch-dir";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
@@ -48,6 +48,8 @@ import {
   setAnalyzerModelRef,
 } from "../approval/config";
 import { getDiagnoseEnabled, setDiagnoseEnabled } from "../diagnose-config";
+import { getCompactionConfig, setCompactionConfig } from "../compaction-config";
+import { isDefaultCompactionConfig } from "@shared/compaction-config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
 import { listDirWithin } from "../file-list";
@@ -90,6 +92,32 @@ function resolveSessionRoot(sessionId: string): string {
   // 会话有自己的目录（任务会话，落库时算好存下的时间子目录）就优先用它；
   // null（普通空间会话、旧行）回落到项目根——两者都出自主进程，信任假设不变。
   return session.cwd ?? project.rootPath;
+}
+
+/**
+ * `resolveSessionRoot` 的**草稿感知**版本，仅供不需要「会话已落库」这一前提的只读查询使用
+ * （当前是 `git.status` 的会话头 chip）。
+ *
+ * 区别只在「还没落库的草稿」这一种情形：会话要等首条消息才落库，而渲染层在草稿态也显示
+ * 会话头，所以那时查库必然落空。草稿的 `projectId` 在主进程的 `drafts` 里，据此取项目根
+ * ——**与渲染层对草稿显示的 cwd 是同一个值**（`activeSession.cwd ?? project.rootPath`）。
+ *
+ * 都没命中（会话被删 / id 伪造）→ 返回 `null`，由调用方给出「不是仓库」。**不要**回落成
+ * 空串再喂给 `readGitStatus`：`resolve("")` 是**主进程自己的 cwd**，开发态下会向上找到
+ * 本仓的 `.git`，于是显示一个与用户会话毫不相干的分支。
+ *
+ * ⚠️ 判据是「会话**是否真的不存在**」，**不是**「`resolveSessionRoot` 有没有抛」。
+ * 用 try/catch 兜住一切的话，数据库没初始化、库文件损坏这类**真故障**也会被当成
+ * 「这个会话不是仓库」静静咽掉——那正是本仓最忌的「用一个看起来正常的答案盖住错误」。
+ *
+ * ⚠️ 不要拿它当审批 / 文件访问的根：那里的语义是「必须有这个会话」，缺了要**报错**而不是
+ * 悄悄给一个兜底路径（这就是它不去改 `resolveSessionRoot` 本身的原因）。
+ */
+function resolveSessionRootOrDraft(sessionId: string): string | null {
+  // 已落库：走与其它通道完全同一条路（项目缺失时它会自己抛，不在这里替它兜）
+  if (getSession(sessionId) !== undefined) return resolveSessionRoot(sessionId);
+  const draft = drafts.get(sessionId);
+  return draft === undefined ? null : (getProject(draft.projectId)?.rootPath ?? null);
 }
 
 /**
@@ -639,6 +667,22 @@ export function registerIpcHandlers(): void {
     return { enabled: request.enabled };
   });
 
+  handle("compaction.config.get", () => {
+    const config = getCompactionConfig();
+    return { config, isDefault: isDefaultCompactionConfig(config) };
+  });
+
+  handle("compaction.config.set", (request) => {
+    // 返回**归一化后**的配置：用户输入可能是空串 / 越界值，界面要显示真实生效值
+    const config = setCompactionConfig(request.config);
+    // 推给池中全部 worker（压缩策略是全局的）。worker 侧会调内核的 `setCompactionSettings`，
+    // 生效时机**不是「下次压缩才读到」**（那要晚得多），而是**从下一次操作起**——
+    // 内核在 accept 时把设置快照进该操作，故**正在跑的那一轮不受影响**。
+    // 准确说法与证据链见 `worker/entry.ts` 的 `setCompaction` 分支注释（那里核过源码）。
+    sessionManager.broadcastCompactionConfig(config);
+    return { config, isDefault: isDefaultCompactionConfig(config) };
+  });
+
   handle("providers.list", () => listProviders());
 
   handle("providers.save", (request) => {
@@ -833,7 +877,21 @@ export function registerIpcHandlers(): void {
     sessionManager.subagentTranscript(request.sessionId, request.id),
   );
 
-  handle("git.status", (request) => readGitStatus(request.cwd));
+  /**
+   * 会话头的 git 分支 chip。根仍然**只由主进程算**（同 `git.committed` / `file.read`）。
+   *
+   * ⚠️ 这里比 `resolveSessionRoot` 多认一种情形：**草稿会话**。会话要等首条消息才落库
+   * （见 `materializeDraft` 的说明），而「新建后还没发消息」恰恰是最想看「我在哪个仓库」的时刻。
+   * 草稿没有 session 行，但 `drafts` 里有它的 `projectId`——而渲染层显示的 cwd 对草稿也
+   * 恒等于项目根（`App.tsx` 的 `activeSession.cwd ?? conversationProject.rootPath`），
+   * 所以两条路算出的是**同一个值**，不存在「主进程与渲染层各说各话」。
+   *
+   * 两者都不是（会话被删了 / id 是伪造的）→ 返回「不是仓库」，chip 隐藏，与「读不到」同形。
+   */
+  handle("git.status", (request) => {
+    const root = resolveSessionRootOrDraft(request.sessionId);
+    return root === null ? NOT_A_REPO_STATUS : readGitStatus(root);
+  });
 
   // 「已提交」批量判定（清单层按需调用）：根只由主进程按 sessionId → 项目推出（同 file.read）
   handle("git.committed", (request) =>

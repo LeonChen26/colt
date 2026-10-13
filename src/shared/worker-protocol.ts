@@ -10,6 +10,7 @@ import type { ProviderBuildConfig, ProviderDirectoryEntry } from "./provider-fac
 import type { ThinkingLevel } from "./thinking-level";
 import type { ViewTodo } from "./todo";
 import type { McpTransport } from "./mcp-config";
+import type { CompactionConfig } from "./compaction-config";
 
 /**
  * 待办清单的类型定义在 `@shared/todo`（纯契约 + 渲染，main / worker / 渲染层三方共用），
@@ -516,6 +517,14 @@ export type WorkerCommand =
        * 运行中变更走 `diagnoseEnabled` 命令补发，不经会话重启。
        */
       diagnoseEnabled: boolean;
+      /**
+       * 自动压缩配置的全局初值（设置页可改，见 `@shared/compaction-config`）。
+       *
+       * 不给就是内核默认值——但主进程**总是**给（设置读取有默认值兜底），因为「应用层
+       * 不知道自己的压缩策略」正是 A2 要修的那件事：界面要显示当前生效值，worker 用的
+       * 必须与显示的是同一份，否则显示的就是假的。
+       */
+      compaction: CompactionConfig;
     }
   | { type: "prompt"; text: string; images?: { data: string; mimeType: string }[] }
   | { type: "steer"; text: string; images?: { data: string; mimeType: string }[] }
@@ -627,6 +636,17 @@ export type WorkerCommand =
    * init 时随引导命令带一次初值；会话开着时改设置从这里补发。
    */
   | { type: "diagnoseEnabled"; enabled: boolean }
+  /**
+   * 压缩设置的实时下发（设置页改完即时下发，不必重启会话）。
+   *
+   * 与 `diagnoseEnabled` 的差别只在 worker 侧的动作：那个只改一个变量，这个要调内核的
+   * `harness.setCompactionSettings`——**不调的话新阈值要等下次压缩才被读到**，
+   * 而「改了没立刻生效」正是用户会当成 bug 的那种表现。
+   *
+   * 生效时机的准确说法（核过内核源码，见 worker 侧该分支的注释）：**从下一次操作起**，
+   * 正在跑的那一轮用的是它 accept 时的快照。
+   */
+  | { type: "setCompaction"; config: CompactionConfig }
   | { type: "dispose" };
 
 /** worker → main */

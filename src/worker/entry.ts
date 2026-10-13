@@ -451,6 +451,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       // 只对**新建 lane** 生效；已存在的会话沿用自己持久化的值，
       // 故下面还有一步显式下发（见 lane 拿到之后的注释）
       thinkingLevel,
+      // 自动压缩策略：**显式给**（原先不给 = 吃内核默认值，应用层零感知，见评审 A2）。
+      // 主进程总是下发（读取有默认值兜底），于是「界面显示的当前生效值」就是这里真正用的。
+      // 运行中变更走 `setCompaction` 命令（内核的 config_update 也认这个属性）。
+      compaction: command.compaction,
     },
     context,
   );
@@ -1064,6 +1068,27 @@ async function handle(command: WorkerCommand): Promise<void> {
     }
 
     // 写后诊断开关：不依赖会话状态也能收下（与 todoSnapshot 同理，init 前主进程也可能推）
+    case "setCompaction": {
+      // 内核的 `setCompactionSettings` 会发 `config_update(property: "compactionSettings")`。
+      //
+      // 生效时机**核过内核源码**（别凭签名猜）：
+      //   - lane 的 `config()` 是 harness 注入的**实时读取**（`runtime/lane.js:121`），
+      //   - 每次 accept 操作时 `acceptanceConfig = this.readConfig()` 并 `capturedSettings`
+      //     把 compaction 快照进该操作的 state（`lane.js:52`、`:320`），
+      //   - 自动压缩的判据读的是**快照**（`drive/structural.js:838` 的 `checkpoint.settings.compaction`）。
+      // 所以准确说法是：**从下一次操作起生效**——不是「等下次压缩才读到」（那要晚得多），
+      // 但**正在跑的那一轮不受影响**（它用的是自己 accept 时的快照）。别把前者写成
+      // 「即时生效」而不给限定，那会让人以为连在飞的那轮也会跟着变。
+      //
+      // 没有 state 时**不报错也不抛**（与相邻的 `diagnoseEnabled` 同口径）：压缩设置是全局的，
+      // 真有这种情形也只是这一条被丢掉，该会话下次 init 会带上正确值——为一次「改设置」
+      // 弹一条错误给用户，是拿噪声换不来任何正确性。顺带说明：`#post` 在 worker ready 之前
+      // 会把命令排队、ready 后按序补发（ready 发在 `init()` 末尾，那时 state 已就绪），
+      // 所以实际上几乎到不了这个分支。
+      await state?.harness.setCompactionSettings(command.config, context);
+      return;
+    }
+
     case "diagnoseEnabled": {
       state?.diagnose.setEnabled(command.enabled);
       return;

@@ -25,11 +25,14 @@ import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol"
 import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getDiagnoseEnabled } from "./diagnose-config";
+import { getCompactionConfig } from "./compaction-config";
 import { getSecret } from "./secrets";
 import { buildWorkerEnv, collectWorkerControl } from "./lib/worker-env";
 import { resolveRgPath } from "./lib/rg-path";
 import { listProviders } from "./providers";
 import { toProviderDirectory } from "@shared/provider-directory";
+import { deriveSessionTitle } from "@shared/session-title";
+import type { CompactionConfig } from "@shared/compaction-config";
 // 无需密钥的服务（requiresKey === false）装配时占位用的假密钥：pi-ai 的 openai-completions
 // 层无法表达「这个服务不需要鉴权」，apiKey 为空会直接抛「No API key for provider」。
 // 真源在 shared（`providerKey` 宿主能力也要用同一份），这里直接用它的名字。
@@ -905,10 +908,13 @@ export class SessionManager {
           entry.view = this.#withDbChanges(message.view);
           entry.running = message.view.running;
           entry.lastActiveAt = Date.now();
-          // 用首条用户消息作为会话标题
-          const firstUser = message.view.messages.find((item) => item.role === "user");
-          const title = firstUser?.text.slice(0, 30);
-          touchSession(options.sessionId, message.view.messages.length, title);
+          // 用首条用户消息作为会话标题（派生规则在 `@shared/session-title`，
+          // 渲染层侧栏用的是同一个函数——两边各写一遍就是「界面与侧栏标题不一致」的来源）
+          touchSession(
+            options.sessionId,
+            message.view.messages.length,
+            deriveSessionTitle(message.view.messages),
+          );
           this.#emit("session.view", entry.view);
           break;
         }
@@ -1198,6 +1204,9 @@ export class SessionManager {
       rgPath: resolveRgPath(),
       // 写后诊断开关：全局设置，worker 侧 after_tool 行为的初值（运行中变更走 diagnoseEnabled 命令）
       diagnoseEnabled: getDiagnoseEnabled(),
+      // 自动压缩配置：全局设置。**总是给**（读取有默认值兜底）——界面显示的「当前生效值」
+      // 必须就是 worker 真正在用的那份，否则显示的是假的（运行中变更走 setCompaction 命令）
+      compaction: getCompactionConfig(),
     } satisfies WorkerCommand);
 
     await readyDeferred.promise;
@@ -1355,6 +1364,24 @@ export class SessionManager {
       } catch (error) {
         // 单个 worker 投递失败不拖累其余：它下次 init 会拿到正确值
         console.error("[session] 下发写后诊断开关失败", sessionId, error);
+      }
+    }
+  }
+
+  /**
+   * 压缩设置变更（设置页）：落库由 ipc 层做（全局设置、非会话状态），这里只把新值推给
+   * **池中全部** worker——压缩策略是全局的。不在池中的会话下次 init 自会带上新值。
+   *
+   * 与 `broadcastDiagnoseEnabled` 同一形态，但**多一个动作**：worker 侧收到后要调内核的
+   * `harness.setCompactionSettings`，而不是只改自己的一个变量（后者下次压缩才会被读到）。
+   */
+  broadcastCompactionConfig(config: CompactionConfig): void {
+    for (const sessionId of this.#workers.keys()) {
+      try {
+        this.#post(sessionId, { type: "setCompaction", config });
+      } catch (error) {
+        // 单个 worker 投递失败不拖累其余：它下次 init 会拿到正确值
+        console.error("[session] 下发压缩设置失败", sessionId, error);
       }
     }
   }

@@ -459,11 +459,14 @@ export function Conversation({
 
   // 会话头展示工作目录的 git 分支（规则 ②-B）；非仓库或读取失败则隐藏。
   // 用户可能在应用外部切换分支，故除 cwd 变化外，窗口重新获焦时也刷新一次。
+  //
+  // 根由主进程按 sessionId 反查（草稿会话也认，见主进程的 `resolveSessionRootOrDraft`），
+  // 这里**不再传 cwd**——`cwd` 仍然留在依赖里：它在起手态换项目时会变，那是「该重查」的信号。
   useEffect(() => {
     let disposed = false;
     const refresh = (): void => {
       void window.colt
-        .invoke("git.status", { cwd })
+        .invoke("git.status", { sessionId })
         .then((next) => {
           if (!disposed) setGit(next);
         })
@@ -478,7 +481,7 @@ export function Conversation({
       disposed = true;
       window.removeEventListener("focus", refresh);
     };
-  }, [cwd]);
+  }, [sessionId, cwd]);
 
   // 内嵌浏览器：订阅视图状态；agent 首次使用浏览器时自动切到「浏览器」页签（规则 ⑦-F）。
   // ⑦-C（视野跳跃为零）在此场景优先于 ⑦-D（不抢焦）——新现场的开始必须被看到。

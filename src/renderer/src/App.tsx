@@ -35,6 +35,7 @@ import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } from "@shared/protocol";
+import { deriveSessionTitle } from "@shared/session-title";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { Conversation } from "./features/Conversation";
 import { dropCachedView } from "./features/Conversation/view-cache";
@@ -313,7 +314,9 @@ export default function App(): React.JSX.Element {
   // （若只靠当前会话的回调，未选中的会话永远停在「新会话」）
   useEffect(() => {
     return window.colt.on("session.view", (view) => {
-      const firstUser = view.messages.find((item) => item.role === "user");
+      // 标题派生与主进程落库用的是**同一个函数**（`@shared/session-title`）：
+      // 两处各写一遍同一条 `slice(0, 30)` 就迟早会漂开，而那是静默的不一致。
+      const derivedTitle = deriveSessionTitle(view.messages);
       setSessionsByProject((map) => {
         const next = new Map(map);
         for (const [projectId, list] of next) {
@@ -324,7 +327,7 @@ export default function App(): React.JSX.Element {
               item.id === view.sessionId
                 ? {
                     ...item,
-                    title: firstUser?.text.slice(0, 30) || item.title,
+                    title: derivedTitle ?? item.title,
                     messageCount: view.messages.length,
                     updatedAt: Date.now(),
                   }
