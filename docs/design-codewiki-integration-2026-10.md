@@ -204,11 +204,13 @@ MCP 那 10 个工具的实际分工（读的是 `codewiki/mcp/server.py`）：
 
 ### P2 · 只读浏览（面板 + 一行指针，零 MCP 依赖）
 
-> **实施状态（2026-10-17，分支 `feat/wiki-panel`）**：面板、读取层、IPC 已落地；
-> `transform_context` 注入尚未做，独立成一次改动。
-> 实际落点：`shared/wiki.ts`（目录唯一真源）、`main/wiki/read.ts`、`protocol.ts` 两通道、
-> `renderer/.../panels/WikiPanel.tsx` + `MermaidBlock.tsx` + `lib/wiki-link.ts`、
-> `WorkspaceDock.tsx` 加 `wiki` 视图、`tests/wiki-read.test.ts` + `tests/wiki-link.test.ts`。
+> **实施状态（2026-10-18，分支 `feat/wiki-panel`）**：P2 全部落地，含 `transform_context` 注入。
+> 实际落点：`shared/wiki.ts`（目录唯一真源）、`shared/wiki-tree.ts`（布局规则，主进程与 worker 共用
+> ——这条是实施中补的：两处各写一遍「模块 → 页面」的映射，CodeWiki 的两种布局迟早在其中一处漏掉）、
+> `shared/wiki-map.ts`（纯渲染的注入块）、`worker/lib/wiki-map.ts`（读盘 + mtime 短路 + git 新鲜度 TTL）、
+> `main/wiki/read.ts`、`protocol.ts` 两通道、`renderer/.../panels/WikiPanel.tsx` + `MermaidBlock.tsx`
+> + `lib/wiki-link.ts`、`WorkspaceDock.tsx` 加 `wiki` 视图、
+> `tests/wiki-read.test.ts` + `tests/wiki-link.test.ts` + `tests/wiki-map.test.ts`。
 > 与计划的差异：`mermaid` 成为新增依赖（`^11.17.2`）——构建后按需分包（core 1.2MB 的
 > 懒加载 chunk，不进首屏），`pre` 渲染器改成「mermaid → 画图，其余 → 原 CodeBlock」。
 
@@ -221,8 +223,8 @@ MCP 那 10 个工具的实际分工（读的是 `codewiki/mcp/server.py`）：
 | `main/ipc/index.ts` | 2 个 `handle(...)`，根由 `sessionId → 项目` 推（**不允许渲染层传根**） | +14 ✅ |
 | `renderer/.../panels/WikiPanel.tsx` | 模块树 + Markdown + Mermaid（动态 `import("mermaid")`）+ 状态条 | +330 ✅ |
 | `renderer/.../WorkspaceDock.tsx` | `DockKind` 加 `"wiki"`，`DOCK_KIND_META` 加标题/图标；加「+」菜单出口 | +18 ✅ |
-| `worker/entry.ts` | `transform_context` 里注入模块地图（+一句「用 read/grep 读某页」） | +35 ⬜ 未做 |
-| `tests` | 读取层与链接归一的单测 26 条；`tests/smoke` dock 模式的菜单断言由 6 项放宽到 7 项 | +15 ✅ |
+| `worker/entry.ts` + `worker/lib/wiki-map.ts` | `transform_context` 里注入模块地图（+一句「用 read 读某页」）；mtime 短路、git 新鲜度 5 分钟 TTL、无产物不注入 | +180 ✅ |
+| `tests` | 读取层 / 链接归一 / 注入块的用例 44 条；`tests/smoke` dock 模式的菜单断言由 6 项放宽到 7 项 | +15 ✅ |
 
 面板必须自己处理的三个细节（都是本次实测撞出来的）：
 

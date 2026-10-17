@@ -114,6 +114,7 @@ import { createMcpRuntime, mcpUserHome, type McpRuntime } from "./lib/mcp-tools"
 import { armLateMcpAttach, composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
 import { createDiagnoseController, type DiagnoseController } from "./lib/diagnose";
 import { systemPrompt } from "./lib/system-prompt";
+import { createWikiMapInjector } from "./lib/wiki-map";
 import { toImageContent } from "./lib/attachments";
 import {
   createAgentsMdInjector,
@@ -359,6 +360,13 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     send({ type: "notice", message, kind: "security" }),
   );
 
+  // 仓库 Wiki（`docs/wiki/`，可选产物）：把「模块 → 页面」索引进提示词。
+  // 有产物才注入、按 mtime 短路、git 新鲜度按 5 分钟 TTL —— 三条都在 lib/wiki-map.ts 里说明。
+  // 读取失败走普通通知而非 security：它不涉及信任边界，只是「地图没铺上」。
+  const wikiMapInjector = createWikiMapInjector(cwd, (message) =>
+    send({ type: "notice", message }),
+  );
+
   // 双级记忆（.colt/memory.md + ~/.colt/memory.md）：助手自己维护的跨会话记忆，
   // 项目级记项目内的事实，用户级记跨项目成立的偏好与习惯。
   // 这里只装载与告知；真正的注入在下面的 transform_context——每次模型请求重读，
@@ -558,6 +566,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     // 逐字相同，提示词缓存照常命中；空清单不产出任何东西（`renderTodoBlock` 的口径）。
     const todoBlock = renderTodoBlock(todoMirror);
     if (todoBlock !== "") withContext = `${withContext}\n\n${todoBlock}`;
+    // 仓库 Wiki 索引（每请求）：产物由外部生成，可能在会话中途被重写——按 mtime 短路重读，
+    // 内容没变时拼出的串逐字相同，提示词缓存照常命中。没有产物就一个字都不加。
+    withContext = await wikiMapInjector.systemPromptFor(withContext);
     // 子代理目录：**必须应用自己拼**——内核的 AgentTool 没有任何「往提示词里塞清单」的钩子，
     // 不拼的话模型根本不知道有哪些子代理可用，而装载/告警/计数全绿（§四那次翻车的同族）。
     // 只在主 lane 注入：注进子 lane 会暗示递归（而递归是明令禁止的）。

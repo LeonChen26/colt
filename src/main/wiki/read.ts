@@ -28,7 +28,8 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { join, resolve } from "node:path";
 import { isWithinRoot } from "../lib/path-guard";
 import { WIKI_DIR } from "@shared/wiki";
-import type { WikiPage, WikiStatus, WikiTreeNode } from "@shared/protocol";
+import { buildWikiTree, isRecord } from "@shared/wiki-tree";
+import type { WikiPage, WikiStatus } from "@shared/protocol";
 
 /** 产物目录（相对项目根）由 `@shared/wiki` 定义——渲染层做页内链接时用的是同一个值 */
 export { WIKI_DIR };
@@ -84,42 +85,9 @@ function readJsonFile(path: string): { value: unknown; error: string | null } {
 /**
  * 找一个模块节点对应的页面文件。
  *
- * 候选顺序照抄 CodeWiki `doc_layout` 的两条规则（`page_path`）：
- *   - hierarchical：`<父模块…>/<本模块>.md`
- *   - flat：`<本模块>.md`（小仓库用 `--flat`，所有页都在根）
- * 先 hierarchical 再 flat：两种布局并存时优先信息更全的那个。
+ * 候选顺序与树的构建规则**都在 `@shared/wiki-tree`**——worker 的提示词注入用的是同一份，
+ * 两处各写一遍的话，「哪个模块对应哪个文件」早晚分叉（见该模块头部的说明）。
  */
-function pageFor(dirAbs: string, names: string[]): string | null {
-  const name = names[names.length - 1] ?? "";
-  if (name === "") return null;
-  const candidates = [`${names.join("/")}.md`, `${name}.md`];
-  for (const rel of candidates) {
-    if (existsSync(join(dirAbs, rel))) return `${WIKI_DIR}/${rel}`;
-  }
-  return null;
-}
-
-/** `module_tree.json` 的一个节点：`{ path, components, children }`（其它键一律忽略） */
-interface RawNode {
-  children?: unknown;
-  [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function buildNodes(dirAbs: string, raw: Record<string, unknown>, parents: string[]): WikiTreeNode[] {
-  const nodes: WikiTreeNode[] = [];
-  for (const [title, value] of Object.entries(raw)) {
-    const names = [...parents, title];
-    const childrenRaw = isRecord(value) ? (value as RawNode).children : undefined;
-    const children = isRecord(childrenRaw) ? buildNodes(dirAbs, childrenRaw, names) : [];
-    nodes.push({ title, page: pageFor(dirAbs, names), children });
-  }
-  return nodes;
-}
-
 /** 递归数 `*.md`（跳过 `temp/` 与隐藏目录） */
 function countPages(dirAbs: string): number {
   let total = 0;
@@ -214,7 +182,7 @@ export async function readWikiStatus(root: string): Promise<WikiStatus> {
     const { value, error } = readJsonFile(treeAbs);
     if (error !== null) status.error = status.error ?? error;
     else if (!isRecord(value)) status.error = status.error ?? `${TREE_FILE} 的结构不是对象`;
-    else status.tree = buildNodes(dirAbs, value, []);
+    else status.tree = buildWikiTree(value, (rel) => existsSync(join(dirAbs, rel)));
   }
 
   Object.assign(status, await staleness(rootAbs, status.commit));

@@ -1411,6 +1411,35 @@ export async function runDock(
     await sleep(250);
     checks.push(["点菜单外即收起「+」菜单", (await probe()).menuItems.length === 0]);
 
+    // ---- v1.79：「Wiki」页签（消费 CodeWiki 产物）----
+    // 冒烟项目就是本仓库，而**仓库根没有 docs/wiki**——所以这一趟只能验「空态」这条腿：
+    // 页签开得出来、面板说清「还没生成 + 怎么生成」、不是白屏也不是崩溃。
+    // 有产物那条腿由 `tests/wiki-read.test.ts` 造目录覆盖：那是纯函数层，比往仓库里
+    // 写一份产物干净得多（写完还得清，清漏了就变成「冒烟改动了工作区」）。
+    await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
+    await sleep(300);
+    checks.push(["「+」菜单里点到「Wiki」就真的打开（kind=wiki 不是死入口）", await clickMenuItem("wiki")]);
+    await sleep(600);
+    const wikiProbe = await run<{ label: string; text: string }>(`(() => {
+      const aside = [...document.querySelectorAll("aside")].find((a) =>
+        a.querySelector('button[aria-label="折叠工作区"], button[aria-label="展开工作区"]'));
+      return {
+        label: (aside?.querySelector('[data-dock-tab][aria-pressed="true"]')?.textContent ?? "").trim(),
+        text: document.body.innerText,
+      };
+    })()`);
+    checks.push(["「Wiki」成为激活页签", wikiProbe.label.includes("Wiki")]);
+    checks.push([
+      "没有 docs/wiki 时给的是「还没生成 + 一条能跑的命令」，不是白屏",
+      wikiProbe.text.includes("还没有 wiki 产物") && wikiProbe.text.includes("codewiki generate"),
+    ]);
+    // 关掉再往下走：后面的用例按页签计数断言（此刻应是 2），留着 wiki 就把计数带偏了
+    checks.push(["「Wiki」页签可关闭（closable，不在默认视图里）", await clickInDock(
+      `b.getAttribute("aria-label") === "关闭Wiki"`,
+    )]);
+    await sleep(400);
+    checks.push(["关掉「Wiki」后页签回到 2（激活位交还「任务摘要」）", (await probe()).tabCount === 2]);
+
     // 关闭**当前激活**的页签：数量减 1、激活位交还默认视图、原生视图必须收起
     await clickInDock(`b.textContent.trim() === "浏览器"`);
     await sleep(500);
