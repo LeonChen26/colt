@@ -1386,9 +1386,9 @@ export async function runDock(
     await sleep(300);
     const menu = await probe();
     checks.push([
-      "「+」菜单只列真的存在的视图（browser/files/terminal/usage/rules/events，共 6 项）",
-      menu.menuItems.length === 6 &&
-        ["browser", "files", "terminal", "usage", "rules", "events"].every((kind) =>
+      "「+」菜单只列真的存在的视图（browser/files/terminal/usage/rules/events/wiki，共 7 项）",
+      menu.menuItems.length === 7 &&
+        ["browser", "files", "terminal", "usage", "rules", "events", "wiki"].every((kind) =>
           menu.menuItems.includes(kind),
         ),
     ]);

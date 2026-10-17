@@ -31,6 +31,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Activity,
+  BookOpen,
   ChartColumn,
   ChevronLeft,
   ChevronRight,
@@ -61,9 +62,18 @@ import { RulesPanel } from "./panels/RulesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { EventsPanel } from "./panels/EventsPanel";
 import { TerminalPanel } from "./panels/TerminalPanel";
+import { WikiPanel } from "./panels/WikiPanel";
 
 /** 视图类型（kind）：决定页签里渲染什么内容 */
-export type DockKind = "follow" | "browser" | "files" | "terminal" | "usage" | "rules" | "events";
+export type DockKind =
+  | "follow"
+  | "browser"
+  | "files"
+  | "terminal"
+  | "usage"
+  | "rules"
+  | "events"
+  | "wiki";
 
 /**
  * 一个**已打开**的视图实例（规则 ⑦-B：⑦ 是可插拔容器，「任务摘要」只是默认视图）。
@@ -121,6 +131,10 @@ const DOCK_KIND_META: Record<
   // F3：安全事件流（技能装载告警、同名覆盖、读取失败等）。它们发生时只弹 5 秒 toast、
   // 无从回查——主进程把它们同时落库（session_events），这个页签是持久记录的回看入口。
   events: { label: "事件", Icon: ShieldAlert, closable: true, desc: "本次会话的安全事件记录，重启后仍可回看" },
+  // CodeWiki 仓库文档（docs/wiki）：只读呈现「模块树 → 页面」。
+  // 与「文件」页签分工：那边是「项目里有什么文件」，这边是「这些模块在讲什么」——
+  // 不做文件树、不做搜索，避免两个入口职责重叠（AGENTS.md §3.6）。
+  wiki: { label: "Wiki", Icon: BookOpen, closable: true, desc: "仓库模块文档（CodeWiki 生成的 docs/wiki）" },
 };
 
 /** 该视图能否关闭（⑦-E：默认视图不可关闭） */
@@ -861,6 +875,8 @@ export function WorkspaceDock({
         <RulesPanel sessionId={sessionId} />
       ) : activeKind === "events" ? (
         <EventsPanel sessionId={sessionId} />
+      ) : activeKind === "wiki" ? (
+        <WikiPanel sessionId={sessionId} />
       ) : drillRequest !== null ? (
         /* 下钻中（⑦-G）：清单 → diff → 内容。只在「任务摘要」这一页签内成立 */
         <ChangeDrilldown

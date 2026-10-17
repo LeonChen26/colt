@@ -376,6 +376,8 @@ export const IPC_CHANNELS = [
   "terminal.input",
   "terminal.resize",
   "terminal.close",
+  "wiki.status",
+  "wiki.page",
 ] as const;
 
 /**
@@ -390,6 +392,64 @@ export type FileReadResult =
   | { kind: "image"; dataUrl: string; size: number }
   | { kind: "binary"; size: number }
   | { kind: "too-large"; size: number; limit: number };
+
+/**
+ * 仓库文档（CodeWiki 产物）的一个模块节点。
+ *
+ * `title` 是 `module_tree.json` 的键**原样**——它同时是页面标题与页签里的层级名，
+ * 不做 slug 化：产物里的文件名就是按这个键拼的（`doc_layout` 的 hierarchical / flat），
+ * 两边一旦各做一套归一化，就会「树上有、点了 404」。
+ *
+ * `page` 是**相对项目根**的路径（如 `docs/wiki/overview.md`），不是相对 wiki 目录——
+ * 渲染层拿到它可以直接喂给 `file.read`，也可以原样做面包屑，不必知道 wiki 目录在哪。
+ * 为 `null` 表示这个模块**没有页面**（旧版产物、或树上登记了但生成中断），界面要显示
+ * 「无页面」而不是画一个点了没反应的条目（死控件的教训，见 AGENTS.md §3.6）。
+ */
+export interface WikiTreeNode {
+  title: string;
+  page: string | null;
+  children: WikiTreeNode[];
+}
+
+/**
+ * `docs/wiki/` 的现状（`wiki.status` 的返回）。
+ *
+ * 为什么把这些字段放在一条通道里：面板的三种空/异常态（没生成、生成了但过期、
+ * 生成了但树坏了）都靠这一份快照区分，分开查必然出现「页面数说 12、树说 0」这种
+ * 自相矛盾的画面。
+ *
+ * `behind` 的 `null` 有明确语义：**比较不了**（不是 git 仓库 / 生成时那个提交不在历史里），
+ * 与 `0`（与 HEAD 一致）必须分开——把「不知道」显示成「最新」是这一层最容易犯的谎。
+ */
+export interface WikiStatus {
+  /** 项目里是否存在 `docs/wiki/`；false 时其余字段一律是空值 */
+  present: boolean;
+  /** 固定为 `docs/wiki`（相对项目根）——给界面写空态文案用，不随调用方变 */
+  dir: string;
+  /** 概览页（`docs/wiki/overview.md`）的路径；没有则为 null */
+  overview: string | null;
+  /** `metadata.json` 里记录的生成时间（原样字符串，不猜格式） */
+  generatedAt: string | null;
+  /** 生成时记录的提交；手工产物 / 旧版没有这一项 */
+  commit: string | null;
+  /** 当前 HEAD；非仓库或读取失败为 null */
+  head: string | null;
+  /** 落后多少个提交；无法比较为 null */
+  behind: number | null;
+  /** 页面总数（`*.md`，不含 `temp/` 里的依赖图） */
+  pages: number;
+  tree: WikiTreeNode[];
+  /** 产物读到了但有问题时的说明（缺 `module_tree.json`、JSON 损坏）；不影响 present */
+  error: string | null;
+}
+
+/** 一页 wiki 的正文（`wiki.page` 的返回） */
+export interface WikiPage {
+  /** 相对项目根的路径，原样回显（与请求的写法一致） */
+  path: string;
+  text: string;
+  size: number;
+}
 
 /**
  * 一个文件在**本次会话**里的净变化（`file.netDiff` 的返回）：基线 → 现在。
@@ -1039,6 +1099,22 @@ export interface IpcInvokeMap {
   "file.list": {
     request: { sessionId: string; path: string };
     response: { entries: FsEntry[]; truncated: boolean; hidden: string[] };
+  };
+  /**
+   * 仓库文档（`docs/wiki/`）的现状。
+   *
+   * 只收 `sessionId`：wiki 目录**固定**在会话所属项目根下，根由主进程反查
+   * （与 `file.read` / `git.status` 同一条不变量——渲染层渲染的是 agent 生成的
+   * Markdown，是不可信来源，不能让它指哪读哪）。
+   */
+  "wiki.status": {
+    request: { sessionId: string };
+    response: WikiStatus;
+  };
+  /** 读一页 wiki 正文；`path` 只能是 `wiki.status` 给过的那些路径 */
+  "wiki.page": {
+    request: { sessionId: string; path: string };
+    response: WikiPage;
   };
   /**
    * 打开（或复用）会话的交互终端（「终端」页签）。

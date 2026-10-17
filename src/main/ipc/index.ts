@@ -53,6 +53,7 @@ import { isDefaultCompactionConfig } from "@shared/compaction-config";
 import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
 import { listDirWithin } from "../file-list";
+import { readWikiPage, readWikiStatus } from "../wiki/read";
 import { computeNetChange } from "../net-change";
 import { closeDatabase, openDatabase } from "../db";
 import { closeMemoryDatabase, openMemoryDatabase } from "../db/memory-index";
@@ -948,6 +949,19 @@ export function registerIpcHandlers(): void {
   /** 「文件」页签的懒加载树：列项目内某目录的一层。边界与 file.read 同一套（根只由主进程推导） */
   handle("file.list", (request) => {
     return listDirWithin(resolveSessionRoot(request.sessionId), request.path);
+  });
+
+  // ---- 「Wiki」页签：读 CodeWiki 的产物（docs/wiki）。根同样只由主进程推 ----
+  //
+  // 只读、不生成：生成要花模型额度且会改工作区，属于「用户显式动作」，
+  // 不走 IPC 随手一个调用就能触发的形态（见 docs/design-codewiki-integration-2026-10.md §5 D9）。
+
+  handle("wiki.status", (request) => {
+    return readWikiStatus(resolveSessionRoot(request.sessionId));
+  });
+
+  handle("wiki.page", (request) => {
+    return readWikiPage(resolveSessionRoot(request.sessionId), request.path);
   });
 
   // ---- 「终端」页签：shell 跑在会话所属项目根下（同 file.read 的根推导，渲染层不能指定）----

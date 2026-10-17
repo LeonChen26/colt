@@ -21,7 +21,7 @@ function InlineCode({ children }: { children?: ReactNode }): React.JSX.Element {
 }
 
 /** 围栏代码块：语言标签 + 复制按钮 + 高亮后的代码 */
-function CodeBlock({ children }: { children?: ReactNode }): React.JSX.Element {
+export function CodeBlock({ children }: { children?: ReactNode }): React.JSX.Element {
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
 
@@ -79,13 +79,28 @@ const COMPONENTS: Components = {
   },
 };
 
-export function Markdown({ children }: { children: string }): React.JSX.Element {
+/**
+ * Markdown 渲染。
+ *
+ * `components` 是**增量覆盖**：只替换传进来的那几个节点，其余仍走默认实现。
+ * 需要它的是「Wiki」页签——那里的 ```mermaid 要画成图、页内相对链接要留在应用内
+ * （默认的 `a` 是 `target="_blank"`，点了会把 `.md` 当外链丢给系统浏览器，一定是 404）。
+ * 助手消息不传这个参数，行为与之前逐字一致。
+ */
+export function Markdown({
+  children,
+  components,
+}: {
+  children: string;
+  components?: Components;
+}): React.JSX.Element {
+  const merged = components === undefined ? COMPONENTS : { ...COMPONENTS, ...components };
   return (
     <div className="md">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
-        components={COMPONENTS}
+        components={merged}
       >
         {children}
       </ReactMarkdown>
