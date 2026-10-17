@@ -17,9 +17,18 @@ import type {
 import type { ThinkingLevel } from "./thinking-level";
 import type { CompactionConfig } from "./compaction-config";
 import type { ToolImageResult } from "./tool-output";
+import type { McpCatalogView, McpInstallProgress, McpInstallResult } from "./mcp-catalog";
 
 /** MCP server 现状的契约定义在 `@shared/worker-protocol`，这里转出去方便界面一处 import */
 export type { McpServerView } from "./worker-protocol";
+/** 内置可选 MCP 目录的视图类型（设置页「可选安装」分区用） */
+export type {
+  McpCatalogView,
+  McpInstallProgress,
+  McpInstallResult,
+  McpInstallStep,
+  McpPresetState,
+} from "./mcp-catalog";
 /** 技能装载现状同理（设置页「技能」分区用） */
 export type { SkillsStatus } from "./worker-protocol";
 
@@ -325,6 +334,9 @@ export const IPC_CHANNELS = [
   "providers.remove",
   "mcp.status",
   "mcp.reload",
+  "mcp.catalog",
+  "mcp.install",
+  "mcp.uninstall",
   "skills.status",
   "skills.rescan",
   "skills.setDisabled",
@@ -850,6 +862,38 @@ export interface IpcInvokeMap {
     response: { servers: McpServerView[]; live: boolean; diagnostics: string[] };
   };
   /**
+   * 内置可选 MCP 目录（设置页「可选安装」分区）：每一项的安装态 + 四连检读数。
+   *
+   * 为什么由主进程算而不是渲染层算：探测要 spawn（Python / git 版本查询），渲染层没有
+   * Node 能力；而且这份结论要被「安装」这一步复用，两处各算一遍必然对不上。
+   *
+   * `request: void` 是因为目录是**全局**的（装在 `~/.colt/mcp.json`，对全部项目生效）——
+   * 与 `mcp.status`（按项目）刻意不同：把项目 id 传进来只会让人误以为它是项目级配置。
+   */
+  "mcp.catalog": {
+    request: void;
+    response: McpCatalogView;
+  };
+  /**
+   * 安装一个内置项：建独立 venv → pip 装钉住的版本 → 复检 → 写**用户级**配置。
+   *
+   * 这是一个**几分钟级**的调用（首次要下包），期间通过 `mcp.installProgress` 事件逐步
+   * 推进度。写用户级配置前界面必须已把「对全部项目生效」说清（P1 纪律 ③）——同意是
+   * 界面的责任，这里只负责照做。
+   */
+  "mcp.install": {
+    request: { id: string };
+    response: McpInstallResult;
+  };
+  /**
+   * 卸载一个内置项。
+   * `removeRuntime` 默认 false：只删我们那条配置声明，运行时留着——重装是秒级。
+   */
+  "mcp.uninstall": {
+    request: { id: string; removeRuntime?: boolean };
+    response: McpInstallResult;
+  };
+  /**
    * 查某项目**当前会话**装载到的技能（设置页「技能」分区）。
    *
    * 与 MCP 那条不同：技能清单是内核 loader 的产物，主进程不自己扫盘复刻，只把问题转给
@@ -1296,6 +1340,7 @@ export const IPC_EVENTS = [
   "browser.state",
   "terminal.output",
   "terminal.exit",
+  "mcp.installProgress",
 ] as const;
 
 /** 主进程 → 渲染进程的推送通道（类型真源） */
@@ -1335,6 +1380,11 @@ export interface IpcEventMap {
   "terminal.output": { sessionId: string; data: string; seq: number };
   /** 终端进程退出（用户敲了 exit / shell 崩了）；exitCode 为 null 表示被信号杀死 */
   "terminal.exit": { sessionId: string; exitCode: number | null };
+  /**
+   * 可选 MCP 的安装进度（逐步推送）。一次安装要几分钟，没有这个事件界面只能干等；
+   * 失败时也要靠它指出**哪一步**红，而不是笼统的「安装失败」。
+   */
+  "mcp.installProgress": McpInstallProgress;
 }
 
 export type IpcEventName = keyof IpcEventMap;

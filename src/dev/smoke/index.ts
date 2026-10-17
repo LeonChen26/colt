@@ -18,6 +18,9 @@
  * mcp-real：真实**第三方** server 版（打模型；本地 Ollama 免费，云端计费）——场景由
  *       COLT_SMOKE_MCP_SCENARIO 选（filesystem / pi-lens），验「真 server 的工具名逐字落到
  *       审批卡」与「真 stdio 往返」；pi-lens 场景另印证「自带 MCP server 的第三方扩展可直连」
+ * mcp-catalog：内置**可选安装**目录的界面与 IPC（**不打模型、不计费、不装任何东西**）——
+ *       设置页里真有那一行、四连检四项都摆出来、没装时没有「卸载」、打开页面不写用户级配置；
+ *       只断言结构不断言探测结论（结论随机器而变，各分支由 `tests/mcp-catalog.test.ts` 钉住）
  * mcp-reload：MCP 的**配置热重载 + 设置页可见性**链路（**不打模型、不计费**）——两版配置
  *       现写现 reload：冷启动装载 → 加 server（分页那支在真 worker 里也收全）→ 删 server
  *       （连工具一起消失，同一 worker 不重启）；再验 `mcp.status` / `mcp.reload` 两个 IPC 的
@@ -111,6 +114,7 @@ import { runHost } from "./modes/host";
 import { runMemory, runMemoryE2e } from "./modes/memory";
 import { runMcpE2e } from "./modes/mcp-e2e";
 import { runMcpReal } from "./modes/mcp-real";
+import { runMcpCatalog } from "./modes/mcp-catalog";
 import { runMcpReload } from "./modes/mcp-reload";
 import { runSkillsReload } from "./modes/skills-reload";
 import { runSubagentE2e } from "./modes/subagent-e2e";
@@ -267,6 +271,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runMcpReal(window, log, run);
     } else if (mode === "mcp-reload") {
       await runMcpReload(window, log, run);
+    } else if (mode === "mcp-catalog") {
+      await runMcpCatalog(window, log, run);
     } else if (mode === "skills-reload") {
       await runSkillsReload(window, log, run);
     } else if (mode === "subagent-e2e") {

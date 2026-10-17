@@ -18,7 +18,16 @@ import {
   Trash2,
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
-import type { McpServerView, ModelOption, Project, ProviderConfig, SkillsStatus } from "@shared/protocol";
+import type {
+  McpCatalogView,
+  McpInstallStep,
+  McpPresetState,
+  McpServerView,
+  ModelOption,
+  Project,
+  ProviderConfig,
+  SkillsStatus,
+} from "@shared/protocol";
 import type { ViewSkillDetail } from "@shared/worker-protocol";
 import { DEFAULT_CONTEXT_WINDOW, LEGACY_MAX_TOKENS } from "@shared/model-option";
 import {
@@ -118,6 +127,7 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
         <ApprovalPolicySettings onSaved={notify} onError={fail} />
         <CompactionSettings onSaved={notify} onError={fail} />
         <DiagnoseSettings onSaved={notify} onError={fail} />
+        <McpCatalogSettings project={project} />
         <McpSettings project={project} />
         <SkillSettings project={project} />
       </div>
@@ -536,6 +546,324 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 内置可选 MCP 目录（P1）：一行一个可选项，可选安装 / 卸载，四连检就地可见。
+ *
+ * 这一段的规矩（`docs/design-codewiki-integration-2026-10.md` §4 P1）：
+ * - **默认不装**。Colt 不替用户往机器上装 Python 环境；「可选」必须是真的可选。
+ * - **必须可见**。所以它就在设置页里、带着探测结论——不是隐形控件，也不是点了没反应的死控件：
+ *   缺什么、差哪个版本、下一步敲哪条命令，全在这一行里说完。
+ * - **写用户级配置要显式同意**。`~/.colt/mcp.json` 对**全部项目**生效，安装前用原生确认框
+ *   把这句话说清楚（不用 `window.confirm`：它会让页面失焦，见 `dialog.confirm` 的注释）。
+ * - **卸载分两档**：默认只删我们那条声明、保留运行时（重装秒回）；勾选后才连运行时一起清。
+ */
+function McpCatalogSettings({ project }: { project: Project | null }): React.JSX.Element {
+  const [catalog, setCatalog] = useState<McpCatalogView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  /** 正在安装 / 卸载的 preset id（同一时刻只做一件，避免两条流水线抢同一个 venv 目录） */
+  const [busy, setBusy] = useState<string | null>(null);
+  /** 每个 preset 的步骤流水：进度事件按 id 覆盖，最终结果整份替换 */
+  const [steps, setSteps] = useState<Record<string, McpInstallStep[]>>({});
+  /** 卸载时是否连运行时一起清（默认否——那是「重装秒回」的前提） */
+  const [purgeRuntime, setPurgeRuntime] = useState(false);
+  const projectId = project?.id;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const view = await window.colt.invoke("mcp.catalog", undefined);
+      setCatalog(view);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // 安装是分钟级的：没有进度事件，界面只能挂着一个转圈，用户会以为卡死
+  useEffect(
+    () =>
+      window.colt.on("mcp.installProgress", (payload) => {
+        setSteps((previous) => {
+          const list = previous[payload.presetId] ?? [];
+          const index = list.findIndex((step) => step.id === payload.step.id);
+          const next = [...list];
+          if (index === -1) next.push(payload.step);
+          else next[index] = payload.step;
+          return { ...previous, [payload.presetId]: next };
+        });
+      }),
+    [],
+  );
+
+  const install = async (preset: McpPresetState): Promise<void> => {
+    const { confirmed } = await window.colt.invoke("dialog.confirm", {
+      message: `安装「${preset.name}」？`,
+      detail:
+        `会做两件事：① 在 ${preset.configPath} 里加一条 ${preset.name} 的 server 声明` +
+        `（**用户级，对全部项目生效**）；② 在 Colt 的数据目录里建一个独立的 Python 运行时，` +
+        `用 pip 装钉住的版本（首次要下载几十 MB）。不装不影响任何现有功能，随时可以卸载。`,
+      confirmLabel: "安装",
+    });
+    if (!confirmed) return;
+    setBusy(preset.id);
+    setSteps((previous) => ({ ...previous, [preset.id]: [] }));
+    try {
+      const result = await window.colt.invoke("mcp.install", { id: preset.id });
+      setSteps((previous) => ({ ...previous, [preset.id]: result.steps }));
+      setError(result.ok ? null : result.error);
+      await load();
+      // 装好就让它对当前项目生效（不必等下一次开会话）；没有项目时只更新目录
+      if (result.ok && projectId !== undefined) {
+        await window.colt.invoke("mcp.reload", { projectId });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const uninstall = async (preset: McpPresetState): Promise<void> => {
+    const { confirmed } = await window.colt.invoke("dialog.confirm", {
+      message: `卸载「${preset.name}」？`,
+      detail: purgeRuntime
+        ? `会从 ${preset.configPath} 里删掉这一条，并把运行时目录一起清掉（下次装要重新下载）。`
+        : `只从 ${preset.configPath} 里删掉这一条，运行时留着——再装是秒级。`,
+      confirmLabel: "卸载",
+    });
+    if (!confirmed) return;
+    setBusy(preset.id);
+    setSteps((previous) => ({ ...previous, [preset.id]: [] }));
+    try {
+      const result = await window.colt.invoke("mcp.uninstall", {
+        id: preset.id,
+        removeRuntime: purgeRuntime,
+      });
+      setSteps((previous) => ({ ...previous, [preset.id]: result.steps }));
+      setError(result.ok ? null : result.error);
+      await load();
+      if (result.ok && projectId !== undefined) {
+        await window.colt.invoke("mcp.reload", { projectId });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mt-6">
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-sm">可选安装</h3>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={loading || busy !== null}
+          className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {loading ? "检查中…" : "重新检查"}
+        </button>
+      </div>
+      <p className="mb-3 text-xs text-text-muted">
+        这些是内置目录里的 MCP server：装与不装都由你决定，装之前会把「缺什么」逐项查清。
+        安装只会往用户级 <span className="font-mono">~/.colt/mcp.json</span>
+        （对全部项目生效）加一条声明，并在 Colt 自己的数据目录里建独立运行时，不碰你机器上的
+        Python 环境。
+      </p>
+
+      {error !== null && (
+        <div className="mb-3 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger-fg">
+          {error}
+        </div>
+      )}
+      {catalog?.configError != null && (
+        <div className="mb-3 rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning-fg">
+          用户级配置读不了，下面的「未安装」不可信：{catalog.configError}
+        </div>
+      )}
+
+      {catalog === null ? (
+        <McpNotice>{error === null ? "读取中…" : "目录读不到（见上）。"}</McpNotice>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {catalog.presets.map((preset) => (
+            <McpPresetCard
+              key={preset.id}
+              preset={preset}
+              busy={busy === preset.id}
+              disabled={busy !== null && busy !== preset.id}
+              steps={steps[preset.id] ?? []}
+              purgeRuntime={purgeRuntime}
+              onPurgeRuntimeChange={setPurgeRuntime}
+              onInstall={() => void install(preset)}
+              onUninstall={() => void uninstall(preset)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 一个可选安装项：状态、四连检、钉版本、动作、流水 */
+function McpPresetCard({
+  preset,
+  busy,
+  disabled,
+  steps,
+  purgeRuntime,
+  onPurgeRuntimeChange,
+  onInstall,
+  onUninstall,
+}: {
+  preset: McpPresetState;
+  busy: boolean;
+  disabled: boolean;
+  steps: McpInstallStep[];
+  purgeRuntime: boolean;
+  onPurgeRuntimeChange: (value: boolean) => void;
+  onInstall: () => void;
+  onUninstall: () => void;
+}): React.JSX.Element {
+  // 三种状态要分开说：装好且在位 / 声明在但运行时没了 / 没装。
+  // 混成一个「已安装」会让第二种情况变成一句谎话——配置指着一个不存在的路径。
+  const status = !preset.installed
+    ? { label: "未安装", className: "text-text-muted", dot: "bg-text-muted" }
+    : preset.runtime
+      ? { label: "已安装", className: "text-success-fg", dot: "bg-success" }
+      : { label: "运行时缺失", className: "text-danger", dot: "bg-danger" };
+
+  return (
+    <div data-mcp-preset={preset.id} className="rounded-lg border border-line bg-surface-raised p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm">{preset.name}</div>
+          <div className="mt-0.5 text-xs text-text-muted">{preset.tagline}</div>
+        </div>
+        <span className={cn("flex shrink-0 items-center gap-1 text-xs", status.className)}>
+          <span className={cn("h-[7px] w-[7px] rounded-full", status.dot)} />
+          {status.label}
+        </span>
+      </div>
+
+      {/* 四连检：逐项给结论。缺件时把「下一步敲什么」直接摆出来，不要求用户自己去查文档 */}
+      <div className="mt-2 flex flex-col gap-1">
+        {preset.probe.items.map((item) => (
+          <div
+            key={item.id}
+            data-mcp-probe={item.id}
+            data-mcp-probe-ok={item.ok ? "1" : "0"}
+            className="flex items-start gap-1.5 text-xs"
+          >
+            <span className={cn("mt-[5px] h-[6px] w-[6px] shrink-0 rounded-full", item.ok ? "bg-success" : "bg-warning")} />
+            <span className="w-16 shrink-0 text-text-secondary">{item.label}</span>
+            <span className={cn("min-w-0 flex-1 break-words", item.ok ? "text-text-muted" : "text-warning-fg")}>
+              {item.detail}
+              {item.hint !== null && (
+                <span className="mt-0.5 block font-mono text-text-muted">{item.hint}</span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-2 text-xs text-text-muted">
+        钉住：
+        {preset.pins.map((pin) => `${pin.label} ${pin.requirement}`).join(" · ")}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onInstall}
+          disabled={busy || disabled}
+          className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {busy ? "处理中…" : preset.installed ? "重新安装" : "安装"}
+        </button>
+        {preset.installed && (
+          <button
+            type="button"
+            onClick={onUninstall}
+            disabled={busy || disabled}
+            className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            卸载
+          </button>
+        )}
+        {preset.installed && (
+          <label className="flex items-center gap-1.5 text-xs text-text-muted">
+            <input
+              type="checkbox"
+              checked={purgeRuntime}
+              onChange={(event) => onPurgeRuntimeChange(event.target.checked)}
+              className="h-3 w-3"
+            />
+            连运行时一起清
+          </label>
+        )}
+      </div>
+      {preset.installed && <div className="mt-1.5 text-xs text-text-muted">{preset.runtimeNote}</div>}
+
+      {steps.length > 0 && (
+        <div data-mcp-steps={preset.id} className="mt-2 flex flex-col gap-1 rounded-md border border-line bg-surface-overlay px-2.5 py-2">
+          {steps.map((step) => (
+            <div key={step.id} className="flex items-start gap-1.5 text-xs">
+              <span
+                className={cn(
+                  "mt-[2px] w-10 shrink-0",
+                  step.state === "ok"
+                    ? "text-success-fg"
+                    : step.state === "failed"
+                      ? "text-danger"
+                      : step.state === "skipped"
+                        ? "text-text-muted"
+                        : "text-text-secondary",
+                )}
+              >
+                {step.state === "ok"
+                  ? "完成"
+                  : step.state === "failed"
+                    ? "失败"
+                    : step.state === "skipped"
+                      ? "跳过"
+                      : "进行中"}
+              </span>
+              <span className="min-w-0 flex-1 break-words text-text-secondary">
+                {step.label}
+                {step.detail !== null && (
+                  <span className="mt-0.5 block whitespace-pre-wrap font-mono text-text-muted">
+                    {step.detail}
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details data-mcp-manual={preset.id} className="mt-2 text-xs text-text-muted">
+        <summary className="cursor-pointer">不用一键安装？（手动命令）</summary>
+        <div className="mt-1 flex flex-col gap-1">
+          {preset.manualCommands.map((command) => (
+            <code key={command} className="break-all font-mono text-text-secondary">
+              {command}
+            </code>
+          ))}
+        </div>
+      </details>
     </div>
   );
 }

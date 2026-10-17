@@ -74,9 +74,9 @@ const GIT_SPAWN_OPTIONS = { timeout: 10_000, windowsHide: true, maxBuffer: 4 * 1
 /** 降级结论：一个都不标。非仓库 / git 不可用 / 执行失败在 UI 上同形（都不标） */
 const NOT_REPO: GitCommittedResult = { isRepo: false, committed: [] };
 
-function runGit(args: string[], cwd: string): Promise<string> {
+function runGit(args: string[], cwd: string, timeoutMs: number = GIT_SPAWN_OPTIONS.timeout): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
-    execFile("git", args, { ...GIT_SPAWN_OPTIONS, cwd }, (error, stdout) => {
+    execFile("git", args, { ...GIT_SPAWN_OPTIONS, timeout: timeoutMs, cwd }, (error, stdout) => {
       if (error === null) resolvePromise(stdout);
       else rejectPromise(error);
     });
@@ -142,6 +142,11 @@ export async function readCommittedFiles(
         ...safe.map((path) => toPosix(resolve(root, path))),
       ],
       topLevel,
+      // `--ignored` 比普通 status 贵一档：它要把「被忽略的东西」也扫出来，而带 node_modules
+      // 的仓库在 Windows 上实测单次 4.5s（冷启更久）。10s 的通用上限在这条路上会**假降级**
+      // ——超时被当成「不是仓库」，于是一个与 HEAD 完全一致的文件也只是**不标**，界面上看不
+      // 出任何异常（静默的错答案）。这是从面板下钻层发起的批量判定，不是热路径，放宽到 20s。
+      20_000,
     );
   } catch {
     return NOT_REPO;

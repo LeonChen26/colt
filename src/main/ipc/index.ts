@@ -10,7 +10,11 @@ import { join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
-import { loadMcpConfig, mcpUserHome, targetOf, transportOf } from "@shared/mcp-config";
+import { loadMcpConfig, mcpUserHome, targetOf, transportOf, userMcpConfigPath } from "@shared/mcp-config";
+import { findPreset, MCP_CATALOG, type McpPresetState } from "@shared/mcp-catalog";
+import { probeCodewiki } from "../mcp/probe";
+import { installPreset, presetRuntimeDir, runtimeExists, uninstallPreset, venvPython } from "../mcp/install";
+import { readUserConfig } from "../mcp/user-config";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
 import { isSkillFilePath } from "@shared/skill-path";
@@ -732,6 +736,84 @@ export function registerIpcHandlers(): void {
       live: true,
       diagnostics: declared.diagnostics,
     } as const;
+  });
+
+  /**
+   * 内置可选 MCP 目录：每一项现在的安装态 + 四连检读数。
+   *
+   * 探测**优先对着我们自己装的运行时**（venv 里那个 Python）跑，而不是 PATH 上的：
+   * 用户机器上多半还有一个全局 Python，它没装 codewiki 很正常——拿它去判「装好了没」，
+   * 会让一个刚装好、正在用的运行时显示成「缺 codewiki」（说反话，`docs/ERRORS.md` 那一类）。
+   * 没有运行时才回落到 PATH 探测，那是「装机前置条件够不够」的答案。
+   */
+  handle("mcp.catalog", async () => {
+    const home = mcpUserHome();
+    const configPath = userMcpConfigPath(home);
+    let declared: Record<string, unknown> = {};
+    let configError: string | null = null;
+    try {
+      declared = (await readUserConfig(home)).servers;
+    } catch (error) {
+      // 配置读不了不能连累整个目录：如实说「这份文件有毛病」，其余照常显示
+      configError = error instanceof Error ? error.message : String(error);
+    }
+    const presets: McpPresetState[] = [];
+    for (const preset of MCP_CATALOG) {
+      const runtimeDir = presetRuntimeDir(app.getPath("userData"), preset.id);
+      const hasRuntime = await runtimeExists(runtimeDir);
+      const probe = await probeCodewiki(
+        undefined,
+        hasRuntime ? { command: venvPython(runtimeDir), args: [] } : undefined,
+      );
+      presets.push({
+        id: preset.id,
+        name: preset.name,
+        tagline: preset.tagline,
+        installed: preset.serverName in declared,
+        runtime: hasRuntime,
+        probe: { ready: probe.ready, items: probe.items },
+        configPath,
+        manualCommands: preset.manualCommands,
+        pins: preset.pins,
+        runtimeNote: preset.runtimeNote,
+      });
+    }
+    return { presets, configError } as const;
+  });
+
+  handleWithSender("mcp.install", async (sender, request) => {
+    const preset = findPreset(request.id);
+    if (preset === undefined) {
+      return { ok: false, steps: [], error: `目录里没有这一项：${request.id}` } as const;
+    }
+    return await installPreset({
+      preset,
+      home: mcpUserHome(),
+      runtimeDir: presetRuntimeDir(app.getPath("userData"), preset.id),
+      onProgress: (step) => {
+        if (!sender.isDestroyed()) {
+          sender.send("mcp.installProgress", { presetId: preset.id, action: "install", step });
+        }
+      },
+    });
+  });
+
+  handleWithSender("mcp.uninstall", async (sender, request) => {
+    const preset = findPreset(request.id);
+    if (preset === undefined) {
+      return { ok: false, steps: [], error: `目录里没有这一项：${request.id}` } as const;
+    }
+    return await uninstallPreset({
+      preset,
+      home: mcpUserHome(),
+      runtimeDir: presetRuntimeDir(app.getPath("userData"), preset.id),
+      removeRuntime: request.removeRuntime === true,
+      onProgress: (step) => {
+        if (!sender.isDestroyed()) {
+          sender.send("mcp.installProgress", { presetId: preset.id, action: "uninstall", step });
+        }
+      },
+    });
   });
 
   handle("skills.status", async (request) => {

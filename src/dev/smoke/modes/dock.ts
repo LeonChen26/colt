@@ -1019,15 +1019,18 @@ export async function runDock(
         toolResults: [{ id: "smoke-card-c1", output: "export function x() {}", isError: false }],
       }),
     );
-    await sleep(350);
-    const cardGeom = await run<{
-      cardW: number;
-      colW: number;
-      scrollW: number;
-      clientW: number;
-      nameRight: number;
-      subLeft: number;
-    } | null>(
+    // 等卡片真的挂上再量：这一份视图是**刚推过去**的，渲染层要先投影再排版。固定 350ms
+    // 在负载高的时候不够（实测读到 `null`，三条断言一起红），而这三条红全在量空气。
+    const cardGeom = await waitFor(
+      () =>
+        run<{
+          cardW: number;
+          colW: number;
+          scrollW: number;
+          clientW: number;
+          nameRight: number;
+          subLeft: number;
+        } | null>(
       `(() => {
         const scroll = document.querySelector("[data-conv-scroll]");
         const card = document.querySelector("[data-tool-card]");
@@ -1044,6 +1047,9 @@ export async function runDock(
           subLeft: sub ? sub.getBoundingClientRect().left : -1,
         };
       })()`,
+        ),
+      (value) => value !== null,
+      5000,
     );
     log(
       `  长路径工具卡：卡片 ${Math.round(cardGeom?.cardW ?? -1)} / 列 ${Math.round(

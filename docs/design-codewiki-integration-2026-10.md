@@ -1,6 +1,7 @@
 # Colt × CodeWiki 集成方案
 
-> **状态**：设计提案，未实施。
+> **状态**：P2（只读浏览 + 注入）与 P1（内置可选安装目录）**已实施**，见 §4 各节的状态段；
+> P0 是配置级方案（不写进本仓库的代码），P3 未做。
 > **设计输入**：2026-10-17 在**本仓库**上完整试跑过一次 CodeWiki 2.0（产物见 `docs/wiki/`，MCP 模式、零 API 花费）。文中的「实测」都指那一次，不是推演。
 > **本文回答三件事**：能不能接、接哪一层、分几步接。实施步骤落地时另开 impl-plan，不写在这里。
 
@@ -15,7 +16,7 @@
 | 含义 | 本质 | 新增代码 | 是否值得做 |
 |---|---|---|---|
 | A. 接一个 MCP server | 用户在 `.colt/mcp.json` 里加一条 | **0** | 先做，但它只是「能用」 |
-| A′. **内置可选安装** | 设置页里一行「装/不装」，内置目录 + 运行时探测 | ~600 行（不做下载则 ~30 行） | **接入形态选它**，见 §2.5 |
+| A′. **内置可选安装** | 设置页里一行「装/不装」，内置目录 + 运行时探测 | ~600 行（不做下载则 ~30 行） | **接入形态选它**，见 §2.5；✅ 已实施（§4 P1） |
 | B. 消费侧整合 | 右栏能读、上下文能看到 | ~600 行 | **最该做**，收益在这里 |
 | C. 生产侧整合 | 面板里能一键生成/增量更新 | ~800 行 + 分发问题 | 可延后（MCP 已能写，只是体验差） |
 
@@ -182,16 +183,33 @@ MCP 那 10 个工具的实际分工（读的是 `codewiki/mcp/server.py`）：
 
 ### P1 · 内置可选安装（MCP 目录 + 运行时探测）
 
+> **实施状态（2026-10-18，分支 `feat/wiki-panel`）**：已落地（不含下载/绑定 Python 的分发优化）。
+> 实际落点：`shared/mcp-catalog.ts`（纯数据目录：名称 / 一句话 / `requirements` / `pins` /
+> 手动命令；视图与进度类型也在这里）、`main/mcp/probe.ts`（四连检，执行器 `Runner` 注入）、
+> `main/mcp/user-config.ts`（**只加/删我们那一条**，坏 JSON 一律报错不改写）、
+> `main/mcp/install.ts`（探测 → venv → pip → 复检 → 写配置；同目录**单飞**）、
+> `protocol.ts` 三通道 + 一条事件、`renderer/.../Settings.tsx` 的 `McpCatalogSettings`。
+> 验证：`tests/mcp-catalog.test.ts`（19 条，注入执行器覆盖 Python 3.11 / mcp 2.x / 无 Python /
+> 装完复检不过 / 并发单飞 / 配置坏掉不覆盖）+ 新冒烟模式 `COLT_SMOKE_MODE=mcp-catalog`
+> （13/13，不打模型；**只断言结构**，探测结论随机器而变）。
+>
+> 与计划的差异：① 「下载 Python」没做——只在探测里给一条 python.org 的引导；真正建运行时用的是
+> 用户机器上已有的 `python -m venv`，`pip install` 走用户自己的索引。② 安装后的运行时是
+> `<userData>/runtimes/<id>`（Colt 自己的目录），不是 `uv tool`；卸载默认只删配置、留运行时。
+> ③ 设置页里「已安装」与「运行时缺失」是**两个**状态：配置指着一条不存在的路径时不能报「已安装」。
+
 目标：设置页里出现一行「CodeWiki（仓库文档生成）」，可选安装/卸载；不装不影响任何现有功能。
 
 | 文件 | 改动 | 规模 |
 |---|---|---|
-| `shared/mcp-catalog.ts` | **纯数据**目录：`id / 名称 / 一句话 / 安装方式 / 探测命令 / 卸载时是否清运行时`。首条是 `codewiki` | +90 |
-| `main/mcp/install.ts` | 安装：定位 Python（≥3.12）→ `uv venv` + `uv pip install codewiki==2.0.0 "mcp<2"`（或直接 `uv tool install`）→ 写用户级 `~/.colt/mcp.json` → `mcp.reload` | +220 |
-| `main/mcp/probe.ts` | 四连检（python / git / codewiki / `mcp<2`），逐项返回「缺什么 + 一条可执行命令」 | +80 |
-| `shared/protocol.ts` | 通道 `mcp.catalog` / `mcp.install` / `mcp.uninstall`，事件 `mcp.installProgress` | +45 |
-| `main/ipc/index.ts` | 3 个 `handle` | +40 |
-| `renderer/.../Settings.tsx` | MCP 分区块上方加「可选安装」，含进度与卸载；**已装则隐藏安装按钮** | +120 |
+| `shared/mcp-catalog.ts` | **纯数据**目录：`id / 名称 / 一句话 / requirements / pins / 手动命令`。首条是 `codewiki` | +150 ✅ |
+| `main/mcp/install.ts` | 安装：探测 → `python -m venv` → `pip install codewiki==2.0.0 "mcp<2"` → 复检 → 写用户级 `~/.colt/mcp.json`；同目录单飞 | +250 ✅ |
+| `main/mcp/probe.ts` | 四连检（python / git / codewiki / `mcp<2`），逐项返回「缺什么 + 一条可执行命令」；执行器可注入 | +250 ✅ |
+| `main/mcp/user-config.ts` | 用户级配置的**最小改动**读写（保留别人的条目与顶层未知字段；坏 JSON 报错不覆盖；临时文件 + rename） | +110 ✅ |
+| `shared/protocol.ts` | 通道 `mcp.catalog` / `mcp.install` / `mcp.uninstall`，事件 `mcp.installProgress` | +45 ✅ |
+| `main/ipc/index.ts` | 3 个 `handle`（安装/卸载走 `handleWithSender`，进度推回发起窗口） | +80 ✅ |
+| `renderer/.../Settings.tsx` | MCP 分区块**上方**加「可选安装」：四连检、钉版本、安装/卸载、进度流水、手动命令折叠 | +330 ✅ |
+| `tests/mcp-catalog.test.ts` + `smoke/modes/mcp-catalog.ts` | 19 条单测 + 13 条冒烟（免费） | +330 ✅ |
 
 四条纪律：
 
