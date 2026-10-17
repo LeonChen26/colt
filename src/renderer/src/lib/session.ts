@@ -63,3 +63,30 @@ export function shouldOfferDraft(
   if (sessions === undefined || sessions.length > 0) return false;
   return active?.projectId !== projectId;
 }
+
+/**
+ * 切项目、拉到该项目的会话列表之后，手里这条会话是否应当**保留**。
+ *
+ * 不放行的两种情况都是「它不在**常规**列表里，但确实该留下」：
+ * - **草稿**：尚未落库，`session.list` 永远不会有它。用户刚点出来的输入框不能被换成
+ *   项目里的某个旧会话。
+ * - **已归档**：`loadProjectSessions` 只返回常规会话（归档的在侧栏底部单独一栏），
+ *   但用户**可以从那里点开它**——底部「已归档」区是跨项目的，点开别的项目的归档会话时
+ *   会顺带切换当前项目，这一下若按「不在列表里就换掉」处理，点击就会落到另一个会话
+ *   （项目里没有常规会话时甚至变成一条空草稿）。
+ *
+ * `projectId` 必须**同时**校验：当前会话若属于另一个项目（切项目后响应才到），就该换掉，
+ * 不能因为它是草稿或归档就留住。
+ */
+export function shouldKeepSessionOnLoad(
+  current: SessionInfo | null,
+  loaded: readonly SessionInfo[],
+  projectId: string,
+): boolean {
+  if (current === null) return false;
+  if (loaded.some((item) => item.id === current.id)) return true;
+  return (
+    current.projectId === projectId &&
+    (isDraftSession(current) || current.status === "archived")
+  );
+}

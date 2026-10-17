@@ -679,6 +679,50 @@ export async function runPerf(
     railAtTop.shell && !railAtTop.shown,
   ]);
 
+  // 窗口**内**的跳转也必须真的滚过去。目标已经在当前挂出的窗口里时（最近几轮），
+  // `windowStart` 会把新起点钳回原值、`start` / `end` 都不变——滚动意图若只挂在它们的变化上，
+  // 这一下点击就完全不滚动（回归：`MessageList` 的滚动意图 effect 曾依赖 `[start, end]`）。
+  // 建立在「回到最新 → 往上滚 200px（窗口起点不变）→ 点最后一轮」这个现场上。
+  const latestClicked = await clickNth("[data-conv-latest]", 0);
+  await sleep(500);
+  const inWindowJump = await run<{ index: number; before: number } | null>(`(() => {
+    const area = document.querySelector("[data-conv-scroll]");
+    const dots = [...document.querySelectorAll("[data-turn-rail-dot]")];
+    const dot = dots[dots.length - 1];
+    if (!area || !dot) return null;
+    area.scrollTop = Math.max(0, area.scrollHeight - area.clientHeight - 200);
+    return { index: Number(dot.getAttribute("data-turn-index")), before: area.scrollTop };
+  })()`);
+  await sleep(300);
+  const clickedLastDot = await run<boolean>(`(() => {
+    const dots = [...document.querySelectorAll("[data-turn-rail-dot]")];
+    const dot = dots[dots.length - 1];
+    if (!dot) return false;
+    dot.click();
+    return true;
+  })()`);
+  await sleep(500);
+  const inWindowAfter = await run<{ after: number; rowTop: number | null }>(`(() => {
+    const area = document.querySelector("[data-conv-scroll]");
+    const index = ${inWindowJump?.index ?? -1};
+    const row = area ? area.querySelector('[data-msg-row="m' + index + '"]') : null;
+    return {
+      after: area ? area.scrollTop : -1,
+      rowTop:
+        row !== null && area !== null
+          ? Math.round(row.getBoundingClientRect().top - area.getBoundingClientRect().top)
+          : null,
+    };
+  })()`);
+  checks.push([
+    `窗口内的跳转也生效：滚上去后点最近一轮（第 ${inWindowJump?.index ?? "?"} 条），滚动 ${inWindowJump?.before ?? "?"} → ${inWindowAfter.after}`,
+    latestClicked &&
+      inWindowJump !== null &&
+      clickedLastDot &&
+      inWindowAfter.after > (inWindowJump?.before ?? 0) + 20 &&
+      inWindowAfter.rowTop !== null,
+  ]);
+
   for (const [name, ok] of checks) log(`  ${ok ? "✓" : "✗"} ${name}`);
   log(`通过 ${checks.filter(([, ok]) => ok).length}/${checks.length}`);
 }

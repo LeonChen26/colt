@@ -12,7 +12,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { isDraftSession, shouldOfferDraft, splitArchived } from "../src/renderer/src/lib/session.ts";
+import { isDraftSession, shouldKeepSessionOnLoad, shouldOfferDraft, splitArchived } from "../src/renderer/src/lib/session.ts";
 import type { SessionInfo } from "../src/shared/protocol.ts";
 
 /** 造一个会话；`draft` 时按主进程约定把 jsonlPath 置空串 */
@@ -100,5 +100,49 @@ describe("splitArchived：按 status 拆成「常规 / 已归档」两块", () =
     const { active, archived } = splitArchived([]);
     assert.equal(active.length, 0);
     assert.equal(archived.length, 0);
+  });
+});
+
+/**
+ * 回归背景（跨项目点开归档会话）：「已归档」区是**跨项目**的，点开会先切当前项目；
+ * 切项目 effect 拿到的常规列表里没有归档项，若按「不在列表里就换成 list[0]」处理，
+ * 用户点的那条归档会话会被换成同项目的另一个会话——项目里没有常规会话时甚至变成空草稿。
+ */
+describe("shouldKeepSessionOnLoad：切项目拉到列表后，手里这条会话留不留", () => {
+  test("null（还没选中）→ 不留，交给列表第一条", () => {
+    assert.equal(shouldKeepSessionOnLoad(null, [session("a")], "p1"), false);
+  });
+
+  test("在常规列表里 → 留住它（本项目的正常会话）", () => {
+    assert.equal(shouldKeepSessionOnLoad(session("a"), [session("a"), session("b")], "p1"), true);
+  });
+
+  test("本项目的草稿（不在列表）→ 留住（刚点出来的输入框不能被换走）", () => {
+    assert.equal(shouldKeepSessionOnLoad(session("d", "p1", true), [], "p1"), true);
+  });
+
+  test("本项目的已归档会话（不在列表）→ 留住（从底部「已归档」区点开的）", () => {
+    assert.equal(
+      shouldKeepSessionOnLoad(session("old", "p1", false, true), [], "p1"),
+      true,
+    );
+  });
+
+  test("别的项目的归档会话 → 不留（切项目后响应才到，不能把旧项目的会话留下）", () => {
+    assert.equal(
+      shouldKeepSessionOnLoad(session("old", "p2", false, true), [session("a", "p1")], "p1"),
+      false,
+    );
+  });
+
+  test("别的项目的草稿 → 不留（同上：靠 projectId 校验兜住）", () => {
+    assert.equal(shouldKeepSessionOnLoad(session("d", "p2", true), [], "p1"), false);
+  });
+
+  test("别的项目的常规会话 → 不留（列表里没有它，就该换成新项目的第一条）", () => {
+    assert.equal(
+      shouldKeepSessionOnLoad(session("x", "p2"), [session("a", "p1")], "p1"),
+      false,
+    );
   });
 });

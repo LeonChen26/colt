@@ -51,6 +51,7 @@ import { PanelToggle } from "./PanelToggle";
 import { Picker } from "./Picker";
 import { QuestionCards } from "./QuestionCard";
 import { useBlockingCards } from "./useBlockingCards";
+import { useAutoScroll } from "./use-auto-scroll";
 import { useHistoryNav } from "./use-history-nav";
 import { useStableView } from "./use-stableView";
 import {
@@ -542,6 +543,31 @@ export function Conversation({
     const offError = window.colt.on("session.error", (payload) => {
       if (!disposed && payload.sessionId === sessionId) setError(payload.message);
     });
+    /**
+     * 进程没了（崩溃 / 空闲回收）之后，视图**不会再更新**，但最后那一帧可能还是
+     * `running: true`——主进程的 exit 分支只发 `session.status`，不补一帧 running=false。
+     * 不在这里就地收回，⑥ 会一直显示「运行中」并继续跳心跳，与侧栏的「异常中断」互相打架，
+     * 也会把半截流式文本连同闪烁光标永远留在屏幕上。
+     *
+     * 只清**运行态**字段：`lastRun` 是内核的结论，不在这里替它编一个；
+     * 崩溃原因由 `session.error` 那条红条负责说明。
+     */
+    const offStatus = window.colt.on("session.status", ({ sessionId: sid, state }) => {
+      if (disposed || sid !== sessionId) return;
+      if (state !== "crashed" && state !== "dormant") return;
+      setView((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              running: false,
+              streamingText: null,
+              thought: null,
+              runningTools: [],
+              runningOperation: null,
+            },
+      );
+    });
     // 压缩完成由 worker 在**真的压缩完**后推来（invoke 提前返回的是「已入队」，不可作数）。
     // 提示是瞬时的：几秒后自动消失，不占用黄条的位置。
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -601,6 +627,7 @@ export function Conversation({
       clearTimeout(noticeTimer);
       offView();
       offError();
+      offStatus();
       offNotice();
       // **不再**在这里 `session.close`。切走即杀会让「去别的会话瞄一眼再回来」付一整次
       // worker 重启（重放整份 JSONL，长会话可能数十秒），而那是最高频的动作。
@@ -609,19 +636,19 @@ export function Conversation({
     };
   }, [sessionId, cwd]);
 
-  // 新内容到达时自动滚到底（审批卡片出现时也要滚，否则用户看不到）。
+  // 新内容到达时自动滚到底（审批 / 提问卡片出现时也要滚，否则用户看不到）。
   // 跟随**只在用户本就停在底部附近**时发生：流式期间每 50ms 一次投影更新，
   // 无条件拉底的话，用户上翻读历史会被不断拽回去，「回到底部」按钮也跟着闪烁。
-  // 审批卡片例外——它是阻塞点、必须被看到，出现（计数增加）时强制拉底。
-  const approvalsCountRef = useRef(0);
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    const approvalAppeared = approvals.length > approvalsCountRef.current;
-    approvalsCountRef.current = approvals.length;
-    if (distance <= 80 || approvalAppeared) node.scrollTop = node.scrollHeight;
-  }, [view?.messages.length, view?.streamingText, view?.thought, view?.runningTools, approvals.length]);
+  // 两类阻塞卡例外——它们都是 lane 停在这里等人的地方，出现（计数增加）时强制拉底。
+  // 规则与阈值集中在 `use-auto-scroll.ts`（那个文件不占本文件的 hook 数上限）。
+  useAutoScroll(scrollRef, {
+    approvals: approvals.length,
+    questions: questions.length,
+    messages: view?.messages.length ?? 0,
+    streamingText: view?.streamingText,
+    thought: view?.thought,
+    runningTools: view?.runningTools,
+  });
 
   // 是否已离开底部（决定是否显示「回到底部」）
   const [awayFromBottom, setAwayFromBottom] = useState(false);

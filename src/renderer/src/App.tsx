@@ -42,7 +42,7 @@ import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
 import { ProjectChanges } from "./features/ProjectChanges";
 import { Settings } from "./features/Settings";
-import { isDraftSession, shouldOfferDraft, splitArchived } from "./lib/session";
+import { shouldKeepSessionOnLoad, shouldOfferDraft, splitArchived } from "./lib/session";
 import { cn } from "./lib/utils";
 
 /** 主区视图 */
@@ -380,6 +380,18 @@ export default function App(): React.JSX.Element {
         }
         return next;
       });
+      // 进程没了就不能再算「运行中」：主进程在异常退出时只发 session.status，
+      // **不会**补一帧 running=false 的视图（见 session-manager 的 exit 分支），
+      // 只靠 session.view 清这份映射的话，崩溃的会话会一直挂着绿点与计时，
+      // 把「异常中断」整个遮掉，还会让 App 每秒空转重渲染。
+      if (state === "dormant" || state === "crashed") {
+        setRunningSessions((map) => {
+          if (!map.has(sessionId)) return map;
+          const next = new Map(map);
+          next.delete(sessionId);
+          return next;
+        });
+      }
     });
   }, [loadProjectSessions]);
 
@@ -553,16 +565,11 @@ export default function App(): React.JSX.Element {
       // 响应到达时可能已经切到别的项目（会话多、IPC 慢时后到）：不能把**上一个项目**
       // 的响应写进选中态，否则主区会用当前项目的 cwd 去开另一个项目的会话。
       if (stale) return;
-      setActiveSession((current) => {
-        if (!current) return list[0] ?? null;
-        // 在库列表里 → 保留
-        if (list.some((item) => item.id === current.id)) return current;
-        // 草稿不在 session.list 里（尚未落库），但它确实属于本项目、也还在侧栏里 → 保留，
-        // 否则切走再切回会被莫名换成别的会话。必须**同时**校验 projectId：当前会话若属于
-        // 另一个项目（切项目后响应到达），就该换掉，不能因为它是草稿就留住。
-        if (current.projectId === projectId && isDraftSession(current)) return current;
-        return list[0] ?? null;
-      });
+      setActiveSession((current) =>
+        // 在列表里、是本项目草稿、或是用户从「已归档」区点开的归档会话 → 保留；
+        // 判据与理由见 `shouldKeepSessionOnLoad`（那几条都有单测）。
+        shouldKeepSessionOnLoad(current, list, projectId) ? current : (list[0] ?? null),
+      );
     })();
     return () => {
       stale = true;

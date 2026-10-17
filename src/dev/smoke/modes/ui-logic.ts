@@ -293,6 +293,85 @@ export async function runUiLogic(
     checks.push(["D2：重复 3 次都「输入保留 / 不派发」（稳定）", rounds.length === 3 && rounds.every((r) => r === "留/0")]);
     checks.push(["D2 对照：图标按钮在运行中置灰（两条入口一致地不执行）", compactButtonDisabled === true]);
 
+    // ============ 运行态回收：进程崩溃后侧栏与 ⑥ 都不许再显示「运行中」 ============
+    // 主进程在 worker 异常退出时只发 session.status=crashed，**不补**一帧 running=false 的视图。
+    // 若两处都只靠 session.view 更新，崩溃的会话会永远挂着绿点、计时与「运行中」，
+    // 把「异常中断」整个遮掉（回归：App 的 session.status 分支 + Conversation 的本地收回）。
+    const crashUi = (): Promise<{ row: string; runState: string | null; streamed: boolean }> =>
+      run(`(() => {
+        const row = document.querySelector('[data-session-row="${session.id}"]');
+        const state = document.querySelector("[data-run-state]");
+        return {
+          row: row ? row.innerText : "",
+          runState: state ? state.getAttribute("data-run-state") : null,
+          streamed: document.body.innerText.includes("崩溃前流出的半截回复"),
+        };
+      })()`);
+    await push({
+      messages: longMessages,
+      running: true,
+      streamingText: "崩溃前流出的半截回复",
+    });
+    await sleep(300);
+    const beforeCrash = await crashUi();
+    checks.push([
+      "（前提）崩溃前：侧栏与 ⑥ 都显示运行中、流式文本在画",
+      beforeCrash.row.includes("运行中") &&
+        beforeCrash.runState === "running" &&
+        beforeCrash.streamed,
+    ]);
+    window.webContents.send("session.status", { sessionId: session.id, state: "crashed" });
+    await sleep(500);
+    const afterCrash = await crashUi();
+    notes.push(
+      `崩溃后：侧栏行=${JSON.stringify(afterCrash.row)}；⑥=${afterCrash.runState}；流式文本还在=${afterCrash.streamed}`,
+    );
+    checks.push([
+      "进程崩溃后侧栏收回「运行中」并显示「异常中断」",
+      afterCrash.row.includes("异常中断") && !afterCrash.row.includes("运行中"),
+    ]);
+    checks.push([
+      "崩溃后 ⑥ 也退出运行态、且不再画半截流式文本（两处不许互相打架）",
+      afterCrash.runState !== "running" && afterCrash.streamed === false,
+    ]);
+
+    // ============ 提问卡与授权卡同一套规则：出现时强制吸底 ============
+    // 两类卡片都是 lane 停在这里等人的地方。上翻读历史时若只对授权卡吸底，
+    // 模型提问的卡片会落在视野外，用户只能靠侧栏的小字才知道它在等（回归：use-auto-scroll）。
+    await push({ messages: longMessages, running: false });
+    await run(`(() => { const v = document.querySelector("[data-conv-scroll]"); if (v) v.scrollTop = 0; return true; })()`);
+    await sleep(300);
+    const scrollDist = (): Promise<number> =>
+      run<number>(`(() => {
+        const v = document.querySelector("[data-conv-scroll]");
+        return v ? v.scrollHeight - v.scrollTop - v.clientHeight : -1;
+      })()`);
+    const beforeAsk = await scrollDist();
+    window.webContents.send("userquestion.pending", {
+      sessionId: session.id,
+      requests: [
+        {
+          toolCallId: "smoke-ask-1",
+          requestedAt: Date.now(),
+          timeoutMs: 300000,
+          questions: [
+            { question: "冒烟：提问卡出现时是否吸底？", options: [{ label: "是", description: "" }] },
+          ],
+        },
+      ],
+    });
+    await sleep(600);
+    const askCard = await run<boolean>(`!!document.querySelector("[data-question-card]")`);
+    const afterAsk = await scrollDist();
+    // 收掉卡片，别影响后面的用例
+    window.webContents.send("userquestion.pending", { sessionId: session.id, requests: [] });
+    await sleep(200);
+    notes.push(`提问卡：出现=${askCard}，距底 ${beforeAsk} → ${afterAsk}`);
+    checks.push([
+      "提问卡出现时与授权卡一样强制吸底（上翻读历史时不会被漏看）",
+      beforeAsk > 200 && askCard && afterAsk <= 8,
+    ]);
+
     // ============ D3：粘贴与拖入同一套反馈 ============
     await push({ messages: longMessages, running: false });
     await clearAttachments();

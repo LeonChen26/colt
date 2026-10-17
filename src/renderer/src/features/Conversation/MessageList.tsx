@@ -480,6 +480,16 @@ export function MessageWindow({
     if (node !== null) node.scrollTop = node.scrollHeight;
   }, [unit, scrollRef]);
 
+  /**
+   * 消费上一次提交前登记好的滚动意图。
+   *
+   * **刻意不给依赖数组**：`pending` 只可能在事件/effect 里被登记，而「登记完立刻消费」
+   * 才是它的全部语义。原先依赖 `[start, end]`，于是**窗口没变**的跳转永远不会被消费——
+   * 点搜索结果或点链里某一轮时，若目标已经在当前挂出的窗口内（常见的「最近几轮」），
+   * `windowStart` 会把新起点钳回原值，`start` / `end` 都不变 → 这一次点击**完全不滚动**；
+   * 而 `pending` 还挂着，等下一次翻页时把用户突然拽到那个旧目标上。
+   * 每帧空跑一次只是判空，代价可以忽略。
+   */
   useLayoutEffect(() => {
     const intent = pending.current;
     pending.current = null;
@@ -498,7 +508,7 @@ export function MessageWindow({
       return;
     }
     node.querySelector<HTMLElement>(`[data-msg-row="${intent.id}"]`)?.scrollIntoView({ block: "start" });
-  }, [start, end, scrollRef]);
+  });
 
   /**
    * 两件都在滚动里做的事：
