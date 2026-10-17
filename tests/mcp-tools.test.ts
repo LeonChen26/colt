@@ -1282,12 +1282,16 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
     const dir = await fixtureProject({
       mcpServers: {
         bad: { command: "definitely-not-a-real-binary-xyz", args: [] },
-        slow: bootServer(3_000),
+        slow: bootServer(6_000),
       },
     });
     const notices: string[] = [];
     const runtime = await createMcpRuntime(dir, (message) => notices.push(message), undefined, {
-      startupBudgetMs: 800,
+      // 预算得**远大于**「spawn 一个不存在的命令 → 拿到 ENOENT」的往返：那条本该是毫秒级，
+      // 可在全量并行跑（本仓默认多文件并行）的 Windows 上实测会到秒级——800ms 时这条曾红成
+      // 「bad 被当成还在路上」。同时慢的那台要**远大于**预算，否则后台那一支也会在摘要前连上，
+      // 「还在路上」这条事实就没了。两边各留一个数量级的余量，判据不跟着负载抖。
+      startupBudgetMs: 2_500,
     });
     try {
       const first = notices.join(" | ");

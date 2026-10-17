@@ -175,6 +175,28 @@ export async function runDock(
       return undefined;
     }
   };
+  /**
+   * 轮询探针直到判据成立（超时把**最后一次读数**交出去）。
+   *
+   * 这一层不能用固定 sleep：被测的量都跨进程 / 跨帧才落地——右栏按**可见性节拍**重排
+   * （400ms 一次），`git.committed` 是**两次 spawn**（`rev-parse` + `status --ignored`），
+   * 在本仓库上实测单次 `status` 就要 4.5s（带 node_modules 的 `--ignored`）。固定等一个
+   * 拍脑袋的毫秒数，红的是环境不是产品（`AGENTS.md` §五）。等不到也返回读数，超时日志里
+   * 才看得见「等到的是什么」，而不是一个光秃秃的 false。
+   */
+  const waitFor = async <T>(
+    probe: () => Promise<T>,
+    accept: (value: T) => boolean,
+    timeoutMs: number,
+    intervalMs = 200,
+  ): Promise<T> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const value = await probe();
+      if (accept(value) || Date.now() > deadline) return value;
+      await sleep(intervalMs);
+    }
+  };
   const waitVisible = async (want: boolean, timeoutMs = 8000): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -1143,15 +1165,36 @@ export async function runDock(
     ]);
     // 思考块（`.thought`）同理，但它**默认收起**——必须**先点开再量**，否则量到的是
     // 「没渲染的东西」，断言必然为真（§五⑫：必然为真的断言比红断言贵得多）。
-    const thoughtGeom = await run<{ w: number; c: number; opened: boolean }>(
-      `(async () => {
-        const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("已思考"));
+    //
+    // 两处都不能靠一次固定等待：
+    // ① 按钮按**文字全等**认（`trim() === "已思考"`）。整行摘要也用这个词
+    //    （`describeSteps` 的「已思考 · N 个工具调用」），用 `includes` 会先命中那一行，
+    //    点下去收的是**整轮折叠**——`.thought` 自然不会出现，红得还怪思考块；
+    // ② 点开之后 `.thought` 要等一帧才挂上、会话区也才重新排完版（实测偶发读到
+    //    `0 / 0`，那是还没排版的读数）。改成轮询等「块在场上且已经有宽度」再量。
+    await run(
+      `(() => {
+        const btn = [...document.querySelectorAll("button")].find(
+          (b) => (b.textContent ?? "").trim() === "已思考");
         if (btn) btn.click();
-        await new Promise((r) => setTimeout(r, 250));
-        const scroll = document.querySelector("[data-conv-scroll]");
-        const block = document.querySelector("[data-conv-scroll] .thought");
-        return { w: scroll.scrollWidth, c: scroll.clientWidth, opened: block !== null };
+        return btn !== undefined;
       })()`,
+    );
+    const thoughtGeom = await waitFor(
+      () =>
+        run<{ w: number; c: number; opened: boolean }>(
+          `(() => {
+            const scroll = document.querySelector("[data-conv-scroll]");
+            const block = document.querySelector("[data-conv-scroll] .thought");
+            return {
+              w: scroll ? scroll.scrollWidth : -1,
+              c: scroll ? scroll.clientWidth : -1,
+              opened: block !== null,
+            };
+          })()`,
+        ),
+      (value) => value.opened && value.c > 0,
+      4000,
     );
     log(`  长思考：展开=${thoughtGeom?.opened}，会话区 ${thoughtGeom?.w} / ${thoughtGeom?.c}`);
     checks.push([
@@ -1172,7 +1215,11 @@ export async function runDock(
       "旧文件行已移除（段一不再列已完成文件，⑦-G 硬约束一）",
       (await clickFileRow(previewRel)) === false,
     ]);
-    const ledger0 = await ledgerProbe();
+    const ledger0 = await waitFor(
+      ledgerProbe,
+      (value) => value.present && value.clickable,
+      5000,
+    );
     checks.push([
       "总账写「N 处 · M 文件」双口径（3 条改动 / 3 个路径）",
       ledger0.present && ledger0.text.includes("3 处 · 3 文件"),
@@ -1961,8 +2008,14 @@ export async function runDock(
         );
         await sleep(400);
         checks.push(["（前置）推「已提交」受控视图后仍可进清单", await clickLedger()]);
-        await sleep(1500); // 判定是两次 spawn（rev-parse + status），留足时间
-        const committedList = await drillProbe();
+        // 判定走两次 spawn，且 `--ignored` 在带 node_modules 的仓库上**不便宜**（本仓库实测
+        // status 单次 4.5s、冷启 rev-parse 2.8s），固定 1.5s 只会红给环境看。轮询到标注出现
+        // 为止，等不到就把空读数交出去——失败判定不变，但日志里能看出「等到的是什么」。
+        const committedList = await waitFor(
+          drillProbe,
+          (value) => value.committed.length > 0,
+          20_000,
+        );
         checks.push([
           `与 HEAD 一致的文件带「已提交」标注（${cleanRel}）`,
           committedList.committed.includes(cleanRel),
