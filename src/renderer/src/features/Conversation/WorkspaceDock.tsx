@@ -695,7 +695,7 @@ export function WorkspaceDock({
               <span
                 data-browser-viewport={`${override.width}x${override.height}`}
                 title={`响应式联调视口 ${override.width}×${override.height}（agent 设置）：页面按这个尺寸重排，超出停靠区的部分看不到。点「恢复」交还给按停靠区尺寸的自适应布局。`}
-                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-warning bg-warning-soft px-2 py-1 text-xs font-medium leading-none text-warning"
+                className="flex min-w-0 items-center gap-1.5 rounded-sm border border-warning bg-warning-soft px-2 py-1 text-xs font-medium leading-none text-warning-fg"
               >
                 <MonitorSmartphone {...ICON.sm} className="shrink-0" />
                 <span className="min-w-0 truncate">
@@ -753,7 +753,7 @@ export function WorkspaceDock({
               <span
                 data-browser-agent-acting=""
                 title="Agent 正在操作这个浏览器（最近 30 秒内有过改动类动作）"
-                className="flex shrink-0 items-center gap-1 rounded-sm border border-warning bg-warning-soft px-1.5 py-[3px] text-xs font-medium leading-none text-warning"
+                className="flex shrink-0 items-center gap-1 rounded-sm border border-warning bg-warning-soft px-1.5 py-[3px] text-xs font-medium leading-none text-warning-fg"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-warning" />
                 {/* 窄栏下只留这个圆点（它是最次要的一枚提示，且 title 里说清了是什么） */}
@@ -795,7 +795,7 @@ export function WorkspaceDock({
           {clippedX && (
             <div
               data-browser-clipped={`${needWidth}>${areaWidth}`}
-              className="flex shrink-0 items-start gap-1.5 border-b border-warning/40 bg-warning-soft px-2.5 py-1.5 text-xs leading-relaxed text-warning"
+              className="flex shrink-0 items-start gap-1.5 border-b border-warning/40 bg-warning-soft px-2.5 py-1.5 text-xs leading-relaxed text-warning-fg"
             >
               <MoveHorizontal {...ICON.sm} className="mt-px shrink-0" />
               <span className="min-w-0 flex-1">

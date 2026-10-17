@@ -20,8 +20,8 @@ import { cn } from "../../lib/utils";
 
 const RISK_STYLE: Record<ApprovalRisk, { label: string; className: string }> = {
   safe: { label: "低风险", className: "text-text-secondary" },
-  moderate: { label: "需确认", className: "text-warning" },
-  dangerous: { label: "高风险", className: "text-danger" },
+  moderate: { label: "需确认", className: "text-warning-fg" },
+  dangerous: { label: "高风险", className: "text-danger-fg" },
 };
 
 export function ApprovalCard({
@@ -70,9 +70,9 @@ export function ApprovalCard({
     >
       <div className="flex items-start gap-2">
         {dangerous ? (
-          <ShieldAlert {...ICON.lg} className="mt-0.5 shrink-0 text-danger" />
+          <ShieldAlert {...ICON.lg} className="mt-0.5 shrink-0 text-danger-fg" />
         ) : (
-          <ShieldQuestion {...ICON.lg} className="mt-0.5 shrink-0 text-warning" />
+          <ShieldQuestion {...ICON.lg} className="mt-0.5 shrink-0 text-warning-fg" />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -96,7 +96,7 @@ export function ApprovalCard({
         <span
           className={cn(
             "flex shrink-0 items-center gap-1 font-mono text-xs",
-            expired ? "text-text-muted" : "text-warning",
+            expired ? "text-text-muted" : "text-warning-fg",
           )}
         >
           <Clock {...ICON.xs} />

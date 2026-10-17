@@ -38,6 +38,9 @@
   --color-success-fg: #7ee787;
   --color-warning: #d29922;
   --color-warning-soft: rgba(210, 153, 34, 0.12);
+  /* 语义色的 `-fg` = 「落在本色的 `-soft` 底上时用的文字色」，暗色下取更亮一档。
+     与 success-fg / danger-fg 同一套规则；亮色下三者的 -fg 都等于本色。 */
+  --color-warning-fg: #e3b341;
   --color-danger: #f85149;
   --color-danger-soft: rgba(248, 81, 73, 0.12);
   --color-danger-fg: #ff9d95;
@@ -54,7 +57,8 @@
      顺序不能反——"Microsoft YaHei UI" 自带拉丁字形，排在前面会把拉丁文全接走，
      于是 "Segoe UI" 永远不可达（Inter 未随包分发，故首位实际落到它）。 */
   --font-sans: "Inter", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "Consolas",
+    ui-monospace, monospace;
 
   /* 字号令牌：全应用只用这几个语义档（text-2xs/xs/sm/base），不再散写 text-[Npx]。
      档位与用途：2xs=徽标/时间戳/语言标签；xs=次要文字/面板正文；sm=正文与主文案；
@@ -121,8 +125,9 @@
   --color-success: #1a7f37;
   --color-success-soft: rgba(26, 127, 55, 0.08);
   --color-success-fg: #1a7f37;
-  --color-warning: #9a6700;
+  --color-warning: #8a5a00;
   --color-warning-soft: rgba(154, 103, 0, 0.08);
+  --color-warning-fg: #8a5a00;
   --color-danger: #cf222e;
   --color-danger-soft: rgba(207, 34, 46, 0.08);
   --color-danger-fg: #cf222e;
@@ -160,8 +165,9 @@
     --color-success: #1a7f37;
     --color-success-soft: rgba(26, 127, 55, 0.08);
     --color-success-fg: #1a7f37;
-    --color-warning: #9a6700;
+    --color-warning: #8a5a00;
     --color-warning-soft: rgba(154, 103, 0, 0.08);
+    --color-warning-fg: #8a5a00;
     --color-danger: #cf222e;
     --color-danger-soft: rgba(207, 34, 46, 0.08);
     --color-danger-fg: #cf222e;
@@ -187,6 +193,10 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  /* 关掉连字（JetBrains Mono 的连字走 `calt`）：本应用的等宽面是**读代码**，
+     `!=` / `=>` / `->` 连成一体在 diff 与路径里会被认错，误读代价高于美观收益。
+     从这里继承到全局，不必逐处挂。 */
+  font-variant-ligatures: none;
   overflow: hidden;
 }
 

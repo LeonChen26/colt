@@ -1171,7 +1171,7 @@ export default function App(): React.JSX.Element {
           )}
 
           {modelServiceReady === false && (
-            <div className="m-3.5 shrink-0 rounded-md border border-line bg-warning-soft px-3.5 py-3 text-sm text-warning">
+            <div className="m-3.5 shrink-0 rounded-md border border-line bg-warning-soft px-3.5 py-3 text-sm text-warning-fg">
               尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
               DeepSeek 或自建的 OpenAI 兼容服务均可）。
             </div>

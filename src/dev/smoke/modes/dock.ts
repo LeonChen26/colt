@@ -648,6 +648,29 @@ export async function runDock(
     }
     log(`活动会话：${sessionId}`);
 
+    // 等宽字体是**随包分发**的（fontsource 分片 + 本地 woff2）：CSP、`file://` 相对路径、
+    // 字体族名三者任一对不上，浏览器都会**安静回落** Consolas——界面照常可用，没人看得出来。
+    // 所以判据不能是「CSS 里有 @font-face」，要取**渲染后的字宽**：
+    // JetBrains Mono 的 advance 是 0.6em（12px → 7.2px），Consolas 是 0.55em（6.6px）。
+    const mono = await run<{ loaded: boolean; width: number }>(`(async () => {
+      await document.fonts.load('12px "JetBrains Mono Variable"');
+      const el = document.createElement("span");
+      el.style.position = "absolute";
+      el.style.visibility = "hidden";
+      el.style.whiteSpace = "pre";
+      el.style.fontSize = "12px";
+      el.style.fontFamily = "var(--font-mono)";
+      el.textContent = "0123456789";
+      document.body.appendChild(el);
+      const width = el.getBoundingClientRect().width / 10;
+      el.remove();
+      return { loaded: document.fonts.check('12px "JetBrains Mono Variable"'), width };
+    })()`);
+    checks.push([
+      `随包等宽字体真的生效（字体已加载=${mono.loaded}，字宽 ${mono.width.toFixed(2)}px，期望 7.2）`,
+      mono.loaded === true && Math.abs(mono.width - 7.2) < 0.3,
+    ]);
+
     const initial = await probe();
     checks.push(["工作区已挂载（找到折叠旋钮）", initial.found]);
     if (!initial.found) return;

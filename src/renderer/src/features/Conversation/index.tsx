@@ -1209,7 +1209,7 @@ export function Conversation({
               className={cn(
                 "mb-3 rounded-md border border-line px-3 py-2 text-sm",
                 compactNotice.kind === "security"
-                  ? "bg-warning-soft text-warning"
+                  ? "bg-warning-soft text-warning-fg"
                   : "bg-success-soft text-success-fg",
               )}
             >
@@ -1224,7 +1224,7 @@ export function Conversation({
           {display.driftedFrom && (
             <div
               data-conv-drift
-              className="mb-3 rounded-md border border-line bg-warning-soft px-3 py-2 text-sm text-warning"
+              className="mb-3 rounded-md border border-line bg-warning-soft px-3 py-2 text-sm text-warning-fg"
             >
               原选定模型 {display.driftedFrom} 已不可用（服务或模型已被删除），本会话实际使用{" "}
               {selectedModelRef}。可在上方切换其他模型。
@@ -1309,7 +1309,7 @@ export function Conversation({
               <div
                 key={item.toolCallId}
                 data-approval-analyzing=""
-                className="flex items-center gap-2 rounded-md border border-line bg-warning-soft px-3.5 py-2.5 text-xs text-warning"
+                className="flex items-center gap-2 rounded-md border border-line bg-warning-soft px-3.5 py-2.5 text-xs text-warning-fg"
               >
                 <span className="pulse-dot inline-block h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px] border-warning bg-warning" />
                 <span className="min-w-0 truncate">
@@ -1402,7 +1402,7 @@ export function Conversation({
           {notice && (
             <div
               data-conv-notice
-              className="mb-2 rounded-md border border-line bg-warning-soft px-3 py-2 text-sm text-warning"
+              className="mb-2 rounded-md border border-line bg-warning-soft px-3 py-2 text-sm text-warning-fg"
             >
               {notice}
             </div>
@@ -1457,7 +1457,7 @@ export function Conversation({
               </div>
             )}
             {attachments.length > 0 && view && !view.imageInput && (
-              <p className="mb-1.5 rounded-xs border border-line bg-warning-soft px-2 py-1 text-xs text-warning">
+              <p className="mb-1.5 rounded-xs border border-line bg-warning-soft px-2 py-1 text-xs text-warning-fg">
                 当前模型不支持图片输入，发送前请切换到支持视觉的模型（如
                 deepseek-v4-flash-vision-exp）
               </p>
@@ -1465,7 +1465,7 @@ export function Conversation({
             {attachNotice && (
               <p
                 data-conv-attach-notice
-                className="mb-1.5 rounded-xs border border-line bg-warning-soft px-2 py-1 text-xs text-warning"
+                className="mb-1.5 rounded-xs border border-line bg-warning-soft px-2 py-1 text-xs text-warning-fg"
               >
                 {attachNotice}
               </p>

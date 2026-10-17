@@ -24,7 +24,8 @@ import { ICON } from "@/lib/icon";
 import "@xterm/xterm/css/xterm.css";
 
 /** 与 styles.css 的 --font-mono 同一份清单（CSS 变量进不了 xterm 的 canvas，只能带字面量副本） */
-const MONO_STACK = '"JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace';
+const MONO_STACK =
+  '"JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace';
 
 /**
  * 挂载时从 CSS 变量读一次配色（跟随 data-theme）。已知局限：**主题切换不实时跟随**
@@ -86,6 +87,17 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
     } catch {
       // 容器还没布局（宽高 0）：用默认 80x24 先开，ResizeObserver 到位后会校正
     }
+
+    // 等宽字体是随包分发的 webfont（`font-display: swap`）：挂载那一刻它可能还没就绪，
+    // xterm 会按**回落字体**的字宽算列数，而它算完不会自己再量。字体一就绪就重算一次，
+    // 否则列宽 / 光标位置会一直错到用户下一次拖窗口。（同 AGENTS §五「电平不能只靠边沿」）
+    void document.fonts.ready.then(() => {
+      try {
+        fit.fit();
+      } catch {
+        // 已卸载 / 容器不可见：忽略，下次可见时 ResizeObserver 会再校正
+      }
+    });
 
     // ① 先订阅——晚于 open 的话，「订阅前 flush 出去的帧」就永远丢了
     const offOutput = window.colt.on("terminal.output", ({ sessionId: sid, data, seq }) => {
