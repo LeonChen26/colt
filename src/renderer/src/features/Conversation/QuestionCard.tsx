@@ -201,7 +201,7 @@ export function QuestionCard({
 
       <div className="mt-3">
         {current.header !== undefined && (
-          <span className="text-xs font-medium uppercase tracking-wide text-text-muted">
+          <span className="text-xs font-medium uppercase tracking-[.5px] text-text-muted">
             {current.header}
           </span>
         )}

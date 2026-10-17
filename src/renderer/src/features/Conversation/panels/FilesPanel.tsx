@@ -342,7 +342,7 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-files-preview-pane="">
           {selected === null ? (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
-              <FileSearch className="text-text-muted" style={{ width: 24, height: 24 }} />
+              <FileSearch className="text-text-muted" {...ICON.xl} />
               <p className="mt-2 text-sm text-text-secondary">选择一个文件预览</p>
               <p className="max-w-[240px] text-xs leading-relaxed text-text-muted">
                 点右侧的文件名查看内容；目录可展开（树可整体收起）。预览是只读的。

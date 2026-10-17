@@ -114,7 +114,7 @@ export function StartPanel({
             <div
               role="menu"
               aria-label="目录选项"
-              className="absolute bottom-full left-1/2 z-10 mb-1.5 w-60 -translate-x-1/2 overflow-hidden rounded-sm border border-line bg-surface-raised py-1 shadow-lg"
+              className="absolute bottom-full left-1/2 z-10 mb-1.5 w-60 -translate-x-1/2 overflow-hidden rounded-sm border border-line bg-surface-raised py-1 shadow-md"
             >
               <button
                 type="button"

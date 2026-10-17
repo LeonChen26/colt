@@ -895,7 +895,7 @@ export default function App(): React.JSX.Element {
       )}
       <header className="flex h-[var(--h-topbar)] shrink-0 items-center justify-between border-b border-line bg-surface-raised px-3.5">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold tracking-[.2px] text-text-primary">
+          <span className="text-sm font-semibold tracking-[.5px] text-text-primary">
             Colt
           </span>
         </div>
@@ -1165,7 +1165,7 @@ export default function App(): React.JSX.Element {
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
-            <div className="m-3.5 shrink-0 rounded-md border border-line bg-danger-soft px-3.5 py-3 text-sm text-danger-fg">
+            <div className="m-3.5 shrink-0 rounded-md border border-danger/40 bg-danger-soft px-3.5 py-3 text-sm text-danger-fg">
               {error}
             </div>
           )}

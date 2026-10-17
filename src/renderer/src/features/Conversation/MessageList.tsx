@@ -1071,7 +1071,7 @@ export function ToolCard({
         // 把会话区（`overflow-y-auto` ⇒ 横向也算 `auto`）撑出横向滚动条。
         // 钳到列宽即可：短卡仍按内容收缩，长卡最多与列等宽。
         "self-start max-w-full overflow-hidden rounded-md border bg-surface-raised",
-        isError ? "border-danger/50" : "border-line",
+        isError ? "border-danger/40" : "border-line",
       )}
       onMouseEnter={() => onHoverFile?.(path ?? null)}
       onMouseLeave={() => onHoverFile?.(null)}

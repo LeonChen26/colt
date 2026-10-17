@@ -66,13 +66,13 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
         </p>
 
         {message && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-success/40 bg-success-soft px-3 py-2 text-sm text-success-fg">
+          <div className="mb-4 flex items-center gap-2 rounded-md border border-success/40 bg-success-soft px-3 py-2 text-sm text-success-fg">
             <Check {...ICON.md} />
             {message}
           </div>
         )}
         {error && (
-          <div className="mb-4 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm text-danger">
+          <div className="mb-4 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
@@ -497,7 +497,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       </p>
 
       {diagnostics.length > 0 && (
-        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="mb-3 flex flex-col gap-1 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger">
           <span>
             MCP 配置有 {diagnostics.length} 处问题——坏掉的条目不会出现在下面：
           </span>
@@ -512,7 +512,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
       {project === null ? (
         <McpNotice>先打开一个项目，才能看到它声明的 MCP server。</McpNotice>
       ) : error !== null ? (
-        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger">
           {error}
         </div>
       ) : loading ? (
@@ -542,7 +542,7 @@ function McpSettings({ project }: { project: Project | null }): React.JSX.Elemen
 
 function McpNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
+    <div className="rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
       {children}
     </div>
   );
@@ -726,7 +726,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
       </p>
 
       {status !== null && status.warnings.length > 0 && (
-        <div className="mb-3 flex flex-col gap-1 rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning">
+        <div className="mb-3 flex flex-col gap-1 rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning">
           <span>装载告警（与「事件」页签同一记录）：</span>
           {status.warnings.map((item) => (
             <span key={item}>{item}</span>
@@ -749,7 +749,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
 
       {/* 动作级失败：只加一条说明，**不动清单**（见 `actionError` 的注释） */}
       {actionError !== null && (
-        <div className="mb-3 rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="mb-3 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger">
           {actionError}
         </div>
       )}
@@ -757,7 +757,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
       {project === null ? (
         <SkillNotice>先打开一个项目，才能看到它装载的技能。</SkillNotice>
       ) : error !== null ? (
-        <div className="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger">
           {error}
         </div>
       ) : loading ? (
@@ -790,7 +790,7 @@ function SkillSettings({ project }: { project: Project | null }): React.JSX.Elem
 
 function SkillNotice({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
+    <div className="rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted">
       {children}
     </div>
   );

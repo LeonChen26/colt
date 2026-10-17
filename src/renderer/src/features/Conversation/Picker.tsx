@@ -68,7 +68,7 @@ export function Picker({
         <ChevronDown {...ICON.xs} className="shrink-0 text-text-muted" />
       </button>
       {open && options.length > 0 && (
-        <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[160px] rounded-sm border border-line bg-surface-overlay py-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[160px] rounded-sm border border-line bg-surface-overlay py-1 shadow-md">
           {options.map((option) => (
             <button
               key={option.value}

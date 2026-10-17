@@ -1350,7 +1350,7 @@ export function Conversation({
                 history.bumpFollow();
                 jumpToBottom();
               }}
-              className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-sm border border-line bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary shadow-lg transition hover:border-line-strong hover:text-text-primary"
+              className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-sm border border-line bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary shadow-sm transition hover:border-line-strong hover:text-text-primary"
             >
               <ArrowDown {...ICON.sm} />
               回到底部
@@ -1394,7 +1394,7 @@ export function Conversation({
           {error && (
             <div
               data-conv-error
-              className="mb-2 rounded-md border border-line bg-danger-soft px-3 py-2 text-sm text-danger-fg"
+              className="mb-2 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-sm text-danger-fg"
             >
               {error}
             </div>
@@ -1547,7 +1547,7 @@ export function Conversation({
               {slashOpen && (
                 <div
                   data-slash-menu
-                  className="absolute bottom-full left-0 right-0 z-20 mb-1 max-h-[220px] overflow-y-auto rounded-sm border border-line bg-surface-overlay py-1 shadow-lg"
+                  className="absolute bottom-full left-0 right-0 z-20 mb-1 max-h-[220px] overflow-y-auto rounded-sm border border-line bg-surface-overlay py-1 shadow-md"
                 >
                   {candidates.map((item, index) => (
                     <button

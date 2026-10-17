@@ -127,7 +127,7 @@ export function FilePreview({
         </div>
       ) : error !== null ? (
         <Placeholder
-          icon={<AlertTriangle className="text-warning" style={{ width: 24, height: 24 }} />}
+          icon={<AlertTriangle className="text-warning" {...ICON.xl} />}
           title="无法预览该文件"
           body={error}
         />
@@ -150,13 +150,13 @@ export function FilePreview({
         </div>
       ) : result.kind === "too-large" ? (
         <Placeholder
-          icon={<FileWarning className="text-text-muted" style={{ width: 24, height: 24 }} />}
+          icon={<FileWarning className="text-text-muted" {...ICON.xl} />}
           title="文件过大，已跳过预览"
           body={`${formatBytes(result.size)} 超出上限 ${formatBytes(result.limit)}。`}
         />
       ) : (
         <Placeholder
-          icon={<FileWarning className="text-text-muted" style={{ width: 24, height: 24 }} />}
+          icon={<FileWarning className="text-text-muted" {...ICON.xl} />}
           title="二进制文件，暂不支持预览"
           body={`${formatBytes(result.size)}。`}
         />

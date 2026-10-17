@@ -24,7 +24,7 @@ export function SubagentPreview({
   return (
     <div data-subagent-preview={subagent.id} className="flex flex-col gap-1.5">
       {subagent.error !== undefined && (
-        <p className="rounded-sm border border-line bg-danger-soft px-2 py-1.5 text-xs leading-relaxed text-danger-fg">
+        <p className="rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs leading-relaxed text-danger-fg">
           {subagent.error}
         </p>
       )}

@@ -65,7 +65,7 @@ export function ApprovalCard({
     <div
       className={cn(
         "rounded-lg border bg-surface-raised p-3",
-        dangerous ? "border-danger/60 bg-danger-soft/50" : "border-warning/50 bg-warning-soft",
+        dangerous ? "border-danger/40 bg-danger-soft" : "border-warning/40 bg-warning-soft",
       )}
     >
       <div className="flex items-start gap-2">

@@ -594,7 +594,7 @@ export function WorkspaceDock({
       {menuOpen && (
         <div
           data-dock-menu-root=""
-          className="absolute top-[calc(var(--h-panel-head)+4px)] right-2 z-50 min-w-[196px] rounded-md border border-line-strong bg-surface-overlay p-1 shadow-lg"
+          className="absolute top-[calc(var(--h-panel-head)+4px)] right-2 z-50 min-w-[196px] rounded-sm border border-line-strong bg-surface-overlay p-1 shadow-md"
         >
           {DOCK_MENU_KINDS.map((kind) => {
             const meta = DOCK_KIND_META[kind];
@@ -831,17 +831,19 @@ export function WorkspaceDock({
                   `data-browser-area` 是给冒烟用的稳定标记——「视图是否**精确**覆盖本区域」
                   只能靠两边各读一次来对，肉眼看不出（原生视图浮在渲染层之上）。
                   底色只在**视口联调**时会露出来（原生视图按覆盖尺寸摆放，盖不满本区域）：
-                  给中性底而不是白，是为了让那一块一眼看出是「联调留白」而非页面没渲染出来。 */}
+                  平时取最暗的表面（偶尔漏出一帧也只是「一道缝」），
+                  **不能是白**——暗色主题下拖栏 / 重排那一帧会闪一道白光；
+                  联调时换成更亮的中性底，让那一块一眼看出是「联调留白」而非页面没渲染出来。 */}
               <div
                 ref={areaRef}
                 data-browser-area=""
-                className={cn("min-h-0 flex-1", override === null ? "bg-white" : "bg-surface-overlay")}
+                className={cn("min-h-0 flex-1", override === null ? "bg-surface" : "bg-surface-overlay")}
               />
               <ObserveDrawer sessionId={sessionId} />
             </>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
-              <Globe className="text-text-muted" style={{ width: 26, height: 26 }} />
+              <Globe className="text-text-muted" {...ICON.xl} />
               <p className="mt-2 text-sm text-text-secondary">浏览器尚未加载</p>
               <p className="max-w-[240px] text-xs leading-relaxed text-text-muted">
                 agent 使用浏览器时会自动打开；在此之前不占用资源。

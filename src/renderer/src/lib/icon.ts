@@ -16,6 +16,7 @@
  *   sm 13  小：按钮内、工具卡头部、树节点行
  *   md 14  中：区块标题、面板开关（默认）
  *   lg 16  大：顶栏、主操作按钮
+ *   xl 24  空态：空面板正中的那一个大图标
  *
  * 描边统一 1.75（lucide 默认 2 偏粗，在暗色小尺寸下显脏）。
  */
@@ -27,6 +28,10 @@ export const ICON = {
   sm: { size: 13, strokeWidth: ICON_STROKE },
   md: { size: 14, strokeWidth: ICON_STROKE },
   lg: { size: 16, strokeWidth: ICON_STROKE },
+  /* 空态**单列一档**：它撑的是整片空区域的重心，用 lg(16) 明显偏小；
+     此前 FilesPanel / FilePreview / WorkspaceDock 各写各的（24/24/26 内联 style），
+     并入本档后尺寸与描边都统一。 */
+  xl: { size: 24, strokeWidth: ICON_STROKE },
 } as const;
 
 /** 图标尺寸档位名 */

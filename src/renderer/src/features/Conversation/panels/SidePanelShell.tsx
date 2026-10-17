@@ -59,7 +59,7 @@ export function SidePanelShell({
       </div>
 
       {error && (
-        <div className="m-2 rounded-md border border-line bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
+        <div className="m-2 rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
           {error}
         </div>
       )}

@@ -77,7 +77,7 @@ export function FirstRunGate({
         </div>
 
         {error && (
-          <p className="mt-3 rounded-md border border-line bg-danger-soft px-3 py-2 text-xs text-danger-fg">
+          <p className="mt-3 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger-fg">
             {error}
           </p>
         )}
