@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<!--
+  ================================================================
+  Colt · 设置页 · 重新设计（概念稿 / 高保真原型）
+  ================================================================
+
+  状态：概念稿。目标是把 src/renderer/src/features/Settings.tsx（1784 行，单列竖直流水线）
+        重排成「左侧分组导航 + 右侧设置行」。
+  依据：src/renderer/src/features/Settings.tsx（现状）、src/renderer/src/styles.css（令牌）
+  配套设计说明：docs/ui-settings-redesign-2026-10.md
+
+  ⚠️ 与当前实现的差异（读此稿时务必区分）：
+
+  | 本稿 | 当前实现 |
+  |---|---|
+  | 左侧 7 项导航，分三组（模型 / 行为 / 扩展），一次只看一段 | 7 个分区首尾相接竖直排（模型服务→审批→写后诊断→压缩→可选安装→MCP→技能），找「审批」要滚过全部 provider 卡片 |
+  | 每个分区标题右侧有**作用域徽标**（全局 / 本项目 / 用户级） | 三种作用域视觉上零区别：诊断是全局、MCP 是项目级、可选安装写的是用户级 `~/.colt/mcp.json`（对全部项目生效） |
+  | 设置项一律是「行」：左标签 + 右控件，行间 1px 分隔，**不再套卡片** | 每段是一块 `rounded-lg border bg-surface-raised p-3`，卡片套卡片（provider 卡片里还有模型行） |
+  | 没有「保存」按钮。开关即时生效，数值失焦提交，白名单按 token 即时提交 | 只有「审批」是 textarea + 恒显示的「保存」按钮（没改动也能点）；其余四项各自一套心智模型 |
+  | 说明文字默认收在 2xs 辅助行里，长解释进 `▸` 展开 | 技能分区光说明就 3 段约 400 字（含两处路径、一个 `/skill` 命令），每次打开都摊开 |
+  | 导航条目右端有**改动指示**（有非默认值 / 有 N 项） | 无。用户无法一眼看出「我改过什么」 |
+  | 危险动作（删 provider / 清运行时）在行内 hover 才转红，且要二次确认 | 垃圾桶图标与开关同一视觉重量 |
+
+  ⚠️ 本稿刻意没做的事：
+  1. 不加「关于 / 版本」分区——需要新增只读通道，本稿只动呈现层。
+  2. 不加设置搜索——只有 7 项，搜索是给 30 项以上的页面用的。
+  3. 不画「安装流水跨页保持」（需要把流水提到主进程）。可选安装那一屏沿用已画的稿。
+
+  主题：暗色为默认，右上角可切亮色。配色全部取自 styles.css 的令牌，未新增任何色值。
+  ================================================================
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>设置页 · 重新设计 · 高保真稿</title>
+<style>
+  :root {
+    --surface: #0a0c0f;
+    --raised: #11141a;
+    --overlay: #161a21;
+    --input: #0e1116;
+    --code: #07090c;
+    --line: #20262f;
+    --line-strong: #2c333d;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --t1: #e8ebf0;
+    --t2: #98a2b3;
+    --t3: #7a838f;
+    --accent: #c9ced6;
+    --accent-soft: rgba(201, 206, 214, 0.1);
+    --accent-dim: #7d8694;
+    --accent-fg: #0a0c0f;
+    --success: #3fb950;
+    --success-soft: rgba(63, 185, 80, 0.12);
+    --success-fg: #7ee787;
+    --warning: #d29922;
+    --warning-soft: rgba(210, 153, 34, 0.12);
+    --warning-fg: #e3b341;
+    --danger: #f85149;
+    --danger-soft: rgba(248, 81, 73, 0.12);
+    --danger-fg: #ff9d95;
+    --sans: "Inter", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  }
+  :root[data-theme="light"] {
+    --surface: #ffffff;
+    --raised: #f7f8f9;
+    --overlay: #eef0f2;
+    --input: #ffffff;
+    --code: #f4f5f7;
+    --line: #e3e6ea;
+    --line-strong: #cdd2d9;
+    --line-soft: rgba(16, 24, 40, 0.07);
+    --t1: #1a1d21;
+    --t2: #565f6b;
+    --t3: #676e78;
+    --accent: #2b3138;
+    --accent-soft: rgba(43, 49, 56, 0.06);
+    --accent-dim: #6b7480;
+    --accent-fg: #ffffff;
+    --success: #1a7f37;
+    --success-soft: rgba(26, 127, 55, 0.08);
+    --success-fg: #1a7f37;
+    --warning: #8a5a00;
+    --warning-soft: rgba(154, 103, 0, 0.08);
+    --warning-fg: #8a5a00;
+    --danger: #cf222e;
+    --danger-soft: rgba(207, 34, 46, 0.08);
+    --danger-fg: #cf222e;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
+  body {
+    margin: 0; padding: 28px 20px 48px;
+    background: #06080a; color: var(--t1);
+    font-family: var(--sans); font-size: 13px; line-height: 1.5;
+  }
+  :root[data-theme="light"] body { background: #eceef1; }
+
+  /* ---------- 稿纸外壳（说明区，不属于产品界面） ---------- */
+  .doc {
+    max-width: 1000px; margin: 0 auto 18px;
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+  }
+  .doc h1 {
+    margin: 0 0 4px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+    color: #e8ebf0;
+  }
+  :root[data-theme="light"] .doc h1 { color: #1a1d21; }
+  .doc p { margin: 0; font-size: 11.5px; line-height: 1.6; color: #7a838f; max-width: 640px; }
+  .doc .meta { font-family: var(--mono); font-size: 10.5px; color: #5b636e; white-space: nowrap; }
+  #theme {
+    flex: none; font: inherit; font-size: 11px; padding: 5px 10px; cursor: pointer;
+    color: #98a2b3; background: #11141a; border: 1px solid #20262f; border-radius: 6px;
+  }
+  #theme:hover { color: #e8ebf0; }
+  :root[data-theme="light"] #theme { color: #565f6b; background: #fff; border-color: #e3e6ea; }
+
+  /* ---------- 应用窗口 ---------- */
+  .window {
+    max-width: 1000px; margin: 0 auto; height: 900px;
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: 0 34px 68px -22px rgba(0, 0, 0, 0.8);
+  }
+  :root[data-theme="light"] .window { box-shadow: 0 24px 48px -20px rgba(16, 24, 40, 0.22); }
+
+  .topbar {
+    flex: none; height: 42px; display: flex; align-items: center; gap: 8px;
+    padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+  }
+  .topbar .crumb { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--t2); }
+  .topbar .crumb b { font-weight: 500; color: var(--t1); }
+  .topbar .slash { color: var(--t3); }
+  .topbar .grow { flex: 1; }
+  .topbar .gear {
+    display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px;
+    color: var(--t1); background: var(--accent-soft); border: 1px solid var(--line-strong);
+  }
+
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- 左侧导航 ---------- */
+  .side {
+    flex: none; width: 216px; padding: 14px 10px 18px;
+    border-right: 1px solid var(--line); background: var(--surface);
+    display: flex; flex-direction: column; overflow-y: auto;
+  }
+  .side .title {
+    font-size: 13px; font-weight: 600; color: var(--t1);
+    padding: 0 8px 12px; letter-spacing: -0.005em;
+  }
+  /* 亮色下内容区是纯白，导航若也用白就与内容融成一片（暗色下两者靠 --line 分得开）。
+     用 raised 给导航一层极浅的面差——这是亮色主题里唯一需要「按主题」写的一条规则。 */
+  :root[data-theme="light"] .side { background: var(--raised); }
+  :root[data-theme="light"] .nav:hover { background: rgba(16, 24, 40, 0.05); }
+  .grp { margin-bottom: 4px; }
+  .grp > span {
+    display: block; padding: 10px 8px 5px;
+    font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--t3); font-weight: 500;
+  }
+  .nav {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    min-height: 32px; padding: 5px 8px; margin-bottom: 1px;
+    font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+    color: var(--t2); background: none; border: 0; border-radius: 6px;
+    transition: color 140ms cubic-bezier(0.2, 0.8, 0.2, 1), background 140ms;
+  }
+  .nav:hover { color: var(--t1); background: var(--line-soft); }
+  .nav:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+  .nav[aria-current="page"] { color: var(--t1); background: var(--accent-soft); font-weight: 500; }
+  .nav .ico { flex: none; width: 14px; height: 14px; opacity: 0.8; }
+  .nav[aria-current="page"] .ico { opacity: 1; }
+  .nav .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 改动指示：有非默认值 = 小圆点；有计数 = 数字 */
+  .nav .mark {
+    flex: none; font-family: var(--mono); font-size: 10px; line-height: 1;
+    color: var(--t3); padding-left: 2px;
+  }
+  .nav .dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-dim); }
+  .nav .warn { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--warning); }
+  .nav[aria-disabled="true"] { color: var(--t3); cursor: not-allowed; opacity: 0.55; }
+  .nav[aria-disabled="true"]:hover { background: none; color: var(--t3); }
+
+  .legend {
+    margin-top: auto; padding: 12px 8px 0; border-top: 1px solid var(--line-soft);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .legend .lrow { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--t3); }
+  .legend .sw { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+
+  /* ---------- 右侧内容 ---------- */
+  .main { flex: 1; min-width: 0; overflow-y: auto; scroll-behavior: smooth; }
+  .wrap { max-width: 672px; padding: 22px 24px 40px; }
+
+  .panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .panel-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .scope {
+    flex: none; font-size: 10.5px; line-height: 1; padding: 3px 6px; border-radius: 4px;
+    color: var(--t3); background: var(--overlay); border: 1px solid var(--line);
+  }
+  .scope.user { color: var(--warning-fg); border-color: color-mix(in srgb, var(--warning) 34%, transparent); background: var(--warning-soft); }
+  .lede {
+    margin: 0 0 16px; font-size: 11.5px; line-height: 1.6; color: var(--t3);
+    max-width: 600px;
+  }
+  .lede code { font-family: var(--mono); font-size: 10.5px; color: var(--t2); }
+
+  /* 设置行 */
+  .rows { border-top: 1px solid var(--line-soft); }
+  .row {
+    display: flex; align-items: flex-start; gap: 14px; min-height: 44px;
+    padding: 9px 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .row.tall { align-items: center; }
+  .row > .lab { flex: 1; min-width: 0; padding-top: 1px; }
+  .row .name { font-size: 12.5px; color: var(--t1); }
+  .row .hint { margin-top: 2px; font-size: 11px; line-height: 1.55; color: var(--t3); max-width: 460px; }
+  .row .hint code { font-family: var(--mono); font-size: 10.5px; color: var(--t2); }
+  .row > .ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+
+  /* 开关 */
+  .switch {
+    position: relative; flex: none; width: 30px; height: 17px; border-radius: 9px;
+    background: var(--line-strong); border: 0; cursor: pointer; padding: 0;
+    transition: background 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2.5px; left: 2.5px; width: 12px; height: 12px;
+    border-radius: 50%; background: var(--t3);
+    transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1), background 140ms;
+  }
+  /* 开态用 accent-dim 而不是 accent：近白色的轨道会让页面上最亮的东西变成开关本身，
+     而开关只是「一行设置的当前取值」，不该比标题和正文更抢眼。dim 与 surface 的对比 4.3:1，
+     作为非文本 UI 组件仍高于 WCAG 的 3:1。 */
+  .switch[aria-checked="true"] { background: var(--accent-dim); }
+  .switch[aria-checked="true"]::after { transform: translateX(13px); background: var(--accent-fg); }
+  .switch:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; }
+
+  /* 数值输入：右对齐、等宽、宽 84px */
+  .num {
+    flex: none; width: 84px; padding: 4px 8px; text-align: right;
+    font-family: var(--mono); font-size: 12px; color: var(--t1);
+    background: var(--input); border: 1px solid var(--line); border-radius: 5px;
+    outline: none; transition: border-color 140ms;
+  }
+  .num:focus { border-color: var(--accent-dim); }
+  .unit { font-size: 11px; color: var(--t3); flex: none; }
+
+  /* 徽标 / 芯片 */
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px;
+    font-family: var(--mono); font-size: 10.5px; border-radius: 4px;
+    color: var(--t2); background: var(--overlay);
+  }
+  .chip.tag { background: none; border: 1px solid var(--line); color: var(--t3); font-family: var(--sans); font-size: 10.5px; }
+  .chip.add { color: var(--t3); border: 1px dashed var(--line-strong); background: none; cursor: pointer; }
+  .chip.add:hover { color: var(--t1); border-color: var(--accent-dim); }
+
+  .stat { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--t2); }
+  .stat .d { width: 6px; height: 6px; border-radius: 50%; }
+  .stat.ok .d { background: var(--success); }
+  .stat.ok { color: var(--success-fg); }
+  .stat.idle .d { background: var(--t3); }
+  .stat.warn .d { background: var(--warning); }
+  .stat.warn { color: var(--warning-fg); }
+
+  /* 按钮 */
+  .btn {
+    font: inherit; font-size: 11.5px; padding: 5px 10px; cursor: pointer;
+    color: var(--t2); background: none; border: 1px solid var(--line);
+    border-radius: 5px; transition: color 140ms, border-color 140ms, background 140ms;
+  }
+  .btn:hover { color: var(--t1); border-color: var(--line-strong); }
+  .btn:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 500; }
+  .btn.primary:hover { background: var(--accent-hover, #fff); color: var(--accent-fg); }
+  .btn.icon { padding: 4px; display: grid; place-items: center; color: var(--t3); border-color: transparent; }
+  .btn.icon:hover { color: var(--t1); background: var(--line-soft); }
+  /* 危险动作：平时只是灰图标，hover / focus 才转红 */
+  .btn.icon.danger:hover, .btn.icon.danger:focus-visible { color: var(--danger); background: var(--danger-soft); }
+  .btn.danger-text { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+  .btn.danger-text:hover { background: var(--danger-soft); color: var(--danger-fg); }
+
+  /* 资源卡（provider / MCP server / 技能 这类「一项资源」仍用卡片，但只套一层） */
+  .res {
+    border: 1px solid var(--line); border-radius: 8px; background: var(--raised);
+    padding: 10px 12px; transition: border-color 140ms;
+  }
+  .res + .res { margin-top: 8px; }
+  .res:hover { border-color: var(--line-strong); }
+  .res .head { display: flex; align-items: center; gap: 8px; }
+  .res .head .nm { font-size: 12.5px; color: var(--t1); font-weight: 500; }
+  .res .head .grow { flex: 1; }
+  .res .sub {
+    margin-top: 2px; font-family: var(--mono); font-size: 10.5px; color: var(--t3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .res .tags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .res .foot { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+  .res .foot .grow { flex: 1; }
+
+  /* 折叠区 */
+  details.more { margin-top: 2px; }
+  details.more > summary {
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+    font-size: 11px; color: var(--t3); list-style: none; padding: 2px 0;
+  }
+  details.more > summary::-webkit-details-marker { display: none; }
+  details.more > summary:hover { color: var(--t2); }
+  details.more > summary::before {
+    content: ""; width: 0; height: 0; border-left: 4px solid currentColor;
+    border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+    transition: transform 140ms;
+  }
+  details.more[open] > summary::before { transform: rotate(90deg); }
+  details.more .inner {
+    margin: 8px 0 2px; padding: 10px 12px; border-radius: 6px;
+    background: var(--code); border: 1px solid var(--line-soft);
+    font-size: 11px; line-height: 1.65; color: var(--t3);
+  }
+  details.more .inner b { color: var(--t2); font-weight: 500; }
+  details.more .inner .kv { display: flex; gap: 8px; }
+  details.more .inner .kv span:first-child { flex: none; width: 74px; color: var(--t2); font-family: var(--mono); font-size: 10.5px; }
+
+  /* 提示条 */
+  .note {
+    display: flex; gap: 7px; padding: 8px 10px; margin-bottom: 12px; border-radius: 6px;
+    font-size: 11.5px; line-height: 1.55;
+    background: var(--overlay); border: 1px solid var(--line); color: var(--t2);
+  }
+  .note.warn { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 30%, transparent); color: var(--warning-fg); }
+  .note .ico { flex: none; margin-top: 1px; }
+
+  /* 空态 */
+  .empty {
+    padding: 22px 16px; text-align: center; border: 1px dashed var(--line-strong);
+    border-radius: 8px; color: var(--t3); font-size: 11.5px; line-height: 1.6;
+  }
+  .empty b { display: block; margin-bottom: 3px; color: var(--t2); font-size: 12px; font-weight: 500; }
+
+  /* 审批白名单的 token 输入 */
+  .tokens {
+    display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    padding: 7px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--input);
+  }
+  .tk {
+    display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 4px 0 7px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--t1);
+    background: var(--overlay); border-radius: 4px;
+  }
+  .tk .x { cursor: pointer; color: var(--t3); font-size: 11px; line-height: 1; padding: 0 1px; }
+  .tk .x:hover { color: var(--danger); }
+  .tokens .tin {
+    flex: 1; min-width: 90px; border: 0; outline: none; background: none;
+    font-family: var(--mono); font-size: 11px; color: var(--t1); padding: 2px 0;
+  }
+  .tokens .tin::placeholder { color: var(--t3); }
+
+  /* 分区脚注：说明「改了会发生什么」 */
+  .foot-note {
+    margin-top: 12px; font-size: 10.5px; line-height: 1.6; color: var(--t3);
+    display: flex; align-items: flex-start; gap: 6px;
+  }
+  .foot-note .ico { flex: none; margin-top: 1px; opacity: 0.7; }
+
+  /* 保存反馈 */
+  .saved {
+    display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--success-fg);
+  }
+
+  .hrule { height: 1px; background: var(--line-soft); margin: 20px 0 16px; }
+  .sec-label {
+    font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--t3); margin-bottom: 8px; font-weight: 500;
+  }
+
+  /* 仅标注用 */
+  .ann {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--mono); font-size: 9.5px; color: #7d8694;
+    padding: 1px 5px; border-radius: 3px; border: 1px dashed #3a424e;
+    vertical-align: 1px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="doc">
+  <div>
+    <h1>Colt · 设置页 · 重新设计</h1>
+    <p>左侧按「这条设置改变什么」分三组；右侧把设置项从「卡片套卡片」改成「行」，并给每一段标出作用域。点左侧可切换，右上角切主题。</p>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="meta">1000 × 900 · 暗/亮</span>
+    <button id="theme" type="button">切到亮色</button>
+  </div>
+</div>
+
+<div class="window">
+  <div class="topbar">
+    <div class="crumb">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m15 18-6-6 6-6"/></svg>
+      <span>colt</span><span class="slash">/</span><b>设置</b>
+    </div>
+    <div class="grow"></div>
+    <span class="gear" title="设置（当前）">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+    </span>
+  </div>
+
+  <div class="body">
+    <!-- ================= 左导航 ================= -->
+    <nav class="side" aria-label="设置分区">
+      <div class="title">设置</div>
+
+      <div class="grp">
+        <span>模型</span>
+        <button class="nav" type="button" data-panel="providers" aria-current="page">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg>
+          <span class="txt">模型服务</span>
+          <span class="mark">2</span>
+        </button>
+      </div>
+
+      <div class="grp">
+        <span>行为</span>
+        <button class="nav" type="button" data-panel="approval">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></svg>
+          <span class="txt">审批</span>
+          <span class="dot"></span>
+        </button>
+        <button class="nav" type="button" data-panel="diagnose">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 8-4-16-3 8H2"/></svg>
+          <span class="txt">写后诊断</span>
+        </button>
+        <button class="nav" type="button" data-panel="compaction">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 12h10M4 16h13"/></svg>
+          <span class="txt">上下文压缩</span>
+          <span class="dot"></span>
+        </button>
+      </div>
+
+      <div class="grp">
+        <span>扩展</span>
+        <button class="nav" type="button" data-panel="catalog">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span class="txt">可选安装</span>
+        </button>
+        <button class="nav" type="button" data-panel="mcp">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span class="txt">MCP 服务</span>
+          <span class="mark">2</span>
+        </button>
+        <button class="nav" type="button" data-panel="skills">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 7v6c0 5 3.5 7.5 8 8 4.5-.5 8-3 8-8V7l-8-4Z"/><path d="M12 8v5m0 3h.01"/></svg>
+          <span class="txt">技能</span>
+          <span class="mark">5</span>
+        </button>
+      </div>
+
+      <div class="legend">
+        <div class="lrow"><span class="sw" style="background:var(--accent-dim)"></span>已改过默认值</div>
+        <div class="lrow"><span class="sw" style="background:var(--warning)"></span>有告警</div>
+        <div class="lrow"><span class="sw" style="background:var(--line-strong)"></span>默认</div>
+      </div>
+    </nav>
+
+    <!-- ================= 右内容 ================= -->
+    <main class="main">
+
+      <!-- -------- 1. 模型服务 -------- -->
+      <section class="wrap" data-p="providers">
+        <div class="panel-head">
+          <h2>模型服务</h2><span class="scope">全局</span>
+        </div>
+        <p class="lede">决定用哪个模型回答、密钥存在哪。密钥经系统加密后只存本机，界面永远不回显明文。</p>
+
+        <div class="res">
+          <div class="head">
+            <span class="nm">DeepSeek</span>
+            <span class="chip tag">OpenAI 兼容</span>
+            <span class="grow"></span>
+            <span class="stat ok"><span class="d"></span>密钥已配置</span>
+            <button class="btn icon" type="button" title="编辑">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z"/></svg>
+            </button>
+            <button class="btn icon danger" type="button" title="删除这个服务">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+            </button>
+          </div>
+          <div class="sub">https://api.deepseek.com/v1</div>
+          <div class="tags">
+            <span class="chip">deepseek-v4.1-flash · 128k</span>
+            <span class="chip">deepseek-reasoner · 64k</span>
+          </div>
+        </div>
+
+        <div class="res">
+          <div class="head">
+            <span class="nm">本地 Ollama</span>
+            <span class="chip tag">OpenAI 兼容</span>
+            <span class="grow"></span>
+            <span class="stat warn"><span class="d"></span>未配置密钥</span>
+            <button class="btn icon" type="button" title="编辑">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z"/></svg>
+            </button>
+            <button class="btn icon danger" type="button" title="删除这个服务">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+            </button>
+          </div>
+          <div class="sub">http://127.0.0.1:11434/v1</div>
+          <div class="foot">
+            <span class="hint" style="font-size:10.5px;color:var(--t3)">本地服务通常不需要密钥</span>
+            <span class="grow"></span>
+            <button class="btn" type="button">补填密钥</button>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <button class="btn" type="button">
+            <span style="vertical-align:-1px">＋</span> 添加 OpenAI 兼容服务
+          </button>
+        </div>
+
+        <div class="foot-note">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>删除服务时，它的密钥一起消失，且不可恢复。若只是换密钥，用编辑。</span>
+        </div>
+      </section>
+
+      <!-- -------- 2. 审批 -------- -->
+      <section class="wrap" data-p="approval" hidden>
+        <div class="panel-head">
+          <h2>审批</h2><span class="scope">全局</span>
+        </div>
+        <p class="lede">决定哪些命令不必每次确认。不在白名单里的操作一律弹窗——白名单只放宽「交给模型分析后自动放行」这一步，不是免审批。</p>
+
+        <div class="rows">
+          <div class="row tall">
+            <div class="lab">
+              <div class="name">自动审批</div>
+              <div class="hint">只对白名单首词生效。关掉后所有操作都转人工确认。</div>
+            </div>
+            <div class="ctl">
+              <button class="switch" type="button" role="switch" aria-checked="true" aria-label="自动审批"></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec-label" style="margin-top:18px">可自动放行的命令</div>
+        <div class="tokens">
+          <span class="tk">npm<span class="x">×</span></span>
+          <span class="tk">pnpm<span class="x">×</span></span>
+          <span class="tk">git<span class="x">×</span></span>
+          <span class="tk">pytest<span class="x">×</span></span>
+          <span class="tk">cargo<span class="x">×</span></span>
+          <input class="tin" placeholder="输入一个命令后回车…" />
+        </div>
+
+        <div class="foot-note">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>匹配的是命令的<strong style="color:var(--t2);font-weight:500">首词</strong>，所以 <code style="font-family:var(--mono)">git push</code> 与 <code style="font-family:var(--mono)">git status</code> 一起放行。想精确到子命令，把整串写进去。</span>
+        </div>
+
+        <div class="foot-note">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>留空 = 关闭自动放行，全部转人工。改动即时写入，没有「保存」按钮。</span>
+        </div>
+      </section>
+
+      <!-- -------- 3. 写后诊断 -------- -->
+      <section class="wrap" data-p="diagnose" hidden>
+        <div class="panel-head">
+          <h2>写后诊断</h2><span class="scope">全局</span>
+        </div>
+        <p class="lede">助手每次写完代码文件，自动跑一遍项目检查，结论直接跟在写入结果里。</p>
+
+        <div class="rows">
+          <div class="row tall">
+            <div class="lab">
+              <div class="name">写完文件后自动运行项目检查</div>
+              <div class="hint">全仓类型检查在写入停止约 2 秒后于后台运行，不阻塞回复。</div>
+            </div>
+            <div class="ctl"><button class="switch" type="button" role="switch" aria-checked="true" aria-label="写后诊断"></button></div>
+          </div>
+        </div>
+
+        <details class="more" open>
+          <summary>它会跑什么</summary>
+          <div class="inner">
+            <div class="kv"><span>.ts / .tsx</span><span>tsc（单文件 / 全仓）、eslint</span></div>
+            <div class="kv"><span>.py</span><span>ruff check</span></div>
+            <div class="kv"><span>.go</span><span>go vet</span></div>
+            <div class="kv"><span>.rs</span><span>cargo check</span></div>
+            <div style="margin-top:7px;color:var(--t3)">只在项目里存在对应配置时运行；跑不起来就跳过，不会报成错误。</div>
+          </div>
+        </details>
+
+        <div class="foot-note">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>检查慢或输出吵的项目可以整体关掉。关掉不影响助手本身写文件，只是不再附结论。</span>
+        </div>
+      </section>
+
+      <!-- -------- 4. 上下文压缩 -------- -->
+      <section class="wrap" data-p="compaction" hidden>
+        <div class="panel-head">
+          <h2>上下文压缩</h2><span class="scope">全局</span>
+        </div>
+        <p class="lede">对话太长时把较早的历史摘要成一段，只留最近的部分原文，让长会话能继续。<strong style="color:var(--t2);font-weight:500">摘要保大意、不保细节</strong>——具体数值和路径可能丢，重要结论让它写进记忆文件。</p>
+
+        <div class="rows">
+          <div class="row tall">
+            <div class="lab">
+              <div class="name">上下文攒满时自动压缩</div>
+              <div class="hint">关掉后对话到上限会直接失败，而不是自动摘要。</div>
+            </div>
+            <div class="ctl"><button class="switch" type="button" role="switch" aria-checked="true" aria-label="自动压缩"></button></div>
+          </div>
+          <div class="row tall">
+            <div class="lab"><div class="name">压缩后保留最近</div><div class="hint">这一段保留原文，其余进入摘要。</div></div>
+            <div class="ctl"><input class="num" value="8000" aria-label="保留最近的 token 数" /><span class="unit">token</span></div>
+          </div>
+          <div class="row tall">
+            <div class="lab"><div class="name">为摘要预留</div><div class="hint">留给摘要本身的空间，太小会把摘要挤断。</div></div>
+            <div class="ctl"><input class="num" value="16384" aria-label="为摘要预留的 token 数" /><span class="unit">token</span></div>
+          </div>
+        </div>
+
+        <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+          <span style="font-size:10.5px;color:var(--t3)">当前生效：保留最近 8000 · 预留 16384（已改过默认值）</span>
+          <span class="grow" style="flex:1"></span>
+          <button class="btn" type="button">恢复默认</button>
+        </div>
+
+        <div class="foot-note">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>改完立即对进行中的会话生效，不用重启。越界数值会被自动钳制，输入框随后回填真实值。</span>
+        </div>
+      </section>
+
+      <!-- -------- 5. 可选安装 -------- -->
+      <section class="wrap" data-p="catalog" hidden>
+        <div class="panel-head">
+          <h2>可选安装</h2><span class="scope user">用户级 · 对全部项目生效</span>
+        </div>
+        <p class="lede">内置目录里的工具，装与不装都由你决定，默认一个都不装。安装在独立运行时里（venv），<strong style="color:var(--t2);font-weight:500">不碰你系统里的 Python</strong>。</p>
+
+        <div class="sec-label">可安装 · 1</div>
+
+        <div class="res" style="margin-top:0">
+          <div class="head">
+            <span class="nm">CodeWiki</span>
+            <span class="chip tag">仓库文档生成</span>
+            <span class="grow"></span>
+            <span class="stat idle"><span class="d"></span>未安装</span>
+          </div>
+          <div class="sub" style="font-family:var(--sans);font-size:11px;line-height:1.55;white-space:normal;margin-top:3px">
+            把仓库拆成模块树，逐页写 Markdown + Mermaid 图。
+          </div>
+          <div class="tags" style="margin-top:8px;align-items:center">
+            <span class="chip tag" style="color:var(--success-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)">✓ Python 3.13.12</span>
+            <span class="chip tag" style="color:var(--success-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)">✓ git 2.47.1</span>
+            <span class="chip tag" style="border-style:dashed">＋ 将装 codewiki 2.0.0 · mcp &lt; 2</span>
+          </div>
+          <div class="foot">
+            <details class="more">
+              <summary>检查明细</summary>
+              <div class="inner">
+                <div class="kv"><span>Python</span><span>3.13.12 · 满足 ≥ 3.12</span></div>
+                <div class="kv"><span>git</span><span>2.47.1</span></div>
+                <div class="kv"><span>codewiki</span><span style="color:var(--t2)">未安装 · 安装时一起装</span></div>
+                <div class="kv"><span>mcp</span><span style="color:var(--t2)">未安装 · 安装时一起装，钉在 &lt; 2</span></div>
+              </div>
+            </details>
+            <span class="grow"></span>
+            <span style="font-size:10.5px;color:var(--t3)">首次约 60MB · 1–3 分钟</span>
+            <button class="btn primary" type="button">安装</button>
+          </div>
+        </div>
+
+        <div class="sec-label" style="margin-top:16px">已安装</div>
+
+        <div class="res" style="margin-top:0">
+          <div class="head">
+            <span class="nm">CodeWiki</span>
+            <span class="chip tag">仓库文档生成</span>
+            <span class="grow"></span>
+            <span class="stat ok"><span class="d"></span>已安装</span>
+          </div>
+          <div class="sub">~/.colt/runtime/codewiki/Scripts/codewiki.exe mcp</div>
+          <div class="foot">
+            <span class="grow"></span>
+            <button class="btn" type="button">卸载</button>
+            <button class="btn" type="button">重新安装</button>
+          </div>
+          <details class="more" open style="margin-top:6px">
+            <summary>检查明细</summary>
+            <div class="inner">
+              <div class="kv"><span>Python</span><span>3.13.12 · 满足 ≥ 3.12</span></div>
+              <div class="kv"><span>git</span><span>2.47.1</span></div>
+              <div class="kv"><span>codewiki</span><span>2.0.0 · 与钉住版本一致</span></div>
+              <div class="kv"><span>mcp</span><span>1.30.0 · 满足 &lt; 2</span></div>
+              <div style="margin-top:7px">四项全绿才会写配置。任何一项红了，装到一半也会停下并把原因写在这里。</div>
+            </div>
+          </details>
+        </div>
+
+        <div class="foot-note" style="margin-top:14px">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>装的是用户级配置（<code style="font-family:var(--mono)">~/.colt/mcp.json</code>），装一次所有项目都能用。卸载默认只删这一条声明、保留运行时。</span>
+        </div>
+      </section>
+
+      <!-- -------- 6. MCP 服务 -------- -->
+      <section class="wrap" data-p="mcp" hidden>
+        <div class="panel-head">
+          <h2>MCP 服务</h2><span class="scope">本项目</span>
+        </div>
+        <p class="lede">本项目声明了哪些 server、现在连上没有、模型能用哪些工具。配置在项目根的 <code>.colt/mcp.json</code>，跟着仓库走。</p>
+
+        <div class="res">
+          <div class="head">
+            <span class="nm">codewiki</span>
+            <span class="chip tag">stdio</span>
+            <span class="grow"></span>
+            <span class="stat ok"><span class="d"></span>已连接</span>
+          </div>
+          <div class="sub">.colt/runtime/codewiki/Scripts/codewiki.exe mcp</div>
+          <div class="tags">
+            <span class="chip">analyze_repo</span><span class="chip">save_module_tree</span>
+            <span class="chip">get_processing_order</span><span class="chip">write_doc_file</span>
+            <span class="chip">+4</span>
+          </div>
+        </div>
+
+        <div class="res">
+          <div class="head">
+            <span class="nm">filesystem</span>
+            <span class="chip tag">stdio</span>
+            <span class="grow"></span>
+            <span class="stat idle"><span class="d"></span>未启动</span>
+          </div>
+          <div class="sub">npx -y @modelcontextprotocol/server-filesystem .</div>
+        </div>
+
+        <div class="res">
+          <div class="head">
+            <span class="nm">broken-server</span>
+            <span class="chip tag">stdio</span>
+            <span class="grow"></span>
+            <span class="stat" style="color:var(--danger-fg)"><span class="d" style="background:var(--danger)"></span>连接失败</span>
+          </div>
+          <div class="sub">npx -y some-server@0.1</div>
+          <div style="margin-top:6px;font-size:11px;line-height:1.55;color:var(--danger-fg)">spawn npx ENOENT —— 命令不在 PATH 上</div>
+          <div class="foot">
+            <span class="grow"></span>
+            <button class="btn" type="button">重试连接</button>
+          </div>
+        </div>
+
+        <div class="foot-note" style="margin-top:14px">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>「未启动」不等于「配错了」：会话没打开时只有声明，没有运行态。开一个会话再回来看。</span>
+        </div>
+      </section>
+
+      <!-- -------- 7. 技能 -------- -->
+      <section class="wrap" data-p="skills" hidden>
+        <div class="panel-head">
+          <h2>技能</h2><span class="scope">本项目</span>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:4px">
+          <p class="lede" style="margin:0;flex:1">在项目根的 <code>.agents/skills/&lt;名字&gt;/SKILL.md</code> 放技能，项目级同名覆盖用户级。改完点「重新扫描」生效，会话不用重启。</p>
+          <button class="btn" type="button" style="flex:none">重新扫描</button>
+        </div>
+
+        <div class="note warn">
+          <svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4m0 3h.01"/><path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+          <span>本项目用了 2 个项目级技能：它们随仓库分发、会进系统提示词、影响模型行为。注意来源是否可信。</span>
+        </div>
+
+        <div class="rows" style="border-top:0">
+          <div class="row tall">
+            <div class="lab">
+              <div class="name" style="display:flex;align-items:center;gap:6px">code-review <span class="chip tag">项目级</span></div>
+              <div class="hint">审查改动，按仓库约定提意见</div>
+            </div>
+            <div class="ctl">
+              <button class="switch" type="button" role="switch" aria-checked="true" aria-label="启用 code-review"></button>
+              <button class="btn icon" type="button" title="在文件管理器中显示">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h5l2 2h11v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="row tall">
+            <div class="lab">
+              <div class="name" style="display:flex;align-items:center;gap:6px">db-migrate <span class="chip tag">项目级</span></div>
+              <div class="hint">按约定生成迁移脚本</div>
+            </div>
+            <div class="ctl">
+              <button class="switch" type="button" role="switch" aria-checked="true" aria-label="启用 db-migrate"></button>
+              <button class="btn icon" type="button" title="在文件管理器中显示">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h5l2 2h11v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="row tall">
+            <div class="lab">
+              <div class="name" style="display:flex;align-items:center;gap:6px">pdf <span class="chip tag">用户级</span></div>
+              <div class="hint">读写 PDF：抽取文本、合并、拆分</div>
+            </div>
+            <div class="ctl">
+              <button class="switch" type="button" role="switch" aria-checked="false" aria-label="启用 pdf"></button>
+              <button class="btn icon" type="button" title="在文件管理器中显示">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h5l2 2h11v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="row tall">
+            <div class="lab">
+              <div class="name" style="display:flex;align-items:center;gap:6px">pptx <span class="chip tag">内置</span></div>
+              <div class="hint">生成与编辑演示文稿</div>
+            </div>
+            <div class="ctl">
+              <button class="switch" type="button" role="switch" aria-checked="true" aria-label="启用 pptx"></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="foot-note">
+          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
+          <span>关掉 = 不再装载：不进系统提示词、模型看不见、<code style="font-family:var(--mono)">/skill</code> 也会被明确拒绝。文件仍在磁盘上，随时能开回来。</span>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById("theme");
+    function sync() {
+      btn.textContent = root.getAttribute("data-theme") === "light" ? "切到暗色" : "切到亮色";
+    }
+    btn.addEventListener("click", function () {
+      root.setAttribute("data-theme", root.getAttribute("data-theme") === "light" ? "dark" : "light");
+      sync();
+    });
+    sync();
+
+    var navs = [].slice.call(document.querySelectorAll(".nav"));
+    var panels = [].slice.call(document.querySelectorAll("[data-p]"));
+    function show(id) {
+      navs.forEach(function (n) {
+        if (n.getAttribute("data-panel") === id) n.setAttribute("aria-current", "page");
+        else n.removeAttribute("aria-current");
+      });
+      panels.forEach(function (p) {
+        p.hidden = p.getAttribute("data-p") !== id;
+      });
+      document.querySelector(".main").scrollTop = 0;
+    }
+    navs.forEach(function (n) {
+      n.addEventListener("click", function () {
+        if (n.getAttribute("aria-disabled") === "true") return;
+        show(n.getAttribute("data-panel"));
+      });
+    });
+
+    // 开关与芯片的假交互：让稿子能点，不代表真实行为
+    [].slice.call(document.querySelectorAll(".switch")).forEach(function (s) {
+      s.addEventListener("click", function () {
+        s.setAttribute("aria-checked", s.getAttribute("aria-checked") === "true" ? "false" : "true");
+      });
+    });
+    [].slice.call(document.querySelectorAll(".tk .x")).forEach(function (x) {
+      x.addEventListener("click", function () { x.parentNode.remove(); });
+    });
+  })();
+</script>
+</body>
+</html>
