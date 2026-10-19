@@ -28,13 +28,9 @@ import { fileURLToPath } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { McpClient, StdioTransport } from "@earendil-works/pi-mcp";
 import type {
-  AgentHarness,
   AgentHarnessTool,
-  AgentLane,
-  Context,
   ExecutionToolContext,
 } from "@earendil-works/pi-agent-core";
-import type { McpServerView } from "../src/shared/worker-protocol.ts";
 import {
   callTimeoutOf,
   closeMcpTools,
@@ -51,7 +47,7 @@ import {
   type McpServerConfig,
 } from "../src/worker/lib/mcp-tools.ts";
 import { isQuestionTool } from "../src/worker/lib/ask-user-tool.ts";
-import { armLateMcpAttach, composeMcpInstructions } from "../src/worker/lib/mcp-reload.ts";
+import { composeMcpInstructions } from "../src/worker/lib/mcp-reload.ts";
 import { isSubagentTool } from "../src/worker/lib/subagent.ts";
 import { READONLY_TOOLS } from "../src/shared/readonly-tools.ts";
 import { mcpToolLabel } from "../src/shared/mcp-label.ts";
@@ -1145,82 +1141,6 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
     },
   });
 
-  /** 假 harness / lane：本组只验「补挂真的发生了 + 传了什么」，不牵扯内核 */
-  function fakeTargets(): {
-    harness: AgentHarness<ExecutionToolContext>;
-    lane: AgentLane;
-    installed: string[][];
-  } {
-    const installed: string[][] = [];
-    const harness = {
-      getTools: async () => [],
-      setTools: async (tools: { name: string }[]) => {
-        installed.push(tools.map((tool) => tool.name));
-      },
-    } as unknown as AgentHarness<ExecutionToolContext>;
-    const lane = {
-      getActiveTools: async () => [],
-      setActiveTools: async () => undefined,
-    } as unknown as AgentLane;
-    return { harness, lane, installed };
-  }
-
-  const testContext = {} as unknown as Context;
-
-  test("超预算：会话不等它，连上后由 armLateMcpAttach 补挂进 harness", async () => {
-    const dir = await fixtureProject({ mcpServers: { late: bootServer(700) } });
-    const notices: string[] = [];
-    const kinds: (string | undefined)[] = [];
-    const started = Date.now();
-    const runtime = await createMcpRuntime(
-      dir,
-      (message, kind) => {
-        notices.push(message);
-        kinds.push(kind);
-      },
-      undefined,
-      {
-        startupBudgetMs: 80,
-      },
-    );
-    const elapsed = Date.now() - started;
-    const { harness, lane, installed } = fakeTargets();
-    const updates: McpServerView[][] = [];
-    try {
-      // 会话启动不该被这台拖住：700ms 的连接只等到 80ms 的预算
-      assert.ok(elapsed < 600, `首次装载不该等那台慢 server（实测 ${elapsed}ms）`);
-      assert.deepEqual(runtime.tools.map((tool) => tool.name), []);
-      // 归因必须指向「转后台」，而不是让用户在设置页里对着「少了几台」猜
-      assert.ok(
-        notices.some((message) => /转后台继续连接/.test(message)),
-        `未见转后台说明：${notices.join(" | ")}`,
-      );
-      armLateMcpAttach({ mcp: runtime, harness, lane }, testContext, (servers) =>
-        updates.push(servers),
-      );
-      await new Promise<void>((resolve) => runtime.onSettled(resolve));
-      // 补挂在 onSettled 里异步跑：等它落地
-      await waitFor(() => installed.length > 0 && updates.length > 0);
-      assert.deepEqual(installed[0], ["mcp__late__ping"]);
-      assert.deepEqual(
-        updates[0]?.map((server) => [server.name, server.status]),
-        [["late", "connected"]],
-      );
-      // 后台**连上**是例行信息：文案要有，但不能带 security（否则事件页签被成功消息占满）
-      const late = notices
-        .map((message, index) => ({ message, kind: kinds[index] }))
-        .filter((item) => /后台连接结束/.test(item.message));
-      assert.ok(late.length > 0, `未见后台收尾文案：${notices.join(" | ")}`);
-      assert.ok(
-        late.every((item) => item.kind === undefined),
-        `成功的后台连接不该按 security 落库：${JSON.stringify(late)}`,
-      );
-    } finally {
-      await runtime.close();
-      await removeDir(dir);
-    }
-  });
-
   test("多台慢 server 并行连接：三个进程同时起来（串行会逐台错开）", async () => {
     // 判据**不用墙钟**：进程启动开销在慢机器上会漂，拿它当尺子会假红。
     // 真正能分辨并行 / 串行的是「三个进程是不是同时 spawn 的」——串行时第二台要等
@@ -1270,26 +1190,23 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
     }
   });
 
-  test("没有后台那一支时不补挂：每次启动只有一条装载摘要", async () => {
-    // 补挂的注册在 `entry.ts` 是**无条件**的，闸门只能落在 runtime 里。若 `onSettled` 在
-    // 一切正常时也回调，就等于是**每次启动**白跑一次 `reload()`——而重载末尾会 `notify`，
+  test("没有后台那一支时 onSettled 不回调：每次启动只有一条装载摘要", async () => {
+    // 补挂的注册在 durable worker 里是**无条件**的，闸门只能落在 runtime 里。若 `onSettled` 在
+    // 一切正常时也回调，就等于是**每次启动**白跑一次重载——而重载末尾会 `notify`，
     // 用户在会话开头看到两条一模一样的「已连接 N 个 MCP server」（那类通知还同时落进
     // 「事件」页签）。这条钉的就是那个重复。
     const dir = await fixtureProject(fixtureServerConfig());
     const notices: string[] = [];
     // 默认预算（15s）：快夹具在预算内连完，没有任何东西欠在后台
     const runtime = await createMcpRuntime(dir, (message) => notices.push(message));
-    const { harness, lane, installed } = fakeTargets();
     try {
       assert.equal(notices.length, 1, `装载摘要本该只有一条：${notices.join(" | ")}`);
       let settled = false;
-      armLateMcpAttach({ mcp: runtime, harness, lane }, testContext, () => undefined);
       runtime.onSettled(() => {
         settled = true;
       });
       await new Promise((resolve) => setTimeout(resolve, 300));
       assert.equal(settled, false, "没有后台连接时 onSettled 不该回调");
-      assert.equal(installed.length, 0, "不该为补挂而跑一次 reload（harness.setTools 被调了）");
       assert.equal(notices.length, 1, `不该多出第二条摘要：${notices.join(" | ")}`);
     } finally {
       await runtime.close();

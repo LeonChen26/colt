@@ -57,13 +57,20 @@ import {
   truncateTitle,
   type SubagentParams,
 } from "../lib/subagent";
-import { MAX_SUBAGENT_STEPS_IN_VIEW } from "../lib/subagent-view";
 import { createHandoffTimer, handoffInstruction, type HandoffLimits } from "../lib/subagent-handoff";
 import { projectTranscript } from "../lib/project";
 import { durableTranscript, livePartialText, liveRunningTools, sumUsage } from "./project";
 
 /** `ViewSubagent.id` 的前缀：`sub:<定义名>:<会话 id>`（会话 id 是 durable 的稳定持久身份） */
 const RUN_ID_PREFIX = "sub:";
+
+/**
+ * 视图里最多带最近多少步。
+ *
+ * 理由：`ConversationView` 是**全量快照**，流式期间每 50ms 整份重推；把子代理的整份
+ * transcript 塞进去，开销会按「子代理数 × 推送次数」乘上去。完整过程走下钻按需拉。
+ */
+export const MAX_SUBAGENT_STEPS_IN_VIEW = 12;
 
 /** 从视图 id 反解子对话 id——重启后内存注册表是空的，只能靠名字找回来 */
 export function conversationIdOfRunId(id: string): ConversationId | undefined {
