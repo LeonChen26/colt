@@ -863,9 +863,6 @@ function describeTool(
     case "read":
     case "grep":
     case "glob":
-    case "ls":
-    case "list":
-    case "search":
       return { icon: <Eye {...ICON.sm} />, subtitle: command ?? path };
     case "bash":
       return { icon: <Terminal {...ICON.sm} />, subtitle: command };

@@ -18,7 +18,7 @@ import { skillInvocationLabel } from "@shared/skill-invocation";
 export const LABEL_MAX = 72;
 
 /** 搜索命中处两侧各留多少字符做上下文 */
-export const SNIPPET_RADIUS = 30;
+const SNIPPET_RADIUS = 30;
 
 export type OutlineItem = {
   /** 该消息在 `messages` 里的下标——跳转就是把它换成窗口起点 */

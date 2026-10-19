@@ -12,12 +12,9 @@ import {
   extractText,
   extractToolCalls,
   extractToolText,
-  isCoveredBlockType,
   project,
-  projectBranchNodes,
   projectTranscript,
   toRelative,
-  type BranchEntry,
 } from "../src/worker/lib/project.ts";
 
 describe("extractText", () => {
@@ -138,125 +135,6 @@ describe("toRelative", () => {
   });
 });
 
-describe("projectBranchNodes", () => {
-  /** 一轮完整对话：用户提问 → 中间 LLM 轮（带工具调用）→ 工具结果 → 最终回复 */
-  const turn = (): BranchEntry[] => [
-    {
-      id: "u1",
-      parentId: null,
-      type: "message",
-      message: { role: "user", content: [{ type: "text", text: "帮我读文件" }] },
-    },
-    {
-      id: "a1",
-      parentId: "u1",
-      type: "message",
-      message: {
-        role: "assistant",
-        content: [
-          { type: "text", text: "好的，我先读取" },
-          { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
-        ],
-      },
-    },
-    {
-      id: "t1",
-      parentId: "a1",
-      type: "message",
-      message: { role: "toolResult", content: [{ type: "text", text: "文件内容" }] },
-    },
-    {
-      id: "a2",
-      parentId: "t1",
-      type: "message",
-      message: { role: "assistant", content: [{ type: "text", text: "文件里是 42" }] },
-    },
-  ];
-
-  test("只保留用户输入与该轮最终回复，折叠中间轮次与工具调用", () => {
-    const nodes = projectBranchNodes(turn(), "a2");
-    assert.deepEqual(nodes.map((node) => node.id), ["u1", "a2"]);
-    assert.deepEqual(nodes.map((node) => node.kind), ["user", "assistant"]);
-    assert.equal(nodes[1]?.parentId, "u1");
-    assert.equal(nodes[1]?.summary, "文件里是 42");
-    assert.equal(nodes[0]?.isTip, false);
-    assert.equal(nodes[1]?.isTip, true);
-    assert.equal(nodes[0]?.onActivePath, true);
-    assert.equal(nodes[1]?.onActivePath, true);
-  });
-
-  test("指针落在被折叠条目上时回退为活跃路径上最近的保留节点", () => {
-    const nodes = projectBranchNodes(turn().slice(0, 3), "t1");
-    assert.deepEqual(nodes.map((node) => node.id), ["u1"]);
-    assert.equal(nodes[0]?.isTip, true);
-    assert.equal(nodes[0]?.onActivePath, true);
-  });
-
-  test("压缩 / 分支摘要等结构节点保留并保持父子挂接", () => {
-    const entries: BranchEntry[] = [
-      {
-        id: "u1",
-        parentId: null,
-        type: "message",
-        message: { role: "user", content: [{ type: "text", text: "继续" }] },
-      },
-      { id: "cp", parentId: "u1", type: "compaction" },
-      { id: "bs", parentId: "cp", type: "branch_summary" },
-      {
-        id: "a1",
-        parentId: "bs",
-        type: "message",
-        message: { role: "assistant", content: [{ type: "text", text: "压缩后继续" }] },
-      },
-    ];
-    const nodes = projectBranchNodes(entries, "a1");
-    assert.deepEqual(nodes.map((node) => node.id), ["u1", "cp", "bs", "a1"]);
-    assert.deepEqual(nodes.map((node) => node.kind), [
-      "user",
-      "compaction",
-      "branch_summary",
-      "assistant",
-    ]);
-    assert.deepEqual(nodes.map((node) => node.parentId), [null, "u1", "cp", "bs"]);
-  });
-
-  test("被折叠条目下的子节点重挂到最近的保留祖先", () => {
-    const entries: BranchEntry[] = [
-      {
-        id: "u1",
-        parentId: null,
-        type: "message",
-        message: { role: "user", content: [{ type: "text", text: "第一问" }] },
-      },
-      {
-        id: "a1",
-        parentId: "u1",
-        type: "message",
-        message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: {} }] },
-      },
-      {
-        id: "a2",
-        parentId: "a1",
-        type: "message",
-        message: { role: "assistant", content: [{ type: "text", text: "原分支答案" }] },
-      },
-      {
-        id: "u2",
-        parentId: "a1",
-        type: "message",
-        message: { role: "user", content: [{ type: "text", text: "改问别的" }] },
-      },
-    ];
-    const nodes = projectBranchNodes(entries, "u2");
-    assert.deepEqual(nodes.map((node) => node.id), ["u1", "a2", "u2"]);
-    assert.equal(nodes.find((node) => node.id === "a2")?.parentId, "u1");
-    assert.equal(nodes.find((node) => node.id === "u2")?.parentId, "u1");
-    assert.equal(nodes.find((node) => node.id === "a2")?.onActivePath, false);
-    assert.equal(nodes.find((node) => node.id === "u2")?.onActivePath, true);
-    assert.equal(nodes.find((node) => node.id === "u2")?.isTip, true);
-  });
-});
-
 describe("project：技能调用消息带上归属标记（别再冒充用户发言）", () => {
   const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
     ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
@@ -287,30 +165,6 @@ describe("project：技能调用消息带上归属标记（别再冒充用户发
     assert.ok(!("skill" in messages[0]!), "没有技能归属时不该多出这个键");
   });
 
-  test("分支树摘要写「技能 X」，而不是原始 XML", () => {
-    const nodes = projectBranchNodes(
-      [{ id: "u1", parentId: null, type: "message", message: { role: "user", content: [{ type: "text", text: invocation() }] } }],
-      "u1",
-    );
-    assert.equal(nodes[0]?.summary, "技能 pdf");
-    assert.ok(!nodes[0]?.summary.includes("<skill"), nodes[0]?.summary ?? "");
-  });
-
-  test("分支树摘要带上额外指示（分得清这次让它干什么）", () => {
-    const nodes = projectBranchNodes(
-      [
-        {
-          id: "u1",
-          parentId: null,
-          type: "message",
-          message: { role: "user", content: [{ type: "text", text: invocation("只改这一处") }] },
-        },
-      ],
-      "u1",
-    );
-    assert.equal(nodes[0]?.summary, "技能 pdf · 只改这一处");
-  });
-
   test("整份视图里没有裸露的技能调用 XML（归属是标记，不是靠正则再认一遍）", () => {
     // 「同一份数据只出现一次」的另一面：原始 XML 只该留在 `text` 里（展开时看），
     // 不该出现在 `skill` 标记或摘要里——否则界面会两处显示同一段内核文案
@@ -334,24 +188,6 @@ describe("project：技能调用消息带上归属标记（别再冒充用户发
     const marker = JSON.stringify(view.messages[0]?.skill);
     assert.ok(!marker.includes("<skill"), marker);
     assert.ok(!marker.includes("References are relative to"), marker);
-  });
-});
-
-describe("内容块覆盖哨兵（升级 pi 时的护栏）", () => {
-  test("四个已知类型都算已覆盖", () => {
-    for (const type of ["text", "thinking", "image", "toolCall"]) {
-      assert.equal(isCoveredBlockType(type), true, type);
-    }
-  });
-
-  test("未知类型与非字符串一律算未覆盖", () => {
-    assert.equal(isCoveredBlockType("audio"), false);
-    assert.equal(isCoveredBlockType(""), false);
-    assert.equal(isCoveredBlockType(undefined), false);
-    assert.equal(isCoveredBlockType(42), false);
-    // 原型链上的键不算「已覆盖」——否则 constructor 之类的字符串会蒙混过关
-    assert.equal(isCoveredBlockType("constructor"), false);
-    assert.equal(isCoveredBlockType("__proto__"), false);
   });
 });
 

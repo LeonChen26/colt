@@ -172,22 +172,6 @@ export function Switch({
   );
 }
 
-/** 只套一层的资源卡：一项资源（provider / MCP server / 技能）有名字、状态、附属信息，压成行会丢信息 */
-export function ResourceCard({
-  children,
-  className,
-  ...rest
-}: React.HTMLAttributes<HTMLDivElement>): React.JSX.Element {
-  return (
-    <div
-      {...rest}
-      className={cn("rounded-md border border-line bg-surface-raised px-3 py-2.5", className)}
-    >
-      {children}
-    </div>
-  );
-}
-
 /** 统一提示条。三种语气，颜色只从这里出——不再各分区自己拼 bg-danger-soft */
 export function Notice({
   tone = "plain",

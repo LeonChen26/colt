@@ -60,6 +60,7 @@ export class QuestionStore {
     return [...bySession.values()];
   }
 
+  /** 待答提问数（测试与诊断用；界面按 `list` 渲染） */
   count(sessionId: string): number {
     return this.#bySession.get(sessionId)?.size ?? 0;
   }

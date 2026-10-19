@@ -38,7 +38,6 @@ describe("inspectUserData", () => {
   test("全新目录：无历史数据且未完成引导", () => {
     const report = inspectUserData(join(root, "fresh"));
     assert.equal(report.hasHistoricalData, false);
-    assert.equal(report.hasDatabase, false);
     assert.equal(report.projectCount, 0);
     assert.equal(report.sessionCount, 0);
     assert.equal(report.onboardingDone, false);
@@ -48,7 +47,6 @@ describe("inspectUserData", () => {
     seedDatabase(root);
     const report = inspectUserData(root);
     assert.equal(report.hasHistoricalData, true);
-    assert.equal(report.hasDatabase, true);
     assert.equal(report.projectCount, 1);
     assert.equal(report.sessionCount, 2);
   });
@@ -84,7 +82,6 @@ describe("applyFirstRunChoice", () => {
     assert.equal(result.cleared, true);
     const report = inspectUserData(root);
     assert.equal(report.hasHistoricalData, false);
-    assert.equal(report.hasDatabase, false);
     assert.equal(report.projectCount, 0);
     assert.equal(report.onboardingDone, true);
   });

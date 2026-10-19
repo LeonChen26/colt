@@ -64,7 +64,6 @@ export function inspectUserData(userDataPath: string): FirstRunReport {
 
   return {
     hasHistoricalData,
-    hasDatabase,
     projectCount: history.projectCount,
     sessionCount: history.sessionCount,
     hasSecret,

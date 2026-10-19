@@ -177,7 +177,6 @@ export function DiagnosePanel({
           <Details summary="它会跑什么">
             <div className="flex flex-col gap-1">
               <span className="font-mono text-text-secondary">.ts / .tsx → tsc + eslint</span>
-              <span className="font-mono text-text-secondary">.py → ruff</span>
               <span className="font-mono text-text-secondary">.go → go vet</span>
               <span className="font-mono text-text-secondary">.rs → cargo check</span>
               <span className="mt-1">

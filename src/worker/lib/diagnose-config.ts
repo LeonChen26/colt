@@ -118,9 +118,6 @@ export const ESLINT_MARKERS = [
   ".eslintrc.yml",
 ];
 
-/** ruff 的项目级配置标记（ruff 没有配置也能跑默认规则，故 pyproject.toml 也算标记） */
-export const RUFF_MARKERS = ["ruff.toml", ".ruff.toml", "pyproject.toml"];
-
 /** fast 检查的前置标记（eslint 是唯一一个；它没有配置文件时跑了也是噪声） */
 export function fastMarkerFor(check: DiagnoseCheck): string[] {
   if (check.label === "eslint") return ESLINT_MARKERS;

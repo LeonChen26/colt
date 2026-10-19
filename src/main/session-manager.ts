@@ -21,7 +21,7 @@ import type {
   WorkerCommand,
   WorkerMessage,
 } from "@shared/worker-protocol";
-import type { ApprovalMode, BranchNode, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, ProviderConfig } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getDiagnoseEnabled } from "./diagnose-config";
@@ -183,13 +183,7 @@ export interface WorkerEntry {
    */
   pendingCommands?: WorkerCommand[];
   /**
-   * 分支树查询的待决 promise（worker 以消息形式异步回复）。
-   * 用队列而非单个回调：切会话 / 刷新按钮 / 分支导航都会触发查询，
-   * 并发时单槽会让先到的请求永远拿不到结果（只能等到超时）。
-   */
-  pendingBranches: Array<(nodes: BranchNode[]) => void>;
-  /**
-   * 子代理完整流的待决队列（同 `pendingBranches` 的范式）。
+   * 子代理完整流的待决队列。
    * 队列里的等待方各自带 `id` 过滤——worker 的回复带回了请求的 id，只有匹配的那个被兑现。
    */
   pendingTranscripts: Array<{
@@ -197,7 +191,7 @@ export interface WorkerEntry {
     settle: (result: { messages: ViewMessage[]; toolResults: ViewToolResult[] }) => void;
   }>;
   /**
-   * MCP 现状查询的待决队列（同 `pendingBranches` 的范式，FIFO）。
+   * MCP 现状查询的待决队列（FIFO）。
    * 设置页问一次、热重载回复一次，都落在它上面。收场口子见 `PendingMcpQuery`。
    */
   pendingMcp: PendingMcpQuery[];
@@ -871,7 +865,6 @@ export class SessionManager {
       ready: readyDeferred.promise,
       // 非空即表示「尚未就绪」：ready 一到就清空，命令恢复直接下发
       pendingCommands: [],
-      pendingBranches: [],
       pendingTranscripts: [],
       pendingMcp: [],
       pendingSkills: [],
@@ -1080,15 +1073,8 @@ export class SessionManager {
           break;
         }
 
-        case "branches": {
-          // FIFO：worker 按收到的顺序回复，最早的等待方先兑现
-          const settle = entry.pendingBranches.shift();
-          settle?.(message.nodes);
-          break;
-        }
-
         case "mcpStatus": {
-          // 与 branches 同款：FIFO 兑现 mcpStatus / mcpReload 的等待方
+          // FIFO 兑现 mcpStatus / mcpReload 的等待方
           const pending = entry.pendingMcp.shift();
           pending?.settle(message.servers);
           break;
@@ -1149,7 +1135,6 @@ export class SessionManager {
         // 且该会话一直被算作「有人在等」——任务栏会一直闪
         this.questions.cancelAll(options.sessionId);
         if (dropped.length > 0) this.#emitPending(options.sessionId);
-        entry.pendingBranches.length = 0;
         // 完整流同理：没人能再回复，等待方各自的超时会收敛
         entry.pendingTranscripts.length = 0;
         // MCP 查询**不能**只清空：它的超时预算是分钟级（要盖住 worker 侧的连接上限），
@@ -1442,29 +1427,6 @@ export class SessionManager {
     this.#post(sessionId, { type: "navigate", targetId });
   }
 
-  /** 查询分支树：发命令后等 worker 回复。会话未打开时返回空（并非异常状态） */
-  async branches(sessionId: string): Promise<BranchNode[]> {
-    const entry = this.#workers.get(sessionId);
-    if (!entry) return [];
-    const queue = entry.pendingBranches;
-    return new Promise<BranchNode[]>((resolve, reject) => {
-      const settle = (nodes: BranchNode[]): void => {
-        clearTimeout(timer);
-        // 从队列摘除自己，避免超时后仍被晚到的回复占位
-        const index = queue.indexOf(settle);
-        if (index !== -1) queue.splice(index, 1);
-        resolve(nodes);
-      };
-      const timer = setTimeout(() => {
-        const index = queue.indexOf(settle);
-        if (index !== -1) queue.splice(index, 1);
-        reject(new Error("查询分支超时"));
-      }, 10_000);
-      queue.push(settle);
-      this.#post(sessionId, { type: "branches" });
-    });
-  }
-
   /**
    * 查某会话的 MCP server 现状（设置页可见性）。
    * worker 不在池中时回**空数组**——「会话没开着」不是错误，调用方用配置文件补位。
@@ -1683,8 +1645,6 @@ export class SessionManager {
     // 提问同理：worker 没了就无人能作答，留着会让卡片与「有人在等」的标记一直挂着
     this.questions.cancelAll(entry.sessionId);
     if (dropped.length > 0) this.#emitPending(entry.sessionId);
-    // 无人再能响应分支查询；清空队列，等待方各自的超时会收敛
-    entry.pendingBranches.length = 0;
     entry.pendingTranscripts.length = 0;
     // MCP 查询当场失败（理由见崩溃那条分支：它的超时预算是分钟级，拖着就是假「重载中…」）
     this.#drainPendingQueries(entry, "会话已回收，设置页查询已取消。");

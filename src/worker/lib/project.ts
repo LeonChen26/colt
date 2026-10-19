@@ -18,13 +18,11 @@ import type {
   ViewSkill,
   ViewSubagent,
   ViewToolResult,
-  WorkerBranchNode,
 } from "@shared/worker-protocol";
 import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import type { ViewTodo } from "@shared/todo";
 import { toolImageFileName } from "@shared/tool-output";
-import { skillInvocationLabel } from "@shared/skill-invocation";
 import { serializeArgs } from "./telemetry";
 import { promptTokensOf } from "./prompt-tokens";
 import { parseSkillInvocation, skillPathMatcher } from "./skills";
@@ -37,17 +35,16 @@ import { parseSkillInvocation, skillPathMatcher } from "./skills";
  * 与 `docs/ERRORS.md` 的「不许静默」直接冲突。理由与升级流程见 `docs/ARCHITECTURE.md` §四。
  */
 type ContentBlock = Exclude<Message["content"], string>[number];
-const COVERED_BLOCK_TYPES: Record<ContentBlock["type"], true> = {
+/**
+ * 已知内容块类型表。**作用只在编译期**：`Record<ContentBlock["type"], true>` 缺键或多键都会
+ * 让 pi 升级后的类型变化当场编译失败；运行时没有读取者，故此处不做查询函数。
+ */
+export const COVERED_BLOCK_TYPES: Record<ContentBlock["type"], true> = {
   text: true,
   thinking: true,
   image: true,
   toolCall: true,
 };
-
-/** 内容块的 `type` 是否已被 `extract*` 覆盖（false = 会被投影丢掉，应当上报） */
-export function isCoveredBlockType(type: unknown): boolean {
-  return typeof type === "string" && Object.prototype.hasOwnProperty.call(COVERED_BLOCK_TYPES, type);
-}
 
 /** 从消息内容块中抽取纯文本 */
 export function extractText(content: unknown): string {
@@ -154,86 +151,6 @@ export function toRelative(cwd: string, path: string): string {
   if (!isAbsolute(path)) return path.replaceAll("\\", "/");
   const rel = relative(cwd, path);
   return (rel.startsWith("..") ? path : rel).replaceAll("\\", "/");
-}
-
-/** 分支树条目：内核 entry 中投影所需的最小字段 */
-export interface BranchEntry {
-  id: string;
-  parentId: string | null;
-  /** 条目类型：message / compaction / branch_summary ... */
-  type: string;
-  timestamp?: number;
-  message?: { role: string; content: unknown };
-}
-
-/**
- * 把会话全部条目投影成分支树节点。
- * 只保留「用户输入」「该轮最终回复」以及压缩/分支摘要等结构节点，
- * 折叠中间的 LLM 轮次与工具调用，避免分支树信息过载。
- * 被折叠条目的子节点会挂到最近的保留祖先上以保持树连通；
- * 若当前指针落在被折叠条目上，则回退为活跃路径上最近的保留节点。
- */
-export function projectBranchNodes(
-  entries: BranchEntry[],
-  tipId: string | null,
-): WorkerBranchNode[] {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-
-  const keep = new Set<string>();
-  for (const entry of entries) {
-    if (!entry.message) {
-      // 压缩 / 分支摘要等结构节点保留
-      keep.add(entry.id);
-      continue;
-    }
-    const role = entry.message.role;
-    if (role === "user") {
-      keep.add(entry.id);
-      continue;
-    }
-    if (role !== "assistant") continue;
-    // 仅保留该轮的最终回复：不含工具调用且有文本输出的助手消息
-    const hasToolCall = extractToolCalls(entry.message.content).length > 0;
-    if (!hasToolCall && extractText(entry.message.content).trim()) keep.add(entry.id);
-  }
-
-  const nearestKept = (id: string): string | null => {
-    let cursor = byId.get(id)?.parentId ?? null;
-    while (cursor) {
-      if (keep.has(cursor)) return cursor;
-      cursor = byId.get(cursor)?.parentId ?? null;
-    }
-    return null;
-  };
-
-  const activePath = new Set<string>();
-  let effectiveTip: string | null = null;
-  let cursor: string | null = tipId;
-  while (cursor) {
-    activePath.add(cursor);
-    if (effectiveTip === null && keep.has(cursor)) effectiveTip = cursor;
-    cursor = byId.get(cursor)?.parentId ?? null;
-  }
-
-  const nodes: WorkerBranchNode[] = [];
-  for (const entry of entries) {
-    if (!keep.has(entry.id)) continue;
-    const text = entry.message ? extractText(entry.message.content) : "";
-    const skill = entry.message?.role === "user" ? parseSkillInvocation(text) : null;
-    nodes.push({
-      id: entry.id,
-      parentId: nearestKept(entry.id),
-      kind: entry.message?.role ?? entry.type,
-      summary:
-        skill === null
-          ? text.slice(0, 60).replace(/\s+/g, " ").trim() || `(${entry.type})`
-          : skillInvocationLabel(skill).slice(0, 60),
-      timestamp: entry.timestamp ?? 0,
-      onActivePath: activePath.has(entry.id),
-      isTip: entry.id === effectiveTip,
-    });
-  }
-  return nodes;
 }
 
 /**

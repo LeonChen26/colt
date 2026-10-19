@@ -16,5 +16,5 @@
  * `entry.sessionId` 强制，故它不越界（论证见 `docs/SECURITY.md`）。
  */
 export const READONLY_TOOLS: ReadonlySet<string> = new Set([
-  "read", "grep", "glob", "ls", "list", "search", "todo", "memory_search",
+  "read", "grep", "glob", "todo", "memory_search",
 ]);

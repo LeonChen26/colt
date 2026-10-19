@@ -29,11 +29,6 @@ export function loadPty(): PtyModule {
   return ptyModule;
 }
 
-/** 装载是否已发生过且成功（诊断用，不触发装载） */
-export function ptyLoaded(): boolean {
-  return ptyModule !== undefined;
-}
-
 /**
  * shell 候选（按优先级）：Windows 上 pwsh（PowerShell 7）> powershell（Windows
  * PowerShell 5.1）> cmd；类 Unix 上 $SHELL > bash > sh。

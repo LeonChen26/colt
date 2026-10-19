@@ -27,7 +27,6 @@ import type {
   FileBaseline,
   ViewFileChange,
   ViewSkill,
-  WorkerBranchNode,
   WorkerCommand,
   WorkerMessage,
 } from "@shared/worker-protocol";
@@ -42,12 +41,10 @@ import { homedir } from "node:os";
 import {
   countPatchLines,
   project,
-  projectBranchNodes,
   projectTranscript,
   toRelative,
-  type BranchEntry,
 } from "./lib/project";
-import { foreignLaneTips, ownedEntries, visibleEntries } from "./lib/lane-ownership";
+import { foreignLaneTips, ownedEntries } from "./lib/lane-ownership";
 import { applyNavigate } from "./lib/navigate";
 import { healLaneTools } from "./lib/lane-heal";
 import { spillToolImages } from "./lib/tool-image-spill";
@@ -229,19 +226,6 @@ async function foreignLaneEntryIds(current: WorkerState): Promise<Set<string>> {
     current.harness.lanes(context),
   ]);
   return ownedEntries(foreignLaneTips(lanes, current.lane.name), entries);
-}
-
-async function projectBranches(current: WorkerState): Promise<WorkerBranchNode[]> {
-  const [entries, tipId, lanes] = await Promise.all([
-    current.session.findEntries({ order: "asc" }, context),
-    current.lane.getTipId(context),
-    current.harness.lanes(context),
-  ]);
-  const owned = ownedEntries(foreignLaneTips(lanes, current.lane.name), entries);
-  return projectBranchNodes(
-    visibleEntries(entries as unknown as BranchEntry[], owned) as BranchEntry[],
-    tipId ?? null,
-  );
 }
 
 let state: WorkerState | undefined;
@@ -1035,12 +1019,6 @@ async function handle(command: WorkerCommand): Promise<void> {
       return;
     }
 
-    case "branches": {
-      if (!state) throw new Error("会话尚未初始化");
-      send({ type: "branches", nodes: await projectBranches(state) });
-      return;
-    }
-
     case "navigate": {
       if (!state) throw new Error("会话尚未初始化");
       const current = state;
@@ -1057,16 +1035,15 @@ async function handle(command: WorkerCommand): Promise<void> {
         resnapshot: () => current.resnapshot(),
       });
       if (!outcome.ok) {
-        // 纵深防御：分支树里已经排除了子 lane 的条目（`projectBranches`），但**能拒绝就要拒绝**——
-        // 「树里看不到、却能导航过去」的幽灵节点会把主对话的历史指针挪到子代理的链上，
-        // 而界面上没有任何东西能解释这次跳转。判据与分支树排除**共用同一个集合**。
+        // 纵深防御：子 lane 的条目**能拒绝就要拒绝**——
+        // 「看不到、却能导航过去」的幽灵节点会把主对话的历史指针挪到子代理的链上，
+        // 而界面上没有任何东西能解释这次跳转。
         send({ type: "error", message: outcome.message, fatal: false });
         return;
       }
       // 跳转换了整条分支，transcript 需要整体重建（新快照由 `applyNavigate` 在指针挪动**之后**拍）
       state.snapshot = outcome.snapshot;
       pushView();
-      send({ type: "branches", nodes: await projectBranches(state) });
       return;
     }
 

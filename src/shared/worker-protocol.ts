@@ -707,7 +707,6 @@ export type WorkerMessage =
       durationMs: number | null;
       timestamp: number;
     }
-  | { type: "branches"; nodes: WorkerBranchNode[] }
   /** `mcpStatus` / `mcpReload` 的回复：重载后（或当前）的 MCP server 现状 */
   | { type: "mcpStatus"; servers: McpServerView[] }
   /** `skillsStatus` / `skillsRescan` 的回复：重扫后（或当前）的技能装载现状 */
@@ -771,14 +770,3 @@ export type WorkerMessage =
    */
   | { type: "notice"; message: string; kind?: "security" }
   | { type: "log"; message: string };
-
-/** 分支树节点（投影后） */
-export interface WorkerBranchNode {
-  id: string;
-  parentId: string | null;
-  kind: string;
-  summary: string;
-  timestamp: number;
-  onActivePath: boolean;
-  isTip: boolean;
-}

@@ -59,8 +59,6 @@ export interface EnvReport {
 export interface FirstRunReport {
   /** 是否存在历史数据目录（%APPDATA%\Colt 已存在） */
   hasHistoricalData: boolean;
-  /** 历史数据库文件是否存在 */
-  hasDatabase: boolean;
   /** 历史项目数量 */
   projectCount: number;
   /** 历史会话数量 */
@@ -359,15 +357,11 @@ export const IPC_CHANNELS = [
   "approval.rules.clear",
   "approval.analyzeConfig.get",
   "approval.analyzeConfig.set",
-  /** 审批分析器专用的模型引用（空 = 沿用会话模型，见工作包 C） */
-  "approval.analyzerModel.get",
-  "approval.analyzerModel.set",
   "diagnose.config.get",
   "diagnose.config.set",
   /** 自动压缩的阈值与开关（A2：原先吃内核默认值、应用层零感知） */
   "compaction.config.get",
   "compaction.config.set",
-  "session.branches",
   "session.navigate",
   /** 中止单个子代理（`ViewSubagent.id` = lane 名） */
   "session.subagentAbort",
@@ -820,19 +814,6 @@ export interface IpcInvokeMap {
     request: { commands: string[] };
     response: { commands: string[] };
   };
-  /**
-   * 读取审批分析器专用的模型引用（`"providerId/modelId"`，全局设置）。
-   * `null` = 未配置 = 沿用会话当前模型（历史行为）。
-   */
-  "approval.analyzerModel.get": {
-    request: void;
-    response: { modelRef: string | null };
-  };
-  /** 保存分析器专用模型；传 `null` 即清空（回到「沿用会话模型」） */
-  "approval.analyzerModel.set": {
-    request: { modelRef: string | null };
-    response: { modelRef: string | null };
-  };
   /** 读取写后诊断开关（全局设置，`docs/archive/DESIGN-afterwrite.md` D5；从未配置过 = 开） */
   "diagnose.config.get": {
     request: void;
@@ -1020,11 +1001,6 @@ export interface IpcInvokeMap {
     request: { sessionId: string };
     response: { ok: true };
   };
-  /** 分支树 */
-  "session.branches": {
-    request: { sessionId: string };
-    response: BranchNode[];
-  };
   /** 切换到指定节点 */
   "session.navigate": {
     request: { sessionId: string; targetId: string };
@@ -1041,7 +1017,7 @@ export interface IpcInvokeMap {
   /**
    * 按需拉一个子代理的**完整流**（视图里只有有界尾部，见 `ViewSubagent`）。
    *
-   * 范式抄 `session.branches`：worker 以消息回复，主进程排队兑现 + 超时。
+   * worker 以消息回复，主进程排队兑现 + 超时。
    * 会话没开着 / 该子代理已不可解析时回空数组（不是错误）——界面按「没有内容」呈现。
    */
   "session.subagentTranscript": {
@@ -1315,21 +1291,6 @@ export interface ProviderConfig {
    * 「是否需要鉴权」是服务的属性，只能由用户显式声明，推断不出来。
    */
   requiresKey: boolean;
-}
-
-/** 会话分支树节点 */
-export interface BranchNode {
-  id: string;
-  parentId: string | null;
-  /** 消息角色或条目类型 */
-  kind: string;
-  /** 摘要文本 */
-  summary: string;
-  timestamp: number;
-  /** 是否在当前活跃路径上 */
-  onActivePath: boolean;
-  /** 是否是当前指针 */
-  isTip: boolean;
 }
 
 /** 一条工具调用记录 */

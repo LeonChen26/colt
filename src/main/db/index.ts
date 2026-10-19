@@ -60,7 +60,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_
 CREATE TABLE IF NOT EXISTS usage_records (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
-  run_id TEXT,
   /** 内核 usage 行 ID，作为幂等键防重放，可为 NULL（历史数据） */
   kernel_usage_id TEXT,
   provider TEXT,
@@ -70,7 +69,6 @@ CREATE TABLE IF NOT EXISTS usage_records (
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
-  latency_ms INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_kernel_id ON usage_records(kernel_usage_id);
@@ -93,7 +91,6 @@ CREATE TABLE IF NOT EXISTS file_changes (
   session_id TEXT NOT NULL,
   /** worker 侧生成的改动 UUID，投影时作为 ViewFileChange.id，保证进程重启后 ID 稳定 */
   client_change_id TEXT,
-  tool_call_id TEXT,
   file_path TEXT NOT NULL,
   change_kind TEXT NOT NULL,
   diff_text TEXT,
