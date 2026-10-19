@@ -13,8 +13,9 @@
 
   | 本稿 | 当前实现 |
   |---|---|
-  | 左侧 7 项导航，分三组（模型 / 行为 / 扩展），一次只看一段 | 7 个分区首尾相接竖直排（模型服务→审批→写后诊断→压缩→可选安装→MCP→技能），找「审批」要滚过全部 provider 卡片 |
-  | 每个分区标题右侧有**作用域徽标**（全局 / 本项目 / 用户级） | 三种作用域视觉上零区别：诊断是全局、MCP 是项目级、可选安装写的是用户级 `~/.colt/mcp.json`（对全部项目生效） |
+  | 左侧 6 项导航，分三组（模型 / 行为 / 扩展），一次只看一段 | 7 个分区首尾相接竖直排（模型服务→审批→写后诊断→压缩→可选安装→MCP→技能），找「审批」要滚过全部 provider 卡片 |
+  | 「MCP」一屏两段：上「已接入」（项目级 + 用户级继承），下「可安装」（内置目录） | 「可选安装」与「MCP 服务」是两段，分居设置页不同位置；同一个 CodeWiki 装前装后各占一段 |
+  | 每个分区标题右侧有**作用域徽标**（全局 / 本项目 / 用户级） | 三种作用域视觉上零区别：诊断是全局、MCP 读的是项目级+用户级合并、可选安装写的是用户级 `~/.colt/mcp.json`（对全部项目生效） |
   | 设置项一律是「行」：左标签 + 右控件，行间 1px 分隔，**不再套卡片** | 每段是一块 `rounded-lg border bg-surface-raised p-3`，卡片套卡片（provider 卡片里还有模型行） |
   | 没有「保存」按钮。开关即时生效，数值失焦提交，白名单按 token 即时提交 | 只有「审批」是 textarea + 恒显示的「保存」按钮（没改动也能点）；其余四项各自一套心智模型 |
   | 说明文字默认收在 2xs 辅助行里，长解释进 `▸` 展开 | 技能分区光说明就 3 段约 400 字（含两处路径、一个 `/skill` 命令），每次打开都摊开 |
@@ -23,8 +24,8 @@
 
   ⚠️ 本稿刻意没做的事：
   1. 不加「关于 / 版本」分区——需要新增只读通道，本稿只动呈现层。
-  2. 不加设置搜索——只有 7 项，搜索是给 30 项以上的页面用的。
-  3. 不画「安装流水跨页保持」（需要把流水提到主进程）。可选安装那一屏沿用已画的稿。
+  2. 不加设置搜索——只有 6 项，搜索是给 30 项以上的页面用的。
+  3. 不画「安装流水跨页保持」（需要把流水提到主进程）。已装态的那张卡沿用 `prototype-mcp-catalog-hifi.html` 的画法，只是位置从上段挪进了「已接入」的一行。
 
   主题：暗色为默认，右上角可切亮色。配色全部取自 styles.css 的令牌，未新增任何色值。
   ================================================================
@@ -445,13 +446,9 @@
 
       <div class="grp">
         <span>扩展</span>
-        <button class="nav" type="button" data-panel="catalog">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-          <span class="txt">可选安装</span>
-        </button>
         <button class="nav" type="button" data-panel="mcp">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-          <span class="txt">MCP 服务</span>
+          <span class="txt">MCP</span>
           <span class="mark">2</span>
         </button>
         <button class="nav" type="button" data-panel="skills">
@@ -642,115 +639,34 @@
         </div>
       </section>
 
-      <!-- -------- 5. 可选安装 -------- -->
-      <section class="wrap" data-p="catalog" hidden>
-        <div class="panel-head">
-          <h2>可选安装</h2><span class="scope user">用户级 · 对全部项目生效</span>
-        </div>
-        <p class="lede">内置目录里的工具，装与不装都由你决定，默认一个都不装。安装在独立运行时里（venv），<strong style="color:var(--t2);font-weight:500">不碰你系统里的 Python</strong>。</p>
-
-        <div class="sec-label">可安装 · 1</div>
-
-        <div class="res" style="margin-top:0">
-          <div class="head">
-            <span class="nm">CodeWiki</span>
-            <span class="chip tag">仓库文档生成</span>
-            <span class="grow"></span>
-            <span class="stat idle"><span class="d"></span>未安装</span>
-          </div>
-          <div class="sub" style="font-family:var(--sans);font-size:11px;line-height:1.55;white-space:normal;margin-top:3px">
-            把仓库拆成模块树，逐页写 Markdown + Mermaid 图。
-          </div>
-          <div class="tags" style="margin-top:8px;align-items:center">
-            <span class="chip tag" style="color:var(--success-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)">✓ Python 3.13.12</span>
-            <span class="chip tag" style="color:var(--success-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)">✓ git 2.47.1</span>
-            <span class="chip tag" style="border-style:dashed">＋ 将装 codewiki 2.0.0 · mcp &lt; 2</span>
-          </div>
-          <div class="foot">
-            <details class="more">
-              <summary>检查明细</summary>
-              <div class="inner">
-                <div class="kv"><span>Python</span><span>3.13.12 · 满足 ≥ 3.12</span></div>
-                <div class="kv"><span>git</span><span>2.47.1</span></div>
-                <div class="kv"><span>codewiki</span><span style="color:var(--t2)">未安装 · 安装时一起装</span></div>
-                <div class="kv"><span>mcp</span><span style="color:var(--t2)">未安装 · 安装时一起装，钉在 &lt; 2</span></div>
-              </div>
-            </details>
-            <span class="grow"></span>
-            <span style="font-size:10.5px;color:var(--t3)">首次约 60MB · 1–3 分钟</span>
-            <button class="btn primary" type="button">安装</button>
-          </div>
-        </div>
-
-        <div class="sec-label" style="margin-top:16px">已安装</div>
-
-        <div class="res" style="margin-top:0">
-          <div class="head">
-            <span class="nm">CodeWiki</span>
-            <span class="chip tag">仓库文档生成</span>
-            <span class="grow"></span>
-            <span class="stat ok"><span class="d"></span>已安装</span>
-          </div>
-          <div class="sub">~/.colt/runtime/codewiki/Scripts/codewiki.exe mcp</div>
-          <div class="foot">
-            <span class="grow"></span>
-            <button class="btn" type="button">卸载</button>
-            <button class="btn" type="button">重新安装</button>
-          </div>
-          <details class="more" open style="margin-top:6px">
-            <summary>检查明细</summary>
-            <div class="inner">
-              <div class="kv"><span>Python</span><span>3.13.12 · 满足 ≥ 3.12</span></div>
-              <div class="kv"><span>git</span><span>2.47.1</span></div>
-              <div class="kv"><span>codewiki</span><span>2.0.0 · 与钉住版本一致</span></div>
-              <div class="kv"><span>mcp</span><span>1.30.0 · 满足 &lt; 2</span></div>
-              <div style="margin-top:7px">四项全绿才会写配置。任何一项红了，装到一半也会停下并把原因写在这里。</div>
-            </div>
-          </details>
-        </div>
-
-        <div class="foot-note" style="margin-top:14px">
-          <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
-          <span>装的是用户级配置（<code style="font-family:var(--mono)">~/.colt/mcp.json</code>），装一次所有项目都能用。卸载默认只删这一条声明、保留运行时。</span>
-        </div>
-      </section>
-
-      <!-- -------- 6. MCP 服务 -------- -->
+      <!-- -------- 5. MCP（已接入 / 可安装） -------- -->
       <section class="wrap" data-p="mcp" hidden>
         <div class="panel-head">
-          <h2>MCP 服务</h2><span class="scope">本项目</span>
+          <h2>MCP</h2><span class="scope">本项目 + 用户级继承</span>
         </div>
-        <p class="lede">本项目声明了哪些 server、现在连上没有、模型能用哪些工具。配置在项目根的 <code>.colt/mcp.json</code>，跟着仓库走。</p>
+        <p class="lede">上半是本项目现在能用哪些 server（项目级合并用户级，同名时项目级覆盖），下半是内置目录里还能装什么。装的是<strong style="color:var(--t2);font-weight:500">用户级配置</strong>（<code>~/.colt/mcp.json</code>），装一次所有项目都能用。</p>
 
-        <div class="res">
-          <div class="head">
-            <span class="nm">codewiki</span>
-            <span class="chip tag">stdio</span>
-            <span class="grow"></span>
-            <span class="stat ok"><span class="d"></span>已连接</span>
-          </div>
-          <div class="sub">.colt/runtime/codewiki/Scripts/codewiki.exe mcp</div>
-          <div class="tags">
-            <span class="chip">analyze_repo</span><span class="chip">save_module_tree</span>
-            <span class="chip">get_processing_order</span><span class="chip">write_doc_file</span>
-            <span class="chip">+4</span>
-          </div>
-        </div>
+        <div class="sec-label">已接入 · 2</div>
 
-        <div class="res">
+        <div class="res" style="margin-top:0">
           <div class="head">
             <span class="nm">filesystem</span>
             <span class="chip tag">stdio</span>
+            <span class="chip tag">项目级 · 覆盖了用户级</span>
             <span class="grow"></span>
-            <span class="stat idle"><span class="d"></span>未启动</span>
+            <span class="stat ok"><span class="d"></span>已连接</span>
           </div>
           <div class="sub">npx -y @modelcontextprotocol/server-filesystem .</div>
+          <div class="tags">
+            <span class="chip">read_file</span><span class="chip">write_file</span>
+          </div>
         </div>
 
         <div class="res">
           <div class="head">
             <span class="nm">broken-server</span>
             <span class="chip tag">stdio</span>
+            <span class="chip tag">用户级</span>
             <span class="grow"></span>
             <span class="stat" style="color:var(--danger-fg)"><span class="d" style="background:var(--danger)"></span>连接失败</span>
           </div>
@@ -762,9 +678,41 @@
           </div>
         </div>
 
+        <div class="sec-label" style="margin-top:16px">可安装 · 1</div>
+
+        <div class="res" style="margin-top:0">
+          <div class="head">
+            <span class="nm">CodeWiki</span>
+            <span class="chip tag">仓库文档生成</span>
+            <span class="grow"></span>
+            <span class="stat idle"><span class="d"></span>未安装</span>
+          </div>
+          <div class="sub" style="font-family:var(--sans);font-size:11px;line-height:1.55;white-space:normal;margin-top:3px">
+            把仓库拆成模块树，逐页写 Markdown + Mermaid 图；模型据此先读文档、再读源码。
+          </div>
+          <div class="tags" style="margin-top:8px;align-items:center">
+            <span class="chip tag" style="color:var(--success-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)">✓ Python 3.13.12</span>
+            <span class="chip tag" style="color:var(--success-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)">✓ git 2.47.1</span>
+          </div>
+          <div class="foot">
+            <details class="more">
+              <summary>检查明细</summary>
+              <div class="inner">
+                <div class="kv"><span>Python</span><span>3.13.12 · 满足 ≥ 3.12</span></div>
+                <div class="kv"><span>git</span><span>2.47.1</span></div>
+                <div class="kv"><span>codewiki</span><span style="color:var(--t2)">未安装 · 装的时候一起装，钉在 2.0.0</span></div>
+                <div class="kv"><span>mcp</span><span style="color:var(--t2)">未安装 · 装的时候一起装，钉在 &lt; 2</span></div>
+              </div>
+            </details>
+            <span class="grow"></span>
+            <span style="font-size:10.5px;color:var(--t3)">首次约 60MB · 1–3 分钟</span>
+            <button class="btn primary" type="button">安装</button>
+          </div>
+        </div>
+
         <div class="foot-note" style="margin-top:14px">
           <svg class="ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5m0-3h.01"/></svg>
-          <span>「未启动」不等于「配错了」：会话没打开时只有声明，没有运行态。开一个会话再回来看。</span>
+          <span>「未启动」不等于「配错了」：会话没打开时只有声明，没有运行态。卸载默认只删用户级那一条声明、保留运行时。</span>
         </div>
       </section>
 

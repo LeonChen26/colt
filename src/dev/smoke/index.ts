@@ -19,7 +19,7 @@
  *       COLT_SMOKE_MCP_SCENARIO 选（filesystem / pi-lens），验「真 server 的工具名逐字落到
  *       审批卡」与「真 stdio 往返」；pi-lens 场景另印证「自带 MCP server 的第三方扩展可直连」
  * mcp-catalog：内置**可选安装**目录的界面与 IPC（**不打模型、不计费、不装任何东西**）——
- *       设置页里真有那一行、四连检四项都摆出来、没装时没有「卸载」、打开页面不写用户级配置；
+ *       设置页里真有那一行、五项前置检查都摆出来、没装时没有「卸载」、打开页面不写用户级配置；
  *       只断言结构不断言探测结论（结论随机器而变，各分支由 `tests/mcp-catalog.test.ts` 钉住）
  * mcp-reload：MCP 的**配置热重载 + 设置页可见性**链路（**不打模型、不计费**）——两版配置
  *       现写现 reload：冷启动装载 → 加 server（分页那支在真 worker 里也收全）→ 删 server

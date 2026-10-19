@@ -23,7 +23,11 @@ const WORKER_PROTOCOL = read("src/shared/worker-protocol.ts");
 const IPC = read("src/main/ipc/index.ts");
 const MANAGER = read("src/main/session-manager.ts");
 const WORKER_ENTRY = read("src/worker/entry.ts");
-const SETTINGS_UI = read("src/renderer/src/features/Settings.tsx");
+/**
+ * 设置页「上下文压缩」那一屏。它从 `Settings.tsx` 拆到了 `settings/Behavior.tsx`
+ * （外壳只留导航），所以这里读拆分之后的文件——断言的内容没变，只是位置变了。
+ */
+const SETTINGS_UI = read("src/renderer/src/features/settings/Behavior.tsx");
 
 /** 取 `handle("<name>"` 起到下一个 `handle(` 为止的源码片段 */
 function ipcHandler(name: string): string {

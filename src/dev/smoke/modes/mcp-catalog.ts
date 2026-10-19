@@ -5,7 +5,7 @@
  * 内置可选 MCP 目录的**界面与 IPC**（P1 验收：设置页里真的有一行、点了看得见事实）。
  *
  * 不打模型、不计费、**不装任何东西**——这条模式只回答三件事：
- * 1. 设置页里那一行在不在，四连检的四项是不是都摆出来了；
+ * 1. 设置页里那一行在不在，五项前置检查是不是都摆出来了；
  * 2. 「可选」是不是真的可选：没装的时候不该出现「卸载」，也不该有任何东西被自动写进
  *    用户级配置（本模式把 `COLT_MCP_HOME` 指到空目录，跑完检查它仍然只有 .colt 之外的空）。
  * 3. IPC 的形状：`mcp.catalog` 回的条目与探测项数量、`configPath` 是否指向隔离目录。
@@ -33,7 +33,9 @@ export async function runMcpCatalog(
 
   const checks: [string, boolean][] = [];
 
-  // 设置页入口是一个 `title="设置"` 的按钮；重复点会切回对话，故先看区块在不在再点
+  // 设置页入口是一个 `title="设置"` 的按钮；重复点会切回对话，故先看区块在不在再点。
+  // 设置页现在是**导航化**的（默认停在「模型服务」），所以点开之后还要切到 MCP 那一屏——
+  // 否则 `data-mcp-preset` 根本不在 DOM 里（这是导航化带来的一处必然改动）。
   const openSettings = async (): Promise<boolean> => {
     const opened = await run<boolean>(`(async () => {
       const present = () => document.querySelector('[data-mcp-preset="codewiki"]') !== null;
@@ -42,7 +44,10 @@ export async function runMcpCatalog(
         (b) => b.getAttribute("title") === "设置");
       if (!button) return false;
       button.click();
-      // 目录要一次 IPC 往返（里面还在跑四连检）：轮询到卡片出现，别赌固定毫秒
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const nav = document.querySelector('[data-settings-nav="mcp"]');
+      if (nav) nav.click();
+      // 目录要一次 IPC 往返（里面还在跑前置检查）：轮询到卡片出现，别赌固定毫秒
       const deadline = Date.now() + 15000;
       while (Date.now() < deadline) {
         if (present()) return true;
@@ -54,7 +59,7 @@ export async function runMcpCatalog(
   };
 
   const firstOpen = await openSettings();
-  checks.push(["设置页出现「可选安装」里的 codewiki 卡片", firstOpen]);
+  checks.push(["「MCP」屏的「可安装」段里出现 codewiki 卡片", firstOpen]);
   if (!firstOpen) {
     log("  设置页里没出现目录卡片，后面的 DOM 断言无从验起");
   }
@@ -87,9 +92,12 @@ export async function runMcpCatalog(
     })()`,
   );
 
-  checks.push(["卡片的四连检四项都在（Python / git / codewiki / mcp）", (card?.probes.length ?? 0) === 4]);
   checks.push([
-    "四连检逐项都有结论文字（不是四个空白点）",
+    "检查项都在（Python / git / Node.js / codewiki / mcp）",
+    (card?.probes.length ?? 0) === 5,
+  ]);
+  checks.push([
+    "前置检查逐项都有结论文字（不是五个空白点）",
     (card?.probes ?? []).every((probe) => probe.text.length > 0),
   ]);
   checks.push([
@@ -113,24 +121,33 @@ export async function runMcpCatalog(
     "catalog 的 configPath 指向隔离的用户目录（没退回家目录）",
     view.presets[0]?.configPath === userConfig,
   ]);
-  checks.push(["catalog 的四连检也是四项", view.presets[0]?.probe.items.length === 4]);
+  checks.push(["catalog 的检查项也是五项", view.presets[0]?.probe.items.length === 5]);
   checks.push(["空目录下没有配置错误", view.configError === null]);
 
-  // 再点一次「重新检查」：幂等，且不会因为重复挂载多出一张卡
-  const refreshed = await run<{ cards: number; text: string }>(`(async () => {
+  // 再点一次「刷新」：幂等，且不会因为重复挂载多出一张卡
+  const refreshed = await run<{ found: boolean; cards: number; settled: boolean }>(`(async () => {
     const button = [...document.querySelectorAll("button")].find(
-      (b) => ["重新检查", "检查中…"].includes((b.textContent ?? "").trim()));
-    if (button) button.click();
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+      (b) => ["刷新", "刷新中…"].includes((b.textContent ?? "").trim()));
+    if (!button) return { found: false, cards: 0, settled: false };
+    button.click();
+    // 探测会 spawn 五条命令：轮询到按钮回到「刷新」，别赌固定毫秒
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      if ((button.textContent ?? "").trim() === "刷新") break;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
     const cards = document.querySelectorAll('[data-mcp-preset="codewiki"]').length;
-    return { cards, text: (button?.textContent ?? "").trim() };
+    return { found: true, cards, settled: (button.textContent ?? "").trim() === "刷新" };
   })()`);
-  checks.push(["点「重新检查」不会多出一张卡", refreshed.cards === 1]);
+  // 「找不到按钮」必须单独判：否则上面的 cards 断言会在空转中静默通过（假绿）
+  checks.push(["「刷新」按钮找得到（屏头唯一那个动作）", refreshed.found]);
+  checks.push(["刷新能走完（按钮回到「刷新」）", refreshed.settled]);
+  checks.push(["点「刷新」不会多出一张卡", refreshed.cards === 1]);
 
   checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   if (uncaughtErrors.length > 0) log(`  未捕获异常：${uncaughtErrors.join(" | ")}`);
 
-  log(`四连检读数：${JSON.stringify(card?.probes.map((probe) => [probe.id, probe.ok]) ?? [])}`);
+  log(`前置检查读数：${JSON.stringify(card?.probes.map((probe) => [probe.id, probe.ok]) ?? [])}`);
   log("（探测结论随机器而变，本模式只断言结构与「可选」语义；判定分支见单测）");
 
   const passed = checks.filter(([, ok]) => ok).length;
