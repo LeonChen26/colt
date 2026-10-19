@@ -32,7 +32,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { defineTool } from "@earendil-works/pi-durable";
 import { looksBinary } from "@shared/binary-sniff";
 import { escapesRoot, toPosix } from "@shared/path-boundary";
 import { isWithinRootReal } from "@shared/path-guard";
@@ -771,7 +771,7 @@ const globSchema = Type.Object({
 export function createSearchTools(
   projectRoot: string,
   options: SearchToolOptions = {},
-): AgentHarnessTool<ExecutionToolContext>[] {
+): ReturnType<typeof defineTool>[] {
   // 生产不传 options（走默认上限）；测试用它造「仓库过大」的前提
   const limit = options.maxScannedFiles ?? MAX_SCANNED_FILES;
   // 快路径的实例状态**在这里建一次**（含 disabled latch）：与 rgPath 同生命周期，
@@ -784,9 +784,8 @@ export function createSearchTools(
           timeoutMs: options.rgTimeoutMs ?? DEFAULT_RG_TIMEOUT_MS,
           disabled: false,
         };
-  const grep: AgentHarnessTool<ExecutionToolContext, typeof grepSchema, undefined> = {
+  const grep = defineTool({
     name: GREP_TOOL_NAME,
-    label: "搜索内容",
     description: [
       "在项目文件里按正则搜索内容，返回 `文件路径:行号:行内容`。只读，不修改任何文件。",
       "**检索代码优先用它**，不要用 bash 里的 find / grep / Select-String（那些要走审批，这里是免审批的）。",
@@ -802,15 +801,14 @@ export function createSearchTools(
       "没有匹配不是错误，会如实回一句「没有匹配」。",
     ].join("\n"),
     parameters: grepSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const text = await runGrep(projectRoot, params, limit, rg);
-      return { content: [{ type: "text" as const, text }], details: undefined };
+      return { output: [{ type: "text" as const, text }] };
     },
-  };
+  });
 
-  const glob: AgentHarnessTool<ExecutionToolContext, typeof globSchema, undefined> = {
+  const glob = defineTool({
     name: GLOB_TOOL_NAME,
-    label: "按模式找文件",
     description: [
       "按 glob 模式列出项目内的文件路径（相对项目根，用 `/` 分隔）。只读。",
       "**找文件优先用它**，不要用 bash 里的 find / dir（那些要走审批，这里是免审批的）。",
@@ -821,11 +819,11 @@ export function createSearchTools(
       "仓库过大时可能扫不完，那时会明确报错让你缩小范围，而不是回一份不完整的清单。",
     ].join("\n"),
     parameters: globSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const text = await runGlob(projectRoot, params, limit);
-      return { content: [{ type: "text" as const, text }], details: undefined };
+      return { output: [{ type: "text" as const, text }] };
     },
-  };
+  });
 
   return [grep, glob];
 }

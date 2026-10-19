@@ -8,7 +8,7 @@
  * 按 截图 → 操作 → 截图 的闭环推进。工具本身不做校验，保持薄。
  */
 import { Type } from "typebox";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { defineTool } from "@earendil-works/pi-durable";
 import { definedParams, hostResultToContent, type HostBridge } from "./host-bridge";
 
 const screenshotSchema = Type.Object({});
@@ -29,23 +29,21 @@ const actionSchema = Type.Object({
 });
 
 /** 电脑控制工具集：截图 + 桌面操作 */
-export function createComputerTools(bridge: HostBridge): AgentHarnessTool<ExecutionToolContext>[] {
-  const screenshotTool: AgentHarnessTool<ExecutionToolContext, typeof screenshotSchema, undefined> = {
+export function createComputerTools(bridge: HostBridge): ReturnType<typeof defineTool>[] {
+  const screenshotTool = defineTool({
     name: "computer_screenshot",
-    label: "Computer Screenshot",
     description:
       "截取整个屏幕画面（图片），用于观察当前桌面状态。任何电脑操作前都必须先执行本工具，" +
       "并基于返回画面中元素的像素坐标给出点击位置。",
     parameters: screenshotSchema,
     async execute() {
       const result = await bridge.call("computer", "screenshot", {});
-      return { content: hostResultToContent(result), details: undefined };
+      return { output: hostResultToContent(result) };
     },
-  };
+  });
 
-  const actionTool: AgentHarnessTool<ExecutionToolContext, typeof actionSchema, undefined> = {
+  const actionTool = defineTool({
     name: "computer_action",
-    label: "Computer Action",
     description:
       "操作整个桌面（会真实控制鼠标键盘）。" +
       "click：在 (x,y) 点击，button 可选 left/right；type：在当前焦点输入 text；" +
@@ -53,12 +51,12 @@ export function createComputerTools(bridge: HostBridge): AgentHarnessTool<Execut
       "delta 为正向下、为负向上。" +
       "每次操作前需先 computer_screenshot，操作后需再次截图确认结果。",
     parameters: actionSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const { action, ...rest } = params;
       const result = await bridge.call("computer", action, definedParams(rest));
-      return { content: hostResultToContent(result), details: undefined };
+      return { output: hostResultToContent(result) };
     },
-  };
+  });
 
   return [screenshotTool, actionTool];
 }

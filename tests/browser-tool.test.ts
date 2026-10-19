@@ -25,18 +25,11 @@ function recordingBridge(): { bridge: HostBridge; calls: { action: string; param
   return { bridge, calls };
 }
 
-/** 按内核的六参签名调用 browser_act（后四个参数在分派校验之前都用不到，传 undefined） */
+/** 按 durable 的工具签名调用 browser_act（api / context 在分派校验之前都用不到，传空对象） */
 async function callAct(params: Record<string, unknown>, bridge: HostBridge) {
   const tool = createBrowserTools(bridge).find((item) => item.name === "browser_act");
   assert.ok(tool !== undefined, "browser_act 工具存在");
-  return tool.execute(
-    "test",
-    params as never,
-    () => undefined,
-    undefined as never,
-    undefined as never,
-    undefined as never,
-  );
+  return tool.execute(params as never, {} as never, {} as never);
 }
 
 async function rejects(params: Record<string, unknown>, pattern: RegExp): Promise<void> {
@@ -83,7 +76,7 @@ describe("browser_act 动作链分派校验", () => {
       },
       bridge,
     );
-    const first = result.content[0];
+    const first = result.output?.[0];
     assert.ok(first !== undefined && first.type === "text", "链结果带文本");
     assert.match(first.text, /动作链完成/);
     const typeCall = calls.find((call) => call.action === "type");
@@ -126,7 +119,7 @@ describe("browser_act 动作链分派校验", () => {
     const call = calls.find((item) => item.action === "key");
     assert.ok(call !== undefined);
     assert.equal(call.params.key, "Enter");
-    const first = result.content[0];
+    const first = result.output?.[0];
     assert.ok(first !== undefined && first.type === "text");
     assert.match(first.text, /动作链完成/);
   });

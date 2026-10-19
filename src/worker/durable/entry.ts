@@ -113,7 +113,6 @@ import { renderTodoBlock } from "@shared/todo";
 import { toImageContent } from "../lib/attachments";
 import { describeCompactError, describeCompactOutcome } from "../lib/compact-error";
 
-import { adaptLegacyTools, type LegacyTool } from "./tool-adapter";
 import { durableTranscript, projectDurableView } from "./project";
 import { DurableSubagents } from "./subagent";
 import { runMemoryTidy } from "./memory-tidy";
@@ -166,7 +165,6 @@ interface WorkerState {
   latest: DurableConversationView;
   models: ReturnType<typeof createModels>;
   providerId: string;
-  env: NodeExecutionEnv;
   cwd: string;
   toolOutputDir: string;
   mcp: McpRuntime;
@@ -192,8 +190,8 @@ interface WorkerState {
   toolStarts: Map<string, { name: string; argsJson: string | null; at: number }>;
   /** 子代理编排：每个子代理是一个由本次工具调用拥有的子对话 */
   subagents: DurableSubagents;
-  /** MCP 工具每次重载后重建扩展用：保留当前旧工具清单 */
-  legacyTools: LegacyTool[];
+  /** MCP 工具每次重载后重建扩展用：保留当前自研工具清单（它们不随 MCP 变） */
+  customTools: ToolRegistration[];
   /** durable 原生工具（read / write / edit / bash）：与 MCP 重载无关，建一次复用 */
   builtinTools: ToolRegistration[];
 }
@@ -498,6 +496,9 @@ function buildExtension(tools: ToolRegistration[]): Parameters<Registry["install
  * 只收**幂等只读**：崩溃后重跑一次与跑一次的结果相同。写类工具绝不进这张表——
  * 重跑一次 `write` / `bash` 就是真实的第二次副作用，而 durable 的默认（unsafe）
  * 正是「不重跑、留一条 interrupted 结果」。
+ *
+ * 工具自己声明了 `replay` 的（如子代理的 safe，靠固定 requestId 找回同一次提交）
+ * 以它自己的为准——这张表只兜住「没说」的那些。
  */
 const REPLAY_SAFE_TOOLS = new Set([
   "read",
@@ -512,14 +513,20 @@ function replaySafe(name: string): boolean {
   return REPLAY_SAFE_TOOLS.has(name);
 }
 
-/** 当前工具集：durable 原生 + 旧工具适配 + MCP 工具适配 */
+/** 给没有自己声明重放策略的工具补上（默认 unsafe，只读的那几个标 safe） */
+function applyReplay(tool: ToolRegistration): ToolRegistration {
+  if (tool.replay !== undefined) return tool;
+  return replaySafe(tool.name) ? { ...tool, replay: "safe" } : tool;
+}
+
+/** 当前工具集：durable 原生 + 自研 + MCP */
 function currentTools(current: WorkerState): ToolRegistration[] {
   return [
     ...current.builtinTools,
-    ...adaptLegacyTools(current.legacyTools, current.env, replaySafe),
-    ...adaptLegacyTools(current.mcp.tools, current.env, replaySafe),
+    ...current.customTools,
+    ...current.mcp.tools,
     current.subagents.tool(),
-  ];
+  ].map(applyReplay);
 }
 
 /** MCP 热重载 / 后台补挂后重建扩展（registry 同名替换） */
@@ -680,23 +687,19 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     createBashTool(),
   ];
 
-  const legacyTools: LegacyTool[] = [
+  const customTools: ToolRegistration[] = [
     ...createBrowserTools(hostBridge),
     ...(command.computerEnabled ? createComputerTools(hostBridge) : []),
     ...createMemoryTools(hostBridge),
     ...createTodoTools(hostBridge),
     ...createSearchTools(cwd, { rgPath: command.rgPath }),
     ...createAskUserTools(questions),
-  ] as unknown as LegacyTool[];
+  ];
 
   const registry = createRegistry<ToolRegistration>();
   // 工具清单在每次请求解析时活读；MCP 重载后同名替换整个扩展即可。
-  const toolsOf = (): ToolRegistration[] => [
-    ...builtin,
-    ...adaptLegacyTools(legacyTools, env, replaySafe),
-    ...adaptLegacyTools(mcp.tools, env, replaySafe),
-    subagents.tool(),
-  ];
+  const toolsOf = (): ToolRegistration[] =>
+    [...builtin, ...customTools, ...mcp.tools, subagents.tool()].map(applyReplay);
   registry.install(buildExtension(toolsOf()));
 
   // 压缩配置必须**活读**：设置页改完下一次操作就生效（与旧内核同一承诺）。
@@ -767,7 +770,6 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     latest: undefined as never,
     models,
     providerId: command.provider.id,
-    env,
     cwd,
     toolOutputDir: command.toolOutputDir,
     mcp,
@@ -797,7 +799,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     baselineSent: new Set(),
     toolStarts: new Map(),
     subagents,
-    legacyTools,
+    customTools,
     builtinTools: builtin,
   };
   state = current;

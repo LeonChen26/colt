@@ -37,17 +37,10 @@ function vendoredRgPath(): string {
   );
 }
 
-/** 工具的 execute 只用到前两个参数；测试里直接按宽松形状调它 */
+/** 工具的 execute 只用到 args（durable 签名是 `(args, api, context)`） */
 type LooseTool = {
   name: string;
-  execute: (
-    toolCallId: string,
-    params: Record<string, unknown>,
-    onUpdate: unknown,
-    toolContext: unknown,
-    invocation: unknown,
-    context: unknown,
-  ) => Promise<{ content: { type: string; text?: string }[] }>;
+  execute: (args: Record<string, unknown>) => Promise<{ output?: { type: string; text?: string }[] }>;
 };
 
 describe("buildRgArgs", () => {
@@ -213,8 +206,8 @@ describe("两个引擎结果一致（装了 rg 才跑）", () => {
     const tools = createSearchTools(root, withRg ? { rgPath } : {}) as unknown as LooseTool[];
     const tool = tools.find((item) => item.name === GREP_TOOL_NAME);
     assert.ok(tool);
-    const result = await tool.execute("c", { pattern, ...extra }, undefined, undefined, {}, {});
-    return result.content.map((b) => b.text ?? "").join("");
+    const result = await tool.execute({ pattern, ...extra });
+    return (result.output ?? []).map((b) => b.text ?? "").join("");
   }
 
   before(() => {
@@ -452,8 +445,8 @@ describe("快路径降级的范围", () => {
     const tool = tools.find((item) => item.name === GREP_TOOL_NAME);
     assert.ok(tool);
     return async (pattern: string) => {
-      const result = await tool.execute("c", { pattern }, undefined, undefined, {}, {});
-      return result.content.map((b) => b.text ?? "").join("");
+      const result = await tool.execute({ pattern });
+      return (result.output ?? []).map((b) => b.text ?? "").join("");
     };
   }
 

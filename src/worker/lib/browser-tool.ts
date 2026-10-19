@@ -9,7 +9,7 @@
  * 读写拆成三个工具而非一个万能工具：审批签名、风险分级与错误信息都更准确。
  */
 import { Type } from "typebox";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { defineTool } from "@earendil-works/pi-durable";
 import type { HostResult } from "@shared/worker-protocol";
 import { definedParams, hostResultToContent, type HostBridge } from "./host-bridge";
 
@@ -156,10 +156,9 @@ export async function runActionChain(bridge: ActionChainBridge, items: ChainItem
 }
 
 /** 浏览器工具集：读、截图、操作三件套，均为对宿主 BrowserHost 的薄封装 */
-export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<ExecutionToolContext>[] {
-  const readTool: AgentHarnessTool<ExecutionToolContext, typeof readSchema, undefined> = {
+export function createBrowserTools(bridge: HostBridge): ReturnType<typeof defineTool>[] {
+  const readTool = defineTool({
     name: "browser_read",
-    label: "Browser Read",
     description:
       "读取当前浏览器页面的信息（只读、无副作用）。" +
       "snapshot：返回页面**可见**可交互元素列表，每项带 ref（供 browser_act 点击/输入）；" +
@@ -172,15 +171,14 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
       "downloads：返回本会话已下载的文件列表（文件名、状态、落盘路径与来源）——" +
       "页面触发下载不会打断任何动作，用这个动作确认文件到底下来没有。",
     parameters: readSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const result = await bridge.call("browser", params.action, {});
-      return { content: hostResultToContent(result), details: undefined };
+      return { output: hostResultToContent(result) };
     },
-  };
+  });
 
-  const screenshotTool: AgentHarnessTool<ExecutionToolContext, typeof screenshotSchema, undefined> = {
+  const screenshotTool = defineTool({
     name: "browser_screenshot",
-    label: "Browser Screenshot",
     description:
       "截取当前浏览器页面的可见截图，以图片返回，供你判断页面状态。" +
       "截图上会给可见的交互元素叠画边框与 ref 编号，与 snapshot 清单一一对应——" +
@@ -188,13 +186,12 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
     parameters: screenshotSchema,
     async execute() {
       const result = await bridge.call("browser", "screenshot", {});
-      return { content: hostResultToContent(result), details: undefined };
+      return { output: hostResultToContent(result) };
     },
-  };
+  });
 
-  const actTool: AgentHarnessTool<ExecutionToolContext, typeof actSchema, undefined> = {
+  const actTool = defineTool({
     name: "browser_act",
-    label: "Browser Act",
     description:
       "操作浏览器页面（wait 与 viewport 除外，其余会改变页面状态）。" +
       "这些动作是**真实输入**（走浏览器输入管线）：click 是真鼠标点击、type 是真文本输入、" +
@@ -226,7 +223,7 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
       "⚠️ 遇到登录 / 验证环节（登录表单、验证码、短信码、扫码、二次验证）：**不要猜账号密码、不要反复试错**；" +
       "用户给过凭据就直接输入，没给就停下浏览器操作，请用户在浏览器面板点「接管」自行输入，他点「交还」后再继续。",
     parameters: actSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       if (params.actions !== undefined) {
         if (params.action !== undefined) throw new Error("action 与 actions 不能同时提供（二选一）");
         if (params.actions.length === 0) throw new Error("actions 不能为空数组");
@@ -242,13 +239,13 @@ export function createBrowserTools(bridge: HostBridge): AgentHarnessTool<Executi
             throw new Error(`actions[${index}] 的 key 动作缺少 key（键名，如 "Enter"、"Escape"）`);
           }
         });
-        return { content: hostResultToContent(await runActionChain(bridge, params.actions)), details: undefined };
+        return { output: hostResultToContent(await runActionChain(bridge, params.actions)) };
       }
       const { action, ...rest } = params;
       const result = await bridge.call("browser", action, definedParams(rest));
-      return { content: hostResultToContent(result), details: undefined };
+      return { output: hostResultToContent(result) };
     },
-  };
+  });
 
   return [readTool, screenshotTool, actTool];
 }

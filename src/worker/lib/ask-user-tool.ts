@@ -12,7 +12,7 @@
  * 三条回落文案），便于单测覆盖——这条链路的失败模式是静默，能测的部分必须测到。
  */
 import { Type } from "typebox";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { defineTool } from "@earendil-works/pi-durable";
 import type {
   AskUserQuestion,
   AskUserSkipReason,
@@ -215,14 +215,9 @@ export interface AskUserHost {
   ask(toolCallId: string, questions: AskUserQuestion[], timeoutMs: number): Promise<AskUserAnswer>;
 }
 
-export function createAskUserTools(host: AskUserHost): AgentHarnessTool<ExecutionToolContext>[] {
-  const askUser: AgentHarnessTool<
-    ExecutionToolContext,
-    typeof askUserSchema,
-    undefined
-  > = {
+export function createAskUserTools(host: AskUserHost): ReturnType<typeof defineTool>[] {
+  const askUser = defineTool({
     name: ASK_USER_TOOL_NAME,
-    label: "Ask User",
     description:
       "向用户提结构化问题（选项式），阻塞等待回答后再继续。" +
       "何时用：需求有关键分岔、存在无法从代码推断的偏好、或将要做不可逆动作而意图不明时——" +
@@ -233,29 +228,24 @@ export function createAskUserTools(host: AskUserHost): AgentHarnessTool<Executio
       "所以选项要覆盖主要分支、但不必穷尽，也别把选项写得像唯一解。" +
       "用户可能跳过：此时你会收到一条说明，请据此自行决断并声明假设，不要重复发问。",
     parameters: askUserSchema,
-    // 参数位置照内核签名：(toolCallId, params, onUpdate, toolContext, invocation, context)
-    async execute(toolCallId, params) {
+    async execute(params, api) {
       const validated = validateQuestionnaire(params);
       if (!validated.ok) {
-        // 抛错而不是返回文本：内核只有这条路能把结果标成 isError（`AgentToolResult` 没有
-        // isError 字段），模型因此能明确看到「这次调用失败了」并改对重发。
+        // 抛错而不是返回文本：这是唯一能让结果标成 isError 的写法，
+        // 模型因此能明确看到「这次调用失败了」并改对重发。
         throw new Error(`提问参数不合法：${validated.message}`);
       }
-      const answer = await host.ask(toolCallId, validated.questions, 0);
+      const answer = await host.ask(api.callId, validated.questions, 0);
       if (answer.kind === "skipped") {
-        return {
-          content: [{ type: "text" as const, text: skipMessage(answer.reason) }],
-          details: undefined,
-        };
+        return { output: [{ type: "text" as const, text: skipMessage(answer.reason) }] };
       }
       return {
-        content: [
+        output: [
           { type: "text" as const, text: formatAnswers(validated.questions, answer.answers) },
         ],
-        details: undefined,
       };
     },
-  };
+  });
   return [askUser];
 }
 

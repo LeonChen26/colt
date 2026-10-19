@@ -18,7 +18,7 @@
  * 所以「什么时候该开清单、什么时候不许标完成」这些规矩只能写在这里。
  */
 import { Type } from "typebox";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { defineTool } from "@earendil-works/pi-durable";
 import {
   MAX_ACTIVE_FORM_CHARS,
   MAX_BLOCKED_BY,
@@ -63,10 +63,9 @@ const todoSchema = Type.Object({
   ids: Type.Optional(Type.Array(Type.String(), { description: "要删除的条目 id（delete 必填）" })),
 });
 
-export function createTodoTools(bridge: HostBridge): AgentHarnessTool<ExecutionToolContext>[] {
-  const todo: AgentHarnessTool<ExecutionToolContext, typeof todoSchema, undefined> = {
+export function createTodoTools(bridge: HostBridge): ReturnType<typeof defineTool>[] {
+  const todo = defineTool({
     name: TODO_TOOL_NAME,
-    label: "Todo",
     description:
       "维护本次任务的待办清单（跨请求持久，界面右栏也能看到）。" +
       "何时用：任务**能拆成 3 步以上**、或用户给了多条要求要逐条推进时——先把清单列出来，" +
@@ -81,7 +80,7 @@ export function createTodoTools(bridge: HostBridge): AgentHarnessTool<ExecutionT
       "activeForm / blockedBy）；delete 给 ids；list 与 clear 无参数。" +
       "每次调用都会返回**整份清单**，不需要自己拼接；参数不合法时你会收到一条报错与正确写法，照着改即可。",
     parameters: todoSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // 校验与写入都在主进程（它才是唯一写入方）；参数不合法时它是**抛错**，
       // 于是这里的 await 直接抛出去，内核把这次调用标成 isError——
       // 模型因此能明确看到「这次失败了」并按报错里的正确写法重发（同 ask_user）。
@@ -90,8 +89,8 @@ export function createTodoTools(bridge: HostBridge): AgentHarnessTool<ExecutionT
         params.action,
         definedParams(params as unknown as Record<string, unknown>),
       );
-      return { content: hostResultToContent(result), details: undefined };
+      return { output: hostResultToContent(result) };
     },
-  };
+  });
   return [todo];
 }

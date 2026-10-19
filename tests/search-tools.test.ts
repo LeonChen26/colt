@@ -80,25 +80,18 @@ after(() => {
   removeTempDir(root);
 });
 
-/** 工具的 execute 只用到前两个参数；测试里直接按宽松形状调它 */
+/** 工具的 execute 只用到 args（durable 签名是 `(args, api, context)`） */
 type LooseTool = {
   name: string;
-  execute: (
-    toolCallId: string,
-    params: Record<string, unknown>,
-    onUpdate: unknown,
-    toolContext: unknown,
-    invocation: unknown,
-    context: unknown,
-  ) => Promise<{ content: { type: string; text?: string }[] }>;
+  execute: (args: Record<string, unknown>) => Promise<{ output?: { type: string; text?: string }[] }>;
 };
 
 async function run(name: string, params: Record<string, unknown>): Promise<string> {
   const tools = createSearchTools(root) as unknown as LooseTool[];
   const tool = tools.find((item) => item.name === name);
   assert.ok(tool, `没有名为 ${name} 的工具`);
-  const result = await tool.execute("call-1", params, undefined, undefined, {}, {});
-  return result.content.map((block) => block.text ?? "").join("");
+  const result = await tool.execute(params);
+  return (result.output ?? []).map((block) => block.text ?? "").join("");
 }
 
 /** 同 `run`，但把「最多扫几个文件」压到很低，用来造「仓库过大」这个前提 */
@@ -110,8 +103,8 @@ async function runLimited(
   const tools = createSearchTools(root, { maxScannedFiles }) as unknown as LooseTool[];
   const tool = tools.find((item) => item.name === name);
   assert.ok(tool, `没有名为 ${name} 的工具`);
-  const result = await tool.execute("call-1", params, undefined, undefined, {}, {});
-  return result.content.map((block) => block.text ?? "").join("");
+  const result = await tool.execute(params);
+  return (result.output ?? []).map((block) => block.text ?? "").join("");
 }
 
 describe("grep：命中格式与范围", () => {

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 import { McpClient, StdioTransport, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import type { TSchema } from "typebox";
-import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { McpServerView } from "@shared/worker-protocol";
 import { MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
-import { MCP_TOOL_PREFIX, mcpToolLabel } from "@shared/mcp-label";
+import { MCP_TOOL_PREFIX } from "@shared/mcp-label";
 import {
   callTimeoutOf,
   configKey,
@@ -216,26 +216,25 @@ function wrapTool(
   tool: ListedTool,
   client: McpClient,
   timeout: number | undefined,
-): AgentHarnessTool<ExecutionToolContext, TSchema, undefined> {
-  return {
+): ToolRegistration {
+  return defineTool({
     name: mcpToolName(serverName, tool.name),
-    label: mcpToolLabel(mcpToolName(serverName, tool.name)) ?? `MCP ${serverName}: ${tool.name}`,
     description: tool.description ?? `MCP server "${serverName}" 的 ${tool.name} 工具`,
     // 裸 JSON Schema 原样透传：pi-ai 的 validateToolArguments 对非 typebox
     // schema 有专门的 coercion + 编译路径（见文件头注释）
     parameters: tool.inputSchema as unknown as TSchema,
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // MCP 把工具失败放在结果里（isError）而不是协议错误里；pi-mcp 原样透传 CallToolResult
       const result = await client.callTool(
         tool.name,
         params as Record<string, unknown>,
         { timeoutMs: timeout },
       );
-      // 内核约定：失败要 throw，由内核转成错误工具结果（与 host-bridge 同款）
+      // 常规约定：失败要 throw，由内核转成错误工具结果（与 host-bridge 同款）
       if (result.isError === true) throw new Error(resultText(result));
-      return { content: mapMcpContent(result), details: undefined };
+      return { output: mapMcpContent(result) };
     },
-  };
+  });
 }
 
 /** 无参能力工具的入参：空对象（裸 JSON Schema，与工具同款透传） */
@@ -320,86 +319,85 @@ function capabilityTools(
   client: McpClient,
   capabilities: { resources?: unknown; prompts?: unknown } | undefined,
   timeoutFor: ToolTimeoutResolver,
-): AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] {
-  const tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[] = [];
-  const label = (suffix: string): string =>
-    mcpToolLabel(mcpToolName(serverName, suffix)) ?? `MCP ${serverName}: ${suffix}`;
+): ToolRegistration[] {
+  const tools: ToolRegistration[] = [];
   if (capabilities?.resources !== undefined) {
-    tools.push({
-      name: mcpToolName(serverName, "list_resources"),
-      label: label("list_resources"),
-      description: `列出 MCP server "${serverName}" 暴露的资源与资源模板（URI / 名称 / MIME 类型）。`,
-      parameters: NO_ARGS_SCHEMA as unknown as TSchema,
-      async execute() {
-        const timeout = { timeoutMs: timeoutFor("list_resources") };
-        // pi-mcp 的 listResources / listResourceTemplates 自己翻完全部分页，直接给数组
-        const listed = await client.listResources(timeout);
-        let templates: unknown = [];
-        try {
-          templates = await client.listResourceTemplates(timeout);
-        } catch {
-          // 有「声明了 resources 却不支持模板列举」的 server；模板是附加信息，取不到就留空
-        }
-        return {
-          content: [
-            { type: "text", text: jsonText({ resources: listed, resourceTemplates: templates }) },
-          ],
-          details: undefined,
-        };
-      },
-    });
-    tools.push({
-      name: mcpToolName(serverName, "read_resource"),
-      label: label("read_resource"),
-      description: `读取 MCP server "${serverName}" 上某个 URI 的资源内容（URI 从 list_resources 拿）。`,
-      parameters: READ_RESOURCE_SCHEMA as unknown as TSchema,
-      async execute(_toolCallId, params) {
-        const { uri } = params as { uri: string };
-        const result = await client.readResource(uri, { timeoutMs: timeoutFor("read_resource") });
-        const contents = Array.isArray(result.contents) ? result.contents : [];
-        return {
-          content:
-            contents.length > 0
-              ? contents.map(mapResourceContents)
-              : [{ type: "text", text: "[mcp] 该资源没有内容" }],
-          details: undefined,
-        };
-      },
-    });
+    tools.push(
+      defineTool({
+        name: mcpToolName(serverName, "list_resources"),
+        description: `列出 MCP server "${serverName}" 暴露的资源与资源模板（URI / 名称 / MIME 类型）。`,
+        parameters: NO_ARGS_SCHEMA as unknown as TSchema,
+        async execute() {
+          const timeout = { timeoutMs: timeoutFor("list_resources") };
+          // pi-mcp 的 listResources / listResourceTemplates 自己翻完全部分页，直接给数组
+          const listed = await client.listResources(timeout);
+          let templates: unknown = [];
+          try {
+            templates = await client.listResourceTemplates(timeout);
+          } catch {
+            // 有「声明了 resources 却不支持模板列举」的 server；模板是附加信息，取不到就留空
+          }
+          return {
+            output: [
+              { type: "text", text: jsonText({ resources: listed, resourceTemplates: templates }) },
+            ],
+          };
+        },
+      }),
+    );
+    tools.push(
+      defineTool({
+        name: mcpToolName(serverName, "read_resource"),
+        description: `读取 MCP server "${serverName}" 上某个 URI 的资源内容（URI 从 list_resources 拿）。`,
+        parameters: READ_RESOURCE_SCHEMA as unknown as TSchema,
+        async execute(params) {
+          const { uri } = params as { uri: string };
+          const result = await client.readResource(uri, { timeoutMs: timeoutFor("read_resource") });
+          const contents = Array.isArray(result.contents) ? result.contents : [];
+          return {
+            output:
+              contents.length > 0
+                ? contents.map(mapResourceContents)
+                : [{ type: "text", text: "[mcp] 该资源没有内容" }],
+          };
+        },
+      }),
+    );
   }
   if (capabilities?.prompts !== undefined) {
-    tools.push({
-      name: mcpToolName(serverName, "list_prompts"),
-      label: label("list_prompts"),
-      description: `列出 MCP server "${serverName}" 提供的提示词（名称 / 说明 / 参数）。`,
-      parameters: NO_ARGS_SCHEMA as unknown as TSchema,
-      async execute() {
-        const listed = (await client.request("prompts/list", {}, {
-          timeoutMs: timeoutFor("list_prompts"),
-        })) as { prompts?: unknown };
-        return { content: [{ type: "text", text: jsonText(listed.prompts ?? []) }], details: undefined };
-      },
-    });
-    tools.push({
-      name: mcpToolName(serverName, "get_prompt"),
-      label: label("get_prompt"),
-      description: `按名取 MCP server "${serverName}" 的一条提示词（由服务端按 arguments 渲染后返回）。`,
-      parameters: GET_PROMPT_SCHEMA as unknown as TSchema,
-      async execute(_toolCallId, params) {
-        const { name, arguments: args } = params as {
-          name: string;
-          arguments?: Record<string, string>;
-        };
-        const result = (await client.request("prompts/get", { name, arguments: args }, {
-          timeoutMs: timeoutFor("get_prompt"),
-        })) as { messages?: unknown };
-        const text = promptMessagesText(result.messages);
-        return {
-          content: [{ type: "text", text: text === "" ? "[mcp] 该提示词没有内容" : text }],
-          details: undefined,
-        };
-      },
-    });
+    tools.push(
+      defineTool({
+        name: mcpToolName(serverName, "list_prompts"),
+        description: `列出 MCP server "${serverName}" 提供的提示词（名称 / 说明 / 参数）。`,
+        parameters: NO_ARGS_SCHEMA as unknown as TSchema,
+        async execute() {
+          const listed = (await client.request("prompts/list", {}, {
+            timeoutMs: timeoutFor("list_prompts"),
+          })) as { prompts?: unknown };
+          return { output: [{ type: "text", text: jsonText(listed.prompts ?? []) }] };
+        },
+      }),
+    );
+    tools.push(
+      defineTool({
+        name: mcpToolName(serverName, "get_prompt"),
+        description: `按名取 MCP server "${serverName}" 的一条提示词（由服务端按 arguments 渲染后返回）。`,
+        parameters: GET_PROMPT_SCHEMA as unknown as TSchema,
+        async execute(params) {
+          const { name, arguments: args } = params as {
+            name: string;
+            arguments?: Record<string, string>;
+          };
+          const result = (await client.request("prompts/get", { name, arguments: args }, {
+            timeoutMs: timeoutFor("get_prompt"),
+          })) as { messages?: unknown };
+          const text = promptMessagesText(result.messages);
+          return {
+            output: [{ type: "text", text: text === "" ? "[mcp] 该提示词没有内容" : text }],
+          };
+        },
+      }),
+    );
   }
   return tools;
 }
@@ -419,7 +417,7 @@ interface ServerState {
    */
   config: McpServerConfig;
   client?: McpClient;
-  tools: AgentHarnessTool<ExecutionToolContext, TSchema, undefined>[];
+  tools: ToolRegistration[];
   /** server 自报的用法说明（握手时的 `InitializeResult.instructions`）；没报就没有这项 */
   instructions?: string;
   error?: string;
@@ -550,7 +548,7 @@ async function closeState(state: ServerState): Promise<void> {
 
 /** 热重载 / 首次装载的产物：新工具清单 + 各 server 现状 + 一行摘要 */
 export interface McpReloadResult {
-  tools: AgentHarnessTool<ExecutionToolContext>[];
+  tools: ToolRegistration[];
   statuses: McpServerView[];
   /** 空串 = 无事可报（没配、也没告警）；非空则调用方原样发 notice */
   summary: string;
@@ -558,7 +556,7 @@ export interface McpReloadResult {
 
 /** 一个会话（= 一个 worker 进程）持有的 MCP 运行态 */
 export interface McpRuntime {
-  readonly tools: AgentHarnessTool<ExecutionToolContext>[];
+  readonly tools: ToolRegistration[];
   reload(): Promise<McpReloadResult>;
   status(): McpServerView[];
   /**
@@ -602,9 +600,9 @@ export async function createMcpRuntime(
    * `AgentHarness.create` 崩掉，那比"少一个工具"严重得多。这里保留先到的、
    * 把后到的记进通知，让人去改配置。
    */
-  const buildTools = (): { tools: AgentHarnessTool<ExecutionToolContext>[]; collisions: string[] } => {
+  const buildTools = (): { tools: ToolRegistration[]; collisions: string[] } => {
     const owner = new Map<string, string>();
-    const tools: AgentHarnessTool<ExecutionToolContext>[] = [];
+    const tools: ToolRegistration[] = [];
     const collisions: string[] = [];
     for (const state of states.values()) {
       for (const tool of state.tools) {
@@ -882,7 +880,7 @@ export async function createMcpRuntime(
 export async function loadMcpTools(
   cwd: string,
   notify: (message: string) => void,
-): Promise<AgentHarnessTool<ExecutionToolContext>[]> {
+): Promise<ToolRegistration[]> {
   const runtime = await createMcpRuntime(cwd, notify);
   return runtime.tools;
 }

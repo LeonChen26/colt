@@ -27,10 +27,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { McpClient, StdioTransport } from "@earendil-works/pi-mcp";
-import type {
-  AgentHarnessTool,
-  ExecutionToolContext,
-} from "@earendil-works/pi-agent-core";
+import type { ToolRegistration } from "@earendil-works/pi-durable";
 import {
   callTimeoutOf,
   closeMcpTools,
@@ -70,7 +67,7 @@ const BOOT_FIXTURE = fileURLToPath(
 );
 const SLOW_FIXTURE = fileURLToPath(new URL("./helpers/mcp-slow-fixture-server.mjs", import.meta.url));
 
-type Tool = AgentHarnessTool<ExecutionToolContext>;
+type Tool = ToolRegistration;
 
 /** 取一个空闲端口：绑 0 号端口读到号，再立刻释放（随后由 HTTP 夹具去绑它） */
 async function freePort(): Promise<number> {
@@ -146,13 +143,12 @@ function countStarts(logPath: string): number {
   }
 }
 
-/** execute 在内核里有 6 个形参，测试只关心前两个 */
+/** execute 在 durable 里是 `(args, api, context)`，测试只关心 args */
 async function callTool(tool: Tool, params: Record<string, unknown>) {
   const execute = tool.execute as unknown as (
-    id: string,
     args: Record<string, unknown>,
-  ) => Promise<{ content: { type: string; text?: string }[] }>;
-  return execute("tc-test", params);
+  ) => Promise<{ output?: { type: string; text?: string }[] }>;
+  return execute(params);
 }
 
 /** 造一个带 .colt/mcp.json 的临时项目目录 */
@@ -199,7 +195,7 @@ describe("装载与包装（真实 stdio 子进程往返）", () => {
     try {
       const echo = tools.find((tool) => tool.name === "mcp__fixture__echo")!;
       const result = await callTool(echo, { text: "你好 MCP" });
-      assert.deepEqual(result.content, [{ type: "text", text: "echo:你好 MCP" }]);
+      assert.deepEqual(result.output, [{ type: "text", text: "echo:你好 MCP" }]);
     } finally {
       await closeMcpTools();
       await rm(dir, { recursive: true, force: true });
@@ -219,7 +215,7 @@ describe("装载与包装（真实 stdio 子进程往返）", () => {
       // 子进程继承的是**应用进程的** cwd（本测试里就是仓库根）——用户的 `args: ["."]` / `["src"]`
       // 随之指到别处（实测：相对参数被解析成 `E:\code\tests\…`，server 直接 Cannot find module）。
       // 先 realpath 归一化再比，免得临时目录的短名 / 符号链接造成假红。
-      assert.equal((result.content[0] as { text: string }).text, await realpath(dir));
+      assert.equal((result.output?.[0] as { text: string }).text, await realpath(dir));
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });
@@ -574,12 +570,12 @@ describe("传输：远程（Streamable HTTP）", () => {
         assert.equal(runtime.status()[0]?.status, "connected");
 
         const echo = runtime.tools.find((tool) => tool.name === "mcp__remote__echo")!;
-        assert.deepEqual((await callTool(echo, { text: "远程" })).content, [
+        assert.deepEqual((await callTool(echo, { text: "远程" })).output, [
           { type: "text", text: "http-echo:远程" },
         ]);
         // headers 透传的物证：server 回显它收到的 Authorization（只验「连通」会漏掉它）
         const auth = runtime.tools.find((tool) => tool.name === "mcp__remote__auth")!;
-        assert.deepEqual((await callTool(auth, {})).content, [
+        assert.deepEqual((await callTool(auth, {})).output, [
           { type: "text", text: "auth:Bearer test-token" },
         ]);
       } finally {
@@ -783,7 +779,7 @@ describe("连接生命周期：失败可重试、掉线如实上报", () => {
     try {
       assert.equal(runtime.status()[0]?.status, "connected");
       const ping = runtime.tools.find((tool) => tool.name === "mcp__crash__ping")!;
-      assert.deepEqual((await callTool(ping, {})).content, [{ type: "text", text: "pong" }]);
+      assert.deepEqual((await callTool(ping, {})).output, [{ type: "text", text: "pong" }]);
       // 装载摘要是**唯一**一条「没事也报一声」的通知，掉线通知不能混在里面
       const loaded = notices.length;
 
@@ -873,28 +869,28 @@ describe("resources / prompts 能力：声明了才包成工具，且走同一�
       }
 
       const listResources = runtime.tools.find((tool) => tool.name === "mcp__caps__list_resources")!;
-      const listed = (await callTool(listResources, {})).content[0]!.text ?? "";
+      const listed = (await callTool(listResources, {})).output?.[0]?.text ?? "";
       assert.match(listed, /caps:\/\/note/);
       // 资源模板也在（模板列举失败会被静默留空，这条正是钉住它没失败）
       assert.match(listed, /caps:\/\/item\/\{id\}/);
 
       const readResource = runtime.tools.find((tool) => tool.name === "mcp__caps__read_resource")!;
-      assert.deepEqual((await callTool(readResource, { uri: "caps://note" })).content, [
+      assert.deepEqual((await callTool(readResource, { uri: "caps://note" })).output, [
         { type: "text", text: "资源正文：hello" },
       ]);
       // 二进制资源**不展开**成 base64——只要「二进制 + 类型」说清了
-      const blob = (await callTool(readResource, { uri: "caps://logo" })).content[0]!.text ?? "";
+      const blob = (await callTool(readResource, { uri: "caps://logo" })).output?.[0]?.text ?? "";
       assert.match(blob, /二进制/);
       assert.match(blob, /image\/png/);
       assert.ok(!blob.includes("QUJD"), `二进制被展开进上下文了：${blob}`);
 
       const listPrompts = runtime.tools.find((tool) => tool.name === "mcp__caps__list_prompts")!;
-      assert.match((await callTool(listPrompts, {})).content[0]!.text ?? "", /greet/);
+      assert.match((await callTool(listPrompts, {})).output?.[0]?.text ?? "", /greet/);
 
       // 参数**真的到了服务端**（服务端按参数渲染）——这是「包成工具」而非「客户端格式化」的物证
       const getPrompt = runtime.tools.find((tool) => tool.name === "mcp__caps__get_prompt")!;
       assert.deepEqual(
-        (await callTool(getPrompt, { name: "greet", arguments: { who: "Colt" } })).content,
+        (await callTool(getPrompt, { name: "greet", arguments: { who: "Colt" } })).output,
         [{ type: "text", text: "user: 你好，Colt" }],
       );
     } finally {
@@ -1108,7 +1104,7 @@ describe("调用超时：按 server / 工具可配（默认仍是客户端的 60
     try {
       const sleep = runtime.tools.find((tool) => tool.name === "mcp__slow__sleep")!;
       const result = await callTool(sleep, { ms: 300 });
-      assert.deepEqual(result.content, [{ type: "text", text: "slept:300" }]);
+      assert.deepEqual(result.output, [{ type: "text", text: "slept:300" }]);
     } finally {
       await runtime.close();
       await rm(dir, { recursive: true, force: true });

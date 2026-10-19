@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * durable worker 的两块纯逻辑：
- *  1. `projectDurableView`：durable 的条目 / 文档 → 渲染层的 `ConversationView`；
- *  2. `adaptLegacyTool`：旧工具的全量快照式进度 → durable 的增量 `output()`。
+ * durable worker 的纯逻辑：`projectDurableView` —— durable 的条目 / 文档 →
+ * 渲染层的 `ConversationView`。
  *
- * 这两块是「换内核但界面与工具行为不变」的关键接缝。它们不依赖 Electron / 网络，
+ * 这是「换内核但界面与工具行为不变」的关键接缝。它不依赖 Electron / 网络，
  * 用 faux provider 与一个假工具就能钉住；跑真 worker 只能验证「进程起得来」，
  * 验证不了这些逐字段的映射。
  */
@@ -31,7 +30,6 @@ import {
 } from "@earendil-works/pi-ai";
 
 import { durableTranscript, projectDurableView } from "../src/worker/durable/project.ts";
-import { adaptLegacyTool, type LegacyTool } from "../src/worker/durable/tool-adapter.ts";
 import type { ConversationView } from "../src/shared/worker-protocol.ts";
 
 const meta = {
@@ -180,74 +178,5 @@ describe("durable → ConversationView 投影", () => {
     } finally {
       await harness.close(BACKGROUND_CONTEXT);
     }
-  });
-});
-
-describe("旧工具 → durable 工具适配", () => {
-  test("全量快照式进度被换算成增量 output", async () => {
-    const chunks: string[] = [];
-    const legacy: LegacyTool = {
-      name: "echo",
-      description: "回显",
-      parameters: Type.Object({ text: Type.String() }),
-      async execute(_toolCallId, _params, onUpdate) {
-        onUpdate?.({ content: [{ type: "text", text: "ab" }] });
-        onUpdate?.({ content: [{ type: "text", text: "abcd" }] });
-        return { content: [{ type: "text", text: "abcd" }], details: { ok: true } };
-      },
-    };
-    const tool = adaptLegacyTool(legacy, {});
-    const result = await tool.execute(
-      { text: "x" },
-      {
-        callId: "call-1",
-        taskId: 1,
-        output: (chunk: string | Uint8Array) => {
-          if (typeof chunk === "string") chunks.push(chunk);
-        },
-        memo: (async () => undefined) as never,
-      } as never,
-      BACKGROUND_CONTEXT,
-    );
-
-    assert.deepEqual(chunks, ["ab", "cd"], "全量快照 ab → abcd 应只追加 cd");
-    assert.deepEqual(result.output, [{ type: "text", text: "abcd" }]);
-    assert.deepEqual(result.details, { ok: true });
-    assert.equal(result.isError, false);
-  });
-
-  test("非前缀变化整段重发，并把 isError / usage 原样带出", async () => {
-    const chunks: string[] = [];
-    const legacy: LegacyTool = {
-      name: "flip",
-      description: "",
-      parameters: Type.Object({}),
-      async execute(_toolCallId, _params, onUpdate) {
-        onUpdate?.({ content: [{ type: "text", text: "旧输出" }] });
-        onUpdate?.({ content: [{ type: "text", text: "新输出" }] });
-        return {
-          content: [{ type: "text", text: "新输出" }],
-          isError: true,
-          usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: {} },
-        };
-      },
-    };
-    const tool = adaptLegacyTool(legacy, {});
-    const result = await tool.execute(
-      {},
-      {
-        callId: "call-2",
-        taskId: 2,
-        output: (chunk: string | Uint8Array) => {
-          if (typeof chunk === "string") chunks.push(chunk);
-        },
-        memo: (async () => undefined) as never,
-      } as never,
-      BACKGROUND_CONTEXT,
-    );
-
-    assert.deepEqual(chunks, ["旧输出", "新输出"]);
-    assert.equal(result.isError, true);
-    assert.ok(result.usage !== undefined);
   });
 });
