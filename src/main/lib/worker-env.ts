@@ -118,15 +118,19 @@ function envKeyOf(record: Record<string, string>, name: string): string | undefi
 /**
  * 装配 worker 的环境。
  *
- * 语义三条：① 只放行 `WORKER_ENV_PASSTHROUGH` 里**在宿主机上确实存在且非空**的键——
+ * 语义四条：① 只放行 `WORKER_ENV_PASSTHROUGH` 里**在宿主机上确实存在且非空**的键——
  * 缺的键不写 `undefined`（写进去会被 Node 展开成字符串 `"undefined"`，
  * 比「没有这个变量」更糟：下游 `if (!value)` 判不出来）；
  * ② `control` 里的键一律覆盖并放行（调用方负责只放非密钥的东西）；
- * ③ 控制变量命中 `FORBIDDEN_WORKER_ENV` 直接抛错。
+ * ③ 控制变量命中 `FORBIDDEN_WORKER_ENV` 直接抛错；
+ * ④ `extra` 是**被 mcp.json 点名的变量**（见 `main/mcp/env-keys.ts`）：
+ *    只透传点名的键，且 `FORBIDDEN_WORKER_ENV` 内的名字一律跳过（不是抛错——
+ *    用户可能恰好写了 `${DEEPSEEK_API_KEY}`，但那不能成为把模型密钥送进 worker 的理由）。
  */
 export function buildWorkerEnv(
   source: NodeJS.ProcessEnv,
   control: Record<string, string> = {},
+  extra: readonly string[] = [],
 ): Record<string, string> {
   for (const name of FORBIDDEN_WORKER_ENV) {
     const hit = envKeyOf(control, name);
@@ -136,8 +140,14 @@ export function buildWorkerEnv(
       );
     }
   }
+  const forbidden = new Set(FORBIDDEN_WORKER_ENV.map((name) => name.toLowerCase()));
   const out: Record<string, string> = {};
   for (const name of WORKER_ENV_PASSTHROUGH) {
+    const value = source[name];
+    if (typeof value === "string" && value !== "") out[name] = value;
+  }
+  for (const name of extra) {
+    if (forbidden.has(name.toLowerCase())) continue;
     const value = source[name];
     if (typeof value === "string" && value !== "") out[name] = value;
   }

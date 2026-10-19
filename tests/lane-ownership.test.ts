@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import {
   foreignLaneTips,
   ownedEntries,
-  visibleEntries,
   type OwnershipEntry,
 } from "../src/worker/lib/lane-ownership.ts";
 
@@ -35,7 +34,7 @@ describe("ownedEntries：fresh 子链整条被排除", () => {
   test("子链与主链并存时，主对话条目一条都不误伤", () => {
     const entries = [...MAIN_CHAIN, entry("s1", null), entry("s2", "s1")];
     const owned = ownedEntries(["s2"], entries);
-    const visible = visibleEntries(entries, owned).map((item) => item.id);
+    const visible = entries.filter((item) => !owned.has(item.id)).map((item) => item.id);
     assert.deepEqual(visible, ["m1", "m2", "m3"]);
   });
 
@@ -68,18 +67,6 @@ describe("ownedEntries：fresh 子链整条被排除", () => {
 
   test("tip 为空数组时不做任何事", () => {
     assert.equal(ownedEntries([], MAIN_CHAIN).size, 0);
-  });
-});
-
-describe("visibleEntries：排除是唯一写法（树与导航守卫共用）", () => {
-  test("保持原顺序，只去掉集合里的条目", () => {
-    const entries = [...MAIN_CHAIN, entry("s1", null)];
-    const visible = visibleEntries(entries, new Set(["m2", "s1"]));
-    assert.deepEqual(visible.map((item) => item.id), ["m1", "m3"]);
-  });
-
-  test("空集合时原样返回", () => {
-    assert.deepEqual(visibleEntries(MAIN_CHAIN, new Set()), MAIN_CHAIN);
   });
 });
 

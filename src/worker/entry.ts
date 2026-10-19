@@ -11,7 +11,6 @@ import {
   BACKGROUND_CONTEXT,
   createBashTool,
   createEditTool,
-  createReadTool,
   createWriteTool,
   JsonlSessionRepo,
   reduceLaneSnapshot,
@@ -110,6 +109,7 @@ import {
 import { createMcpRuntime, mcpUserHome, type McpRuntime } from "./lib/mcp-tools";
 import { armLateMcpAttach, composeMcpInstructions, handleMcpCommand } from "./lib/mcp-reload";
 import { createDiagnoseController, type DiagnoseController } from "./lib/diagnose";
+import { createGuardedReadTool } from "./lib/read-guard";
 import { systemPrompt } from "./lib/system-prompt";
 import { createWikiMapInjector } from "./lib/wiki-map";
 import { toImageContent } from "./lib/attachments";
@@ -214,12 +214,11 @@ interface WorkerState {
   unsubscribe: () => void;
 }
 
-/** 把全部条目投影成分支树（session 级扫描，含所有分支）。
- *  只保留用户输入、各轮最终回复与结构节点，折叠中间的 LLM 轮次与工具调用。
+/** 会话级扫描里属于**其它 lane** 的条目 id（记忆整理 / 子代理各自成一根）。
  *
- *  ⚠️ 会话级扫描会**连带扫到子 lane**（记忆整理 / 子代理）的条目：`fresh` 子 lane 的链
- *  自成一根，不过滤就会在左栏凭空多出一个可点的根节点。排除与导航守卫共用同一个集合
- *  （见 `lib/lane-ownership`）。 */
+ *  只服务导航守卫：不让历史指针挪进别人 lane 的链条。
+ *  ⚠️ 会话级扫描会**连带扫到子 lane** 的条目：排除与守卫必须按**同一个集合**判断，
+ *  各写一遍迟早走偏（见 `lib/lane-ownership`）。 */
 async function foreignLaneEntryIds(current: WorkerState): Promise<Set<string>> {
   const [entries, lanes] = await Promise.all([
     current.session.findEntries({ order: "asc" }, context),
@@ -282,6 +281,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     model: modelId,
     provider: providerConfig,
     thinkingLevel,
+    // 写后诊断的初值：主进程按设置下发（默认关）。漏接这条线＝界面显示关、实际仍在跑。
+    diagnoseEnabled,
+    // 电脑控制（实验能力，默认关）：决定工具清单与提示词里那一段是否出现。
+    computerEnabled,
   } = command;
 
   const models = createModels();
@@ -298,6 +301,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   // 免审批窄通道的正当性论证在 docs/SECURITY.md §写后诊断；开关运行中可改（diagnoseEnabled）。
   const diagnose = createDiagnoseController({
     cwd,
+    enabled: diagnoseEnabled,
     exec: (cmd, opts, ctx) =>
       executionEnv.exec(
         cmd,
@@ -425,14 +429,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       model,
       resources: harnessSkills.length > 0 ? { skills: harnessSkills } : undefined,
       tools: [
-        createReadTool(),
+        createGuardedReadTool(cwd),
         createWriteTool(),
         createEditTool(),
         createBashTool(),
         ...createBrowserTools(hostBridge),
         // 电脑控制是实验能力（默认关）：开关在会话创建时读一次，故改了设置要重开会话。
         // 不开时这两个工具根本不注册——模型看不到，也就不存在「点了没反应」的入口。
-        ...(command.computerEnabled ? createComputerTools(hostBridge) : []),
+        ...(computerEnabled ? createComputerTools(hostBridge) : []),
         ...createMemoryTools(hostBridge),
         ...createTodoTools(hostBridge),
         // 检索工具（grep / glob）：纯 fs、无原生依赖，故留在 worker 侧，不走宿主通道。
@@ -445,7 +449,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       // create-time 静态部分只有**基础提示词**本身；技能清单、AGENTS.md、记忆块都在
       // transform_context 里每请求重拼——技能清单放那里是「重新扫描」能当轮生效的前提（A2），
       // 其余几块本来就要每请求重读。
-      systemPrompt: systemPrompt(cwd),
+      systemPrompt: systemPrompt(cwd, { computerEnabled }),
       // 只对**新建 lane** 生效；已存在的会话沿用自己持久化的值，
       // 故下面还有一步显式下发（见 lane 拿到之后的注释）
       thinkingLevel,

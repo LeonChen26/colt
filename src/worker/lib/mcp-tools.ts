@@ -758,8 +758,12 @@ export async function createMcpRuntime(
           // 时就发出去了，此刻写进去没有人再读（下一次重载开头还会清空）。所以这里自己
           // 报一次，且**只报后台那几台**——预算内已连上的首轮 summary 刚说过，重复是噪音。
           const behind = settled.filter((entry) => pending.includes(entry.name));
-          // 后台连接失败属于异常，要和掉线一样可回查；只是「连上了」不落库
-          if (!closed && behind.length > 0) notify(lateSummary(behind), "security");
+          // 后台连接失败属于异常，要和掉线一样可回查；只是「连上了」不落库。
+          // `behind` 里同时含成功与失败，所以判据必须看单项的 `error`，不能无条件给 security。
+          if (!closed && behind.length > 0) {
+            const failed = behind.some((entry) => entry.error !== undefined);
+            notify(lateSummary(behind), failed ? "security" : undefined);
+          }
         })
         .finally(() => {
           busy -= 1;

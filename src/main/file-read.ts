@@ -23,7 +23,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { looksBinary } from "@shared/binary-sniff";
 import { MAX_TOOL_IMAGE_BYTES } from "@shared/tool-output";
-import { isWithinRoot } from "./lib/path-guard";
+import { isWithinRoot } from "@shared/path-guard";
 import type { FileReadResult } from "@shared/protocol";
 
 /** 文本预览上限：超出只回「过大」，**不做截断**——半截文件比看不到更容易误导 */

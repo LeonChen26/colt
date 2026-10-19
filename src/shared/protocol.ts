@@ -817,7 +817,7 @@ export interface IpcInvokeMap {
     request: { commands: string[] };
     response: { commands: string[] };
   };
-  /** 读取写后诊断开关（全局设置，`docs/archive/DESIGN-afterwrite.md` D5；从未配置过 = 开） */
+  /** 读取写后诊断开关（全局设置，`docs/archive/DESIGN-afterwrite.md` D5；从未配置过 = 关） */
   "diagnose.config.get": {
     request: void;
     response: { enabled: boolean };

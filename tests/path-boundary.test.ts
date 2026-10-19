@@ -13,7 +13,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { escapesRoot } from "@shared/path-boundary";
-import { isWithinRoot } from "../src/main/lib/path-guard.ts";
+import { isWithinRoot } from "../src/shared/path-guard.ts";
 import { resolveInRoot } from "../src/worker/lib/search-tools.ts";
 
 describe("escapesRoot：按路径段判，不看前缀", () => {

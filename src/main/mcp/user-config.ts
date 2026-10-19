@@ -39,8 +39,16 @@ export async function readUserConfig(home: string): Promise<UserConfigFile> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
-  } catch {
-    return { path, exists: false, root: {}, servers: {} };
+  } catch (error) {
+    // 只有「文件不存在」才算空配置。权限不足 / 被占用 / 盘符掉线都必须原样抛——
+    // 把它们当不存在，随后 `writeUserConfig` 会用空 root 重写整份文件，等于静默清空用户配置。
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return { path, exists: false, root: {}, servers: {} };
+    }
+    throw new Error(
+      `${path} 读取失败（${error instanceof Error ? error.message : String(error)}）——` +
+        "没有替你改写：先确认文件可读再来安装",
+    );
   }
   let parsed: unknown;
   try {

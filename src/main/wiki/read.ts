@@ -26,7 +26,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { isWithinRoot } from "../lib/path-guard";
+import { isWithinRoot } from "@shared/path-guard";
+import { toPosix } from "@shared/path-boundary";
 import { WIKI_DIR } from "@shared/wiki";
 import { buildWikiTree, isRecord } from "@shared/wiki-tree";
 import type { WikiPage, WikiStatus } from "@shared/protocol";
@@ -48,10 +49,6 @@ export const WIKI_PAGE_LIMIT = 2 * 1024 * 1024;
 
 /** 递归计数时跳过的目录：`temp/` 是依赖图缓存（本仓实测占产物 99% 的体积） */
 const SKIP_DIRS = new Set(["temp"]);
-
-function toPosix(path: string): string {
-  return path.split("\\").join("/");
-}
 
 /** 空快照：`present: false` 时用它，保证每个字段都有确定值（不留 undefined 让渲染层猜） */
 function emptyStatus(): WikiStatus {

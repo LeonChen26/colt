@@ -51,6 +51,11 @@ export function createDiagnoseController(options: {
   cwd: string;
   exec: ExecFn;
   context: Context;
+  /**
+   * 初值：来自会话设置（`diagnose.config.get`，默认关）。运行中可由 `setEnabled` 改。
+   * 必填而不是给默认值——漏接这条线会让「界面显示关、实际在跑」静默发生。
+   */
+  enabled: boolean;
   /** slow 批次有值得说的事（有问题 / 跳过）时回调；干净批次不打扰 */
   onSlowResult: (notice: string) => void;
   /** 前置标记探测（相对项目根）；缺省用真盘 existsSync——测试注入假探测 */
@@ -59,7 +64,7 @@ export function createDiagnoseController(options: {
   debounceMs?: number;
 }): DiagnoseController {
   const { cwd, exec, context, onSlowResult } = options;
-  let enabled = true;
+  let enabled = options.enabled;
 
   const probe = options.probe ?? markerProbe(cwd);
   const existsProbeFor = (check: DiagnoseCheck) => () =>

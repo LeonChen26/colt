@@ -21,7 +21,7 @@
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
-import { isWithinRoot } from "./lib/path-guard";
+import { isWithinRoot } from "@shared/path-guard";
 import type { FsEntry } from "@shared/protocol";
 
 /** 单层条目上限：超出即截断（`truncated` 如实说），防一个巨型目录把 IPC 与渲染层撑爆 */

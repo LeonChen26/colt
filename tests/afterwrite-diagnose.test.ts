@@ -262,6 +262,7 @@ describe("createDiagnoseController", () => {
     const notices: string[] = [];
     const controller = createDiagnoseController({
       cwd: "/proj",
+      enabled: true,
       exec,
       context: ctx,
       onSlowResult: (message) => notices.push(message),
@@ -280,6 +281,26 @@ describe("createDiagnoseController", () => {
   });
 
   const tick = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  test("enabled: false 时一次检查都不跑（设置项默认关）", async () => {
+    let calls = 0;
+    const controller = createDiagnoseController({
+      cwd: "/proj",
+      enabled: false,
+      exec: async () => {
+        calls += 1;
+        return { ok: true, value: { exitCode: 0 } };
+      },
+      context: ctx,
+      onSlowResult: () => undefined,
+      probe: () => true,
+      debounceMs: 5,
+    });
+    assert.equal(await controller.handleAfterTool(event("/proj/src/a.ts")), undefined);
+    await tick(20);
+    assert.equal(calls, 0, "关掉后不该 spawn 任何检查器");
+    controller.dispose();
+  });
 
   test("非 write/edit / 失败写入 / 无 path：一律不干预", async () => {
     const { controller } = make();

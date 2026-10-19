@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir, removeTempDir } from "./helpers/temp";
-import { isWithinRoot, isWithinRootReal } from "../src/main/lib/path-guard.ts";
+import { isWithinRoot, isWithinRootReal } from "../src/shared/path-guard.ts";
 
 let root = "";
 let outside = "";

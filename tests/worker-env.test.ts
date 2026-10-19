@@ -40,6 +40,25 @@ function hostEnv(): NodeJS.ProcessEnv {
   };
 }
 
+describe("buildWorkerEnv：按需透传 mcp.json 点名的变量", () => {
+  test("extra 里的键被放行——白名单之外也能拿到（MCP 的 ${VAR} 靠这条）", () => {
+    const env = buildWorkerEnv({ ...hostEnv(), GITHUB_TOKEN: "gh-token" }, {}, ["GITHUB_TOKEN"]);
+    assert.equal(env.GITHUB_TOKEN, "gh-token");
+  });
+
+  test("FORBIDDEN 优先：即便配置点名，也不把模型密钥送进 worker", () => {
+    const env = buildWorkerEnv({ ...hostEnv(), DEEPSEEK_API_KEY: "sk" }, {}, [
+      "DEEPSEEK_API_KEY",
+    ]);
+    assert.equal(env.DEEPSEEK_API_KEY, undefined);
+  });
+
+  test("点名的键在宿主机不存在时不写 undefined（写进去会被展开成字符串）", () => {
+    const env = buildWorkerEnv(hostEnv(), {}, ["MISSING_VAR"]);
+    assert.equal("MISSING_VAR" in env, false);
+  });
+});
+
 describe("buildWorkerEnv：只放行白名单", () => {
   test("输出的键全在白名单或控制变量里（不是「删掉密钥」那种黑名单手法）", () => {
     const allowed = new Set<string>([...WORKER_ENV_PASSTHROUGH, ...WORKER_ENV_CONTROL]);

@@ -54,20 +54,6 @@ export function ownedEntries(
 }
 
 /**
- * 分支树要展示的条目：会话级全部条目**减去**子 lane 拥有的那些。
- *
- * 导出成单独一步（而不是让调用方自己拼两行）是为了让「排除」只有一个写法——
- * 分支树查询与导航守卫必须**按同一个集合**判断，各写一遍迟早走偏：
- * 那时会出现「树里看不到、却能导航过去」的幽灵节点。
- */
-export function visibleEntries<T extends OwnershipEntry>(
-  entries: readonly T[],
-  owned: ReadonlySet<string>,
-): T[] {
-  return entries.filter((entry) => !owned.has(entry.id));
-}
-
-/**
  * 非主 lane 的 tip 列表——`harness.lanes()` 的投影。
  *
  * 内核在装配 harness 时会**恢复全部已配置的 lane**（含上次运行留下的子代理 lane），

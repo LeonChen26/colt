@@ -29,6 +29,7 @@ import { getComputerEnabled } from "./computer-config";
 import { getCompactionConfig } from "./compaction-config";
 import { getSecret } from "./secrets";
 import { buildWorkerEnv, collectWorkerControl } from "./lib/worker-env";
+import { collectMcpEnvKeys } from "./mcp/env-keys";
 import { resolveRgPath } from "./lib/rg-path";
 import { listProviders } from "./providers";
 import { toProviderDirectory } from "@shared/provider-directory";
@@ -838,7 +839,13 @@ export class SessionManager {
       // 环境**白名单投影**，不是 `...process.env`：内核 bash 工具 `inheritEnv: true`
       // 会把 worker 的环境整份铺进子 shell，全量继承等于「模型一条 env 就能读到密钥」。
       // 名单与排除项见 `main/lib/worker-env.ts`（含 Windows 定位 Git Bash 与代理变量）。
-      env: buildWorkerEnv(process.env, collectWorkerControl(process.env)),
+      env: buildWorkerEnv(
+        process.env,
+        collectWorkerControl(process.env),
+        // 被 mcp.json 点名的 `${VAR}` 按需透传：白名单不含用户自定义变量，
+        // 而 MCP 的既定写法就是引用环境变量（见 main/mcp/env-keys.ts）。
+        collectMcpEnvKeys(options.cwd),
+      ),
     });
     // 记忆检索的项目隔离依据：cwd 由主进程登记，不信任 worker 报值（见 memory-host.ts）
     hostBridge.setMemoryContext(options.sessionId, options.cwd);
@@ -1110,6 +1117,13 @@ export class SessionManager {
     });
 
     child.on("exit", (code) => {
+      // 先认身份再动池：`#disposeWorker` 是「先删条目 → 发 dispose → 等进程退出」，
+      // 这中间的窗口里用户可能已重开同一会话（新 worker 已入池）。旧进程此刻若
+      // 再按 sessionId 删池，删掉的是**新那一个**——后续所有消息都会找不到 entry。
+      if (this.#workers.get(options.sessionId) !== entry) {
+        clearTimeout(readyTimer);
+        return;
+      }
       // 三分：
       // - 未主动销毁（disposeReason 为 undefined）→ 崩溃，发 crashed + error
       // - "idle"（超时回收 / 池淘汰）→ 发 dormant，侧栏提示「空闲休眠」

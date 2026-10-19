@@ -58,7 +58,13 @@ export function createSpawnRunner(timeoutMs = PROBE_TIMEOUT_MS): Runner {
       };
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(command, args, { windowsHide: true, shell: false });
+        child = spawn(command, args, {
+          windowsHide: true,
+          shell: false,
+          // stdin 必须显式 ignore：默认 "pipe" 会给子进程一个永不关闭的 stdin，
+          // rg / pip 这类会「检测到可读就去读」的程序会挂到超时才失败（AGENTS.md §五）。
+          stdio: ["ignore", "pipe", "pipe"],
+        });
       } catch (error) {
         resolve({
           ok: false,

@@ -122,10 +122,17 @@ function setSteps(presetId: string, steps: McpInstallStep[]): void {
 /** 装 / 卸之后：目录与运行态都得重来一遍（`installed` 与 `servers` 是两个数据源） */
 async function reloadAfterMutation(projectId: string | undefined): Promise<void> {
   catalogCache = null;
-  if (projectId !== undefined) {
-    await window.colt.invoke("mcp.reload", { projectId });
+  try {
+    if (projectId !== undefined) {
+      await window.colt.invoke("mcp.reload", { projectId });
+    }
+  } catch (e) {
+    // 重载失败只报告，不能挡住下面的复位：`busy` 留在模块级 store 里，
+    // 不复位就等于安装按钮永久卡在「处理中…」且不可重试。
+    emitInstall({ error: e instanceof Error ? e.message : String(e) });
+  } finally {
+    emitInstall({ busy: null, revision: installState.revision + 1 });
   }
-  emitInstall({ busy: null, revision: installState.revision + 1 });
 }
 
 async function runInstall(

@@ -1170,10 +1170,19 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
   test("超预算：会话不等它，连上后由 armLateMcpAttach 补挂进 harness", async () => {
     const dir = await fixtureProject({ mcpServers: { late: bootServer(700) } });
     const notices: string[] = [];
+    const kinds: (string | undefined)[] = [];
     const started = Date.now();
-    const runtime = await createMcpRuntime(dir, (message) => notices.push(message), undefined, {
-      startupBudgetMs: 80,
-    });
+    const runtime = await createMcpRuntime(
+      dir,
+      (message, kind) => {
+        notices.push(message);
+        kinds.push(kind);
+      },
+      undefined,
+      {
+        startupBudgetMs: 80,
+      },
+    );
     const elapsed = Date.now() - started;
     const { harness, lane, installed } = fakeTargets();
     const updates: McpServerView[][] = [];
@@ -1196,6 +1205,15 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
       assert.deepEqual(
         updates[0]?.map((server) => [server.name, server.status]),
         [["late", "connected"]],
+      );
+      // 后台**连上**是例行信息：文案要有，但不能带 security（否则事件页签被成功消息占满）
+      const late = notices
+        .map((message, index) => ({ message, kind: kinds[index] }))
+        .filter((item) => /后台连接结束/.test(item.message));
+      assert.ok(late.length > 0, `未见后台收尾文案：${notices.join(" | ")}`);
+      assert.ok(
+        late.every((item) => item.kind === undefined),
+        `成功的后台连接不该按 security 落库：${JSON.stringify(late)}`,
       );
     } finally {
       await runtime.close();

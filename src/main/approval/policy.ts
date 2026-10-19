@@ -21,7 +21,7 @@
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 import { mcpToolLabel } from "@shared/mcp-label";
 import { isSkillFilePath } from "@shared/skill-path";
-import { isWithinRoot, isWithinRootReal } from "../lib/path-guard";
+import { isWithinRoot, isWithinRootReal } from "@shared/path-guard";
 import { comboSignature, keyLabel } from "../host/browser-keys";
 
 /** 风险档位 */

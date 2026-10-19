@@ -575,13 +575,12 @@ export type WorkerCommand =
   | { type: "subagentAbort"; id: string }
   /**
    * 按需拉一个子代理的**完整流**（视图只带有界尾部，见 `ViewSubagent`）。
-   * 与 `branches` 同形：worker 以消息形式回复，主进程排队兑现。
+   * worker 以消息形式回复，主进程按 FIFO 排队兑现。
    */
   | { type: "subagentTranscript"; id: string }
-  | { type: "branches" }
   | { type: "navigate"; targetId: string }
   /**
-   * 查 MCP server 现状（设置页可见性）。与 `branches` 同形：worker 以 `mcpStatus` 消息回复。
+   * 查 MCP server 现状（设置页可见性）。同样以 `mcpStatus` 消息回复，主进程排队兑现。
    * 只用当前进程里那份运行态，**不重读配置**——要看配置改动请发 `mcpReload`。
    */
   | { type: "mcpStatus" }

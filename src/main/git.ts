@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { isWithinRoot } from "./lib/path-guard";
+import { isWithinRoot } from "@shared/path-guard";
 import { toPosix } from "@shared/path-boundary";
 import type { GitCommittedResult, GitStatus } from "@shared/protocol";
 

@@ -218,7 +218,7 @@ dangerous、每次单独确认。**没有绕过 write/edit 的记忆写入入口
 
 ### 写后诊断（after_tool 内部的免审批执行通道，2026-10-11）
 
-写完 `write` / `edit` 后自动跑项目检查（eslint / tsc / ruff / go vet / cargo check，
+写完 `write` / `edit` 后自动跑项目检查（eslint / tsc / go vet / cargo check，
 `docs/archive/DESIGN-afterwrite.md`）。设计上它**不走 before_tool**——审批闸门是「裁决模型给出的工具入参」，
 而检查发生在工具执行完之后，policy 层没有任何介入点。**免审批因此不是「加进白名单」，
 而是在闸门之下另开一条执行通道**，正当性必须自己站住，三条：
@@ -227,7 +227,7 @@ dangerous、每次单独确认。**没有绕过 write/edit 的记忆写入入口
    模型唯一的输入是 `path`，且该 `path` 刚被审批闸门放行的 write/edit **成功写过**——
    能被检查的路径必然先经过了「写入本身」这道审查。路径进命令的唯一通道是
    `posixQuotePath`（POSIX 单引号转义），无转义文本拼不进命令。
-2. **检查类命令对用户工作区无写副作用**。eslint / ruff check / tsc --noEmit 只读；
+2. **检查类命令对用户工作区无写副作用**。eslint / tsc --noEmit 只读；
    cargo check / go vet 写的是 `target/`、构建缓存这类**项目内派生物**——与 `todo`
    「写库仍免审批」同一条口径（写的是工具自有数据，不是用户的工作区语义）。
 3. **资源受控**。每条命令带超时（快 60s / 慢 120s）与输出上限（8KB / 200 行），
@@ -378,6 +378,10 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
   这就是 `docs/architecture-review-2026-10.md` 的 🔴1）。worker 的环境变量现在是一份**白名单投影**
   （`main/lib/worker-env.ts`），里面没有任何密钥；`providerKey` 宿主能力按需把某家的密钥
   经消息体回给 worker 一次（只走内存，不落盘、不进 env）。
+- **MCP 配置点名的变量按需透传**（v2.07）：`mcp.json` 的既定写法是 `${VAR}` 引用环境变量，
+  而 worker 环境是白名单投影、不含用户自定义变量。`main/mcp/env-keys.ts` 只把两份 `mcp.json`
+  里**出现过的变量名**补进投影（不是全量继承），且 `FORBIDDEN_WORKER_ENV`（Colt 的 provider 密钥名）
+  优先——即便用户配置点名也不透传。读不到配置文件按「没有引用」处理，不影响会话启动。
 - 界面里**密钥只上行、不下行**——设置页看得到「是否已设置」，看不到明文。
 - **Wiki 生成不复制 Colt 的密钥**（v2.00）：默认方案要求用户先 `codewiki config set`；runner 只透传用户自己在环境里放的 `CODEWIKI_*`，不读 `secrets` 表、也不把 provider key 写进 argv 或 env。
 - 不需要鉴权的本地服务（`requiresKey === false`）启动 worker 时会填一个**占位假密钥**——因为 pi-ai 的

@@ -9,7 +9,11 @@
  * `file-read.ts` 的 `isWithin`（`path.relative` + realpath 二次校验）。
  * 两份互不引用，于是「软链接把根内的名字指到根外」这条防线**只在文件预览路径上有，
  * 审批闸门上没有**——而审批闸门才是对外动作（写文件 / 上传）的入口。
- * 两份判定漂开时也不会报错，只会「一边说越界、一边说没事」。
+ * 两份判定漂开时也不会报错，只会「一边说越界、一边没事」。
+ *
+ * 放在 shared 而不是 main：worker 侧的 `read` 工具也要用（内核的 read 接受绝对路径、
+ * 自身不做根校验，见 `worker/lib/read-guard.ts`）。此前只有 main 能拿到它，
+ * worker 于是没有这道闸门。
  *
  * 这里拆成两个函数，因为两者的**适用时机不同**，不能混：
  *
@@ -30,7 +34,7 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
-import { escapesRoot } from "@shared/path-boundary";
+import { escapesRoot } from "./path-boundary";
 
 /**
  * target 是否落在 root 内（**纯字符串**，不访问磁盘）。
@@ -40,7 +44,7 @@ import { escapesRoot } from "@shared/path-boundary";
 export function isWithinRoot(root: string, target: string): boolean {
   const base = resolve(root);
   const absolute = resolve(base, target);
-  // 判据本身放在 `@shared/path-boundary`：那是**全仓唯一一份**（本文件头就写了这条约定），
+  // 判据本身放在 `path-boundary`：那是**全仓唯一一份**（本文件头就写了这条约定），
   // 而原先这里的 `startsWith("..")` 会把根下合法的 `..foo` 误判成越界——
   // 与 worker 侧检索工具对同一个名字给出相反结论。详见那个模块的文件头。
   return !escapesRoot(relative(base, absolute));

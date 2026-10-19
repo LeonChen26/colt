@@ -8,11 +8,13 @@
  * 「能力在主进程」的唯一理由是**持有窗口与 OS 权限**（浏览器/桌面），检索两头都不沾，
  * 走宿主通道只会多一次 IPC 往返——与 `memory_search` 等 worker 内工具同一取舍。
  *
- * ⚠️ **路径边界由本文件自己守**：`read` 工具的越界防护在主进程
- * （`main/lib/path-guard.ts` 的 `isWithinRoot`），而只读白名单放行时**不看路径**
- * （`shared/readonly-tools.ts` 的判据是「有没有路径」而不是「路径在哪」）。所以这里
- * 一旦接受绝对路径或 `..`，模型就能读到项目外的文件，**绕过 read 的边界**。
- * 办法是入口只收相对路径，且统一过 `resolveInRoot`（拼接 → resolve → 前缀校验）。
+ * ⚠️ **路径边界由本文件自己守**：`read` 的越界防护在 `worker/lib/read-guard.ts`
+ * （内核的 read 接受绝对路径、自身不校验根，外面包了一层 `isWithinRootReal`），而只读
+ * 白名单放行时**不看路径**（`shared/readonly-tools.ts` 的判据是「有没有路径」而不是
+ * 「路径在哪」）。所以这里一旦接受绝对路径或 `..`，模型就能读到项目外的文件，
+ * **绕过 read 的边界**。
+ * 办法是入口只收相对路径，且统一过 `resolveInRoot`（拼接 → resolve → 前缀校验），
+ * 再对**起始路径**补一次 `isWithinRootReal`（挡「根内软链接指向根外」）。
  *
  * ⚠️ 输出**必须封顶**（`MAX_GREP_MATCHES` / `MAX_GREP_BYTES`）：视图与上下文都是按
  * 「全量快照」处理的，一次不封顶的检索能瞬间吃掉整个上下文预算。
@@ -33,6 +35,7 @@ import { Type } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import { looksBinary } from "@shared/binary-sniff";
 import { escapesRoot, toPosix } from "@shared/path-boundary";
+import { isWithinRootReal } from "@shared/path-guard";
 import { IgnoreFilter, SKIP_DIRS } from "./search-ignore";
 import {
   DEFAULT_RG_TIMEOUT_MS,
@@ -491,6 +494,12 @@ async function runGrep(
 ): Promise<string> {
   const window = resolveInRoot(root, params.path);
   if (!window.ok) return `错误：${window.error}`;
+  // 起始路径还要解一次真实路径：`resolveInRoot` 只保证「名字在根内」，
+  // 挡不住「根内的软链接指向根外」（遍历中遇到的子项按 lstat 不跟随，
+  // 但起始路径是调用方直接给的，必须单独把关）。
+  if (!isWithinRootReal(root, window.abs)) {
+    return `错误：path 经软链接解析后位于项目根之外，已拒绝：${params.path ?? "."}`;
+  }
   const includeIgnored = params.includeIgnored === true;
 
   let regex: RegExp;
@@ -658,6 +667,10 @@ async function runGlob(
   }
   const window = resolveInRoot(root, params.path);
   if (!window.ok) return `错误：${window.error}`;
+  // 同 grep：起始路径先解真实路径，挡住「根内软链接指向根外」。
+  if (!isWithinRootReal(root, window.abs)) {
+    return `错误：path 经软链接解析后位于项目根之外，已拒绝：${params.path ?? "."}`;
+  }
   const includeIgnored = params.includeIgnored === true;
 
   const matcher = globToRegExp(pattern);
