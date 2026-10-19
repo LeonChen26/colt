@@ -7,7 +7,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import type { IpcChannel, IpcInvokeMap, SessionInfo, WikiGenerateEvent } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
 import { loadMcpConfig, mcpUserHome, targetOf, transportOf, userMcpConfigPath } from "@shared/mcp-config";
@@ -220,38 +220,17 @@ async function openSessionWorker(input: {
 }
 
 /**
- * 删除会话对应的 JSONL 历史文件。
- * 内核按 cwd 转义目录 + `时间戳_kernelId.jsonl` 命名，DB 里的 jsonl_path 不可靠，
- * 因此在 sessions 根目录下递归搜文件名包含 kernelSessionId 的文件。
- * 找不到（无历史的新会话）或删除失败均不报错——DB 记录已删，孤文件无害。
+ * 删除会话的持久化历史（durable 的 SQLite 单文件库）。
+ * 只删库行会让 `durable-<id>.db` 永久留在 sessions 目录里
+ * （删掉会话后它再也没有入口，成了不可见的磁盘泄漏）。
  */
-function removeSessionJsonl(kernelSessionId: string | null): void {
-  if (!kernelSessionId) return;
+function removeSessionHistory(sessionId: string): void {
   const root = join(app.getPath("userData"), "sessions");
-  if (!existsSync(root)) return;
-
-  const stack = [root];
-  while (stack.length > 0) {
-    const dir = stack.pop()!;
-    let entries: Dirent[];
+  for (const suffix of [".db", ".db-wal", ".db-shm"]) {
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      rmSync(join(root, `durable-${sessionId}${suffix}`), { force: true });
     } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-        continue;
-      }
-      if (entry.name.includes(kernelSessionId) && entry.name.endsWith(".jsonl")) {
-        try {
-          rmSync(full, { force: true });
-        } catch {
-          // 忽略：文件被占用等情况下不阻断删除流程
-        }
-      }
+      // 删不掉不阻断删除流程（下一轮启动时它也只是个无主文件）
     }
   }
 }
@@ -515,7 +494,7 @@ export function registerIpcHandlers(): void {
       sessionManager.approvals.unregister(session.id);
       dropSessionPin(session.id);
       removeToolOutput(session.id);
-      removeSessionJsonl(session.kernelSessionId);
+      removeSessionHistory(session.id);
     }
     // 本项目的草稿：没落库也没有文件，丢掉内存记录即可（否则它一直挂在一张不存在的项目下）
     const staleDrafts = [...drafts].filter(([, draft]) => draft.projectId === request.projectId);
@@ -591,18 +570,18 @@ export function registerIpcHandlers(): void {
     if (drafts.delete(request.sessionId)) return { ok: true } as const;
     const session = getSession(request.sessionId);
     if (!session) throw new Error("会话不存在或已被删除");
-    // 运行中的会话拒绝删除：避免删除正在写入的 JSONL 与后台进程错配
+    // 运行中的会话拒绝删除：避免删除正在写入的 SQLite 库与后台进程错配
     if (sessionManager.isRunning(request.sessionId)) {
       throw new Error("会话正在运行，请先中止后再删除");
     }
     // 先关 worker（若已加载），释放文件句柄，再删数据与文件
     sessionManager.close(request.sessionId);
     deleteSession(request.sessionId);
-    removeSessionJsonl(session.kernelSessionId);
+    removeSessionHistory(session.id);
     // 会话已永久删除：清掉审批状态，否则会话级模式/记忆规则会滞留在内存
     sessionManager.approvals.unregister(request.sessionId);
     dropSessionPin(request.sessionId);
-    // 工具图片与 JSONL 同寿命：会话删了，落盘的截图也一并清掉
+    // 工具图片与历史同寿命：会话删了，落盘的截图也一并清掉
     removeToolOutput(request.sessionId);
     return { ok: true } as const;
   });
@@ -765,7 +744,7 @@ export function registerIpcHandlers(): void {
     // 推给池中全部 worker（压缩策略是全局的）。worker 侧会调内核的 `setCompactionSettings`，
     // 生效时机**不是「下次压缩才读到」**（那要晚得多），而是**从下一次操作起**——
     // 内核在 accept 时把设置快照进该操作，故**正在跑的那一轮不受影响**。
-    // 准确说法与证据链见 `worker/entry.ts` 的 `setCompaction` 分支注释（那里核过源码）。
+    // 准确说法与证据链见 `worker/durable/entry.ts` 的 `setCompaction` 分支注释（那里核过源码）。
     sessionManager.broadcastCompactionConfig(config);
     return { config, isDefault: isDefaultCompactionConfig(config) };
   });

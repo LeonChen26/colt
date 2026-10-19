@@ -112,7 +112,8 @@ async function openHarness(override?: Skill[]): Promise<{
   const { harness } = await AgentHarness.create(
     {
       session,
-      models,
+      // 过渡期同 worker/entry.ts：旧内核带 0.99.1，根 pi-ai 已是 1.3；仅编译期 brand 不同。
+      models: models as unknown as Parameters<typeof AgentHarness.create>[0]["models"],
       model: faux.getModel(),
       resources: (override ?? skills).length > 0 ? { skills: override ?? skills } : undefined,
       systemPrompt: "测试用系统提示词",

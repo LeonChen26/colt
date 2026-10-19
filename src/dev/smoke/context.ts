@@ -160,9 +160,8 @@ function readHeaderKernelId(file: string): string | null {
 /**
  * 扫掉 `userData/sessions` 下**库里已没有对应会话**的 `.jsonl` 历史文件，返回删掉的路径。
  *
- * 为什么需要它：内核按「转义 cwd 目录 + `时间戳_kernelId.jsonl`」落盘，而这些名字**只有内核知道**
- * （`ipc/index.ts#removeSessionJsonl` 也只能靠「文件名含 kernelSessionId」去反查）。于是凡是用例
- * 起了个**没落过库**的会话（`[model/during-init]` 的合成 id），或删了库里的行却没带走文件
+ * 为什么需要它：旧内核按「转义 cwd 目录 + `时间戳_kernelId.jsonl`」落盘，而这些名字**只有内核知道**。
+ * 于是凡是用例起了个**没落过库**的会话（`[model/during-init]` 的合成 id），或删了库里的行却没带走文件
  * （`runSessionDraft` 直接调 `deleteSession`），产物就留在盘上、够不到、越跑越多——
  * 2026-09-22 清出的那批孤儿（35 个 / 87KB）正是这么来的。
  *
@@ -206,6 +205,35 @@ export function removeOrphanSessionJsonl(log?: Log): string[] {
   }
   if (removed.length > 0) {
     log?.(`清掉无主 JSONL 历史 ${removed.length} 个：${removed.map((file) => basename(file)).join(", ")}`);
+  }
+  return removed;
+}
+
+/**
+ * 扫掉 `userData/sessions` 下**库里已没有对应会话**的 durable SQLite 库（含 WAL / SHM）。
+ *
+ * 与 JSONL 同理：冒烟里 `deleteSession` 只删库行，不清 `durable-<会话 id>.db`。
+ * durable 是当前唯一内核，这些文件不带走就会越跑越多。判据取**文件名里的会话 id
+ * 在不在 sessions 表里**，不按 mtime 猜（`AGENTS.md` §五⑫：别按时间猜归属）。
+ */
+export function removeOrphanDurableStorage(log?: Log): string[] {
+  const removed: string[] = [];
+  const root = join(app.getPath("userData"), "sessions");
+  if (!existsSync(root)) return removed;
+  const known = new Set(listSessions().map((session) => session.id));
+  for (const entry of readdirSync(root)) {
+    const match = /^durable-(.+)\.db(?:-(?:wal|shm))?$/.exec(entry);
+    const sessionId = match?.[1];
+    if (sessionId === undefined || known.has(sessionId)) continue;
+    try {
+      rmSync(join(root, entry), { force: true });
+      removed.push(entry);
+    } catch {
+      // 句柄未释放（worker 刚关）等情况跳过，不阻断收尾
+    }
+  }
+  if (removed.length > 0) {
+    log?.(`清掉无主 durable 库 ${removed.length} 个：${removed.join(", ")}`);
   }
   return removed;
 }

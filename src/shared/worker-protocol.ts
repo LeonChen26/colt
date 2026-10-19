@@ -143,7 +143,7 @@ export interface ViewRunningTool {
  * 一个子代理（subagent）实例的总账。
  *
  * 为什么只带**有界尾部**而不是整份流：视图是**全量快照**，流式期间每 50ms 整份重推
- * （`worker/entry.ts` 的 `scheduleFlush`），N 个子代理的全文会按推送次数乘上去——
+ * （`worker/durable/entry.ts` 的 `scheduleFlush`），N 个子代理的全文会按推送次数乘上去——
  * 与「工具截图不进视图、落盘按需读回」是同一条教训。完整流走 `session.subagentTranscript`
  * 按需拉（见 `@shared/protocol`）。
  *

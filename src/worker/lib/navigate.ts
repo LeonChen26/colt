@@ -4,7 +4,7 @@
 /**
  * 「把主对话的历史指针挪到某个节点上」——`navigate` 命令里**做决定的那一步**。
  *
- * 为什么单独抽出来：这段原来长在 `worker/entry.ts` 的 `case "navigate"` 里，而那是 worker
+ * 为什么单独抽出来：这段原来长在 worker 的 `case "navigate"` 里，而那是 worker
  * 入口——测试一 import 就把进程引导跑起来了，等于没法单测。可它有两条语义**只有这里能保证**：
  *   ① **拒绝子 lane 的节点**。`ownedEntries` / `foreignLaneTips` 那套纯函数有单测（见
  *      `lane-ownership.ts`），但「集合里有它时**一次都不去** navigate」是调用点的职责——

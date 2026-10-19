@@ -61,7 +61,7 @@
 
 - **DB 是 main 写的**，不是 worker。worker 只**上报**（`usage` / `toolCall` / `fileChange`），main 收到后落库，再把加工过的视图推回渲染层（`session-manager.ts` 的 `#withDbChanges`）。
 - **净值在主进程算**：**基线**由 worker 在改动前抓（`worker/lib/baseline.ts`，挂在 `before_tool`），**当前内容与 diff** 由 main 算（`main/net-change.ts` + 纯函数 `shared/line-diff.ts`）。
-- **`ConversationView` 是「全量快照 + 全量重推」**，不是增量：流式期间 `scheduleFlush` 每 50ms 把**整份**视图重新投影、重新序列化、重新发一遍（`worker/entry.ts`）。
+- **`ConversationView` 是「全量快照 + 全量重推」**，不是增量：流式期间 `scheduleFlush` 每 50ms 把**整份**视图重新投影、重新序列化、重新发一遍（`worker/durable/entry.ts`）。
   所以**任何大 payload 放进视图，代价都要乘上「被推了几次」**——一轮几十分钟的运行里，同一张截图会被搬几十上百次。
   带图的工具结果因此在视图里只留 `hasImage`：图片由 worker 落盘一次（`worker/lib/tool-image-spill.ts`），
   卡片展开时才用 `session.toolOutput` 从主进程读回（命名与校验见 `shared/tool-output.ts`、读取见 `main/tool-output.ts`）。
@@ -109,18 +109,18 @@
 
 ## 四、与 pi 内核的边界（升级依赖前必读）
 
-worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）。**我们对它只有 11 处 import**，
-且全部走 pi 在 `package.json` 的 `exports` 里声明的公开入口——没有一处 import `dist/` 下的内部模块，
+worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，工具与执行环境来自 `pi-agent-core` / `pi-ai`）。
+**只走 pi 在 `package.json` 的 `exports` 里声明的公开入口**——没有一处 import `dist/` 下的内部模块，
 也没有 `patches/` / `overrides` / vendoring。这条「零补丁」是升级能一直是「改版本号 + 跑测试」的前提，**不要破坏它**。
 
 | 用到的内核能力 | 公开入口 | 我们的用法 |
 |---|---|---|
-| 工具集 | `createBashTool` / `createEditTool` / `createReadTool` / `createWriteTool` | `worker/entry.ts` 组装 lane 工具集 |
+| 工具集 | `createBashTool` / `createEditTool` / `createReadTool` / `createWriteTool` | `worker/durable/entry.ts` 组装工具集 |
 | 自定义工具 | `AgentHarnessTool` / `ExecutionToolContext`（类型） | `worker/lib/browser-tool.ts`、`computer-tool.ts` |
-| 钩子 | `harness.hooks.on("before_tool" / "after_tool" / "transform_context")` | 审批闸门、净值基线抓取、浏览器变更提示注入（`entry.ts:426-474`） |
-| 事件 | `harness.events.on("usage" / "tool_start" / "tool_end")` | 用量与工具状态上报 |
-| 会话持久化 | `JsonlSessionRepo` | **格式归 pi**；我们只在自己的库里存 `kernel_session_id` 做映射 |
-| 状态归约 | `reduceLaneSnapshot` + `LaneSnapshot` | 投影成我们自己的 `ConversationView` |
+| 钩子 | `hook(ToolTask, { beforeTool, afterTool })` / `hook(GenerationTask, { beforeRequest })` | 审批闸门、净值基线抓取、临时提醒注入（`durable/entry.ts`） |
+| 事件 | `conversation.watch` / `watchEvents` | 用量、工具状态与整份视图推送 |
+| 会话持久化 | `openNodeSqliteStorage`（每会话一个 `durable-<id>.db`） | **格式归 pi**；我们只在自己的库里存 `kernel_session_id`（`d<会话 id>`）做映射 |
+| 状态归约 | `ConversationView`（`entries` + `pi.live` / `pi.usage` 文档） | `durable/project.ts` 投影成我们自己的 `ConversationView` |
 | 模型 / provider | `createModels` / `createProvider` / `envApiKeyAuth` / `lazyApi` + `pi-ai/providers/*` + `pi-ai/api/*` | `shared/provider-factory.ts`、`main/providers.ts`、`main/approval/analyzer.ts` |
 | 执行环境 | `pi-agent-core/node` 的 `NodeExecutionEnv` | worker 里的 bash / fs |
 | 上下文 | `BACKGROUND_CONTEXT`（实为 `@earendil-works/chord/context` 经 pi 转出） | worker 的 `Context` |
@@ -144,8 +144,8 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 3. `npm install` → `npm run typecheck` → `npm test` → `npm run build`。
    **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
 4. 冒烟：`COLT_SMOKE_MODE=fixture` + `COLT_SMOKE_MODE=dock`。
-5. **逐项核对「我们用过的内核字段」**：`LaneSnapshot.lastResult`（`status` / `kind`）、会话条目的 `seq`、
-   `thinkingLevel`、`Usage` 各字段、`JsonlSessionMetadata`。
+5. **逐项核对「我们用过的内核字段」**：`ConversationView.entries` / `pi.live` / `pi.usage` / `pi.agent`、
+   `thinkingLevel`、`Usage` 各字段、`ConversationRecord` 与 `TaskRecord` 的状态联合。
 6. 单独一个提交，消息里写明升到哪个版本、改了什么。
 
 > 这三个包**全部精确 pin，不用 `^`**（与 pi 自己的做法一致：它把 `diff` / `typebox` / `yaml` / `ignore`
@@ -165,9 +165,37 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 | 插件 / 组合运行时（`@earendil-works/chord`，**已在依赖树里**） | **未启用**——只用了它的 `BACKGROUND_CONTEXT` 一个符号 |
 
 ⚠️ 还有一条**没有版本锚点**的耦合：worker 的集成形态是照 pi 仓库里
-`packages/coding-agent/src/experimental/mini/worker/run.ts` 抄的（`worker/entry.ts` 头注自己写着）。
+`packages/coding-agent/src/experimental/mini/worker/run.ts` 抄的（`worker/durable/entry.ts` 的进程形态沿用同一套）。
 `@earendil-works/coding-agent` 不是我们的依赖——拿不到它的版本号，也收不到变更通知，而那个路径还在
 `experimental/` 下。**改动 worker 形态时记住这一点。**
+
+### 4.1 内核：只有 pi-durable（2026-10 起）
+
+`pi-agent-core` 从 1.0 起不再导出 harness；harness 能力迁到了 **`pi-durable`**
+（`Harness` / `Conversation` / `Task` / `Entry` / 文档 + 存储适配器）。
+旧的内核 worker（`AgentHarness` + lane + JSONL）**已删除**：当前没有存量用户，
+不需要兼容旧 JSONL 历史，也就没有「按会话回退」这套复杂度。
+
+| 入口 | 内核 | 存储 |
+|---|---|---|
+| [`src/worker/durable/entry.ts`](../src/worker/durable/entry.ts) | `Harness` + `Conversation` | SQLite：`sessions/durable-<会话 id>.db` |
+
+[`session-manager.ts`](../src/main/session-manager.ts) 不再做内核选择，固定 fork
+`durable-worker.js`；`COLT_WORKER_OVERRIDE`（仅开发态）仍可用于故障注入。
+
+**为什么是 SQLite 而不是 JSONL / 内存**：pi-durable 的存储是可插拔的（`MemoryStorage` /
+`openNodeJsonlStorage` / `openNodeSqliteStorage`）。官方对长会话推荐 SQLite——JSONL 后端会把
+整份历史同时留在内存里，`MemoryStorage` 则连「崩溃恢复」这个前提都不成立。SQLite 这里是
+Node 内置 `node:sqlite` 的**本地单文件**，没有外部数据库服务。
+
+durable 侧真正用上的能力（不是「接进来放着」）：
+
+- **崩溃恢复**：工具任务是持久状态机，`harness.resume()` 会接着跑未完成的任务；
+- **工具重放**：只读工具标 `replay: "safe"`，崩溃后重跑而不是留一条 interrupted 结果；
+- **子代理 = 任务拥有的会话**：中止调用会中止子代理、父任务空闲前子代理必须先空闲；
+- **分支**：`conversation.fork(at)`（`head` write 是回卷，不是分支）；
+- **SQLite 长会话**：单文件库 + WAL，不再受 JSONL 单文件重写成本约束。
+
 
 **Pi 生态的「扩展宿主」给了什么、我们为什么不用**（2026-09 记）
 
@@ -176,7 +204,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-agent-core` / `pi-ai`）�
 
 | 宿主给的权力 | 扩展怎么用 | 本仓对应 |
 |---|---|---|
-| **加载权**：`package.json` 的 `pi.extensions` + jiti 直接加载 `.ts`，调用默认导出的 `(pi: ExtensionAPI) => void` | 包的入口就是那个函数 | ❌ **不自建扩展宿主**；能力**内建**进 `AgentHarness.create({ tools })`（`worker/entry.ts`） |
+| **加载权**：`package.json` 的 `pi.extensions` + jiti 直接加载 `.ts`，调用默认导出的 `(pi: ExtensionAPI) => void` | 包的入口就是那个函数 | ❌ **不自建扩展宿主**；能力**内建**进 durable 的 `defineExtension({ tools })`（`worker/durable/entry.ts`） |
 | **提示词组装权**：`registerTool` 的 `promptSnippet` / `promptGuidelines` | 模型「知道该用这个工具」靠宿主把这些字符串拼进系统提示词 | ❌ 内核 `AgentTool` 只有 `name / label / description / parameters / execute`（`pi-agent-core/dist/types.d.ts`）——引导只能写进 `description` 或 `composeSystemPrompt` |
 | **TUI 渲染权**：`ctx.ui.setWidget(key, factory, { placement })`（`render(width) => string[]`）、`ui.custom` / `ui.notify` / `ui.onTerminalInput` | 面板、交互表单、键盘拦截 | ❌ 本仓是 React + 主进程原生视图；对应物是渲染层组件 + IPC 通道 |
 | **会话生命周期**：`pi.on("session_start" / "session_compact" / "session_tree" / "session_shutdown")` | 重放状态、按前台 / 子会话分派、清理 | 🔸 内核**没有同名事件**；对应点要在 `session-manager` 与 worker 侧自己找 |
@@ -205,7 +233,7 @@ toolResult，**未在本仓内核上验证**）；且本仓还多一条它没有
 
 ### B. 加一个 worker 命令
 
-`shared/worker-protocol.ts` 的 `WorkerCommand` 联合加成员 → `worker/entry.ts` 加处理分支 → `main/session-manager.ts` 里加调用方（`#post`）。
+`shared/worker-protocol.ts` 的 `WorkerCommand` 联合加成员 → `worker/durable/entry.ts` 加处理分支 → `main/session-manager.ts` 里加调用方（`#post`）。
 
 ⚠️ 与 `A` 的区别：**`A` 是渲染层的请求，`B` 是主进程对 worker 的指令**。多数「用户点了一下要影响 agent」的需求两处都要改。
 

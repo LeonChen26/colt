@@ -53,7 +53,7 @@ export interface SkillDir {
 export function builtinSkillsDir(): string {
   const override = process.env.COLT_BUILTIN_SKILLS_DIR;
   if (override !== undefined && override !== "") return override;
-  // 相对**本模块所在目录**定位：构建后它在 `out/main/worker.js`，与 `builtin-skills/` 同级。
+  // 相对**本模块所在目录**定位：构建后它在 `out/main/durable-worker.js`，与 `builtin-skills/` 同级。
   // 但这有个隐含前提——**这个模块自己待在 worker.js 里，没被 vite 拆进 chunk**。真被拆进
   // `out/main/chunks/` 时 dirname 就成了 `chunks/`，同级那份根本不存在，而症状是**装了几个
   // 技能静默少一个**（内核扫不到目录不报错，只交回空清单），正是本项目反复踩的那类失败。
@@ -137,7 +137,7 @@ const SOURCE_TEXT: Record<ViewSkill["source"], string> = {
  * 越界时**抛**、不兜底：两者不同源只可能是装载与投影脱了钩（`dirSources` 少给了一项），
  * 而兜底值会给出一个看着合理、其实**必然为真**的假标签，界面上再没人会对它起疑——
  * 比一条红断言贵得多（`AGENTS.md` §四）。代价要说清：这条路径在 `init` 上，抛出去会变成
- * **会话打不开**（`worker/entry.ts` 把 `init` 的失败标成 fatal）。这是**有意**的取舍：
+ * **会话打不开**（`worker/durable/entry.ts` 把 `init` 的失败标成 fatal）。这是**有意**的取舍：
  * 宁可打不开、也不给假标签；`tests/skills.test.ts` 有一条用例把这个行为钉住。
  */
 function sourceOf(loaded: LoadedSkills, index: number | undefined): ViewSkill["source"] {

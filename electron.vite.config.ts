@@ -86,8 +86,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve("src/main/index.ts"),
-          // session worker（utilityProcess）与主进程同目录输出
-          worker: resolve("src/worker/entry.ts"),
+          // durable 会话 worker（utilityProcess）与主进程同目录输出。
+          // 只有一个内核：旧 JSONL worker 已删除，不需要保留回退入口。
+          "durable-worker": resolve("src/worker/durable/entry.ts"),
         },
       },
     },

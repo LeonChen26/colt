@@ -68,7 +68,7 @@ const CONSUMERS: { file: string; symbol: string }[] = [
   { file: join(SRC, "shared", "binary-sniff.ts"), symbol: "SNIFF_BYTES" },
   { file: join(SRC, "main", "approval", "store.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
   { file: join(SRC, "main", "session-manager.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
-  { file: join(SRC, "worker", "entry.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
+  { file: join(SRC, "worker", "durable", "entry.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
   { file: join(SRC, "worker", "lib", "mcp-tools.ts"), symbol: "MCP_STEP_TIMEOUT_MS" },
   { file: join(SRC, "main", "session-manager.ts"), symbol: "MCP_STEP_TIMEOUT_MS" },
   { file: join(SRC, "worker", "lib", "mcp-tools.ts"), symbol: "MCP_STARTUP_BUDGET_MS" },

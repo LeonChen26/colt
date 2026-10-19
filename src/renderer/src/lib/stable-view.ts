@@ -5,7 +5,7 @@
  * 视图的「稳定投影」：**内容没变就复用上一份的对象**。
  *
  * 为什么需要它：`ConversationView` 是**全量快照**，流式期间每 50ms 整份重推一次
- * （`worker/entry.ts` 的 `scheduleFlush`）。每次都新建 `messages` / `toolResults` /
+ * （`worker/durable/entry.ts` 的 `scheduleFlush`）。每次都新建 `messages` / `toolResults` /
  * `fileChanges` 三个数组，于是**每个元素都是新对象**——哪怕内容一个字节都没变。
  * 渲染层把这些对象当 props 传下去，React 只能整列表重渲染：实测 370 条消息时
  * 每帧 544ms（约 5fps），而这 370 条里真正变的往往只有 1 条。

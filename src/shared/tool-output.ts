@@ -5,7 +5,7 @@
  * 工具输出的落盘约定：**worker 写、主进程读、渲染层按 (sessionId, toolCallId) 要**。
  *
  * 为什么要有这个文件：带图的工具结果（浏览器 / 电脑截图）单条就能有几百 KB ~ 几 MB，
- * 而 `ConversationView` 是**全量快照**——流式期间每 50ms 重推一次（见 `worker/entry.ts`
+ * 而 `ConversationView` 是**全量快照**——流式期间每 50ms 重推一次（见 `worker/durable/entry.ts`
  * 的 `scheduleFlush`），等于把历史里每一张截图的 base64 反复序列化、跨进程发送。
  * 同一份数据被重复搬运几十上百次，这才是「会话一长就卡」的大头。
  *

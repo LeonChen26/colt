@@ -831,8 +831,11 @@ export class SessionManager {
 
     // 诊断钩子（仅开发态）：指向故障注入脚本，用于验证就绪失败路径。
     // 打包后一律使用真实 worker，避免误配指向恶意脚本。
+    // 内核：**只有 pi-durable**（SQLite 单文件库 + 持久任务 + 崩溃恢复）。
+    // 旧 JSONL 内核已删除，不存在「按会话回退」——当前没有存量用户，不需要迁移旧历史。
+    // `COLT_WORKER_OVERRIDE`（仅开发态）仍然优先，用于故障注入。
     const workerPath =
-      (isDev && process.env.COLT_WORKER_OVERRIDE) || join(__dirname, "worker.js");
+      (isDev && process.env.COLT_WORKER_OVERRIDE) || join(__dirname, "durable-worker.js");
     const child = utilityProcess.fork(workerPath, [], {
       serviceName: `colt-session-${options.sessionId.slice(0, 8)}`,
       stdio: "pipe",

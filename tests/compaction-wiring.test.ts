@@ -22,7 +22,7 @@ const PROTOCOL = read("src/shared/protocol.ts");
 const WORKER_PROTOCOL = read("src/shared/worker-protocol.ts");
 const IPC = read("src/main/ipc/index.ts");
 const MANAGER = read("src/main/session-manager.ts");
-const WORKER_ENTRY = read("src/worker/entry.ts");
+const WORKER_ENTRY = read("src/worker/durable/entry.ts");
 /**
  * 设置页「上下文压缩」那一屏。它从 `Settings.tsx` 拆到了 `settings/Behavior.tsx`
  * （外壳只留导航），所以这里读拆分之后的文件——断言的内容没变，只是位置变了。
@@ -86,23 +86,33 @@ describe("③ init 载荷：新会话必须拿到设置（否则全走内核默�
     assert.match(MANAGER, /compaction:\s*getCompactionConfig\(\)/, "init 里没带上设置");
   });
 
-  test("worker 把它交给 harness.create（不是自己存着）", () => {
-    assert.match(WORKER_ENTRY, /compaction:\s*command\.compaction/, "harness.create 没收到设置");
+  test("worker 用 init 载荷建活配置，并把 settings 交给 Harness.open", () => {
+    // ③ 的核心没变：新会话必须拿到设置，而不是走内核默认值。
+    // durable 的接法与旧内核不同——压缩策略在 `HarnessSettings.compaction` 里**活读**，
+    // 所以这里钉的是「初值来自 init 载荷」+「settings 真的传给了 Harness.open」。
+    assert.match(
+      WORKER_ENTRY,
+      /let compactionSettings[^=]*=\s*\{[\s\S]{0,200}enabled:\s*command\.compaction\.enabled/,
+      "活配置的初值没有来自 init 载荷",
+    );
+    assert.match(WORKER_ENTRY, /get compaction\(\)\s*\{/, "settings 必须活读 compaction，不能快照");
+    assert.match(WORKER_ENTRY, /Harness\.open\([\s\S]{0,400}?\bregistry,\s*settings,/, "Harness.open 没收到 settings");
   });
 });
 
-describe("④ 运行中变更：必须调内核，而不是只改自己的变量", () => {
+describe("④ 运行中变更：必须让内核下一次解析就读到", () => {
   test("worker dispatch 有 setCompaction 分支", () => {
     assert.match(WORKER_ENTRY, /case "setCompaction":/, "命令没人处理：设置改了但运行中的会话不变");
   });
 
-  test("该分支调 harness.setCompactionSettings（改了当轮生效）", () => {
+  test("该分支更新活配置（getter 下一次解析即读到）", () => {
     const from = WORKER_ENTRY.indexOf('case "setCompaction":');
     const body = WORKER_ENTRY.slice(from, WORKER_ENTRY.indexOf('case "', from + 10));
+    assert.match(body, /state\.applyCompaction\(config\)/, "没改活配置：新阈值要等下次启动才被读到");
     assert.match(
-      body,
-      /setCompactionSettings\(command\.config/,
-      "没调内核的 setCompactionSettings：新阈值要等下次压缩才被读到",
+      WORKER_ENTRY,
+      /applyCompaction:\s*\(config\)\s*=>\s*\{[\s\S]{0,300}compactionSettings\s*=/,
+      "applyCompaction 没有写回 getter 读的那个变量",
     );
   });
 });

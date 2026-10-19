@@ -83,7 +83,7 @@ export const MAX_FINISHED_SUBAGENTS = 20;
 /** 标题上限——它进「任务摘要」那一行与 ④ 卡，太长会把行撑爆 */
 export const MAX_TITLE_CHARS = 60;
 
-const subagentSchema = Type.Object({
+export const subagentSchema = Type.Object({
   agent: Type.String({
     description: "子代理定义名（见系统提示词里的 <available_subagents> 清单）",
   }),
@@ -98,7 +98,7 @@ const subagentSchema = Type.Object({
   ),
 });
 
-type SubagentParams = Static<typeof subagentSchema>;
+export type SubagentParams = Static<typeof subagentSchema>;
 
 /** 编排侧需要从 entry 拿到的能力（工具在 harness 建好之前就要交出去，故 harness 是惰性取的） */
 export interface SubagentDeps {

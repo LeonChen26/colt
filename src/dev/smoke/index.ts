@@ -101,6 +101,7 @@ import { sessionManager } from "../../main/session-manager";
 import { dirname, join } from "node:path";
 import {
   removeFixtureProjects,
+  removeOrphanDurableStorage,
   removeOrphanSessionJsonl,
   setActiveOutputPath,
   sleep,
@@ -346,6 +347,7 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
         for (const sessionId of created) deleteSession(sessionId);
         if (created.length > 0) log(`会话清扫：删掉本次新建的会话 ${created.length} 条`);
         removeOrphanSessionJsonl(log);
+        removeOrphanDurableStorage(log);
       } catch (error) {
         lines.push(`[SMOKE] 会话清扫失败（不阻断结论）${String(error)}`);
       }

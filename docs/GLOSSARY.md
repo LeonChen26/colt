@@ -101,9 +101,10 @@
 
 | 叫法 | 是什么 |
 |---|---|
-| **harness / lane** | 内核（`@earendil-works/pi-agent-core`）的会话运行时与「会话里的一路运行」。worker 持有一个 harness |
-| **子代理 / subagent** | 模型用 `subagent` 工具**委派出去的一次独立任务**：跑在同会话的**另一条 lane**（名字 `sub:<定义名>:<短id>`，进程内），有独立 transcript 与**硬白名单**工具面，开局**只有委托方写的那段 `task`**。跑完把结论作为**工具结果**回到主对话。界面是 ④ 的一张活卡（有界预览 + 卡上「中止」），完整过程点进去看（按需拉）。见 `docs/archive/DESIGN-subagents.md` |
-| **fresh（子代理的 fork 语义）** | 子代理开局**不继承主对话历史**（`createAt: null`）——「一座空岛」，只由那段 `task` 交接。本仓**明确否决** `fork`（把主对话整份复制过去，与隔离的目的冲突）。⚠️ 与 `ARCHITECTURE.md` 里「不 fork **内核仓库**」是**同词异义**，别混 |
+| **harness / lane** | 旧内核（`@earendil-works/pi-agent-core`）的会话运行时与「会话里的一路运行」。**已删除**：worker 只跑 durable（见下一条）；`pi-agent-core` 现在只作为工具/执行环境的来源留在依赖里 |
+| **durable / conversation / task** | 当前唯一内核（`@earendil-works/pi-durable`）的三层抽象：`Harness` 是一个 SQLite 会话的运行时，`Conversation` 是一条 transcript，`Task` 是每一步都落检查点、可崩溃恢复的状态机。工具调用本身就是一个 `pi.tool` 任务；它的 `replay: "safe"` 决定崩溃后是否重跑。条目（`pi.user` / `pi.assistant` / `pi.tool-result` …）与内置文档（`pi.live` / `pi.inbox` / `pi.usage` / `pi.agent`）都在 `ConversationView` 里投影成渲染层认识的形状 |
+| **子代理 / subagent** | 模型用 `subagent` 工具**委派出去的一次独立任务**：一条**由这次工具调用（`pi.tool` 任务）拥有的子对话**（`ViewSubagent.id = sub:<定义名>:<会话 id>`）。有独立 transcript 与**硬白名单**工具面，开局**只有委托方写的那段 `task`**，跑完把结论作为**工具结果**回到主对话。界面是 ④ 的一张活卡（有界预览 + 卡上「中止」），完整过程点进去看（按需拉）。见 `docs/archive/DESIGN-subagents.md` |
+| **fresh（子代理的 fork 语义）** | 子代理开局**不继承主对话历史**——「一座空岛」，只由那段 `task` 交接。本仓**明确否决** `fork`（把主对话整份复制过去，与隔离的目的冲突）。⚠️ 与 `ARCHITECTURE.md` 里「不 fork **内核仓库**」是**同词异义**，别混 |
 | **compaction（压缩）** | 上下文将满时把历史摘要掉。**算法是内核自带的**，Colt 只负责入口、参数装配、失败翻译与提示 |
 | **thinkingLevel（思考等级）** | 会话级配置 `off / low / medium / high`，默认 `high`。⚠️ **默认值不能是 `off`**——pi-ai 的 provider 兼容层会把 `off` 翻译成**显式关闭思考**，对「始终思考」的模型会让**不带工具**的请求直接 400（压缩、审批分析器都因此失效） |
 | **toolRpc** | worker → 主进程的宿主能力往返（浏览器 / 电脑控制），由主进程回消息唤醒 |

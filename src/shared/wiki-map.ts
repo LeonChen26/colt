@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 仓库 Wiki 的**提示词注入块**（每请求拼进系统提示词，见 `worker/entry.ts` 的 `transform_context`）。
+ * 仓库 Wiki 的**提示词注入块**（每请求拼进系统提示词，见 `worker/durable/entry.ts` 的 `GenerationTask.beforeRequest`）。
  *
  * 为什么值得注入：「这个项目怎么组织的」是每轮对话都要用到的背景，而模型默认只能靠
  * grep 逐个文件重建。有产物时先把「模块 → 页面」的索引摆出来，模型的第一反应才会是

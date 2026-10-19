@@ -1,7 +1,7 @@
 /**
  * `navigate` 命令决策部分的单测（`src/worker/lib/navigate.ts`）。
  *
- * 为什么值得单独钉：这段逻辑原来是 `worker/entry.ts` 里的一小段 `case "navigate"`，
+ * 为什么值得单独钉：这段逻辑原来是 worker 入口里的一小段 `case "navigate"`，
  * 而 worker 入口一 import 就会把进程引导跑起来，所以它此前**没有任何断言**——
  * 分支能力从界面（左栏那棵树）搬进会话区之后，「从这里分叉」成了它唯一的界面调用方，
  * 这里判错的代价更大了：

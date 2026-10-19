@@ -111,7 +111,7 @@ export function renderTodoSnapshot(todos: readonly ViewTodo[]): string {
 }
 
 /**
- * 提示词注入块：**每请求**拼进系统提示词（见 `worker/entry.ts` 的 `transform_context`）。
+ * 提示词注入块：**每请求**拼进系统提示词（见 `worker/durable/entry.ts` 的 `GenerationTask.beforeRequest`）。
  *
  * 三条口径（都来自 `docs/archive/DESIGN-todo.md` §8，别自己发明）：
  * 1. **空清单不产出任何东西**——宁可少一段，也不要一段「（无待办）」的常态噪声；

@@ -28,10 +28,9 @@
  * reckless 在另一个全新会话里跑，历史里没有被抄的委派成功。
  *
  * prompt C 验**递归防护的模型侧**：夹具 `reckless.md` 的定义里**显式白名单了
- * subagent**（作者恶意/误配），`#spawn` 仍必须把它硬剥掉。depth 守卫（「调用方不是
- * 主 lane 就拒」）被白名单挡在模型可达面之外，模型侧能钉的物证是落盘 JSONL 里子 lane
- * **运行时** `pi.op.state` 的 `batch.configuration.activeToolNames`（恰好等于白名单）。
- * ⚠️ `pi.lane.config` 是创建时的种子快照（全量），不是运行态，拿它断言必假阴性。
+ * subagent**（作者恶意/误配），`#spawn` 仍必须把它硬剥掉。白名单的确定性物证由
+ * `tests/durable-subagent.test.ts` 直接读子对话的 `pi.agent` 断言；durable 不写 JSONL，
+ * 因此本冒烟只验模型侧「transcript 里没有 subagent 调用」这条阴性判据。
  *
  * 夹具：`<fixture>/.agents/agents/demo.md`（frontmatter 白名单 `write, read`）与
  * `reckless.md`（对抗定义，白名单 `write, subagent`），与生产发现路径同构
@@ -42,14 +41,12 @@ import { app, BrowserWindow } from "electron";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
-  type Dirent,
 } from "node:fs";
 import { join } from "node:path";
-import { createSession, getSession, upsertProject } from "../../../main/db/repo";
+import { createSession, upsertProject } from "../../../main/db/repo";
 import { sessionManager } from "../../../main/session-manager";
 import { listProviders } from "../../../main/providers";
 import { hasUsableProvider } from "@shared/model-ref";
@@ -264,73 +261,6 @@ export async function runSubagentE2e(
     return false;
   };
 
-  /**
-   * 从落盘 JSONL 收集指定会话里所有 `pi.op.state` 的
-   * `batch.configuration.activeToolNames`（子 lane **实际运行时**的工具名单，排序后 JSON 去重）。
-   *
-   * ⚠️ 不能拿 `pi.lane.config` 当物证（实测踩过）：它记的是 lane 创建时的**种子值**
-   * （全量 14 个工具），`setActiveTools` 的运行时更新不落这个 namespace——
-   * 拿它断言会得出「白名单没生效」的**假阴性**（与 §五⑤「电平别拿创建时快照当运行态」同源）。
-   *
-   * ⚠️ 定位文件**不能**按 `join(userData, "sessions", project.id)`（实测踩过，报「集合为空」）：
-   * DB 里 project.id 是 UUID，而内核按**转义后的 cwd** 建目录、按 `时间戳_kernelId.jsonl` 命名
-   * （报错现场是 `readdirSync(<uuid> 目录)` 抛异常 → 静默 catch → 空集合）。这里沿用产品自己的
-   * 定位法（`ipc/index.ts` 的 `removeSessionJsonl`）：在 sessions 根下递归搜**文件名含本会话
-   * kernelSessionId** 的 `.jsonl`——只收**本次会话**的文件，避免把历次冒烟遗留的旧文件一并
-   * 并进来（否则判据会被旧物证喂成**假绿**，比红更危险）。
-   */
-  const batchedToolNameSets = (sids: string[]): Set<string> => {
-    const found = new Set<string>();
-    const kernelIds = sids
-      .map((sid) => getSession(sid)?.kernelSessionId)
-      .filter((id): id is string => typeof id === "string" && id !== "");
-    if (kernelIds.length === 0) return found;
-    const root = join(app.getPath("userData"), "sessions");
-    if (!existsSync(root)) return found;
-    const files: string[] = [];
-    const stack = [root];
-    while (stack.length > 0) {
-      const dir = stack.pop()!;
-      let entries: Dirent[];
-      try {
-        entries = readdirSync(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(full);
-          continue;
-        }
-        if (entry.name.endsWith(".jsonl") && kernelIds.some((id) => entry.name.includes(id))) {
-          files.push(full);
-        }
-      }
-    }
-    for (const file of files) {
-      const text = readFileSync(file, "utf8");
-      for (const line of text.split("\n")) {
-        if (!line.includes("pi.op.state") || !line.includes("activeToolNames")) continue;
-        try {
-          const arr: unknown[] = line.trim().startsWith("[") ? JSON.parse(line) : [JSON.parse(line)];
-          for (const entry of arr as {
-            namespace?: string;
-            value?: { batch?: { configuration?: { activeToolNames?: unknown } } };
-          }[]) {
-            const names = entry.value?.batch?.configuration?.activeToolNames;
-            if (entry.namespace === "pi.op.state" && Array.isArray(names)) {
-              found.add(JSON.stringify([...names].sort()));
-            }
-          }
-        } catch {
-          // 行解析失败就跳过——判据落在「找到且字段对」，不因单行坏数据误判
-        }
-      }
-    }
-    return found;
-  };
-
   let session2: ReturnType<typeof createSession> | undefined;
 
   try {
@@ -497,15 +427,10 @@ export async function runSubagentE2e(
       "reckless 子代理跑完（completed 且有时间戳）",
       entry2 !== undefined && entry2.status === "completed" && entry2.endedAt !== undefined,
     ]);
-    // 硬剥的确定性物证：子 lane **运行时** batch 配置恰好等于白名单
-    //（demo=read+write；reckless 对抗定义列了 subagent 也被剥到只剩 write——
-    // 若硬剥失效，运行时配置只会是全量 14 个，绝不会出现这两个精确集合）
-    const batchSets = batchedToolNameSets([session.id, session2.id]);
-    log(`  运行时工具名单集合：${[...batchSets].join(" ；")}`);
-    checks.push([
-      "子 lane 白名单硬剥 subagent（对抗定义显式列了也没用；运行时 batch 配置物证）",
-      batchSets.has(JSON.stringify(["read", "write"])) && batchSets.has(JSON.stringify(["write"])),
-    ]);
+    // 硬剥的确定性物证由 `tests/durable-subagent.test.ts` 直接读子对话的 `pi.agent` 断言
+    // （运行时工具名单恰为白名单）。durable 不写 JSONL，这里没有可读的落盘物证，
+    // 只如实说明跳过——不出一条「空集合」的假红，也不把「没物证」说成「白名单失效」。
+    log("  跳过「落盘运行时工具名单」物证：durable 没有 JSONL（该判据由单测覆盖）");
     if (entry2 !== undefined) {
       const recklessTranscript = await sessionManager.subagentTranscript(session2.id, entry2.id);
       const hay2 = JSON.stringify(recklessTranscript);

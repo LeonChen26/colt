@@ -246,7 +246,7 @@ dangerous、每次单独确认。**没有绕过 write/edit 的记忆写入入口
 | 消费方 | 用途 |
 |---|---|
 | `main/approval/policy.ts` | 名单内的工具**不对用户工作区产生副作用** → 直接放行、不进审批队列 |
-| `worker/entry.ts` | `after_tool` 的「未经闸门即执行」安全告警据此豁免——既然 policy 保证放行，本就不该经过闸门 |
+| `worker/durable/entry.ts` | `afterTool` 的「未经闸门即执行」安全告警据此豁免——既然 policy 保证放行，本就不该经过闸门 |
 
 当前名单：`read, grep, glob, ls, list, search, todo, memory_search`。
 

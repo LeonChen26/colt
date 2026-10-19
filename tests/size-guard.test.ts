@@ -84,8 +84,8 @@ const KNOWN_LARGE_FILES: { file: string[]; why: string }[] = [
       "2026-09-18 曾产品决定由 1235 上调到 2000（见提交说明）",
   },
   {
-    file: ["worker", "entry.ts"],
-    why: "工具调用分发与事件投影写在同一个函数里",
+    file: ["worker", "durable", "entry.ts"],
+    why: "工具调用分发、事件投影与视图推送写在同一个 worker 文件里（旧 JSONL worker 已删除）",
   },
   {
     file: ["main", "host", "browser-host.ts"],

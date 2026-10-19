@@ -5,7 +5,7 @@
  * 子代理的**视图投影**：`LaneSnapshot` → `ViewSubagent`（纯函数）。
  *
  * 与 `project.ts` 对主对话做的事完全同形，只是**有界**：视图是全量快照、流式期间
- * 每 50ms 整份重推（`worker/entry.ts` 的 `scheduleFlush`），若把子代理的整份流塞进去，
+ * 每 50ms 整份重推（`worker/durable/entry.ts` 的 `scheduleFlush`），若把子代理的整份流塞进去，
  * 开销会按「子代理数 × 推送次数」乘上去。故只带最近 `MAX_SUBAGENT_STEPS_IN_VIEW` 步，
  * 但**如实给出真实总步数**——截断可以，静默截断不行（`docs/ERRORS.md`）。
  */
