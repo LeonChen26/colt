@@ -2,8 +2,8 @@
 
 > **状态**：**已实施**（2026-09-19）。界面归属见 `UI-REGIONS.md` **v1.48**（⑦ 默认视图更名**任务摘要**，清单是它的**第一段**；② 不加常驻入口）。
 > **落地落点**：契约 `shared/todo.ts` / 状态机 `main/todo-store.ts` / 工具 `worker/lib/todo-tool.ts` / 表 `todos`（`main/db/`，schema v10）/ 界面 `FollowPanel.tsx` 第一段。
-> **验收**：单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `todo`（26 条，**免模型**）。
-> **未覆盖（别当成验过了）**：镜像 → `transform_context` 的每请求注入只有 `todo-e2e`（打模型、尚未建）能覆盖；worker 意外崩溃那一支的收尾。
+> **验收**：单测 `tests/todo-store.test.ts`（63 条）+ `tests/migration.test.ts` 的 v10；冒烟 `todo`（26 条，**免模型**）+ `todo-e2e`（**打模型**，20 条：注入可见性 / 工具可见性与免审批 / 重启后 `ready` 补发）。
+> **未覆盖（别当成验过了）**：worker 意外崩溃那一支的收尾。
 > **一句话**：给模型一个「先拆清单、再逐条推进、随时能查到进行到哪」的账本——清单**落 SQLite**、由**主进程独占写入**、界面搭 `session.view` 顺风车显示，模型侧靠**每请求注入**持续看得见。
 > **配套**：动手前读 `docs/ARCHITECTURE.md`、`docs/PRINCIPLES.md`（#1 #8）、`docs/SECURITY.md`、`docs/ERRORS.md`、`AGENTS.md` §1.4 §3.6 §四。
 > **参考实现**：`rpiv-todo@2.10.1`（MIT，本仓**未收录**源码）——**只抄状态机语义与显示口径**；它的扩展宿主层（`promptSnippet` / `renderCall` / `setWidget` / `pi.on`）在本仓没有对应物，理由见 `ARCHITECTURE.md` §四。
@@ -114,7 +114,7 @@ worker: todo 工具 ──toolRpc(capability:"todo")──▶ host/index.ts:case
 
 - **单测**：状态转移（含**拒绝** `completed → in_progress`、同状态 no-op）、只允许一条 `in_progress`（自动退回 + 文本说明）、依赖校验（**整次不落任何一行**）、删除清悬空引用、上限、`clear` 后为 `[]`；DAO 按会话隔离 / 幂等 upsert；注入渲染（预算截断**先丢已完成**、截断后**如实计数**、空清单**不产出文本**）。
 - **冒烟 `todo`**（免模型；不往 `dock.ts` 塞）：走**产品同一条路**（`hostBridge.handle({capability:"todo"})`）+ 主进程打桩读回。三份都要看（DB / `getView()` / `session.view` 推出来的那份——只读主进程那份会得出「数据明明是好的」这种必然误导的结论）；界面（清单出现、`N/M` 计数、`activeForm`、已完成折行）；空态两层；**worker 被回收重启后清单仍在**；v1.48 改名（页签 `activeLabel === "任务摘要"`、面包屑同名）。⚠️ 小目标入口要**命中测试**（`elementFromPoint`）。
-- **打模型 e2e（可选、计费）** `todo-e2e`：模型真调用 `todo`、清单随过程推进、断言**组装后的提示词里含清单**（决策四的判据）。
+- **打模型 e2e（计费）`todo-e2e`**：**已建**（`src/dev/smoke/modes/todo-e2e.ts`）——① 主进程旁路写入带随机 token 的清单，模型在**不调工具**的前提下逐字抄出来（判据落在模型答案上 = 注入真的到了提示词）；② 模型真调用 `todo`，在最严格的 `approval` 模式下**不弹卡**，且写入落到库；③ 关掉 worker 后离线写入一条，重启后第一次请求就答得出来（`ready` 补发 → 镜像 → 注入）。
 - **明确不覆盖**：压缩后清单是否仍能重建（本设计不依赖 transcript，**如实写明是「无关」而不是「验过」**）；并发调用（靠「同步、不 await」在**结构上**排除，没有用例制造并发）。
 
 ## 10. 明确不做

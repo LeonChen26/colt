@@ -64,6 +64,11 @@
  *        单条 in_progress 约束、已完成折一行 + 命中测试、依赖未满足的「等待：」与拒绝开工、
  *        空态两层（无清单不渲染 / 有清单空闲）、页签更名（v1.48「任务摘要」）、
  *        worker 回收重启后从库重建、下钻面包屑与「返回」文案同名
+ * todo-e2e：待办清单的**真实模型**端到端（**打模型、计费**）——免费模式从 `hostBridge`
+ *        直接写入，验的是「写入之后」；这里补「写入之前」三段：模型第一次请求就答得出
+ *        旁路写入的随机 token（= `transform_context` 的注入真的到了提示词）、模型真调用
+ *        `todo` 并在最严格的 approval 模式下不弹卡（= 白名单生效）、关掉 worker 后离线
+ *        写入的条目在重启后第一次请求就看得见（= `ready` 补发 → 镜像 → 注入）
  * perf：长会话的**渲染**开销（不调模型、不计费）——用 rAF 采样最长帧：条数扫描量「打开长会话」
  *        的挂载成本；再量流式期间「每 50ms 整份重推」的每帧成本，且分三组对照——「只动最后一条」
  *        （真实流式）、「内容一个字节都不变」（稳定投影的纯度检验）、「空历史」
@@ -131,6 +136,7 @@ import { runReenter } from "./modes/reenter";
 import { runRmWorkspace } from "./modes/rm-workspace";
 import { runSubagent } from "./modes/subagent";
 import { runTodo } from "./modes/todo";
+import { runTodoE2e } from "./modes/todo-e2e";
 
 export async function runSmoke(window: BrowserWindow, outputPath: string): Promise<void> {
   // outputPath 由 launcher 归一化到 out/ 下（见 main/index.ts 的 smokeArtifactPath）
@@ -295,6 +301,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runPerf(window, project.id, sessionsDir, log, run);
     } else if (mode === "todo") {
       await runTodo(window, project.id, sessionsDir, log, run);
+    } else if (mode === "todo-e2e") {
+      await runTodoE2e(window, log, run);
     } else if (mode === "subagent") {
       await runSubagent(window, project.id, sessionsDir, log, run);
     } else if (mode === "model") {

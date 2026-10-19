@@ -231,6 +231,8 @@
 | `model` | 模型选择 / 会话生命周期六段（`[model]` / `fallback` / `keyless` / `no-usable` / `during-init` / `[session/draft]`） | 部分（含真调模型段） | 三段「这台机器上只有用例的服务」前提必须**显式建立**（`stashUsableProviders()`：带密钥的服务只删密钥、不删条目） |
 | `memory` | 记忆检索**跨进程链路**（含项目隔离 / 关会话清上下文 / 二字词 LIKE 兜底） | 否 | **会话必须建在夹具项目下**，且跑完把仓库项目顶回 `project.list[0]`（最近打开优先） |
 | `memory-e2e` | 记忆**行为质量**（固定 4 次真实调用） | 是 | 与 `memory` **相反**：夹具会话必须是渲染层自动打开的那个，**不要**顶回 `list[0]` |
+| `todo` | 待办清单**写入之后**的链路（库 / 主进程视图 / 界面 / 重启重建） | 否 | 走产品自己的写入路径 `hostBridge.handle({capability:"todo"})` |
+| `todo-e2e` | 待办清单**写入之前**的三段（注入可见性 / 工具可见性与免审批 / 重启后 `ready` 补发） | **是** | 旁路写入带随机 token 的清单；审批留在最严格的 `approval` 模式；模型跑偏时拒绝并记账，不干等超时 |
 | 其余（不给 `COLT_SMOKE_MODE` 时为 `basic`；`host` 最费） | — | **是** | 只想看界面时直接启动应用 + **系统级截图** |
 
 ⚠️ **关键前置（缺了会假红 / 污染用户数据）**：
@@ -240,7 +242,7 @@
 - 冒烟把主窗口钉为「始终可见」并关掉后台节流（`src/dev/smoke/index.ts` 的 `pinVisibility`）——F11 之后「窗口不可见就停表」是产品行为，遮挡（Windows occlusion → `document.hidden`）期会假红；「不可见时暂停」本身由 `tests/visible-interval.test.ts` 单测覆盖。
 - `npm run dev` 报 `Error: spawn UNKNOWN`（errno **-4094**）是本机「智能应用控制」拦了未签名的 `electron.exe`（与业务代码无关，`electron` 已精确 pin）；报 `does not provide an export named 'BrowserWindow'` 是 `ELECTRON_RUN_AS_NODE` 把 Electron 按成了 Node（**要 unset，设成空串没用**）——两条都见 `AGENTS.md` 最后一节。
 
-**计费模式清单**：`dock`、`fixture`、`memory`、`perf`、`ask-user`、`mcp-reload`、`mcp-catalog`、`subagent` 是**不调用模型**的模式；其余模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）都会真实打模型并计费。`dock` 曾经的 `/compact` 段会把打桩转发给真实现而真发 prompt、写进用户真实会话历史，v1.41 起该段改为**只记账、不转发**（测试装置不许有副作用，`AGENTS.md` §五⑩）。
+**计费模式清单**：`dock`、`fixture`、`memory`、`perf`、`ask-user`、`todo`、`mcp-reload`、`mcp-catalog`、`subagent` 是**不调用模型**的模式；其余模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）都会真实打模型并计费。`dock` 曾经的 `/compact` 段会把打桩转发给真实现而真发 prompt、写进用户真实会话历史，v1.41 起该段改为**只记账、不转发**（测试装置不许有副作用，`AGENTS.md` §五⑩）。
 
 ---
 
