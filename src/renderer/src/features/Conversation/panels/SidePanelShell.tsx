@@ -26,6 +26,8 @@ export function SidePanelShell({
   empty,
   isEmpty,
   onRefresh,
+  /** 刷新按钮左侧的面板自有动作（如「生成」「取消」）；刷新始终留在最右 */
+  actions,
   children,
 }: {
   title: string;
@@ -38,6 +40,7 @@ export function SidePanelShell({
   empty: ReactNode;
   isEmpty: boolean;
   onRefresh: () => void;
+  actions?: ReactNode;
   children: ReactNode;
 }): React.JSX.Element {
   return (
@@ -48,18 +51,21 @@ export function SidePanelShell({
           {title}
           {meta}
         </span>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-line-soft hover:text-text-primary"
-          title="刷新"
-        >
-          <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
-        </button>
+        <div className="flex items-center gap-1">
+          {actions}
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-line-soft hover:text-text-primary"
+            title="刷新"
+          >
+            <RefreshCw {...ICON.sm} className={cn(loading && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
       {error && (
-        <div className="m-2 rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
+        <div className="m-2 whitespace-pre-wrap break-words rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
           {error}
         </div>
       )}

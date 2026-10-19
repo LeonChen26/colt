@@ -391,6 +391,9 @@ export const IPC_CHANNELS = [
   "terminal.close",
   "wiki.status",
   "wiki.page",
+  "wiki.generate.start",
+  "wiki.generate.cancel",
+  "wiki.generate.status",
 ] as const;
 
 /**
@@ -462,6 +465,40 @@ export interface WikiPage {
   path: string;
   text: string;
   size: number;
+}
+
+/** Wiki 生成阶段；`running` 之外的三个都是终态 */
+export type WikiGeneratePhase = "running" | "done" | "failed" | "cancelled";
+
+/**
+ * 一次 Wiki 生成任务的现状（`wiki.generate.status` 的返回）。
+ *
+ * `lines` 是**最近 400 行**的环形日志：界面关掉再打开时靠它把进度接回来，
+ * 不必让主进程重新跑一遍。终态任务也保留最后一份，供失败时展开。
+ */
+export interface WikiGenerateSnapshot {
+  sessionId: string;
+  phase: WikiGeneratePhase;
+  lines: string[];
+  /** 失败原因；running / done / cancelled 为 null */
+  error: string | null;
+  /** 毫秒时间戳；任务从启动到结束不变 */
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+/**
+ * 生成进度推送。`lines` 是**增量**（自上一帧以来新出现的行）——
+ * 一次推送 400 行既浪费又会让渲染层做无意义的整段替换。
+ */
+export interface WikiGenerateEvent {
+  sessionId: string;
+  phase: WikiGeneratePhase;
+  /** 本帧新增的日志行 */
+  lines: string[];
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
 }
 
 /**
@@ -1162,6 +1199,37 @@ export interface IpcInvokeMap {
     response: WikiPage;
   };
   /**
+   * 启动一次 CodeWiki 生成。
+   *
+   * 这是**用户显式动作**（面板按钮 + 原生确认框），不是 agent 工具：生成会花模型
+   * 额度并改工作区，不能变成模型一次调用就能触发的路径。
+   *
+   * 同一项目单飞：已有任务在跑时返回 `alreadyRunning: true`，界面转去订阅进度，
+   * 不排队、也不并发写同一个 `docs/wiki/`。
+   */
+  "wiki.generate.start": {
+    request: { sessionId: string; mode: "full" | "update" };
+    /**
+     * `error` 是「没有启动」的原因（前置检查缺件、spawn 失败），直接展示给用户。
+     * 不靠 invoke 的 rejection：Electron 会把它包成「Error invoking remote method…」，
+     * 真正该看的那句会被埋在噪音里。
+     */
+    response: { started: boolean; alreadyRunning: boolean; error: string | null };
+  };
+  /** 取消正在跑的任务；保留半成品（`--update` 能接着修） */
+  "wiki.generate.cancel": {
+    request: { sessionId: string };
+    response: { cancelled: boolean };
+  };
+  /**
+   * 当前/最近一次生成任务。面板重新挂载时用它把进度接回来；
+   * 从未跑过返回 null（不是错误）。
+   */
+  "wiki.generate.status": {
+    request: { sessionId: string };
+    response: WikiGenerateSnapshot | null;
+  };
+  /**
    * 打开（或复用）会话的交互终端（「终端」页签）。
    *
    * **幂等**：同一会话已开就直接返回，`replay` 是环形缓冲里的全部积压——
@@ -1342,6 +1410,7 @@ export const IPC_EVENTS = [
   "terminal.output",
   "terminal.exit",
   "mcp.installProgress",
+  "wiki.generateState",
 ] as const;
 
 /** 主进程 → 渲染进程的推送通道（类型真源） */
@@ -1386,6 +1455,13 @@ export interface IpcEventMap {
    * 失败时也要靠它指出**哪一步**红，而不是笼统的「安装失败」。
    */
   "mcp.installProgress": McpInstallProgress;
+  /**
+   * Wiki 生成进度（增量日志 + 阶段变化）。
+   *
+   * 广播给所有窗口而不是只回给发起者：生成可能持续数十分钟，面板关掉再打开
+   * 要能继续看到进度；只回发起者会让「重开页签」变成只能等、不能看。
+   */
+  "wiki.generateState": WikiGenerateEvent;
 }
 
 export type IpcEventName = keyof IpcEventMap;

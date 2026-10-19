@@ -342,6 +342,19 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
 
 ---
 
+## 五之二、Wiki 生成（CodeWiki runner，v2.00）
+
+「Wiki」页签的「生成 / 更新」与终端同属**用户直操作能力面**：由用户点按钮 + 原生确认框发起，**模型工具面零入口**（D9：一次生成会花额度、改工作区，不能变成模型一次调用就能触发的路径）。
+
+- **写入路径由程序钉死**：参数固定为 `generate --output docs/wiki`（更新另加 `--update`），渲染层与模型都无法指定输出目录；`cwd` 由主进程按 sessionId 反查会话根（同 `file.read`）。
+- **不把工作区交给 shell**：spawn 不经 shell、参数走数组；取消用 `taskkill /T /F`（Windows）或进程组信号（POSIX），带走 CodeWiki 拉起的 Python 子进程；退出应用时 `cancelAllWikiGenerations()` 尽力收掉整棵树。
+- **环境是白名单投影**（`buildWikiEnv`）：只放行 PATH / 系统目录 / 代理等宿主条件与用户自己的 `CODEWIKI_*`；**没有任何 Colt 的 provider 密钥**。
+- **前置检查只挡生成必需项**：Python ≥3.12、git、codewiki == 2.0.0；`mcp` / `node` 不是生成门禁（前者只影响 `codewiki mcp` server，后者是装期依赖）。缺件时不启动，把「缺什么 + 怎么装」原样给面板。
+- **同一项目单飞**：第二次点击不排队、不并发写同一个 `docs/wiki/`；取消保留半成品（`--update` 能接着修）。
+- **成功不靠退出码自证**：退出码 0 但 `docs/wiki/metadata.json` 未更新 → 如实报失败；日志保留最后 400 行供展开。
+
+---
+
 ## 六、电脑控制（Computer Use）
 
 读整屏截图 + 注入键鼠（`desktopCapturer` + PowerShell / user32）。这是**权限最高**的能力：
@@ -361,6 +374,7 @@ Markdown——**所以绝不能让调用方指定「读哪个根」**。根由 I
   （`main/lib/worker-env.ts`），里面没有任何密钥；`providerKey` 宿主能力按需把某家的密钥
   经消息体回给 worker 一次（只走内存，不落盘、不进 env）。
 - 界面里**密钥只上行、不下行**——设置页看得到「是否已设置」，看不到明文。
+- **Wiki 生成不复制 Colt 的密钥**（v2.00）：默认方案要求用户先 `codewiki config set`；runner 只透传用户自己在环境里放的 `CODEWIKI_*`，不读 `secrets` 表、也不把 provider key 写进 argv 或 env。
 - 不需要鉴权的本地服务（`requiresKey === false`）启动 worker 时会填一个**占位假密钥**——因为 pi-ai 的
   `openai-completions` 层无法表达「这个服务不需要鉴权」，`apiKey` 为空会直接抛错。
 - **没有账号、没有服务端、不上传会话数据**。会话与用量记录存在本机 SQLite。

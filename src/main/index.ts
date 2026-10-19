@@ -14,6 +14,7 @@ import { inspectUserData } from "./first-run";
 import { hostBridge } from "./host";
 import { isDev } from "./lib/app-mode";
 import { sessionManager } from "./session-manager";
+import { cancelAllWikiGenerations } from "./wiki/runner";
 
 /** reload 会再次触发 ready-to-show，防止冒烟流程重入 */
 let smokeStarted = false;
@@ -173,6 +174,9 @@ function bootApp(): void {
   });
 
   app.on("before-quit", () => {
+    // 生成是分钟级任务，进程会再拉 Python 子进程：退出必须带走整棵树，
+    // 否则用户关了应用、后台还在写 `docs/wiki/`（taskkill 是异步的，只能尽力而为）
+    cancelAllWikiGenerations();
     sessionManager.disposeAll();
     // 退出用 shutdownDatabase 而非 closeDatabase：后者保留自愈所需的路径，
     // 会让退出过程中的残余调用把库又建出来

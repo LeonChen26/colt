@@ -9,3 +9,9 @@
  * 与 `shared/path-boundary.ts` 那次「四处各写一份判据」是同一类事故。
  */
 export const WIKI_DIR = "docs/wiki";
+
+/**
+ * 生成进度日志的环形上限：主进程保留多少行，渲染层合帧时就最多保留多少行。
+ * 共用一份是为了避免「主进程说 400、界面按 200 截断」这种对不上账的差异。
+ */
+export const WIKI_LOG_MAX_LINES = 400;

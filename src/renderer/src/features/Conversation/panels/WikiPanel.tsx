@@ -23,10 +23,20 @@
  * 默认的 `<a target="_blank">` 会把这种链接丢给系统浏览器，必然 404——所以这里覆盖
  * `a`：能解析到 `docs/wiki/` 内的 `.md` 就留在应用内换页，其余（http、锚点）按原样。
  */
-import { Children, isValidElement, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, BookOpen, ChevronRight } from "lucide-react";
+import {
+  Children,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { ArrowLeft, BookOpen, ChevronRight, Loader2, Play, RotateCw, TriangleAlert } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { WikiPage, WikiStatus, WikiTreeNode } from "@shared/protocol";
+import type { WikiGenerateSnapshot, WikiPage, WikiStatus, WikiTreeNode } from "@shared/protocol";
+import { WIKI_LOG_MAX_LINES } from "@shared/wiki";
 import { ICON } from "@/lib/icon";
 import { resolveWikiLink } from "@/lib/wiki-link";
 import { cn } from "../../../lib/utils";
@@ -123,6 +133,72 @@ function shortTime(raw: string | null): string | null {
   return match === null ? raw : `${match[1]} ${match[2]}`;
 }
 
+/** 任务耗时：不到一分钟给秒，超过给「X 分 Y 秒」 */
+function formatDuration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1_000));
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+const JOB_PHASE_LABEL: Record<WikiGenerateSnapshot["phase"], string> = {
+  running: "CodeWiki 运行中…",
+  done: "上次生成完成",
+  failed: "上次生成失败",
+  cancelled: "上次生成已取消（半成品保留在 docs/wiki）",
+};
+
+/**
+ * 生成任务卡片：跑的时候给**最近几行**（进度是活的），结束后收起成一段日志。
+ * 终态卡片不自动消失——失败原因要留到用户看见为止（`docs/ERRORS.md` 的「别撒谎」）。
+ */
+function JobCard({ job }: { job: WikiGenerateSnapshot }): React.JSX.Element {
+  const running = job.phase === "running";
+  return (
+    <div
+      data-wiki-job={job.phase}
+      className={cn(
+        "mb-2 rounded-md border px-2 py-1.5 text-2xs leading-relaxed",
+        job.phase === "failed"
+          ? "border-danger/40 bg-danger-soft text-danger-fg"
+          : "border-line bg-surface-overlay text-text-muted",
+      )}
+    >
+      <div className="flex items-center gap-1.5">
+        {running ? (
+          <Loader2 {...ICON.xs} className="shrink-0 animate-spin" />
+        ) : job.phase === "failed" ? (
+          <TriangleAlert {...ICON.xs} className="shrink-0" />
+        ) : null}
+        <span className={cn(running && "text-text-secondary")}>{JOB_PHASE_LABEL[job.phase]}</span>
+        {job.finishedAt === null ? null : (
+          <span>· {formatDuration(job.finishedAt - job.startedAt)}</span>
+        )}
+      </div>
+      {job.error === null ? null : (
+        <p className="mt-1 whitespace-pre-wrap break-words">{job.error}</p>
+      )}
+      {running ? (
+        job.lines.length === 0 ? (
+          <p className="mt-1">
+            已启动，等待第一行输出…（首次运行可能要几十秒；日志会逐行出现在这里）
+          </p>
+        ) : (
+          <pre className="mt-1 max-h-24 overflow-hidden whitespace-pre-wrap break-words font-mono">
+            {job.lines.slice(-6).join("\n")}
+          </pre>
+        )
+      ) : job.lines.length === 0 ? null : (
+        <details className="mt-1" open={job.phase === "failed"}>
+          <summary className="cursor-pointer select-none">日志 · {job.lines.length} 行</summary>
+          <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono">
+            {job.lines.join("\n")}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Element {
   const [status, setStatus] = useState<WikiStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -133,6 +209,17 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
   const [page, setPage] = useState<WikiPage | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
+  /** 当前/最近一次生成任务；`null` = 这个项目从没跑过（不是错误） */
+  const [job, setJob] = useState<WikiGenerateSnapshot | null>(null);
+  /** 「没有启动」的原因（前置检查缺件、spawn 失败），与任务本身的 `error` 分开 */
+  const [startError, setStartError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  /**
+   * 面板当前跟的是哪个会话的任务。同一项目的生成是**单飞**的：另一个会话发起时，
+   * `wiki.generate.status` 返回的仍是同一个任务，进度事件也要跟着那个 sessionId 收，
+   * 否则界面会停在一帧（看起来像卡死）。
+   */
+  const jobSessionRef = useRef<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -168,9 +255,75 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
     [sessionId],
   );
 
+  /** 面板重挂载 / 切页签回来时把进度接回来；读不到不算错误（进度是附加信息） */
+  const loadJob = useCallback(async () => {
+    try {
+      const next = await window.colt.invoke("wiki.generate.status", { sessionId });
+      jobSessionRef.current = next?.sessionId ?? null;
+      setJob(next);
+    } catch {
+      // 目录本身由 loadStatus 的 error 呈现；这里静默即可
+    }
+  }, [sessionId]);
+
+  const startGeneration = useCallback(
+    async (mode: "full" | "update") => {
+      const { confirmed } = await window.colt.invoke("dialog.confirm", {
+        message: mode === "update" ? "更新仓库 Wiki？" : "生成仓库 Wiki？",
+        detail:
+          (mode === "update"
+            ? "会在项目根运行 codewiki generate --update --output docs/wiki，只重写与代码差异相关的组件。"
+            : "会在项目根运行 codewiki generate --output docs/wiki，全量重写 docs/wiki/。") +
+          "\n\n这会花模型额度并修改工作区；写入路径由 Colt 固定，不需要逐页批准。" +
+          "需要先为 CodeWiki 配好 provider 与密钥（codewiki config set）。" +
+          "\n\n可以随时取消；已写出的半成品会保留，之后用「更新」接着修。",
+        confirmLabel: mode === "update" ? "更新" : "生成",
+      });
+      if (!confirmed) return;
+      setStarting(true);
+      setStartError(null);
+      try {
+        const result = await window.colt.invoke("wiki.generate.start", { sessionId, mode });
+        if (result.error !== null) setStartError(result.error);
+        // 同项目已有任务（可能是另一个会话发起的）：接上它的进度
+        else if (result.alreadyRunning) await loadJob();
+      } catch (reason) {
+        setStartError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        setStarting(false);
+      }
+    },
+    [sessionId, loadJob],
+  );
+
+  const cancelGeneration = useCallback(async () => {
+    try {
+      // 取消按**任务所属会话**发起：同项目单飞时，任务可能不是这个会话开的
+      await window.colt.invoke("wiki.generate.cancel", {
+        sessionId: job?.sessionId ?? sessionId,
+      });
+    } catch (reason) {
+      setStartError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [sessionId, job?.sessionId]);
+
+  // 订阅生成进度。终态（done / failed / cancelled）后重读产物：
+  // 成功要刷新时间与页数，取消也要如实显示已经写出来的那部分。
   useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
+    return window.colt.on("wiki.generateState", (event) => {
+      if (event.sessionId !== sessionId && event.sessionId !== jobSessionRef.current) return;
+      jobSessionRef.current = event.sessionId;
+      setJob((current) => {
+        const prior = current?.sessionId === event.sessionId ? current.lines : [];
+        const lines = [...prior, ...event.lines];
+        if (lines.length > WIKI_LOG_MAX_LINES) {
+          lines.splice(0, lines.length - WIKI_LOG_MAX_LINES);
+        }
+        return { ...event, lines };
+      });
+      if (event.phase !== "running") void loadStatus();
+    });
+  }, [sessionId, loadStatus]);
 
   // 换会话即回到列表：上一次会话的页面路径在新项目里大概率不存在
   useEffect(() => {
@@ -178,7 +331,15 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
     setPage(null);
     setPageError(null);
     setExpanded(new Set());
+    setJob(null);
+    setStartError(null);
+    jobSessionRef.current = null;
   }, [sessionId]);
+
+  useEffect(() => {
+    void loadStatus();
+    void loadJob();
+  }, [loadStatus, loadJob]);
 
   /** 页内链接：能解析到 docs/wiki 内的 .md 就换页，否则按外链交给系统浏览器 */
   const components = useMemo<Components>(
@@ -255,6 +416,10 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
   // 概览入口：它不在 module_tree 里（顶层页面），单独钉在列表最上面
   const overview = status?.overview ?? null;
 
+  const running = job?.phase === "running";
+  // `done` 不占位置：产物时间与页数已经在摘要条里。失败 / 取消要留到用户看见为止。
+  const showJob = job !== null && job.phase !== "done";
+
   // 页面视图
   if (openPath !== null) {
     return (
@@ -302,22 +467,62 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
       }
       summary={status === null ? null : summarize(status)}
       loading={loading}
-      error={error}
-      isEmpty={status !== null && !status.present}
+      // 启动失败走外壳的 error 位：空态时 children 不渲染，放里面会「点了生成、什么都没发生」
+      error={startError ?? error}
+      isEmpty={status !== null && !status.present && !showJob}
       empty={
         <span className="block">
           这个项目还没有 wiki 产物（<span className="font-mono">docs/wiki/</span> 不存在）。
           <br />
-          让 agent 用 CodeWiki 生成，或在项目根跑 <span className="font-mono">codewiki generate --output docs/wiki</span>。
+          点右上角「生成」让 CodeWiki 从仓库写出文档；也可以在项目根跑{" "}
+          <span className="font-mono">codewiki generate --output docs/wiki</span>。
         </span>
       }
       onRefresh={() => void loadStatus()}
+      actions={
+        running ? (
+          <button
+            type="button"
+            onClick={() => void cancelGeneration()}
+            className="rounded-xs px-1.5 py-0.5 text-2xs text-text-muted transition hover:bg-line-soft hover:text-danger"
+          >
+            取消
+          </button>
+        ) : (
+          <>
+            {status?.present ? (
+              <button
+                type="button"
+                disabled={starting}
+                onClick={() => void startGeneration("update")}
+                className="flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-2xs text-text-secondary transition hover:bg-line-soft hover:text-text-primary disabled:opacity-50"
+                title="只重写与代码差异相关的组件"
+              >
+                <RotateCw {...ICON.xs} />
+                更新
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={starting}
+              onClick={() => void startGeneration("full")}
+              className="flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-2xs font-medium text-accent-dim transition hover:bg-line-soft hover:text-accent disabled:opacity-50"
+              title={status?.present ? "从头全量生成" : "生成仓库 Wiki"}
+            >
+              <Play {...ICON.xs} />
+              {starting ? "启动中…" : status?.present ? "全量" : "生成"}
+            </button>
+          </>
+        )
+      }
     >
       {status !== null && status.error !== null ? (
         <div className="mb-2 rounded-md border border-warning/40 bg-warning-soft px-2 py-1.5 text-2xs leading-relaxed text-warning-fg">
           {status.error}
         </div>
       ) : null}
+
+      {showJob && job !== null ? <JobCard job={job} /> : null}
 
       {overview !== null ? (
         <button

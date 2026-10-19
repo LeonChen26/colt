@@ -8,7 +8,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs";
-import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
+import type { IpcChannel, IpcInvokeMap, SessionInfo, WikiGenerateEvent } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
 import { loadMcpConfig, mcpUserHome, targetOf, transportOf, userMcpConfigPath } from "@shared/mcp-config";
 import {
@@ -17,8 +17,15 @@ import {
   MCP_CATALOG,
   type McpPresetState,
 } from "@shared/mcp-catalog";
-import { probeCodewiki } from "../mcp/probe";
-import { installPreset, presetRuntimeDir, runtimeExists, uninstallPreset, venvPython } from "../mcp/install";
+import { createSpawnRunner, parseVersion, probeCodewiki } from "../mcp/probe";
+import {
+  installPreset,
+  presetRuntimeDir,
+  runtimeExists,
+  uninstallPreset,
+  venvBinary,
+  venvPython,
+} from "../mcp/install";
 import { readUserConfig } from "../mcp/user-config";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { resolveSessionModel } from "@shared/model-ref";
@@ -63,6 +70,12 @@ import { hostBridge } from "../host";
 import { readFileWithin } from "../file-read";
 import { listDirWithin } from "../file-list";
 import { readWikiPage, readWikiStatus } from "../wiki/read";
+import {
+  cancelWikiGeneration,
+  formatWikiProbeFailure,
+  readWikiGeneration,
+  startWikiGeneration,
+} from "../wiki/runner";
 import { computeNetChange } from "../net-change";
 import { closeDatabase, openDatabase } from "../db";
 import { closeMemoryDatabase, openMemoryDatabase } from "../db/memory-index";
@@ -320,6 +333,49 @@ function materializeDraft(sessionId: string): void {
  */
 function reviveIfArchived(sessionId: string): void {
   if (getSession(sessionId)?.status === "archived") setSessionStatus(sessionId, "active");
+}
+
+/** CodeWiki 在目录里的 id（运行时目录、安装态都按它索引） */
+const CODEWIKI_PRESET_ID = "codewiki";
+
+/**
+ * 生成任务要用的 CodeWiki 入口，以及「缺什么」。
+ *
+ * 只把 `python` / `git` / `codewiki` 当门禁：`mcp` 是 `codewiki mcp`（server）的要求，
+ * `node` 是装期依赖（PythonMonkey 安装时调 npm），生成时都用不上。把它们也当门禁，
+ * 会让一个**能生成**的环境显示成「缺件」——那是反话（`docs/ERRORS.md`）。
+ */
+async function resolveWikiCommand(): Promise<{ command: string } | { error: string }> {
+  const runtimeDir = presetRuntimeDir(app.getPath("userData"), CODEWIKI_PRESET_ID);
+  const hasRuntime = await runtimeExists(runtimeDir);
+  const probe = await probeCodewiki(
+    undefined,
+    // 有自有运行时就**只**问它：PATH 上那个全局 Python 没装 codewiki 很正常，
+    // 拿它判「装好了没」会让正在用的运行时显示成缺件（与 mcp.catalog 同一条理由）。
+    hasRuntime ? { command: venvPython(runtimeDir), args: [] } : undefined,
+  );
+  const required = new Set(["python", "git", "codewiki"]);
+  const blocking = probe.items.filter((item) => required.has(item.id) && !item.ok);
+  if (blocking.length === 0) {
+    return { command: hasRuntime ? venvBinary(runtimeDir, CODEWIKI_PRESET_ID) : "codewiki" };
+  }
+  // 手工安装可能把 console script 放在别的解释器下（pipx 等），此时「当前 Python 能否
+  // import」会误判。直接问一次 CLI：能报出钉住的 2.0.0 就照常可用。
+  if (!hasRuntime && blocking.every((item) => item.id === "codewiki")) {
+    const result = await createSpawnRunner()(CODEWIKI_PRESET_ID, ["--version"]);
+    const parsed = parseVersion(`${result.stdout}\n${result.stderr}`);
+    if (result.ok && parsed !== null && parsed[0] === 2 && parsed[1] === 0 && parsed[2] === 0) {
+      return { command: CODEWIKI_PRESET_ID };
+    }
+  }
+  return { error: formatWikiProbeFailure(blocking) };
+}
+
+/** 生成进度统一广播给所有窗口；渲染层按 `sessionId` 过滤 */
+function broadcastWikiGenerate(event: WikiGenerateEvent): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send("wiki.generateState", event);
+  }
 }
 
 export function registerIpcHandlers(): void {
@@ -1061,10 +1117,11 @@ export function registerIpcHandlers(): void {
     return listDirWithin(resolveSessionRoot(request.sessionId), request.path);
   });
 
-  // ---- 「Wiki」页签：读 CodeWiki 的产物（docs/wiki）。根同样只由主进程推 ----
+  // ---- 「Wiki」页签：读 CodeWiki 的产物（docs/wiki），以及用户显式发起的生成/更新 ----
   //
-  // 只读、不生成：生成要花模型额度且会改工作区，属于「用户显式动作」，
-  // 不走 IPC 随手一个调用就能触发的形态（见 docs/design-codewiki-integration-2026-10.md §5 D9）。
+  // 根**只由主进程推**（sessionId → 会话 / 项目），渲染层给不了目录。
+  // 生成同样是「用户显式动作」（面板按钮），不做成 agent 工具：它会花模型额度并改工作区，
+  // 不能变成模型一次调用就能触发的路径（见 docs/design-codewiki-integration-2026-10.md §5 D9）。
 
   handle("wiki.status", (request) => {
     return readWikiStatus(resolveSessionRoot(request.sessionId));
@@ -1072,6 +1129,44 @@ export function registerIpcHandlers(): void {
 
   handle("wiki.page", (request) => {
     return readWikiPage(resolveSessionRoot(request.sessionId), request.path);
+  });
+
+  handle("wiki.generate.start", async (request) => {
+    const root = resolveSessionRoot(request.sessionId);
+    // 单飞先问一次，省掉「已经在跑还去探一遍前置条件」的几秒钟
+    if (readWikiGeneration(root)?.phase === "running") {
+      return { started: false, alreadyRunning: true, error: null } as const;
+    }
+    const target = await resolveWikiCommand();
+    if ("error" in target) {
+      return { started: false, alreadyRunning: false, error: target.error } as const;
+    }
+    try {
+      const result = await startWikiGeneration({
+        sessionId: request.sessionId,
+        root,
+        mode: request.mode,
+        command: target.command,
+        // 前置检查已在上面做完；runner 里留这一道是为了单测与未来的调用方
+        checkReady: async () => null,
+        onEvent: broadcastWikiGenerate,
+      });
+      return { ...result, error: null } as const;
+    } catch (error) {
+      return {
+        started: false,
+        alreadyRunning: false,
+        error: error instanceof Error ? error.message : String(error),
+      } as const;
+    }
+  });
+
+  handle("wiki.generate.cancel", (request) => {
+    return { cancelled: cancelWikiGeneration(request.sessionId) } as const;
+  });
+
+  handle("wiki.generate.status", (request) => {
+    return readWikiGeneration(resolveSessionRoot(request.sessionId));
   });
 
   // ---- 「终端」页签：shell 跑在会话所属项目根下（同 file.read 的根推导，渲染层不能指定）----
