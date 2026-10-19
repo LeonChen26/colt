@@ -1296,8 +1296,6 @@ export interface ProviderConfig {
 /** 一条工具调用记录 */
 export interface ToolCallRecord {
   id: string;
-  /** 所属运行 ID，用于按一次运行聚合；历史数据可能为 null */
-  runId: string | null;
   toolName: string;
   inputJson: string | null;
   isError: boolean;

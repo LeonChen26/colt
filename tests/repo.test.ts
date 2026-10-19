@@ -382,32 +382,25 @@ describe("recordToolCall", () => {
   test("写入并读取", () => {
     const project = upsertProject("E:/demo");
     const session = createSession(project.id, "E:/demo/jsonl");
-    recordToolCall({ toolCallId: "c1", sessionId: session.id, runId: "r1", toolName: "bash", inputJson: '{"command":"ls"}', isError: false, durationMs: 42, timestamp: 1 });
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, toolName: "bash", inputJson: '{"command":"ls"}', isError: false, durationMs: 42, timestamp: 1 });
     const calls = listSessionToolCalls(session.id);
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.toolName, "bash");
-    assert.equal(calls[0]?.runId, "r1");
     assert.equal(calls[0]?.inputJson, '{"command":"ls"}');
     assert.equal(calls[0]?.durationMs, 42);
     assert.equal(calls[0]?.isError, false);
     assert.equal(calls[0]?.createdAt, 1);
   });
 
-  test("未传 runId 时落库为 null", () => {
+  test("覆盖重放时更新错误与耗时", () => {
     const project = upsertProject("E:/demo");
     const session = createSession(project.id, "E:/demo/jsonl");
-    recordToolCall({ toolCallId: "c1", sessionId: session.id, toolName: "read", inputJson: null, isError: false, durationMs: 1, timestamp: 1 });
-    assert.equal(listSessionToolCalls(session.id)[0]?.runId, null);
-  });
-
-  test("覆盖重放时保留原 runId", () => {
-    const project = upsertProject("E:/demo");
-    const session = createSession(project.id, "E:/demo/jsonl");
-    recordToolCall({ toolCallId: "c1", sessionId: session.id, runId: "r1", toolName: "bash", inputJson: null, isError: true, durationMs: 10, timestamp: 1 });
-    recordToolCall({ toolCallId: "c1", sessionId: session.id, runId: "r1", toolName: "bash", inputJson: null, isError: false, durationMs: 20, timestamp: 1 });
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, toolName: "bash", inputJson: null, isError: true, durationMs: 10, timestamp: 1 });
+    recordToolCall({ toolCallId: "c1", sessionId: session.id, toolName: "bash", inputJson: null, isError: false, durationMs: 20, timestamp: 1 });
     const calls = listSessionToolCalls(session.id);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.runId, "r1");
+    assert.equal(calls[0]?.isError, false);
+    assert.equal(calls[0]?.durationMs, 20);
   });
 
   test("同一 toolCallId 覆盖而非重复（恢复重放场景）", () => {

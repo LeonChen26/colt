@@ -77,7 +77,6 @@ CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_records(session_id, create
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
-  run_id TEXT,
   tool_name TEXT NOT NULL,
   input_json TEXT,
   is_error INTEGER NOT NULL DEFAULT 0,

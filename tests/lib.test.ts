@@ -569,7 +569,6 @@ const toolCall = (
   options: { durationMs?: number | null; isError?: boolean; inputJson?: string | null } = {},
 ): ToolCallRecord => ({
   id: `call-${(toolCallSeq += 1)}`,
-  runId: null,
   toolName,
   inputJson: options.inputJson ?? null,
   isError: options.isError ?? false,

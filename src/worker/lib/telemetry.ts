@@ -57,7 +57,6 @@ export interface KernelUsageEvent {
 /** 内核 tool_end 事件中本模块关心的部分 */
 export interface KernelToolEndEvent {
   lane: string;
-  runId: string;
   toolCallId: string;
   toolName: string;
   isError: boolean;
@@ -175,7 +174,6 @@ export class ToolCallTracker {
     return {
       type: "toolCall",
       toolCallId: event.toolCallId,
-      runId: event.runId,
       toolName: event.toolName,
       inputJson: meta?.argsJson ?? null,
       isError: event.isError,

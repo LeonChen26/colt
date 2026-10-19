@@ -328,7 +328,6 @@ export function getFileBaseline(
 export function recordToolCall(input: {
   toolCallId: string;
   sessionId: string;
-  runId?: string | null;
   toolName: string;
   inputJson: string | null;
   isError: boolean;
@@ -338,8 +337,8 @@ export function recordToolCall(input: {
   getDatabase()
     .prepare(
       `INSERT INTO tool_calls
-         (id, session_id, run_id, tool_name, input_json, is_error, duration_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (id, session_id, tool_name, input_json, is_error, duration_ms, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          is_error = excluded.is_error,
          duration_ms = excluded.duration_ms`,
@@ -347,7 +346,6 @@ export function recordToolCall(input: {
     .run(
       input.toolCallId,
       input.sessionId,
-      input.runId ?? null,
       input.toolName,
       input.inputJson,
       input.isError ? 1 : 0,
@@ -360,14 +358,13 @@ export function recordToolCall(input: {
 export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
   const rows = getDatabase()
     .prepare(
-      `SELECT id, run_id, tool_name, input_json, is_error, duration_ms, created_at
+      `SELECT id, tool_name, input_json, is_error, duration_ms, created_at
        FROM tool_calls
        WHERE session_id = ?
        ORDER BY created_at DESC, id DESC`,
     )
     .all(sessionId) as unknown as {
     id: string;
-    run_id: string | null;
     tool_name: string;
     input_json: string | null;
     is_error: number;
@@ -377,7 +374,6 @@ export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
 
   return rows.map((row) => ({
     id: row.id,
-    runId: row.run_id,
     toolName: row.tool_name,
     inputJson: row.input_json,
     isError: row.is_error === 1,
@@ -510,7 +506,6 @@ export function replaceSessionTodos(sessionId: string, todos: readonly ViewTodo[
  * 记录一条模型用量（每次内核上报的 usage 行对应一条）。
  * 用量历史只增不改，供审计与统计使用。
  * 以内核的 kernelUsageId 作为幂等键：重放同一行不会重复计数。
- * 注：内核的 usage 事件不携带 runId（仅 lane/row/totals），故该列暂为 NULL。
  */
 export function recordUsage(input: {
   sessionId: string;

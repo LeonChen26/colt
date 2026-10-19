@@ -163,7 +163,7 @@ export function DiagnosePanel({
         <RowGroup>
           <Row
             label="写完文件后自动运行项目检查"
-            hint="全仓类型检查在写入停止约 2 秒后于后台运行，不阻塞回复。"
+            hint="默认关闭。开启后，全仓类型检查在写入停止约 2 秒后于后台运行，不阻塞回复。"
           >
             <Switch
               checked={enabled}

@@ -1,8 +1,6 @@
 /**
  * 遥测投影测试：usage 过滤规则与 tool_start/tool_end 配对。
- * 重点覆盖两处曾被变异测试漏掉的行为：
- *   1. 工具记录的时间戳必须取开始时刻，否则并行工具顺序会反
- *   2. runId 必须原样带出，否则无法按运行聚合
+ * 重点覆盖曾被测出会漏的行为：工具记录的时间戳必须取开始时刻，否则并行工具顺序会反。
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -31,7 +29,6 @@ function usageEvent(overrides: Partial<KernelUsageEvent> = {}): KernelUsageEvent
 function endEvent(overrides: Partial<KernelToolEndEvent> = {}): KernelToolEndEvent {
   return {
     lane: "main",
-    runId: "run-1",
     toolCallId: "call-1",
     toolName: "bash",
     isError: false,
@@ -110,13 +107,12 @@ describe("serializeArgs", () => {
 });
 
 describe("ToolCallTracker", () => {
-  test("配对后带出入参、耗时与 runId", () => {
+  test("配对后带出入参、耗时与结果", () => {
     const tracker = new ToolCallTracker();
     tracker.start("call-1", { command: "ls" }, 1000);
     const upload = tracker.end(endEvent(), 1070);
 
     assert.equal(upload?.toolCallId, "call-1");
-    assert.equal(upload?.runId, "run-1");
     assert.equal(upload?.toolName, "bash");
     assert.equal(upload?.inputJson, '{"command":"ls"}');
     assert.equal(upload?.durationMs, 70);

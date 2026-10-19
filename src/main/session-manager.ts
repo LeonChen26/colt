@@ -985,7 +985,6 @@ export class SessionManager {
           recordToolCall({
             toolCallId: message.toolCallId,
             sessionId: options.sessionId,
-            runId: message.runId,
             toolName: message.toolName,
             inputJson: message.inputJson,
             isError: message.isError,

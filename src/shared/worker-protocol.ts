@@ -697,8 +697,6 @@ export type WorkerMessage =
       type: "toolCall";
       /** 内核工具调用 ID，天然唯一，作为数据库主键 */
       toolCallId: string;
-      /** 所属运行 ID，用于按一次运行聚合 */
-      runId: string;
       toolName: string;
       /** 工具入参的 JSON 字符串，无法序列化时为 null */
       inputJson: string | null;
