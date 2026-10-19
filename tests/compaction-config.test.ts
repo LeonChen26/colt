@@ -2,7 +2,7 @@
  * 压缩配置的钉子。
  *
  * 两件事必须钉住：
- *   ① **默认值必须与内核一致**——本模块刻意复写了内核的 `DEFAULT_COMPACTION_SETTINGS`
+ *   ① **默认值必须与内核一致**——本模块刻意复写了内核的 `DEFAULT_COMPACTION_POLICY`
  *      而不是 import 它（渲染层不得依赖内核），所以「两边漂开」这件事必须有断言兜着，
  *      否则内核升级改了默认值、我们还照着老数字显示，用户看到的就是假的「当前生效值」。
  *      下面**真去读内核 dist 的常量**比对，不是再抄一遍数字。
@@ -23,18 +23,18 @@ import {
 } from "../src/shared/compaction-config.ts";
 
 describe("默认值与内核对齐（不是「抄一份」，是被断言钉住的副本）", () => {
-  test("内核 DEFAULT_COMPACTION_SETTINGS 与本模块默认值逐字段相同", () => {
+  test("内核 DEFAULT_COMPACTION_POLICY 与本模块默认值逐字段相同", () => {
     // 直接读内核 dist 源码里的常量——内核不导出类型以外的运行时入口给渲染层，
     // 而单测跑在 node 里，读文件是最稳的比对方式（不引入 kernel 到渲染层的依赖）。
     const dist = fileURLToPath(
       new URL(
-        "../node_modules/@earendil-works/pi-agent-core/dist/harness/compaction/compaction.js",
+        "../node_modules/@earendil-works/pi-durable/dist/harness/agent.js",
         import.meta.url,
       ),
     );
     const source = readFileSync(dist, "utf8");
-    const block = /DEFAULT_COMPACTION_SETTINGS\s*=\s*\{([^}]*)\}/.exec(source);
-    assert.ok(block, "内核里找不到 DEFAULT_COMPACTION_SETTINGS，断言需要跟着更新（不是删掉）");
+    const block = /DEFAULT_COMPACTION_POLICY\s*=\s*\{([^}]*)\}/.exec(source);
+    assert.ok(block, "内核里找不到 DEFAULT_COMPACTION_POLICY，断言需要跟着更新（不是删掉）");
     const body = block[1]!;
     const readNumber = (key: string): number => {
       const m = new RegExp(`${key}\\s*:\\s*([0-9_]+)`).exec(body);
@@ -45,6 +45,7 @@ describe("默认值与内核对齐（不是「抄一份」，是被断言钉住�
     assert.equal(DEFAULT_COMPACTION_CONFIG.enabled, true);
     assert.equal(DEFAULT_COMPACTION_CONFIG.reserveTokens, readNumber("reserveTokens"));
     assert.equal(DEFAULT_COMPACTION_CONFIG.keepRecentTokens, readNumber("keepRecentTokens"));
+    assert.equal(DEFAULT_COMPACTION_CONFIG.backgroundTokens, readNumber("backgroundTokens"));
   });
 });
 
@@ -52,7 +53,12 @@ describe("normalizeCompactionConfig：钳制与回落", () => {
   test("合法输入原样通过", () => {
     assert.deepEqual(
       normalizeCompactionConfig({ enabled: true, reserveTokens: 8000, keepRecentTokens: 30000 }),
-      { enabled: true, reserveTokens: 8000, keepRecentTokens: 30000 },
+      {
+        enabled: true,
+        reserveTokens: 8000,
+        keepRecentTokens: 30000,
+        backgroundTokens: DEFAULT_COMPACTION_CONFIG.backgroundTokens,
+      },
     );
   });
 
@@ -89,6 +95,18 @@ describe("normalizeCompactionConfig：钳制与回落", () => {
     const onlyEnabled = normalizeCompactionConfig({ enabled: true });
     assert.equal(onlyEnabled.reserveTokens, DEFAULT_COMPACTION_CONFIG.reserveTokens);
     assert.equal(onlyEnabled.keepRecentTokens, DEFAULT_COMPACTION_CONFIG.keepRecentTokens);
+  });
+
+  test("backgroundTokens：0 是合法的「关闭」值，负值回落默认", () => {
+    assert.equal(normalizeCompactionConfig({ backgroundTokens: 0 }).backgroundTokens, 0);
+    assert.equal(
+      normalizeCompactionConfig({ backgroundTokens: -1 }).backgroundTokens,
+      DEFAULT_COMPACTION_CONFIG.backgroundTokens,
+    );
+    assert.equal(
+      normalizeCompactionConfig({ backgroundTokens: "abc" }).backgroundTokens,
+      DEFAULT_COMPACTION_CONFIG.backgroundTokens,
+    );
   });
 
   test("非对象输入不抛错，得到默认配置", () => {
@@ -140,7 +158,12 @@ describe("isDefaultCompactionConfig / describeCompaction", () => {
   });
 
   test("开启时把两个阈值都说出来（可见性正是 A2 要的）", () => {
-    const text = describeCompaction({ enabled: true, reserveTokens: 4096, keepRecentTokens: 9000 });
+    const text = describeCompaction({
+      enabled: true,
+      reserveTokens: 4096,
+      keepRecentTokens: 9000,
+      backgroundTokens: 0,
+    });
     assert.match(text, /9000/);
     assert.match(text, /4096/);
   });

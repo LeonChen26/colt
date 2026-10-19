@@ -6,19 +6,24 @@
  *
  * ## 背景
  *
- * 自动压缩一直是**开着**的：`entry.ts` 从没给 harness 传过 `compaction`，于是内核用它自己的
- * `DEFAULT_COMPACTION_SETTINGS`（`enabled: true / reserveTokens: 16384 / keepRecentTokens: 20000`）。
- * 应用层对此**零感知**：阈值不可见、不可调，界面只能在压缩触发时靠 `runningOperation` 猜
- * （2026-10-11 架构评审 A2）。
+ * 自动压缩一直是**开着**的：`entry.ts` 从没给内核传过 `compaction`，于是内核用它自己的
+ * `DEFAULT_COMPACTION_POLICY`（`enabled: true / reserveTokens: 16384 / keepRecentTokens: 20000 /
+ * backgroundTokens: 32768`）。应用层对此**零感知**：阈值不可见、不可调，界面只能在压缩触发时靠
+ * `runningOperation` 猜（2026-10-11 架构评审 A2）。
  *
  * ## 与内核的关系
  *
- * 内核类型是 `CompactionSettings = { enabled, reserveTokens, keepRecentTokens }`
- * （`harness/compaction/compaction.d.ts`）。本模块的 `CompactionConfig` **与之逐字段同形**，
+ * 内核类型是 `CompactionPolicy = { enabled, reserveTokens, keepRecentTokens, backgroundTokens }`
+ * （`pi-durable` 的 `harness/types.d.ts`）。本模块的 `CompactionConfig` **与之逐字段同形**，
  * 这样跨进程传的就是内核能直接吃的形状，不必在 worker 里再映射一层——映射层是最容易
  * 在升级时漂开的地方（多一层就多一处要跟）。
  *
- * ⚠️ **不要 import 内核的 `DEFAULT_COMPACTION_SETTINGS`**：本模块被渲染层 import
+ * `backgroundTokens` 是切到 durable 后新增的能力：离阻塞阈值还差这么多 token 时，
+ * 内核**在后台开始摘要**，当前对话继续跑；`0` 表示关闭（只在阻塞阈值处压缩）。
+ * 默认值 32768 取自内核 `DEFAULT_COMPACTION_POLICY`——对上下文窗口较小的模型，
+ * 阻塞阈值（`contextWindow - reserveTokens`）会更早触发，后台阈值不会抢先，故无需按模型换算。
+ *
+ * ⚠️ **不要 import 内核的 `DEFAULT_COMPACTION_POLICY`**：本模块被渲染层 import
  * （设置界面要显示默认值），而渲染层不得依赖内核（协议层的既有约定）。默认值在此**显式
  * 复写**并有测试钉住它与内核一致（`tests/compaction-config.test.ts` 会真去读内核常量比对），
  * 于是「两边漂开」这件事有断言兜着，而不是靠约定。
@@ -31,7 +36,7 @@
  * 悄悄发生。
  */
 
-/** 自动压缩的配置（与内核 `CompactionSettings` 同形） */
+/** 自动压缩的配置（与内核 `CompactionPolicy` 同形） */
 export interface CompactionConfig {
   /** 是否允许**自动**压缩（手动 `/compact` 不受它约束，那是用户显式动作） */
   enabled: boolean;
@@ -39,6 +44,11 @@ export interface CompactionConfig {
   reserveTokens: number;
   /** 压缩后**保留**的近期上下文 token 数（越大越不容易丢细节，也越快再次触发） */
   keepRecentTokens: number;
+  /**
+   * 离阻塞阈值还差这么多 token 时**后台**开始压缩；`0` = 关闭后台压缩。
+   * 后台压缩不打断当前对话，只在摘要就绪后于下一轮边界替换历史。
+   */
+  backgroundTokens: number;
 }
 
 /**
@@ -57,6 +67,7 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = Object.freeze({
   enabled: true,
   reserveTokens: 16384,
   keepRecentTokens: 20000,
+  backgroundTokens: 32768,
 });
 
 /**
@@ -78,6 +89,19 @@ function clampTokens(value: unknown, fallback: number): number {
 }
 
 /**
+ * `backgroundTokens` 的钳制：`0` 是**合法值**（关闭后台压缩），不能套用 `clampTokens`
+ * 的下界——否则「关闭」会被悄悄改回 1024。负数与非数字一律回落默认值。
+ */
+function clampBackgroundTokens(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.trunc(parsed);
+  if (rounded === 0) return 0;
+  if (rounded < 0) return fallback;
+  return Math.min(COMPACTION_TOKENS_MAX, Math.max(COMPACTION_TOKENS_MIN, rounded));
+}
+
+/**
  * 归一化任意输入为可用配置。
  *
  * `enabled` 只认**布尔真值**（`true`）；其余一律 false——这一项**故意不猜**：
@@ -93,6 +117,10 @@ export function normalizeCompactionConfig(input: unknown): CompactionConfig {
       source.keepRecentTokens,
       DEFAULT_COMPACTION_CONFIG.keepRecentTokens,
     ),
+    backgroundTokens: clampBackgroundTokens(
+      source.backgroundTokens,
+      DEFAULT_COMPACTION_CONFIG.backgroundTokens,
+    ),
   };
 }
 
@@ -105,7 +133,8 @@ export function isDefaultCompactionConfig(config: CompactionConfig): boolean {
   return (
     config.enabled === DEFAULT_COMPACTION_CONFIG.enabled &&
     config.reserveTokens === DEFAULT_COMPACTION_CONFIG.reserveTokens &&
-    config.keepRecentTokens === DEFAULT_COMPACTION_CONFIG.keepRecentTokens
+    config.keepRecentTokens === DEFAULT_COMPACTION_CONFIG.keepRecentTokens &&
+    config.backgroundTokens === DEFAULT_COMPACTION_CONFIG.backgroundTokens
   );
 }
 

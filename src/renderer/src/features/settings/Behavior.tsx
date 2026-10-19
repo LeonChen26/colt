@@ -352,6 +352,7 @@ export function CompactionPanel({
       enabled: config.enabled,
       reserveTokens: Number.isFinite(parsedReserve) ? parsedReserve : config.reserveTokens,
       keepRecentTokens: Number.isFinite(parsedKeep) ? parsedKeep : config.keepRecentTokens,
+      backgroundTokens: config.backgroundTokens,
     });
   };
 
@@ -421,6 +422,7 @@ export function CompactionPanel({
                   enabled: DEFAULT_COMPACTION_CONFIG.enabled,
                   reserveTokens: DEFAULT_COMPACTION_CONFIG.reserveTokens,
                   keepRecentTokens: DEFAULT_COMPACTION_CONFIG.keepRecentTokens,
+                  backgroundTokens: DEFAULT_COMPACTION_CONFIG.backgroundTokens,
                 })
               }
               className="shrink-0 rounded-sm border border-line px-2 py-0.5 text-2xs text-text-muted transition hover:text-text-primary"

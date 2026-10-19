@@ -703,6 +703,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     enabled: command.compaction.enabled,
     reserveTokens: command.compaction.reserveTokens,
     keepRecentTokens: command.compaction.keepRecentTokens,
+    backgroundTokens: command.compaction.backgroundTokens,
   };
   const settings: HarnessSettings = {
     get compaction() {
@@ -779,6 +780,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         enabled: config.enabled,
         reserveTokens: config.reserveTokens,
         keepRecentTokens: config.keepRecentTokens,
+        backgroundTokens: config.backgroundTokens,
       };
     },
     meta,
