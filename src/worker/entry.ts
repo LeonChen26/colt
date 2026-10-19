@@ -408,7 +408,11 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     },
   });
 
-  const mcp = await createMcpRuntime(cwd, (message) => send({ type: "notice", message, kind: "security" }), mcpUserHome());
+  const mcp = await createMcpRuntime(
+    cwd,
+    (message, kind) => send({ type: "notice", message, kind }),
+    mcpUserHome(),
+  );
 
   // 给模型的技能副本：先滤掉被禁用的（P6），再对超长正文截断并指回文件（P7）；
   // 装载结果本身既不滤也不截——设置页要看全文、要画开关。

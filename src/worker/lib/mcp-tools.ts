@@ -466,7 +466,7 @@ async function connectServer(
   declared: McpServerConfig,
   resolved: McpServerConfig,
   cwd: string,
-  notify: (message: string) => void,
+  notify: (message: string, kind?: "security") => void,
 ): Promise<ServerState> {
   // requestTimeoutMs 钉 60s：既兜住握手（connect 不收请求选项），也是调用的默认值
   //（pi-mcp 自身默认 30s，配置层文档口径是 60s，见 MCP_CALL_DEFAULT_TIMEOUT_MS）
@@ -526,6 +526,7 @@ async function connectServer(
       notify(
         `MCP server "${name}" 连上后掉线：${MCP_DROPPED}。` +
           `它的工具仍在清单里、调用会失败；在设置页点「重新加载」可恢复。`,
+        "security",
       );
     });
     liveClients.add(client);
@@ -586,7 +587,7 @@ export interface McpRuntime {
  */
 export async function createMcpRuntime(
   cwd: string,
-  notify: (message: string) => void,
+  notify: (message: string, kind?: "security") => void,
   home?: string,
   options?: { startupBudgetMs?: number },
 ): Promise<McpRuntime> {
@@ -757,7 +758,8 @@ export async function createMcpRuntime(
           // 时就发出去了，此刻写进去没有人再读（下一次重载开头还会清空）。所以这里自己
           // 报一次，且**只报后台那几台**——预算内已连上的首轮 summary 刚说过，重复是噪音。
           const behind = settled.filter((entry) => pending.includes(entry.name));
-          if (!closed && behind.length > 0) notify(lateSummary(behind));
+          // 后台连接失败属于异常，要和掉线一样可回查；只是「连上了」不落库
+          if (!closed && behind.length > 0) notify(lateSummary(behind), "security");
         })
         .finally(() => {
           busy -= 1;
@@ -787,7 +789,11 @@ export async function createMcpRuntime(
       parts.push(`MCP 工具重名 ${collisions.length} 条：${collisions.join("；")}`);
     }
     const summary = parts.join("；");
-    if (summary !== "") notify(summary);
+    // 只把**异常**当安全事件落库：例行「已连接 N 个 server」每次开新会话都会出现，
+    // 落进「事件」页签只会把真正的告警淹掉。含告警或重名才升级为 security。
+    if (summary !== "") {
+      notify(summary, diagnostics.length > 0 || collisions.length > 0 ? "security" : undefined);
+    }
     return { tools, statuses: status(), summary };
   };
 

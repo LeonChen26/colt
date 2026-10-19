@@ -145,22 +145,18 @@ export async function runMcpE2e(
     checks.push(["渲染层自动打开夹具会话（worker 就绪）", opened]);
     if (!opened) return;
 
-    // 装载结果如实告知：worker init 时连接 fixture server，security 类 notice 落 session_events。
-    // 这条同时是「loadMcpTools 在真 worker 里真连上了」的物证（单测只验装载函数本身）。
-    const eventsDeadline = Date.now() + 30_000;
-    let mcpEvent: string | null = null;
-    while (Date.now() < eventsDeadline) {
-      const hit = listSessionEvents(session.id).find(
-        (item) => item.message.includes("MCP") && item.message.includes("fixture"),
-      );
-      if (hit) {
-        mcpEvent = hit.message;
-        break;
-      }
-      await sleep(500);
-    }
-    checks.push(["装载如实告知：事件流里有 MCP 连接记录（真 worker 连上了 fixture server）", mcpEvent !== null]);
-    if (mcpEvent !== null) log(`  事件：${mcpEvent}`);
+    // 例行「已连接 N 个 server」只走 toast、**不落安全事件表**（v2.06）：它每次开新会话
+    // 都会出现，落进「事件」页签只会把真正的告警淹掉。这里做阴性断言；
+    // 「真 worker 连上了 fixture server」的强物证在后面——模型真的调用了 mcp__fixture__echo。
+    await sleep(3000);
+    const routineEvent = listSessionEvents(session.id).find(
+      (item) => item.message.includes("MCP") && item.message.includes("fixture"),
+    );
+    checks.push([
+      "例行连接摘要不落「安全事件」表（只 toast；连上的物证看后面的工具调用）",
+      routineEvent === undefined,
+    ]);
+    if (routineEvent !== undefined) log(`  不该落库的例行摘要：${routineEvent.message}`);
 
     // 对抗条件：审批档。MCP 的安全语义就是「未知工具弹卡等人批」，在全权档验等于卸了闸门验桥。
     await run(
