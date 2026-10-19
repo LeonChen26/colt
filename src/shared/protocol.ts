@@ -359,6 +359,9 @@ export const IPC_CHANNELS = [
   "approval.analyzeConfig.set",
   "diagnose.config.get",
   "diagnose.config.set",
+  /** 电脑控制（实验能力）开关：默认关，下个会话生效 */
+  "computer.config.get",
+  "computer.config.set",
   /** 自动压缩的阈值与开关（A2：原先吃内核默认值、应用层零感知） */
   "compaction.config.get",
   "compaction.config.set",
@@ -821,6 +824,21 @@ export interface IpcInvokeMap {
   };
   /** 保存写后诊断开关；运行中的会话由主进程即时下发，不必重启 */
   "diagnose.config.set": {
+    request: { enabled: boolean };
+    response: { enabled: boolean };
+  };
+  /** 读取电脑控制（实验能力）开关；从未配置过 = 关 */
+  "computer.config.get": {
+    request: void;
+    response: { enabled: boolean };
+  };
+  /**
+   * 保存电脑控制开关。
+   *
+   * 工具清单在会话创建时确定，故**下个会话生效**——已开着的会话要重新打开才有。
+   * （与 `diagnose.config.set` 的「即时下发」不同，别照抄那条的注释。）
+   */
+  "computer.config.set": {
     request: { enabled: boolean };
     response: { enabled: boolean };
   };

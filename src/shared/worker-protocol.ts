@@ -531,6 +531,13 @@ export type WorkerCommand =
        */
       diagnoseEnabled: boolean;
       /**
+       * 电脑控制（`computer_screenshot` / `computer_action`）开关的全局初值。
+       *
+       * 默认关（实验能力）。与 `diagnoseEnabled` 不同：它决定**工具清单**，
+       * 只在会话创建时读一次，运行中改设置不影响已开的会话（见 `computer-config.ts`）。
+       */
+      computerEnabled: boolean;
+      /**
        * 自动压缩配置的全局初值（设置页可改，见 `@shared/compaction-config`）。
        *
        * 不给就是内核默认值——但主进程**总是**给（设置读取有默认值兜底），因为「应用层

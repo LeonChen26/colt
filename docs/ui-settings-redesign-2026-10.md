@@ -331,7 +331,7 @@ MCP                                       本项目 + 用户级继承
 features/Settings.tsx             148 行  外壳：导航 + 条件渲染 + 跨屏提示条
 features/settings/parts.tsx       361 行  PanelHead / Row / Switch / Notice / Chip / Details / TokenInput（`ResourceCard` 已于 v2.02 删除：全仓无使用者）
 features/settings/ProvidersSection.tsx  620 行  模型服务（原样迁移 + 卡片改一层）
-features/settings/Behavior.tsx    357 行  审批 / 写后诊断 / 上下文压缩
+features/settings/Behavior.tsx    437 行  审批 / 写后诊断 / 电脑控制（v2.05 新增屏）/ 上下文压缩
 features/settings/Mcp.tsx         688 行  MCP 一屏两段（新写）
 features/settings/Skills.tsx      332 行  技能（迁移 + 开关换 role=switch）
 ```

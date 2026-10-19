@@ -21,6 +21,7 @@ import {
   Brain,
   Check,
   Layers,
+  Monitor,
   ShieldCheck,
   Sparkles,
   type LucideIcon,
@@ -28,13 +29,13 @@ import {
 import { ICON } from "@/lib/icon";
 import type { Project } from "@shared/protocol";
 import { cn } from "@/lib/utils";
-import { ApprovalPanel, CompactionPanel, DiagnosePanel } from "./settings/Behavior";
+import { ApprovalPanel, CompactionPanel, ComputerPanel, DiagnosePanel } from "./settings/Behavior";
 import { McpPanel, useMcpInstallBusy } from "./settings/Mcp";
 import { ProvidersPanel } from "./settings/ProvidersSection";
 import { SkillsPanel } from "./settings/Skills";
 
-/** 六个屏。id 同时是 `data-settings-nav` 的值（冒烟先点导航再断言，见 `dev/smoke/modes/mcp-catalog.ts`） */
-type PanelId = "providers" | "approval" | "diagnose" | "compaction" | "mcp" | "skills";
+/** 七个屏。id 同时是 `data-settings-nav` 的值（冒烟先点导航再断言，见 `dev/smoke/modes/mcp-catalog.ts`） */
+type PanelId = "providers" | "approval" | "diagnose" | "computer" | "compaction" | "mcp" | "skills";
 
 /**
  * 分组不按作用域分（全局 / 项目级 / 用户级），按**用户想改什么**分：
@@ -48,6 +49,7 @@ const GROUPS: { label: string; items: { id: PanelId; label: string; icon: Lucide
     items: [
       { id: "approval", label: "审批", icon: ShieldCheck },
       { id: "diagnose", label: "写后诊断", icon: Activity },
+      { id: "computer", label: "电脑控制", icon: Monitor },
       { id: "compaction", label: "上下文压缩", icon: Layers },
     ],
   },
@@ -152,6 +154,7 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
           {active === "providers" && <ProvidersPanel onSaved={notify} onError={fail} />}
           {active === "approval" && <ApprovalPanel onSaved={notify} onError={fail} />}
           {active === "diagnose" && <DiagnosePanel onSaved={notify} onError={fail} />}
+          {active === "computer" && <ComputerPanel onSaved={notify} onError={fail} />}
           {active === "compaction" && <CompactionPanel onSaved={notify} onError={fail} />}
           {active === "mcp" && <McpPanel project={project} />}
           {active === "skills" && <SkillsPanel project={project} />}

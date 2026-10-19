@@ -426,7 +426,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
         createEditTool(),
         createBashTool(),
         ...createBrowserTools(hostBridge),
-        ...createComputerTools(hostBridge),
+        // 电脑控制是实验能力（默认关）：开关在会话创建时读一次，故改了设置要重开会话。
+        // 不开时这两个工具根本不注册——模型看不到，也就不存在「点了没反应」的入口。
+        ...(command.computerEnabled ? createComputerTools(hostBridge) : []),
         ...createMemoryTools(hostBridge),
         ...createTodoTools(hostBridge),
         // 检索工具（grep / glob）：纯 fs、无原生依赖，故留在 worker 侧，不走宿主通道。

@@ -191,6 +191,88 @@ export function DiagnosePanel({
 }
 
 /**
+ * 电脑控制开关（实验能力，全局）。
+ *
+ * 默认关。默认不注册 `computer_screenshot` / `computer_action`——它们仅 Windows 实现、
+ * 每个动作 spawn 一次 PowerShell，走 OS 级鼠标键盘注入，而浏览器面板的「接管」
+ * 只拦 `browser_act`、拦不住 OS 级点击。
+ *
+ * **生效时机与写后诊断不同**：工具清单在会话创建时确定，故这里改完要**重新打开会话**才生效。
+ */
+export function ComputerPanel({
+  onSaved,
+  onError,
+}: {
+  onSaved: (message: string) => void;
+  onError: (error: unknown) => void;
+}): React.JSX.Element {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { enabled: current } = await window.colt.invoke("computer.config.get", undefined);
+        setEnabled(current);
+      } catch (e) {
+        onError(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [onError]);
+
+  const toggle = async (): Promise<void> => {
+    const next = !enabled;
+    setEnabled(next); // 乐观更新；失败回滚
+    try {
+      const saved = await window.colt.invoke("computer.config.set", { enabled: next });
+      setEnabled(saved.enabled);
+      onSaved(saved.enabled ? "电脑控制已开启（重新打开会话后生效）" : "电脑控制已关闭（重新打开会话后生效）");
+    } catch (e) {
+      setEnabled(enabled);
+      onError(e);
+    }
+  };
+
+  return (
+    <div>
+      <PanelHead
+        title="电脑控制"
+        scope="全局"
+        lede="让助手截取整个屏幕、用鼠标键盘操作桌面应用。实验能力，默认关闭。"
+      />
+      <div className="mt-3">
+        <RowGroup>
+          <Row
+            label="启用电脑控制"
+            hint="默认关闭。仅 Windows；开启后需重新打开会话才生效。"
+          >
+            <Switch
+              checked={enabled}
+              disabled={loading}
+              label="启用电脑控制"
+              onToggle={() => void toggle()}
+            />
+          </Row>
+        </RowGroup>
+        <div className="mt-2">
+          <Details summary="它会上报哪些工具">
+            <div className="flex flex-col gap-1">
+              <span className="font-mono text-text-secondary">computer_screenshot → 截取整屏（含隐私，需确认）</span>
+              <span className="font-mono text-text-secondary">computer_action → 点击 / 输入 / 按键（最高风险，每次确认）</span>
+              <span className="mt-1">
+                关闭时这两个工具不注册：模型看不到它们，也就不存在「点了没反应」的入口。
+              </span>
+            </div>
+          </Details>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 自动压缩（上下文管理）的设置，全局。
  *
  * 修的是「**看不见也调不了**」：自动压缩一直开着（吃内核默认值），但应用层对此零感知——

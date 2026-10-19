@@ -62,6 +62,7 @@ import {
   setAnalyzeCommandAllowlist,
 } from "../approval/config";
 import { getDiagnoseEnabled, setDiagnoseEnabled } from "../diagnose-config";
+import { getComputerEnabled, setComputerEnabled } from "../computer-config";
 import { getCompactionConfig, setCompactionConfig } from "../compaction-config";
 import { isDefaultCompactionConfig } from "@shared/compaction-config";
 import { hostBridge } from "../host";
@@ -740,6 +741,16 @@ export function registerIpcHandlers(): void {
     setDiagnoseEnabled(request.enabled);
     // 立即生效：推给池中全部 worker（开关是全局的，不是会话级的）
     sessionManager.broadcastDiagnoseEnabled(request.enabled);
+    return { enabled: request.enabled };
+  });
+
+  handle("computer.config.get", () => ({
+    enabled: getComputerEnabled(),
+  }));
+
+  handle("computer.config.set", (request) => {
+    setComputerEnabled(request.enabled);
+    // 不下发：工具清单是会话创建时确定的，改开关只影响下个会话（见协议注释）
     return { enabled: request.enabled };
   });
 

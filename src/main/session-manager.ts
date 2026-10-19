@@ -25,6 +25,7 @@ import type { ApprovalMode, ProviderConfig } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getDiagnoseEnabled } from "./diagnose-config";
+import { getComputerEnabled } from "./computer-config";
 import { getCompactionConfig } from "./compaction-config";
 import { getSecret } from "./secrets";
 import { buildWorkerEnv, collectWorkerControl } from "./lib/worker-env";
@@ -1188,6 +1189,8 @@ export class SessionManager {
       rgPath: resolveRgPath(),
       // 写后诊断开关：全局设置，worker 侧 after_tool 行为的初值（运行中变更走 diagnoseEnabled 命令）
       diagnoseEnabled: getDiagnoseEnabled(),
+      // 电脑控制（实验）开关：决定工具清单，只有会话创建时读一次（下个会话生效）
+      computerEnabled: getComputerEnabled(),
       // 自动压缩配置：全局设置。**总是给**（读取有默认值兜底）——界面显示的「当前生效值」
       // 必须就是 worker 真正在用的那份，否则显示的是假的（运行中变更走 setCompaction 命令）
       compaction: getCompactionConfig(),
