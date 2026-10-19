@@ -423,6 +423,15 @@ export type FileReadResult =
  */
 export interface WikiTreeNode {
   title: string;
+  /**
+   * 这个模块包含的组件，CodeWiki 原样给出的 `相对路径::符号`（已把 `\` 归一成 `/`）。
+   * 没有组件（纯分组节点）或产物是旧版时为**空数组**，不是 null——界面据此决定是否画
+   * 「涉及组件」段，空数组与「没读到」在这里没有区别，也不需要区别。
+   *
+   * ⚠️ 这是**生成的产物**，与 Markdown 同属不可信输入：渲染层只把它拆成
+   * 「路径 + 符号」去调 `file.read`，根与越界校验仍在主进程（不在这里判）。
+   */
+  components: string[];
   page: string | null;
   children: WikiTreeNode[];
 }

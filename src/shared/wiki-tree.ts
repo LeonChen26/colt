@@ -14,13 +14,47 @@
 import type { WikiTreeNode } from "./protocol";
 import { WIKI_DIR } from "./wiki";
 
-/** `module_tree.json` 的一个节点：只有 `children` 是我们认的，其余键（`path`/`components`）忽略 */
+/** `module_tree.json` 的一个节点：`children` 与 `components` 是我们认的，其余键忽略 */
 interface RawNode {
   children?: unknown;
+  components?: unknown;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 拆一条 CodeWiki 的组件引用：`src/main/session-manager.ts::SessionManager.abort`。
+ *
+ * `::` 后面是符号名（CodeWiki 只给到类 / 方法，**没有行号**），也可能没有——
+ * 旧版产物或纯文件引用就只有路径。返回的 `path` 已把 `\` 归一成 `/`，
+ * 否则 Windows 产物在渲染层拼出来的路径在别处会对不上。
+ *
+ * 空串 / 只有 `::` 这类残渣返回 null，由调用方跳过（不画一个点了报错的死条目）。
+ */
+export function parseWikiComponent(
+  raw: string,
+): { path: string; symbol: string | null } | null {
+  const text = raw.trim().split("\\").join("/");
+  if (text === "") return null;
+  const split = text.indexOf("::");
+  const path = (split === -1 ? text : text.slice(0, split)).trim();
+  if (path === "") return null;
+  const symbol = split === -1 ? "" : text.slice(split + 2).trim();
+  return { path, symbol: symbol === "" ? null : symbol };
+}
+
+/** 读一个节点的 components：只认非空字符串，归一分隔符，按原序去重 */
+function readComponents(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const text = item.trim().split("\\").join("/");
+    if (text !== "") seen.add(text);
+  }
+  return [...seen];
 }
 
 /**
@@ -51,14 +85,47 @@ export function buildWikiTree(
     const nodes: WikiTreeNode[] = [];
     for (const [title, value] of Object.entries(level)) {
       const names = [...parents, title];
-      const childrenRaw = isRecord(value) ? (value as RawNode).children : undefined;
+      const raw = isRecord(value) ? (value as RawNode) : undefined;
+      const childrenRaw = raw?.children;
       const children = isRecord(childrenRaw) ? walk(childrenRaw, names) : [];
       const found = pageCandidates(names).find((rel) => exists(rel)) ?? null;
-      nodes.push({ title, page: found === null ? null : `${WIKI_DIR}/${found}`, children });
+      nodes.push({
+        title,
+        components: readComponents(raw?.components),
+        page: found === null ? null : `${WIKI_DIR}/${found}`,
+        children,
+      });
     }
     return nodes;
   };
   return walk(raw, []);
+}
+
+/**
+ * 某一页对应哪个模块的组件清单；概览页（不在树里）返回空数组。
+ *
+ * **命中即停**：`pageCandidates` 的 flat 兜底可能让不同父节点下的同名叶子解析到
+ * 同一个页面——此时返回**树序第一个**命中者的清单，哪怕它是空数组。不能用
+ * 「清单非空才认命中」判断：那会让「命中但没组件」继续搜到撞页兄弟的非空清单，
+ * 结果取决于遍历顺序。
+ */
+function findComponents(
+  nodes: readonly WikiTreeNode[],
+  page: string,
+): string[] | null {
+  for (const node of nodes) {
+    if (node.page === page) return node.components;
+    const found = findComponents(node.children, page);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+export function componentsForPage(
+  nodes: readonly WikiTreeNode[],
+  page: string,
+): string[] {
+  return findComponents(nodes, page) ?? [];
 }
 
 /** 摊平成「有页面的模块」清单，保持树序（父在子前），供注入块按预算裁剪 */

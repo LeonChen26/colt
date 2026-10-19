@@ -16,7 +16,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { renderWikiMap, WIKI_MAP_BUDGET_CHARS } from "@shared/wiki-map";
-import { buildWikiTree, flattenWikiPages, pageCandidates } from "@shared/wiki-tree";
+import {
+  buildWikiTree,
+  componentsForPage,
+  flattenWikiPages,
+  pageCandidates,
+  parseWikiComponent,
+} from "@shared/wiki-tree";
 import { createWikiMapInjector } from "../src/worker/lib/wiki-map.ts";
 
 /** 造一棵最小树：`{ 父: { children: { 子: {} } }, 平铺: {} }` */
@@ -75,6 +81,59 @@ describe("布局规则：摊平给注入用", () => {
       { path: "docs/wiki/父/子.md", title: "父 / 子" },
       { path: "docs/wiki/平铺.md", title: "平铺" },
     ]);
+  });
+});
+
+describe("组件清单：从 module_tree 带出", () => {
+  const raw = {
+    模块: {
+      // 真实产物里是 Windows 反斜杠；空串与非字符串要被忽略，重复项按原序去重
+      components: ["src\\main\\a.ts::A", "src/main/b.ts::B.run", "  ", 42, "src\\main\\a.ts::A"],
+      children: {},
+    },
+    纯分组: {},
+  };
+  const tree = buildWikiTree(raw, () => false);
+
+  test("归一分隔符、去重、忽略残渣", () => {
+    assert.deepEqual(tree[0]?.components, ["src/main/a.ts::A", "src/main/b.ts::B.run"]);
+    assert.deepEqual(tree[1]?.components, [], "没有 components 的节点给空数组，不是 undefined");
+  });
+
+  test("parseWikiComponent：拆路径与符号，残渣返回 null", () => {
+    assert.deepEqual(parseWikiComponent("src\\main\\a.ts::A.b"), {
+      path: "src/main/a.ts",
+      symbol: "A.b",
+    });
+    assert.deepEqual(parseWikiComponent("src/main/a.ts"), {
+      path: "src/main/a.ts",
+      symbol: null,
+    });
+    assert.deepEqual(parseWikiComponent("src/main/a.ts::"), {
+      path: "src/main/a.ts",
+      symbol: null,
+    });
+    assert.equal(parseWikiComponent(""), null);
+    assert.equal(parseWikiComponent("  ::X"), null, "没有路径的引用不画成死条目");
+  });
+
+  test("componentsForPage：命中即停——撞页时取树序第一个命中者，与兄弟无关", () => {
+    // flat 兜底让不同父节点下的同名叶子解析到同一个 <名>.md（两个节点撞同一页）
+    const collided = {
+      A: { children: { 共享: { components: [] } } },
+      B: { children: { 共享: { components: ["src/b.ts::B"] } } },
+    };
+    const tree = buildWikiTree(collided, (rel) => rel === "共享.md");
+    // 第一个命中者（A/共享）清单为空：不能把「没组件」当「没命中」继续搜到 B 的非空清单
+    assert.deepEqual(componentsForPage(tree, "docs/wiki/共享.md"), []);
+    // 正常路径：嵌套命中非空清单原样返回
+    const normal = buildWikiTree(
+      { A: { children: { 共享: { components: ["src/a.ts::A"] } } }, B: { children: { 别的: {} } } },
+      (rel) => rel === "共享.md",
+    );
+    assert.deepEqual(componentsForPage(normal, "docs/wiki/共享.md"), ["src/a.ts::A"]);
+    // 概览页不在树里：空数组（与「命中但没组件」同形，界面都不画清单）
+    assert.deepEqual(componentsForPage(normal, "docs/wiki/overview.md"), []);
   });
 });
 

@@ -10,6 +10,11 @@
  * 看源码仍然走「文件」页签与 `read`（`AGENTS.md` §3.6：入口一旦职责重叠，
  * 用户就不知道该点哪个）。所以本面板**不**做文件树、不做搜索、不做编辑。
  *
+ * 唯一的源码入口是**页底的「涉及组件」**：`module_tree.json` 已经把「这一页讲哪些
+ * 组件」写好了（`路径::符号`），点一条复用现成的 `FilePreview` 打开。它没有目录树、
+ * 没有搜索，入口只来自当前页面——这是一次**从文档到源码的下钻**，不是第二个浏览器。
+ * 边界与 `file.read` 同源：渲染层只传路径，越界由主进程拒绝。
+ *
  * ## 三种状态都要如实呈现，不能糊成一种
  *
  *   - 没生成：说明怎么生成（这是正常状态，不是错误）
@@ -39,10 +44,12 @@ import type { WikiGenerateSnapshot, WikiPage, WikiStatus, WikiTreeNode } from "@
 import { WIKI_LOG_MAX_LINES } from "@shared/wiki";
 import { ICON } from "@/lib/icon";
 import { resolveWikiLink } from "@/lib/wiki-link";
+import { parseWikiComponent, componentsForPage } from "@shared/wiki-tree";
 import { cn } from "../../../lib/utils";
 import { CodeBlock, Markdown } from "../../../components/Markdown";
 import { SidePanelShell } from "./SidePanelShell";
 import { MermaidBlock } from "./MermaidBlock";
+import { FilePreview } from "./FilePreview";
 
 /** 从 `<pre>` 的孩子里认出 ```mermaid 块；不是就返回 null */
 function mermaidSource(children: ReactNode): string | null {
@@ -220,6 +227,10 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
    * 否则界面会停在一帧（看起来像卡死）。
    */
   const jobSessionRef = useRef<string | null>(null);
+  /** 页面里点开的组件（源码预览）；null = 正在看 wiki 页 */
+  const [source, setSource] = useState<{ path: string; symbol: string | null } | null>(null);
+  /** 源码预览的重读令牌：再点同一个组件也要重读（agent 可能刚改过） */
+  const [sourceReload, setSourceReload] = useState(0);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -241,6 +252,7 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
   const openPage = useCallback(
     async (path: string) => {
       setOpenPath(path);
+      setSource(null);
       setPageLoading(true);
       setPageError(null);
       try {
@@ -331,6 +343,7 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
     setPage(null);
     setPageError(null);
     setExpanded(new Set());
+    setSource(null);
     setJob(null);
     setStartError(null);
     jobSessionRef.current = null;
@@ -420,38 +433,93 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
   // `done` 不占位置：产物时间与页数已经在摘要条里。失败 / 取消要留到用户看见为止。
   const showJob = job !== null && job.phase !== "done";
 
-  // 页面视图
+  // 页面视图：页面 → 组件源码，逐层后退
   if (openPath !== null) {
+    const pageComponents = componentsForPage(status?.tree ?? [], openPath);
+    const pageName = openPath.slice(openPath.lastIndexOf("/") + 1).replace(/\.md$/i, "");
     return (
       <div className="flex min-h-0 w-full flex-1 flex-col">
         <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-1 border-b border-line px-2">
           <button
             type="button"
             onClick={() => {
+              if (source !== null) {
+                setSource(null);
+                return;
+              }
               setOpenPath(null);
               setPage(null);
               setPageError(null);
             }}
             className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted hover:bg-line-soft hover:text-text-primary"
-            title="返回目录"
+            title={source === null ? "返回目录" : "返回页面"}
           >
             <ArrowLeft {...ICON.sm} />
           </button>
-          <span className="min-w-0 flex-1 truncate text-xs text-text-secondary" title={openPath}>
-            {openPath.slice(openPath.lastIndexOf("/") + 1).replace(/\.md$/i, "")}
+          <span
+            className="min-w-0 flex-1 truncate text-xs text-text-secondary"
+            title={
+              source === null
+                ? openPath
+                : `${source.path}${source.symbol === null ? "" : ` · ${source.symbol}`}`
+            }
+          >
+            {source === null
+              ? pageName
+              : (source.symbol ?? source.path.slice(source.path.lastIndexOf("/") + 1))}
           </span>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-          {pageLoading ? (
-            <p className="py-8 text-center text-xs text-text-muted">加载中…</p>
-          ) : pageError !== null ? (
-            <div className="rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
-              {pageError}
-            </div>
-          ) : page === null ? null : (
-            <Markdown components={components}>{page.text}</Markdown>
-          )}
-        </div>
+        {source !== null ? (
+          <FilePreview
+            sessionId={sessionId}
+            path={source.path}
+            reloadToken={sourceReload}
+            onReload={() => setSourceReload((token) => token + 1)}
+          />
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+            {pageLoading ? (
+              <p className="py-8 text-center text-xs text-text-muted">加载中…</p>
+            ) : pageError !== null ? (
+              <div className="rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
+                {pageError}
+              </div>
+            ) : page === null ? null : (
+              <Markdown components={components}>{page.text}</Markdown>
+            )}
+
+            {pageComponents.length > 0 ? (
+              <div className="mt-4 border-t border-line pt-2" data-wiki-components={pageComponents.length}>
+                <div className="mb-1 text-2xs uppercase tracking-[.5px] text-text-muted">
+                  涉及组件 · {pageComponents.length}
+                </div>
+                {pageComponents.map((raw, index) => {
+                  const part = parseWikiComponent(raw);
+                  if (part === null) return null;
+                  return (
+                    <button
+                      key={`${raw}:${index}`}
+                      type="button"
+                      data-wiki-component={part.path}
+                      onClick={() => {
+                        setSource(part);
+                        // 连点同一个组件也要重读：agent 可能刚改过源码
+                        setSourceReload((token) => token + 1);
+                      }}
+                      className="mb-1 flex w-full items-baseline gap-2 rounded-sm px-1 py-0.5 text-left transition hover:bg-line-soft"
+                      title={`${part.path}${part.symbol === null ? "" : ` · ${part.symbol}`}`}
+                    >
+                      <span className="shrink-0 truncate font-mono text-2xs text-text-secondary">
+                        {part.symbol ?? "（整个文件）"}
+                      </span>
+                      <span className="min-w-0 truncate text-2xs text-text-muted">{part.path}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
     );
   }

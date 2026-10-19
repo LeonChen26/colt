@@ -83,4 +83,17 @@ describe("Wiki 生成接线（源码契约）", () => {
       "动作应排在刷新左侧，刷新固定在最右",
     );
   });
+
+  test("组件跳转复用 FilePreview（不是第二套文件浏览器）", () => {
+    assert.ok(
+      PANEL.includes("parseWikiComponent"),
+      "页面没有解析 module_tree 的组件引用",
+    );
+    assert.ok(PANEL.includes("<FilePreview"), "打开源码应复用现成的 FilePreview");
+    assert.ok(PANEL.includes("data-wiki-component="), "组件条目缺少可定位标记");
+    assert.ok(
+      !PANEL.includes('invoke("file.read"'),
+      "文件读取应交给 FilePreview（根与越界校验只有一条链路）",
+    );
+  });
 });

@@ -106,6 +106,15 @@ describe("readWikiStatus：布局与缓存目录", () => {
     assert.equal(ghost.page, null);
   });
 
+  test("模块的组件清单从 module_tree 带出（页面跳源码的入口）", async () => {
+    const status = await readWikiStatus(root);
+    const module = status.tree[0]?.children.find((node) => node.title === "会话编排与 IPC");
+    assert.deepEqual(module?.components, ["src/main/session-manager.ts::SessionManager"]);
+    // 没有页面的模块也照样给出组件——页面缺失不该把「这一页讲什么」一起吞掉
+    const ghost = status.tree[0]?.children.find((node) => node.title === "未生成");
+    assert.deepEqual(ghost?.components, ["src/main/ghost.ts::ghost"]);
+  });
+
   test("页面数是 *.md 且不含 temp/（4 页：overview + 两个模块页 + 子页）", async () => {
     const status = await readWikiStatus(root);
     assert.equal(status.pages, 4);
