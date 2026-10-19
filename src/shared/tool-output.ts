@@ -20,7 +20,10 @@
 /** 落盘目录名（主进程在 userData 下建它；worker 拿主进程下发的绝对路径写） */
 export const TOOL_OUTPUT_DIR_NAME = "tool-output";
 
-/** 单张图片的落盘上限：与 `file.read` 的图片上限一致，避免同一件事有两套数 */
+/**
+ * 单张图片的上限：工具输出落盘（worker）与文件预览（`main/file-read.ts`）共用这一个值。
+ * 两处各写一个 8MB 时只要有人只改一处，同一张图就会「预览得到、落盘不了」（或反之）。
+ */
 export const MAX_TOOL_IMAGE_BYTES = 8 * 1024 * 1024;
 
 const EXT_TO_MIME: Record<string, string> = {

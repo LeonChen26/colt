@@ -31,7 +31,8 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { AgentHarnessTool, ExecutionToolContext } from "@earendil-works/pi-agent-core";
-import { escapesRoot } from "@shared/path-boundary";
+import { looksBinary } from "@shared/binary-sniff";
+import { escapesRoot, toPosix } from "@shared/path-boundary";
 import { IgnoreFilter, SKIP_DIRS } from "./search-ignore";
 import {
   DEFAULT_RG_TIMEOUT_MS,
@@ -126,11 +127,6 @@ async function readTextFile(path: string): Promise<string> {
 /** Windows 的文件名比较不区分大小写；检索结果按同一口径匹配（路径本身仍原样返回） */
 const CASE_INSENSITIVE_FS = process.platform === "win32";
 
-/** 反斜杠统一成 `/`：对内一切比较、匹配、返回都用正斜杠（Windows 上尤其要紧） */
-function toPosix(value: string): string {
-  return value.split("\\").join("/");
-}
-
 type InRoot =
   | { ok: true; abs: string; rel: string }
   | { ok: false; error: string };
@@ -212,11 +208,6 @@ export function globToRegExp(glob: string): RegExp {
     out += escapeRegExp(char);
   }
   return new RegExp(`^${out}$`, CASE_INSENSITIVE_FS ? "i" : "");
-}
-
-/** 二进制判定：前 8KB 里出现 NUL 字节即当二进制（文本文件不会有） */
-function looksBinary(buffer: Buffer): boolean {
-  return buffer.subarray(0, 8192).includes(0);
 }
 
 /**

@@ -10,6 +10,7 @@ import type { Project, ProjectFileChange, ProjectKind, SessionEvent, SessionInfo
 import type { ViewFileChange } from "@shared/worker-protocol";
 import type { ViewTodo } from "@shared/todo";
 import { toStoredThinkingLevel } from "@shared/thinking-level";
+import { promptTokensOf } from "@shared/token-usage";
 import { getDatabase, normalizeRootKey } from "./index";
 
 interface ProjectRow {
@@ -615,7 +616,11 @@ export function latestContextUsed(sessionId: string): number {
     cache_write_tokens: number;
   } | undefined;
   if (!row) return 0;
-  return row.input_tokens + row.cache_read_tokens + row.cache_write_tokens;
+  return promptTokensOf({
+    input: row.input_tokens,
+    cacheRead: row.cache_read_tokens,
+    cacheWrite: row.cache_write_tokens,
+  });
 }
 
 /** 项目级改动汇总：跨会话，按时间倒序 */

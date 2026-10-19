@@ -481,8 +481,8 @@ export function isAnalyzeEligible(
   });
 }
 
-/** 判断已记忆的规则是否覆盖本次调用 */
-function matchedByRules(
+/** 判断已记忆的规则是否覆盖本次调用（`store.ts` 的自动放行复用同一份，别各写一遍） */
+export function matchedByRules(
   invocation: ToolInvocation,
   signature: string,
   rules: AllowRule[],

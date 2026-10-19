@@ -24,7 +24,7 @@ import type { ThinkingLevel } from "@shared/thinking-level";
 import type { ViewTodo } from "@shared/todo";
 import { toolImageFileName } from "@shared/tool-output";
 import { serializeArgs } from "./telemetry";
-import { promptTokensOf } from "./prompt-tokens";
+import { promptTokensOf } from "@shared/token-usage";
 import { parseSkillInvocation, skillPathMatcher } from "./skills";
 
 /**
@@ -393,7 +393,7 @@ export function project(
     stats: {
       messageCount: snapshot.stats?.messageCount ?? 0,
       // 「输入」按 prompt 总量报（含缓存命中部分）——内核的 `usage.input` 是净输入，
-      // 单用它会让长会话的「输入」比真实上下文小一个数量级（见 `prompt-tokens.ts`）。
+      // 单用它会让长会话的「输入」比真实上下文小一个数量级（见 `@shared/token-usage`）。
       promptTokens: usage === undefined ? 0 : promptTokensOf(usage),
       outputTokens: usage?.output ?? 0,
       totalTokens: usage?.totalTokens ?? 0,

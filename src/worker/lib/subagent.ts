@@ -43,7 +43,7 @@ import { projectSubagent, type SubagentProjectionInput } from "./subagent-view";
 import { isQuestionTool } from "./ask-user-tool";
 import { toolDurations } from "./tool-bookkeeping";
 import { forgetLaneModel, recordLaneModelFrom } from "./lane-model";
-import { promptTokensOf } from "./prompt-tokens";
+import { promptTokensOf } from "@shared/token-usage";
 import { createHandoffTimer, handoffInstruction, type HandoffLimits } from "./subagent-handoff";
 
 /** 工具名常量：注册名与闸门判据**必须同源**（改错会静默变成「委派也要弹卡」） */
@@ -134,7 +134,7 @@ interface SubagentRun {
   /** 走到时间上限、改由「总结交接」收尾（见 `subagent-handoff.ts`） */
   handedOff?: boolean;
   snapshot: LaneSnapshot;
-  /** `promptTokens` 口径与主对话一致：含缓存命中部分（见 `prompt-tokens.ts`） */
+  /** `promptTokens` 口径与主对话一致：含缓存命中部分（见 `@shared/token-usage`） */
   stats: { promptTokens: number; outputTokens: number; costUsd: number };
   unsubscribe: () => void;
 }

@@ -14,27 +14,11 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { SNIFF_BYTES } from "@shared/limits";
+import { looksBinary } from "@shared/binary-sniff";
 import type { FileBaseline } from "@shared/worker-protocol";
 
 /** 留基线的文本上限：与预览同量级。超了就不留——不留只是净值算不出，截断则会算错 */
 export const BASELINE_TEXT_LIMIT = 1024 * 1024;
-
-/**
- * 头部出现 NUL 字节即按二进制处理（UTF-8 文本不会含 NUL）。
- *
- * 本函数与 `main/file-read.ts` 的 `looksBinary` 是**同判据的两份实现**（规则逐字相同），
- * 共用 `@shared/limits` 的 `SNIFF_BYTES`——嗅探窗口若分成两个值，同一个文件会出现
- * 「预览说二进制 / 基线说文本」这类对不上。规则本身仍是两份：它只有三行、且不跨进程
- * 传递，抽到 shared 的收益不抵多一层的成本。**改这里时请同步改 `file-read.ts` 那份。**
- */
-function looksBinary(buffer: Buffer): boolean {
-  const end = Math.min(buffer.length, SNIFF_BYTES);
-  for (let index = 0; index < end; index += 1) {
-    if (buffer[index] === 0) return true;
-  }
-  return false;
-}
 
 /** 读改动前的文件内容；读不到也要给出**可区分**的结论（见文件头） */
 export function captureBaseline(cwd: string, rawPath: string): FileBaseline {

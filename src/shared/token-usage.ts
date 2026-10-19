@@ -11,18 +11,23 @@
  * （实测某会话累计净输入 103,246、缓存读 4,004,672，相差 39 倍），
  * 界面上就成了「输入 103K / 输出 47K」这种看着像统计坏了的结论。
  *
- * 公式与 `telemetry.ts` 的上下文占用（`contextUsedFromUsage`）**同源**：
+ * 公式与 `worker/lib/telemetry.ts` 的上下文占用（`contextUsedFromUsage`）**同源**：
  *   prompt tokens = input + cacheRead + cacheWrite
- * 会话视图 stats、子代理 stats、占用条三处都走这个函数，不再各写一遍加法
+ * 会话视图 stats、子代理 stats、占用条、统计页签（`renderer/lib/session-stats.ts`）
+ * 与主进程的用量汇总（`main/db/repo.ts`）都走这个函数，不再各写一遍加法
  * （同一件事两处口径不一致，是本仓反复踩过的坑）。
+ *
+ * 放在 shared 而不是 worker：三端都要这条加法；放在 worker 时 main / renderer
+ * 只能各手写一遍，正是此前漂开的原因。
  */
-export interface PromptTokenUsage {
+export interface PromptTokenParts {
+  /** 净输入（不含缓存命中） */
   input: number;
   cacheRead: number;
   cacheWrite: number;
 }
 
 /** prompt tokens = 净输入 + 缓存读 + 缓存写 */
-export function promptTokensOf(usage: PromptTokenUsage): number {
+export function promptTokensOf(usage: PromptTokenParts): number {
   return usage.input + usage.cacheRead + usage.cacheWrite;
 }

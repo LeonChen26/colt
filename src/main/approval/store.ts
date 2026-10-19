@@ -21,7 +21,13 @@ import type {
   ApprovalRuleKind,
   ApprovalRuleView,
 } from "@shared/protocol";
-import { buildSignature, evaluateTool, type AllowRule, type ToolInvocation } from "./policy";
+import {
+  buildSignature,
+  evaluateTool,
+  matchedByRules,
+  type AllowRule,
+  type ToolInvocation,
+} from "./policy";
 
 export interface ApprovalDecision {
   approved: boolean;
@@ -423,17 +429,4 @@ function parseArgs(argsJson: string): Record<string, unknown> | null {
     return null;
   }
   return null;
-}
-
-/** 判断已记忆的规则是否覆盖本次调用 */
-function matchedByRules(
-  invocation: ToolInvocation,
-  signature: string,
-  rules: AllowRule[],
-): boolean {
-  return rules.some((rule) => {
-    if (rule.toolName !== invocation.toolName) return false;
-    if (rule.scope === "tool") return true;
-    return rule.signature === signature;
-  });
 }

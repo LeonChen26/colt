@@ -21,6 +21,7 @@
  * 命中率的分母也用 `promptTokens`——分母不含命中量本身时，比率可以超过 100%（实测 3878%）。
  */
 import type { ToolCallRecord, UsageRecord } from "@shared/protocol";
+import { promptTokensOf } from "@shared/token-usage";
 import { parseArgsJson } from "./format";
 
 /** 模型缺失时的占位（DB 里 `model` 可为 null：早期记录、或供应商没回传） */
@@ -32,7 +33,7 @@ export interface UsageTotals {
   /**
    * 送进模型的 prompt 总量（含缓存命中部分），**界面上的「输入」就是它**。
    * = `inputTokens + cacheReadTokens + cacheWriteTokens`，与视图 `stats.promptTokens`、
-   * 上下文占用条同一口径（视图侧的真源是 worker 的 `prompt-tokens.ts`）。
+   * 上下文占用条同一口径（真源是 `@shared/token-usage` 的 `promptTokensOf`）。
    * 只报 `inputTokens`（DB 里的净输入）会把长会话的输入报小一个数量级。
    */
   promptTokens: number;
@@ -120,7 +121,11 @@ export function buildSessionStats(
   const totals = records.reduce<UsageTotals>(
     (acc, item) => ({
       calls: acc.calls + 1,
-      promptTokens: acc.promptTokens + item.inputTokens + item.cacheReadTokens + item.cacheWriteTokens,
+      promptTokens: acc.promptTokens + promptTokensOf({
+        input: item.inputTokens,
+        cacheRead: item.cacheReadTokens,
+        cacheWrite: item.cacheWriteTokens,
+      }),
       inputTokens: acc.inputTokens + item.inputTokens,
       outputTokens: acc.outputTokens + item.outputTokens,
       cacheReadTokens: acc.cacheReadTokens + item.cacheReadTokens,
@@ -145,7 +150,11 @@ export function buildSessionStats(
       costShare: 0,
     };
     stat.calls += 1;
-    stat.promptTokens += record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens;
+    stat.promptTokens += promptTokensOf({
+      input: record.inputTokens,
+      cacheRead: record.cacheReadTokens,
+      cacheWrite: record.cacheWriteTokens,
+    });
     stat.outputTokens += record.outputTokens;
     stat.costUsd += record.costUsd;
     byModel.set(key, stat);

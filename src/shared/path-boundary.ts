@@ -25,6 +25,17 @@
 import { isAbsolute } from "node:path";
 
 /**
+ * 反斜杠统一成 `/`：对内一切比较、匹配、返回都用正斜杠（Windows 上尤其要紧）。
+ *
+ * 全仓只有这一份。此前 `main/git.ts` 与 `worker/lib/search-tools.ts` 各写了一遍
+ * （`replaceAll` 与 `split().join()` 两种写法），同一个路径在不同链路上可能给出
+ * 不同的字符串——比较、去重、匹配都会因此对不上，且不会报错。
+ */
+export function toPosix(value: string): string {
+  return value.split("\\").join("/");
+}
+
+/**
  * `rel`（相对路径）是否指到根之外。
  *
  * 判法是**逐段走一遍、数净深度**（不是字符串前缀比较）：整段是 `..` 就减一层，

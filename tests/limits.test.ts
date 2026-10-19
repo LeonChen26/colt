@@ -63,8 +63,9 @@ const sources = allSources();
 
 /** 「已知消费方 → 它应当 import 的符号」。改动实现时同步改这里，别放宽断言 */
 const CONSUMERS: { file: string; symbol: string }[] = [
-  { file: join(SRC, "main", "file-read.ts"), symbol: "SNIFF_BYTES" },
-  { file: join(SRC, "worker", "lib", "baseline.ts"), symbol: "SNIFF_BYTES" },
+  // 二进制判定的**唯一消费者**是 shared/binary-sniff（三处调用都走它）；
+  // 预览 / 基线 / 检索不再各自 import 常量，也就没法各自漂一个窗口长度。
+  { file: join(SRC, "shared", "binary-sniff.ts"), symbol: "SNIFF_BYTES" },
   { file: join(SRC, "main", "approval", "store.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
   { file: join(SRC, "main", "session-manager.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
   { file: join(SRC, "worker", "entry.ts"), symbol: "APPROVAL_TIMEOUT_MS" },
@@ -74,9 +75,12 @@ const CONSUMERS: { file: string; symbol: string }[] = [
   { file: join(SRC, "main", "session-manager.ts"), symbol: "MCP_STARTUP_BUDGET_MS" },
 ];
 
-/** 从 `@shared/limits` 的 import 语句里取花括号内容——`[^}]*` 不会跨到别的 import 上 */
+/**
+ * 从 limits 的 import 语句里取花括号内容——`[^}]*` 不会跨到别的 import 上。
+ * `shared/` 内部按惯例用相对路径（`"./limits"`），其余层用别名；两种都认。
+ */
 function importedFromLimits(text: string): string | undefined {
-  return /import\s*\{([^}]*)\}\s*from\s*"@shared\/limits"/.exec(text)?.[1];
+  return /import\s*\{([^}]*)\}\s*from\s*"(?:@shared\/limits|\.\/limits)"/.exec(text)?.[1];
 }
 
 describe("跨进程常量", () => {

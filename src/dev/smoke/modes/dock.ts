@@ -316,7 +316,7 @@ export async function runDock(
    * 读「任务摘要」的**本次用量**段（v1.61）：`present` 判整段在不在——**零消耗时必须不在**
    * （「无消耗时整段不渲染」是这段的规矩，也是它不摆空壳的判据）。`cost` 读结论里的费用，
    * `hasExit` 读去「统计」页签的那个出口；`input` / `output` 读两格里的**渲染文字**
-   * （v1.91：口径是 prompt 总量，见 `prompt-tokens.ts`——断言取产品自己的标记
+   * （v1.91：口径是 prompt 总量，见 `@shared/token-usage`——断言取产品自己的标记
    * `[data-usage-token]`，不靠标签文字或层级去猜是哪一格）。
    */
   const usageProbe = (): Promise<{

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isWithinRoot } from "./lib/path-guard";
+import { toPosix } from "@shared/path-boundary";
 import type { GitCommittedResult, GitStatus } from "@shared/protocol";
 
 const HEAD_REF_PREFIX = "ref: refs/heads/";
@@ -64,9 +65,6 @@ export function readGitStatus(cwd: string): GitStatus {
     return { isRepo: true, branch: null, detached: false };
   }
 }
-
-/** 归一为正斜杠（比较与传给 git 的 pathspec 都用它；Windows 下 git 只认正斜杠形式最稳） */
-const toPosix = (path: string): string => path.replaceAll("\\", "/");
 
 /** execFile 的公共参数：只读操作，别在失败处打扰用户（超时即杀，不给慢仓库拖住 IPC 的机会） */
 const GIT_SPAWN_OPTIONS = { timeout: 10_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 } as const;

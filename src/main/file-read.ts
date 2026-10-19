@@ -21,14 +21,13 @@
  */
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
-import { SNIFF_BYTES } from "@shared/limits";
+import { looksBinary } from "@shared/binary-sniff";
+import { MAX_TOOL_IMAGE_BYTES } from "@shared/tool-output";
 import { isWithinRoot } from "./lib/path-guard";
 import type { FileReadResult } from "@shared/protocol";
 
 /** 文本预览上限：超出只回「过大」，**不做截断**——半截文件比看不到更容易误导 */
 export const FILE_TEXT_LIMIT = 1024 * 1024;
-/** 图片预览上限：要转 base64 走 IPC，比文本更贵，所以放得宽松但仍有界 */
-export const FILE_IMAGE_LIMIT = 8 * 1024 * 1024;
 const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -38,15 +37,6 @@ const IMAGE_MIME: Record<string, string> = {
   ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
 };
-
-/** 头部出现 NUL 字节即按二进制处理（UTF-8 文本不会含 NUL） */
-function looksBinary(buffer: Buffer): boolean {
-  const end = Math.min(buffer.length, SNIFF_BYTES);
-  for (let i = 0; i < end; i += 1) {
-    if (buffer[i] === 0) return true;
-  }
-  return false;
-}
 
 /**
  * 越界、不存在、非文件都会抛错，让渲染层拿到一句可读的原因。
@@ -72,7 +62,9 @@ export function readFileWithin(root: string, requestedPath: string): FileReadRes
 
   const mime = IMAGE_MIME[extname(targetReal).toLowerCase()];
   if (mime !== undefined) {
-    if (size > FILE_IMAGE_LIMIT) return { kind: "too-large", size, limit: FILE_IMAGE_LIMIT };
+    if (size > MAX_TOOL_IMAGE_BYTES) {
+      return { kind: "too-large", size, limit: MAX_TOOL_IMAGE_BYTES };
+    }
     const buffer = readFileSync(targetReal);
     return { kind: "image", dataUrl: `data:${mime};base64,${buffer.toString("base64")}`, size };
   }
