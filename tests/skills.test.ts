@@ -12,8 +12,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
-import { BACKGROUND_CONTEXT, formatSkillInvocation, type Skill } from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { formatSkillInvocation, type Skill } from "../src/worker/lib/skills-loader.ts";
 import {
   MAX_SKILL_BODY_CHARS,
   builtinSkillsDir,
@@ -561,9 +560,9 @@ describe("parseSkillInvocation", () => {
     filePath: "/home/u/.agents/skills/pdf/SKILL.md",
   };
 
-  test("拿内核真函数钉住模板：`formatSkillInvocation` 产出的消息一定认得出来", () => {
-    // 只用我们自己拼的字符串测，模板一变就会**静默失效**（内核改了包围格式，我们还照旧认）。
-    // 这条直接调内核的真函数，模板一变就红（同 §5.5 那种「钉住外部契约」的用例）。
+  test("拿真格式化函数钉住模板：`formatSkillInvocation` 产出的消息一定认得出来", () => {
+    // 只用我们自己手写的字符串测，模板一变就会**静默失效**（格式化改了包围格式，我们还照旧认）。
+    // 这条直接调真函数，模板一变就红（同 §5.5 那种「钉住契约」的用例）。
     assert.deepEqual(parseSkillInvocation(formatSkillInvocation(pdf)), { name: "pdf" });
   });
 
@@ -574,9 +573,9 @@ describe("parseSkillInvocation", () => {
     });
   });
 
-  test("正文里出现 `</skill>` 也认对：只锚内核生成的开头两行", () => {
+  test("正文里出现 `</skill>` 也认对：只锚格式化函数生成的开头两行", () => {
     // 教 XML / 讲本协议本身的技能，正文里就会有 `</skill>`。去匹配结尾会认错人，
-    // 而开头那两行是内核生成的固定文案、**不可能来自正文**。
+    // 而开头那两行是格式化函数生成的固定文案、**不可能来自正文**。
     const text = formatSkillInvocation({ ...pdf, content: "示例：\n</skill>\n这段仍是正文。" });
     assert.deepEqual(parseSkillInvocation(text), { name: "pdf" });
     // 带额外指示时同理：`lastIndexOf` 仍落在真正的收尾上
@@ -631,7 +630,7 @@ describe("composeSystemPrompt", () => {
   });
 });
 
-describe("真装载（内核 loader + 真目录）", () => {
+describe("真装载（本地 loader + 真目录）", () => {
   let base = "";
   let outside = "";
   let dup = "";
@@ -660,15 +659,10 @@ describe("真装载（内核 loader + 真目录）", () => {
   });
 
   test("标准目录里的 SKILL.md 装得出来；工作区外的用户级目录同样读得到", async () => {
-    const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(
-      env,
-      [
-        { dir: join(base, ".agents", "skills"), source: "project" },
-        { dir: join(outside, ".agents", "skills"), source: "user" },
-      ],
-      BACKGROUND_CONTEXT,
-    );
+    const loaded = await loadSkillsForSession([
+      { dir: join(base, ".agents", "skills"), source: "project" },
+      { dir: join(outside, ".agents", "skills"), source: "user" },
+    ]);
     assert.deepEqual(loaded.skills.map((item) => item.name).sort(), ["processing-pdfs", "user-level"]);
     assert.deepEqual(loaded.counts, [1, 1]);
     // 来源下标随技能一一对应：项目级目录在前，故 user-level 的 sources 是 1
@@ -680,12 +674,9 @@ describe("真装载（内核 loader + 真目录）", () => {
   });
 
   test("真装载的技能进了系统提示词，且给模型的位置是**绝对路径**（否则用户级技能读不到）", async () => {
-    const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(
-      env,
-      [{ dir: join(base, ".agents", "skills"), source: "project" }],
-      BACKGROUND_CONTEXT,
-    );
+    const loaded = await loadSkillsForSession([
+      { dir: join(base, ".agents", "skills"), source: "project" },
+    ]);
     const prompt = composeSystemPrompt("基础提示词", loaded.skills);
     assert.ok(prompt.includes("<name>processing-pdfs</name>"), prompt);
     // 块里那句「读技能文件」要求模型直接 read 这个路径；相对路径会被解析到 cwd 下，
@@ -695,37 +686,28 @@ describe("真装载（内核 loader + 真目录）", () => {
     assert.ok(prompt.includes(filePath), prompt);
   });
 
-  test("缺 description 的技能被内核丢掉，并留下可读告警", async () => {
-    const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(
-      env,
-      [{ dir: join(base, ".agents", "skills"), source: "project" }],
-      BACKGROUND_CONTEXT,
-    );
+  test("缺 description 的技能被装载器丢掉，并留下可读告警", async () => {
+    const loaded = await loadSkillsForSession([
+      { dir: join(base, ".agents", "skills"), source: "project" },
+    ]);
     assert.deepEqual(loaded.skills.map((item) => item.name), ["processing-pdfs"]);
     assert.ok(loaded.diagnostics.some((item) => item.code === "invalid_metadata"));
     assert.ok(describeSkillWarnings(loaded)?.includes("元数据不合法"));
   });
 
   test("目录不存在时静默跳过（不报错、不产生噪音）", async () => {
-    const env = new NodeExecutionEnv({ cwd: base });
-    const loaded = await loadSkillsForSession(
-      env,
-      [{ dir: join(base, "nope", "skills"), source: "project" }],
-      BACKGROUND_CONTEXT,
-    );
+    const loaded = await loadSkillsForSession([
+      { dir: join(base, "nope", "skills"), source: "project" },
+    ]);
     assert.deepEqual(loaded.skills, []);
     assert.deepEqual(loaded.diagnostics, []);
     assert.equal(describeSkillWarnings(loaded), null);
   });
 
-  test("同一来源内重名：内核不去重（返回两条），由我们兜住并**按同目录口径**告知", async () => {
-    const env = new NodeExecutionEnv({ cwd: dup });
-    const loaded = await loadSkillsForSession(
-      env,
-      [{ dir: join(dup, ".agents", "skills"), source: "project" }],
-      BACKGROUND_CONTEXT,
-    );
+  test("同一来源内重名：装载器不去重（返回两条），由我们兜住并**按同目录口径**告知", async () => {
+    const loaded = await loadSkillsForSession([
+      { dir: join(dup, ".agents", "skills"), source: "project" },
+    ]);
     // 去重后只剩一条，且被遮蔽的那条 `from === by`（同目录），**不是**「项目级盖用户级」
     assert.deepEqual(loaded.skills.map((item) => item.name), ["dup-name"]);
     assert.deepEqual(loaded.shadowed, [{ name: "dup-name", from: 0, by: 0 }]);
@@ -764,8 +746,7 @@ describe("内置技能（随应用分发）", () => {
   const builtinDir = (): SkillDir => ({ dir: builtinSkillsDir(), source: "builtin" });
 
   test("内置目录里装得出 skill-creator，来源标成 builtin", async () => {
-    const env = new NodeExecutionEnv({ cwd: process.cwd() });
-    const loaded = await loadSkillsForSession(env, [builtinDir()], BACKGROUND_CONTEXT);
+    const loaded = await loadSkillsForSession([builtinDir()]);
     const names = loaded.skills.map((item) => item.name);
     assert.ok(
       names.includes("skill-creator"),
@@ -788,12 +769,10 @@ describe("内置技能（随应用分发）", () => {
         "---\nname: skill-creator\ndescription: 项目自带的同名技能\n---\n\n正文\n",
         "utf8",
       );
-      const env = new NodeExecutionEnv({ cwd: projectRoot });
-      const loaded = await loadSkillsForSession(
-        env,
-        [{ dir: join(projectRoot, ".agents", "skills"), source: "project" }, builtinDir()],
-        BACKGROUND_CONTEXT,
-      );
+      const loaded = await loadSkillsForSession([
+        { dir: join(projectRoot, ".agents", "skills"), source: "project" },
+        builtinDir(),
+      ]);
       const target = toViewSkills(loaded).find((item) => item.name === "skill-creator");
       assert.equal(target?.source, "project", "同名的项目级技能应当胜出");
       assert.equal(target?.description, "项目自带的同名技能");
@@ -812,8 +791,7 @@ describe("内置技能（随应用分发）", () => {
   });
 
   test("内置技能的正文没超它自己讲的那条上限（否则自相矛盾）", async () => {
-    const env = new NodeExecutionEnv({ cwd: process.cwd() });
-    const loaded = await loadSkillsForSession(env, [builtinDir()], BACKGROUND_CONTEXT);
+    const loaded = await loadSkillsForSession([builtinDir()]);
     const skill = loaded.skills.find((item) => item.name === "skill-creator");
     assert.ok(skill !== undefined, "先确保装出来了，否则下面这条是假绿");
     assert.ok(

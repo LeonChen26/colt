@@ -6,7 +6,8 @@
  * 这样社区技能包可以**直接丢进来**用。
  *
  * 递归遍历、ignore 文件（`.gitignore` / `.ignore` / `.fdignore`）、frontmatter 校验
- * 全部由内核的 `loadSkills` 负责；我们只决定**取哪几个目录**和**同名怎么取舍**。
+ * 全部由 `skills-loader.ts` 负责（切到 pi-durable 后内核不再提供装载）；我们只决定
+ * **取哪几个目录**和**同名怎么取舍**。
  *
  * 目录（**顺序即优先级，先到者胜出**）：
  * 1. 项目级 `<cwd>/.agents/skills`——随仓库分发；
@@ -14,22 +15,17 @@
  * 3. 内置 `worker/lib/builtin-skills/`——随应用分发，**优先级最低**（磁盘上的同名技能可盖它）。
  * 被遮蔽的名字如实报出来。
  *
- * 内核的机制是**两套、缺一不可**：
- * 1. 让模型**看见**——`formatSkillsForSystemPrompt` 生成 `<available_skills>` 块，
- *    **内核只提供这个函数、不会自己调用**，得由应用拼进自己的系统提示词（见 `composeSystemPrompt`）；
- * 2. 让应用**按名调用**——把 skills 放进 `resources.skills`，内核在 `lane.skill(name, …)`
- *    时按名取出整份正文。只做第 2 条的话模型不知道技能存在，整个接入是空转。
+ * 让模型**看见**靠 `formatSkillsForSystemPrompt` 拼进系统提示词（`composeSystemPrompt`）；
+ * 按名显式调用由 `/skill` 命令把正文包成一条 user 消息投递（`formatSkillInvocation`）。
  */
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   formatSkillsForSystemPrompt,
   loadSkills,
-  type Context,
-  type ExecutionEnv,
   type Skill,
   type SkillDiagnostic,
-} from "@earendil-works/pi-agent-core";
+} from "./skills-loader";
 import type { ViewSkill, ViewSkillDetail, ViewSkillInvocation } from "@shared/worker-protocol";
 import { loadSkillsConfig, skillsConfigPath } from "@shared/skills-config";
 
@@ -79,8 +75,8 @@ export function skillDirSources(cwd: string, home: string): SkillDir[] {
  * 被遮蔽的一份技能：谁遮了谁。
  *
  * 为什么必须带上来源下标：重名有两种、说法完全不同——**跨来源**（项目级盖用户级）与
- * **同目录内重名**（内核不去重：`name ≠ 目录名` 只告警、不丢弃，见内核
- * `loadSkillsFromDirInternal` / `validateName`）。只记名字的话，第二种会被报成
+ * **同目录内重名**（装载器不去重：`name ≠ 目录名` 只告警、不丢弃，见 `skills-loader.ts`
+ * 的 `walk` / `validateName`）。只记名字的话，第二种会被报成
  * 「项目级覆盖了同名用户级技能」——**一句假话**，而这个模块存在的全部意义就是如实告知。
  */
 export interface ShadowedSkill {
@@ -233,9 +229,7 @@ export function describeDiagnostic(diagnostic: SkillDiagnostic): string {
 
 /** 装载指定的各个目录；某个目录炸了也算一条告警，不打断会话（会话能用比技能重要） */
 export async function loadSkillsForSession(
-  env: ExecutionEnv,
   dirs: SkillDir[],
-  context: Context,
   disabled: string[] = [],
   disabledByUser: string[] = [],
 ): Promise<LoadedSkills> {
@@ -243,7 +237,7 @@ export async function loadSkillsForSession(
   const diagnostics: SkillDiagnostic[] = [];
   for (const { dir } of dirs) {
     try {
-      const result = await loadSkills(env, dir, context);
+      const result = await loadSkills(dir);
       groups.push(result.skills);
       diagnostics.push(...result.diagnostics);
     } catch (error) {
@@ -277,16 +271,12 @@ export async function loadSkillsForSession(
  * 一条路径上发作的错。绑在一起，两条路径拿到的必然是同一份口径。
  */
 export async function loadSkillsForSessionWithConfig(
-  env: ExecutionEnv,
   cwd: string,
   home: string,
-  context: Context,
 ): Promise<LoadedSkills> {
   const config = await loadSkillsConfig(cwd, home);
   const loaded = await loadSkillsForSession(
-    env,
     skillDirSources(cwd, home),
-    context,
     config.disabled,
     config.fromUser,
   );
@@ -309,11 +299,12 @@ export async function loadSkillsForSessionWithConfig(
 /**
  * 把技能的 `<available_skills>` 块拼到基础提示词后面。
  *
- * **这一步不能省**：内核只提供 `formatSkillsForSystemPrompt`，自己**从不调用**它
- * （`resources.skills` 在内核里只被「按名显式调用」用到）。不拼的话模型收不到技能清单，
- * 技能就等于没装——而且**失败是静默的**：装载、告警、计数全都正常，只有模型不知道。
+ * **这一步不能省**：`formatSkillsForSystemPrompt` 只是一个纯函数，没有任何一层会替我们调用它。
+ * 不拼的话模型收不到技能清单，技能就等于没装——而且**失败是静默的**：装载、告警、计数全都正常，
+ * 只有模型不知道。
  *
- * 块里**不含** `disableModelInvocation` 的技能（内核过滤），所以「已加载」不等于「模型看得见」。
+ * 块里**不含** `disableModelInvocation` 的技能（`formatSkillsForSystemPrompt` 自己过滤），
+ * 所以「已加载」不等于「模型看得见」。
  */
 export function composeSystemPrompt(base: string, skills: Skill[]): string {
   const block = formatSkillsForSystemPrompt(skills);
@@ -476,7 +467,7 @@ export function toSkillDetails(loaded: LoadedSkills): ViewSkillDetail[] {
 }
 
 /**
- * 内核 `formatSkillInvocation` 生成的技能调用消息，**开头**长这样：
+ * `skills-loader.ts` 的 `formatSkillInvocation` 生成的技能调用消息，**开头**长这样：
  *
  * ```
  * <skill name="<名字>" location="<路径>">
@@ -495,10 +486,10 @@ const SKILL_INVOCATION_HEAD =
 const SKILL_INVOCATION_TAIL = "\n</skill>";
 
 /**
- * 这条 user 消息是**内核替我们发的技能调用**吗？是的话把归属信息取出来。
+ * 这条 user 消息是**应用替我们发的技能调用**吗？是的话把归属信息取出来。
  *
- * 为什么得靠认模板：内核把技能正文包成一条普通的 `role: "user"` 消息，**没有任何结构化标记**
- * （`acceptRun` 的 `case "skill"`）。不认它，会话流就会把一大段原始 XML 画成「你」说的话，
+ * 为什么得靠认模板：技能正文被包成一条普通的 `role: "user"` 消息，**没有任何结构化标记**。
+ * 不认它，会话流就会把一大段原始 XML 画成「你」说的话，
  * 目录与分支树的标签也会变成 `<skill name="…" location="…">`。
  *
  * 两处刻意的取舍：

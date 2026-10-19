@@ -2,28 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 技能与 harness / 设置页之间的**接线**，四件事一处：
+ * 技能与设置页之间的**接线**，三件事一处：
  *  1. `createSkillsRuntime`——装载一次并给出「可变清单 + 设置页宿主」，入口只持有它；
- *  2. `runSkillCommand`——显式 `/skill <名字>` 的判定与投递（原先是 `entry.ts` 的 `case "skill"`）；
- *  3. `handleSkillsCommand`——设置页那三个命令（查现状 / 重新扫描 / 禁用启用）的落点；
- *  4. `dispatchSkills`——入口那四条技能命令的共同出口（把 `send` 留在入口、判定留在这里）。
+ *  2. `handleSkillsCommand`——设置页那三个命令（查现状 / 重新扫描 / 禁用启用）的落点；
+ *  3. `reloadAndPublish`——重扫与改开关共用的一段（装载 → 替换容器 → 广播）。
+ *
+ * `/skill <名字>` 的投递在 durable 入口里：它走 `conversation.submit`，
+ * 不再经过内核的 `lane.skill`；但「名字对不对 / 是否被禁用 / 正文包成什么」这段判定
+ * 仍在本模块（`resolveSkillInvocation`），因为它与设置页共用同一份清单口径。
  *
  * 为什么单独成文件：worker 入口有体量闸（`AGENTS.md` §1.4），这些逻辑各要 3~5 个依赖
- * （lane / harness / 装载容器 / 重扫回调），塞进入口既长又难读；它们本身都是机械的
+ * （装载容器 / 重扫回调），塞进入口既长又难读；它们本身都是机械的
  * 「取 → 判 → 写回」，自成一体（同 `mcp-reload.ts` 的理由）。
  */
-import type {
-  AgentHarness,
-  AgentLane,
-  Context,
-  ExecutionToolContext,
-} from "@earendil-works/pi-agent-core";
-import { describeSkillError, disabledSkillMessage, unknownSkillMessage } from "@shared/skill-error";
 import { setSkillDisabled as writeSkillDisabled } from "@shared/skills-config";
-import type { SkillsStatus, ViewSkill, WorkerCommand, WorkerMessage } from "@shared/worker-protocol";
+import { disabledSkillMessage, unknownSkillMessage } from "@shared/skill-error";
+import type { SkillsStatus, ViewSkill, WorkerCommand } from "@shared/worker-protocol";
+import { formatSkillInvocation } from "./skills-loader";
 import {
+  capSkillBodies,
   describeSkillWarnings,
-  modelSkills,
   skillWarningParts,
   toSkillDetails,
   toViewSkills,
@@ -34,53 +32,14 @@ import {
 export const EMPTY_SKILLS_STATUS: SkillsStatus = { skills: [], warnings: [], live: false };
 
 /**
- * 显式技能调用的判定与投递。返回**要报的错误文案**（无错时 `undefined`），由入口决定怎么发
- * ——本模块不认识 `send`，只做「判 + 调内核」这件纯事，便于单测。
- *
- * 先按**本会话装到的清单**自查一遍再交给内核：内核的 `UnknownSkill` 只带名字、不带候选，
- * 而技能名是用户自己在磁盘上定的——打错时必须把可用名一起给出来，否则用户无从修正。
- * 渲染层有一份同样的清单（`ConversationView.skills`）会先拦一次，这里是**兜底**：
- * 渲染层不知道清单时（无 worker / 还没上报）或有人直接调 IPC 时，这条负责说同一句话。
- */
-export async function runSkillCommand(
-  lane: AgentLane,
-  skills: readonly ViewSkill[],
-  command: { name: string; instructions?: string | undefined },
-  context: Context,
-): Promise<string | undefined> {
-  const target = skills.find((item) => item.name === command.name);
-  if (target === undefined) {
-    // 候选里**只列可调用的**：把被禁用的名字当候选给出来，用户照着敲还是会被拒
-    return unknownSkillMessage(
-      command.name,
-      skills.filter((item) => !item.disabled).map((item) => item.name),
-    );
-  }
-  // 被禁用的技能**不是「未知」**——用户自己关的，就该明说是他关的、去哪开回来。
-  // （说成「未知技能」会让人以为名字打错了，而名字恰恰是他刚关掉的那个。）
-  if (target.disabled) {
-    return disabledSkillMessage(command.name);
-  }
-  const result = await lane.skill(command.name, command.instructions, context);
-  // 内核的技能调用失败**走 `Result.err` 而不是抛异常**，不查返回值就是「敲了没反应」。
-  // （对照 prompt 不查：那一条的失败由视图里的 `lastRun` 终态体现；而 LaneBusy /
-  //   Closed / UnknownSkill 只走这条路，不查就静默。）
-  return result.ok ? undefined : describeSkillError(result.error);
-}
-
-/**
  * 设置页「技能」分区的宿主：入口把可变容器与几个回调交进来，本模块只做机械编排。
  *
  * `skillsRef` 之所以是**可变容器**（而不是直接传一份 `LoadedSkills`）：重扫要就地替换清单，
  * 而每请求拼系统提示词的钩子读的是**同一个容器**——换掉它，下一次请求立刻看到新清单。
- *
- * `harness` 是**惰性取值**：它比技能容器晚建好（装载在 `AgentHarness.create` 之前），
- * 而只有重扫用到它。
  */
 export interface SkillsHost {
   skillsRef: { current: LoadedSkills };
-  harness: () => AgentHarness<ExecutionToolContext> | undefined;
-  /** 重新扫盘并去重（入口提供：它才握着 executionEnv / cwd / homedir） */
+  /** 重新扫盘并去重（入口提供：它才握着 cwd / homedir） */
   reload: () => Promise<LoadedSkills>;
   /**
    * 工作目录（项目根）。禁用偏好**只写项目级** `<cwd>/.colt/skills.json`——这份配置的读者
@@ -116,7 +75,6 @@ export interface SkillsRuntime {
  */
 export async function createSkillsRuntime(opts: {
   reload: () => Promise<LoadedSkills>;
-  harness: () => AgentHarness<ExecutionToolContext> | undefined;
   /** 工作目录（项目根）：禁用偏好写 `<cwd>/.colt/skills.json` */
   cwd: string;
   /** 播报一条装载告警（走 notice → 「事件」页签，安全类） */
@@ -136,7 +94,6 @@ export async function createSkillsRuntime(opts: {
   };
   const host: SkillsHost = {
     skillsRef: ref,
-    harness: opts.harness,
     reload: opts.reload,
     cwd: opts.cwd,
     applyRescan: publish,
@@ -170,28 +127,22 @@ export function skillsStatusOf(host: SkillsHost): SkillsStatus {
 }
 
 /**
- * 重新装载并广播：装载 → 写回 harness 的 `resources.skills` → 替换容器 → 广播。
+ * 重新装载并广播：装载 → 替换容器 → 广播。
  *
- * `setResources` 是内核给的官方写回口（`AgentHarness` 上就有），换掉的是**按名取正文**
- * 那一份；系统提示词那份由入口的每请求钩子重拼（技能清单本来就该每请求可变），
- * 于是新技能 / 新开关**不必重启会话**即可用（报告 A2）。重扫与改开关共用这一段，
- * 免得只修好其中一条路径。
+ * 系统提示词由入口的每请求钩子重拼（技能清单本来就该每请求可变），
+ * 于是新技能 / 新开关**不必重启会话**即可用（报告 A2）。
+ * 重扫与改开关共用这一段，免得只修好其中一条路径。
  */
-async function reloadAndPublish(host: SkillsHost, context: Context): Promise<SkillsStatus> {
-  const harness = host.harness();
-  if (harness === undefined) throw new Error("会话尚未初始化");
+async function reloadAndPublish(host: SkillsHost): Promise<SkillsStatus> {
   const next = await host.reload();
-  // 写回内核的是**滤掉禁用、且截断过**的副本（与入口 create 时同一份口径），
-  // 否则「重扫 / 改开关」会悄悄把被禁用的、或超长正文整段放回模型上下文。
-  await harness.setResources({ skills: modelSkills(next) }, context);
   host.skillsRef.current = next;
   host.applyRescan();
   return skillsStatusOf(host);
 }
 
 /** 重新扫描技能目录并**热更新**（设置页「重新扫描」） */
-export async function rescanSkills(host: SkillsHost, context: Context): Promise<SkillsStatus> {
-  return reloadAndPublish(host, context);
+export async function rescanSkills(host: SkillsHost): Promise<SkillsStatus> {
+  return reloadAndPublish(host);
 }
 
 /**
@@ -204,78 +155,52 @@ export async function applyDisable(
   host: SkillsHost,
   name: string,
   disabled: boolean,
-  context: Context,
 ): Promise<SkillsStatus> {
   await writeSkillDisabled(host.cwd, name, disabled);
-  return reloadAndPublish(host, context);
+  return reloadAndPublish(host);
 }
 
 /**
- * 设置页那三个命令的落点。未就绪时（`host` 不存在或 harness 还没建好）：查现状回空、
+ * 设置页那三个命令的落点。未就绪时（`host` 不存在）：查现状回空、
  * 其余两个报错——**不假装成功**，否则界面会显示一份并不存在的现状。
  */
 export async function handleSkillsCommand(
   command: Extract<WorkerCommand, { type: "skillsStatus" | "skillsRescan" | "skillsSetDisabled" }>,
   host: SkillsHost | undefined,
-  context: Context,
 ): Promise<SkillsStatus> {
   if (command.type === "skillsStatus") {
-    return host === undefined || host.harness() === undefined ? EMPTY_SKILLS_STATUS : skillsStatusOf(host);
+    return host === undefined ? EMPTY_SKILLS_STATUS : skillsStatusOf(host);
   }
   if (host === undefined) throw new Error("会话尚未初始化");
-  if (command.type === "skillsRescan") return reloadAndPublish(host, context);
-  return applyDisable(host, command.name, command.disabled, context);
+  if (command.type === "skillsRescan") return reloadAndPublish(host);
+  return applyDisable(host, command.name, command.disabled);
 }
 
-/** 入口四条技能命令的共同结果：要么回一条消息，要么「已投递、请补推一次终态」 */
-export type SkillsDispatchResult =
-  | { kind: "replied"; message: WorkerMessage }
-  | { kind: "delivered" };
+/** 显式调用的一次判定结果：要么是可以投递的正文，要么是一句要报给用户的错 */
+export type SkillInvocation = { ok: true; text: string } | { ok: false; error: string };
 
 /**
- * 入口 `case "skill" / "skillsStatus" / "skillsRescan" / "skillsSetDisabled"` 的实现。
+ * `/skill <名字>` 的**判定**：名字在不在、是否被禁用、正文怎么包。
  *
- * 为什么把四条合成一个出口：它们共用同一份「会话未就绪怎么办」的判断，且四条都只做
- * 「取 → 判 → 回」（`AGENTS.md` §1.4 那种**一个完整往返**的搬运）。`send` 与 `pushView`
- * 仍留在入口——这里只回「该发什么」，不碰通道。
- *
- * **四条都从 `enqueue` 这条队走**：命令入口不排队，而「禁用 / 启用」是读-改-写（见
- * `SkillsRuntime.enqueue`）。顺带把「查现状」也排在队里——它读到的是同一份可变容器，
- * 排一下才能保证回给界面的是**某一时刻自洽**的现状，而不是重扫进行到一半的中间态。
+ * 为什么先自查再投递：名字是用户在磁盘上定的，打错时给一条**可见报错并列出可用名**
+ * 最有用；而且只有渲染层/入口在提交那一刻判成败，才能做到「拦下时不清空输入」。
+ * 正文按 `MAX_SKILL_BODY_CHARS` 截断——与旧内核 `resources.skills` 的行为一致，
+ * 告警里那句「模型只会收到截断后的正文」才不会变成假话。
  */
-export async function dispatchSkills(
-  command: Extract<
-    WorkerCommand,
-    { type: "skill" | "skillsStatus" | "skillsRescan" | "skillsSetDisabled" }
-  >,
-  state: { lane: AgentLane; skills: SkillsRuntime } | undefined,
-  context: Context,
-): Promise<SkillsDispatchResult> {
-  // 会话未就绪时没有 runtime 可排队：那几条只会立刻回空现状 / 报错，串不串行无所谓
-  if (state === undefined) return dispatchOne(command, undefined, context);
-  return state.skills.enqueue(() => dispatchOne(command, state, context));
+export function resolveSkillInvocation(
+  loaded: LoadedSkills,
+  name: string,
+  instructions?: string,
+): SkillInvocation {
+  const view = toViewSkills(loaded);
+  const available = (): string[] =>
+    view.filter((item) => !item.disabled).map((item) => item.name);
+  const target = view.find((item) => item.name === name);
+  if (target === undefined) return { ok: false, error: unknownSkillMessage(name, available()) };
+  if (target.disabled) return { ok: false, error: disabledSkillMessage(name) };
+  const skill = loaded.skills.find((item) => item.name === name);
+  if (skill === undefined) return { ok: false, error: unknownSkillMessage(name, available()) };
+  const capped = capSkillBodies([skill])[0] ?? skill;
+  return { ok: true, text: formatSkillInvocation(capped, instructions) };
 }
 
-async function dispatchOne(
-  command: Extract<
-    WorkerCommand,
-    { type: "skill" | "skillsStatus" | "skillsRescan" | "skillsSetDisabled" }
-  >,
-  state: { lane: AgentLane; skills: SkillsRuntime } | undefined,
-  context: Context,
-): Promise<SkillsDispatchResult> {
-  if (command.type === "skill") {
-    if (state === undefined) throw new Error("会话尚未初始化");
-    const error = await runSkillCommand(state.lane, state.skills.view(), command, context);
-    return error === undefined
-      ? { kind: "delivered" }
-      : { kind: "replied", message: { type: "error", message: error, fatal: false } };
-  }
-  return {
-    kind: "replied",
-    message: {
-      type: "skillsStatus",
-      status: await handleSkillsCommand(command, state?.skills.host, context),
-    },
-  };
-}

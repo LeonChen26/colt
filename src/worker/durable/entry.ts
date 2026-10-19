@@ -42,9 +42,6 @@ import {
   createBashTool,
   createEditTool,
   createWriteTool,
-  formatSkillInvocation,
-  type AgentHarness,
-  type ExecutionToolContext,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
@@ -65,7 +62,6 @@ import { buildProvider } from "@shared/provider-factory";
 import { APPROVAL_TIMEOUT_MS } from "@shared/limits";
 import { READONLY_TOOLS } from "@shared/readonly-tools";
 import { type ThinkingLevel } from "@shared/thinking-level";
-import { unknownSkillMessage, disabledSkillMessage } from "@shared/skill-error";
 import { normalizeCompactionConfig, type CompactionConfig } from "@shared/compaction-config";
 import { splitModelRef } from "@shared/model-ref";
 
@@ -95,6 +91,7 @@ import { skillsUserHome } from "@shared/skills-config";
 import {
   createSkillsRuntime,
   handleSkillsCommand,
+  resolveSkillInvocation,
   type SkillsRuntime,
 } from "../lib/skills-command";
 import {
@@ -595,12 +592,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
 
   // 技能：装载 / 告警 / 设置页热更新走旧实现；durable 侧的「按名取正文」由 /skill 命令自己做
   const skills = await createSkillsRuntime({
-    reload: () => loadSkillsForSessionWithConfig(env, cwd, skillsUserHome(), context as never),
+    reload: () => loadSkillsForSessionWithConfig(cwd, skillsUserHome()),
     cwd,
-    // 旧宿主接口的唯一用途是 `setResources`（按名取正文）。durable 下提示词每请求重拼、
-    // `/skill` 由本文件直接投递正文，故这里只需要一个「在」的宿主。
-    harness: () =>
-      ({ setResources: async () => undefined }) as unknown as AgentHarness<ExecutionToolContext>,
     onNotice: (message) => send({ type: "notice", message, kind: "security" }),
     onViewSkills: (list) => {
       if (state) state.meta.skills = list;
@@ -941,25 +934,14 @@ async function runSkillCommand(
 ): Promise<string | undefined> {
   if (!state) throw new Error("会话尚未初始化");
   const current = state;
-  const view = current.skills.view();
-  const target = view.find((item) => item.name === command.name);
-  if (target === undefined) {
-    return unknownSkillMessage(
-      command.name,
-      view.filter((item) => !item.disabled).map((item) => item.name),
-    );
-  }
-  if (target.disabled) return disabledSkillMessage(command.name);
-  const skill = current.skills.ref.current.skills.find((item) => item.name === command.name);
-  if (skill === undefined) {
-    return unknownSkillMessage(
-      command.name,
-      view.filter((item) => !item.disabled).map((item) => item.name),
-    );
-  }
-  const text = formatSkillInvocation(skill, command.instructions);
+  const resolved = resolveSkillInvocation(
+    current.skills.ref.current,
+    command.name,
+    command.instructions,
+  );
+  if (!resolved.ok) return resolved.error;
   const submission = await current.conversation.submit(
-    { type: "input", content: [{ type: "text", text }] },
+    { type: "input", content: [{ type: "text", text: resolved.text }] },
     context,
   );
   await submission.wait(context);
@@ -1111,7 +1093,7 @@ async function handle(command: WorkerCommand): Promise<void> {
       if (!state) throw new Error("会话尚未初始化");
       const current = state;
       const status = await current.skills.enqueue(() =>
-        handleSkillsCommand(command, current.skills.host, context as never),
+        handleSkillsCommand(command, current.skills.host),
       );
       send({ type: "skillsStatus", status });
       return;

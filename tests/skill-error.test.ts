@@ -1,16 +1,15 @@
 /**
- * 技能调用失败原因的翻译（`describeSkillError` / `unknownSkillMessage`）。
- *
- * 内核的技能调用失败走 `Result.err` 而不是抛异常，错误类不在本仓类型面里，
- * 只能按 `_tag` 判别。**每一种形态都必须给出可读说明**——否则用户敲了 `/skill xxx`
- * 就是「敲了没反应」，而技能调用最常见的失败（名字不存在）恰恰只走这条路。
+ * 技能自查文案（`unknownSkillMessage` / `disabledSkillMessage`）。
  *
  * 模块住在 `src/shared/`：渲染层的本地拦截与 worker 的兜底必须说**同一句话**。
+ *
+ * 切到 pi-durable 后不再有内核 `Result.err` 那一层（投递由应用直接 `conversation.submit`），
+ * 于是「可用名」这件事全靠这里的两句文案——它是用户打错名字时唯一的指路牌。
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  describeSkillError,
+  disabledSkillMessage,
   unknownSkillMessage,
 } from "../src/shared/skill-error.ts";
 
@@ -29,27 +28,12 @@ describe("unknownSkillMessage", () => {
   });
 });
 
-describe("describeSkillError", () => {
-  test("按 _tag 给出可读说明", () => {
-    assert.equal(
-      describeSkillError({ _tag: "LaneBusy", message: "busy" }),
-      "当前有正在进行的任务，无法调用技能：请等它结束，或先停止当前任务。",
-    );
-    assert.equal(describeSkillError({ _tag: "Closed", message: "closed" }), "会话已关闭，无法调用技能。");
-    assert.equal(
-      describeSkillError({ _tag: "InvalidMessage", message: "bad" }),
-      "技能的正文无法构成一条有效消息（技能文件内容异常）。",
-    );
-  });
-
-  test("UnknownSkill 只说不存在，不断言「没装载任何技能」（那时技能其实装着，只是名字不对）", () => {
-    assert.equal(describeSkillError({ _tag: "UnknownSkill", name: "pdf" }), "技能「pdf」不存在。");
-    assert.equal(describeSkillError({ _tag: "UnknownSkill" }), "技能不存在。");
-    assert.ok(!describeSkillError({ _tag: "UnknownSkill", name: "pdf" }).includes("没有装载"));
-  });
-
-  test("未知形态（含非 Error 值）也不抛，原样带出", () => {
-    assert.equal(describeSkillError("boom"), "调用技能失败：boom");
-    assert.equal(describeSkillError(undefined), "调用技能失败：undefined");
+describe("disabledSkillMessage", () => {
+  test("说「被你禁用」并指回设置页，而不是「不存在」", () => {
+    const message = disabledSkillMessage("pdf");
+    assert.ok(message.includes("已被你在设置里禁用"), message);
+    assert.ok(message.includes("设置 → 技能"), message);
+    // 「不存在」会让人去翻拼写——而这个名字是他自己刚关掉的
+    assert.ok(!message.includes("不存在"), message);
   });
 });
