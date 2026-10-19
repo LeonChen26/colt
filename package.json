@@ -2,7 +2,7 @@
   "name": "colt",
   "version": "0.0.1",
   "private": true,
-  "description": "Colt 桌面 Agent 工作台 - 基于 pi-durable / pi-agent-core 的编码 Agent 工作台",
+  "description": "Colt 桌面 Agent 工作台 - 基于 pi-durable 的编码 Agent 工作台",
   "author": "Colt",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,6 @@
   },
   "dependencies": {
     "@earendil-works/chord": "1.3.0",
-    "@earendil-works/pi-agent-core": "0.99.1",
     "@earendil-works/pi-ai": "1.3.0",
     "@earendil-works/pi-durable": "1.3.0",
     "@earendil-works/pi-mcp": "1.3.0",

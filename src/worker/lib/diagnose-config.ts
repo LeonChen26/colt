@@ -7,8 +7,8 @@
  * 通道安全性由两条不变量支撑，缺一不可：
  * 1. **命令不是模型给的**——命令模板写死在这张表里，模型的唯一输入是文件路径
  *    （且该路径刚被审批闸门放行的 write/edit 成功写过）；
- * 2. **模型输入必须 POSIX 引号转义后才能拼进命令**（内核 exec 全平台走 bash，
- *    见 `pi-agent-core/dist/harness/env/nodejs.js` 的 shell 选择）——
+ * 2. **模型输入必须 POSIX 引号转义后才能拼进命令**（durable exec 全平台走 bash，
+ *    见 `@earendil-works/pi-durable/dist/env/node.js` 的 shell 选择）——
  *    转义在 `posixQuotePath`，是路径进命令的唯一通道。
  *
  * 越界校验**刻意不做**：`main/lib/path-guard.ts` 是全仓唯一实现且在 main 层，

@@ -111,7 +111,7 @@ import { systemPrompt } from "../lib/system-prompt";
 import { ProviderRegistry } from "../lib/provider-registry";
 import { renderTodoBlock } from "@shared/todo";
 import { toImageContent } from "../lib/attachments";
-import { describeCompactError, describeCompactOutcome } from "../lib/compact-error";
+import { describeCompactOutcome } from "../lib/compact-error";
 
 import { durableTranscript, projectDurableView } from "./project";
 import { DurableSubagents } from "./subagent";
@@ -932,7 +932,7 @@ async function compact(): Promise<void> {
   if (result.entryId === undefined && result.submissionId === undefined) {
     send({
       type: "error",
-      message: describeCompactError({ _tag: "NothingToCompact" }),
+      message: "没有可压缩的内容：会话还没有消息，或刚压缩过还没有新对话。",
       fatal: false,
     });
     return;

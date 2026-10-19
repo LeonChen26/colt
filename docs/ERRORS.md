@@ -34,8 +34,9 @@
 
 **结论**：判断「这件事成了没有」，**不能只看 `Result.err`**，必须**同时**检查结算状态。
 
-参考实现：`src/worker/lib/compact-error.ts`（`describeCompactError` 处理 `Result.err`，
-`describeCompactOutcome` 处理结算状态），单测在 `tests/compact-error.test.ts`。
+参考实现：`src/worker/lib/compact-error.ts`（`describeCompactOutcome` 处理结算状态），
+单测在 `tests/compact-error.test.ts`。durable 的压缩走 `waitForTask` 的 `outcome.status`，
+不再有旧内核那层 `Result.err`。
 
 ---
 

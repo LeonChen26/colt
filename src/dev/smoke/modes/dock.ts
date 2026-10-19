@@ -13,7 +13,6 @@ import {
   createSession,
   getProject,
   recordFileBaseline,
-  setKernelSessionId,
   upsertProject,
 } from "../../../main/db/repo";
 import { hostBridge } from "../../../main/host";
@@ -65,7 +64,7 @@ import { sleep, uncaughtErrors } from "../context";
  *
  * 末尾一段是「移除工作区」（规则 ③-D），只走 IPC（**不点界面按钮**：那一按会弹原生确认框，
  * 会把本模式整条链路挂住；界面那一按交给 `rm-workspace` 模式，它把 `dialog.showMessageBox`
- * 打桩成「点了确认」），验整项目级联（项目行 / 名下会话 / JSONL / 落盘截图一起清），
+ * 打桩成「点了确认」），验整项目级联（项目行 / 名下会话 / 会话历史库 / 落盘截图一起清），
  * 以及一条**否定断言**——断开登记之后**磁盘上的项目目录必须一行不动**。刻意用独立项目做靶子，
  * 不碰本模式的主角。**分工**：本段是「不需要任何注入」的那半边（总在跑）；另两段——
  * 「运行中会话让整次移除被拒绝」（要 `sessionManager.isRunning()` 为真，而它只能来自 worker
@@ -1465,10 +1464,12 @@ export async function runDock(
     checks.push(["点菜单外即收起「+」菜单", (await probe()).menuItems.length === 0]);
 
     // ---- v1.79：「Wiki」页签（消费 CodeWiki 产物）----
-    // 冒烟项目就是本仓库，而**仓库根没有 docs/wiki**——所以这一趟只能验「空态」这条腿：
-    // 页签开得出来、面板说清「还没生成 + 怎么生成」、不是白屏也不是崩溃。
-    // 有产物那条腿由 `tests/wiki-read.test.ts` 造目录覆盖：那是纯函数层，比往仓库里
-    // 写一份产物干净得多（写完还得清，清漏了就变成「冒烟改动了工作区」）。
+    // 冒烟项目就是本仓库。**空态那条腿要求仓库根没有 `docs/wiki`**——本机若已经生成过
+    // 产物，这个前提就不成立（`AGENTS.md` §五⑬：前提要么显式建立、要么明说没建立），
+    // 此时改验「有产物」那条腿（摘要行），空态仍由 `tests/wiki-read.test.ts` 覆盖。
+    // 刻意**不**为了跑冒烟去挪/删仓库里的 `docs/wiki`：那是产品的落盘产物，不是测试夹具。
+    const wikiRoot = join(process.env.COLT_SMOKE_CWD ?? process.cwd(), "docs", "wiki");
+    const wikiPresent = existsSync(wikiRoot);
     await clickInDock(`b.getAttribute("aria-label") === "新增视图"`);
     await sleep(300);
     checks.push(["「+」菜单里点到「Wiki」就真的打开（kind=wiki 不是死入口）", await clickMenuItem("wiki")]);
@@ -1483,9 +1484,16 @@ export async function runDock(
     })()`);
     checks.push(["「Wiki」成为激活页签", wikiProbe.label.includes("Wiki")]);
     checks.push([
-      "没有 docs/wiki 时给的是「还没生成 + 一条能跑的命令」，不是白屏",
-      wikiProbe.text.includes("还没有 wiki 产物") && wikiProbe.text.includes("codewiki generate"),
+      wikiPresent
+        ? "仓库已有 docs/wiki 时 Wiki 页签给出产物摘要，不是空态 / 白屏"
+        : "没有 docs/wiki 时给的是「还没生成 + 一条能跑的命令」，不是白屏",
+      wikiPresent
+        ? wikiProbe.text.includes("生成于") || wikiProbe.text.includes("未记录生成提交")
+        : wikiProbe.text.includes("还没有 wiki 产物") && wikiProbe.text.includes("codewiki generate"),
     ]);
+    if (wikiPresent) {
+      log("[Wiki] 空态未验：仓库根已有 docs/wiki（生成产物）；该腿由 tests/wiki-read.test.ts 覆盖");
+    }
     // 关掉再往下走：后面的用例按页签计数断言（此刻应是 2），留着 wiki 就把计数带偏了
     checks.push(["「Wiki」页签可关闭（closable，不在默认视图里）", await clickInDock(
       `b.getAttribute("aria-label") === "关闭Wiki"`,
@@ -3536,7 +3544,7 @@ export async function runDock(
     checks.push(["删除后读回不抛异常，仍旧回 missing", afterDelete.status === "missing"]);
 
     // ---- 移除工作区：断开登记 + 清会话，但**不动磁盘上的代码**（规则 ③-D）----
-    // 与 session.delete 同族，多出来的三处只有真 IPC 才覆盖得到：整项目级联（含 JSONL
+    // 与 session.delete 同族，多出来的三处只有真 IPC 才覆盖得到：整项目级联（含会话历史库
     // 与落盘截图）、以及「不删目录」这条**否定断言**——纯逻辑单测里根本没有磁盘可看。
     // 前提**自己建**（AGENTS §五⑬）：造一个**独立项目**，绝不碰本模式的主角那个。
     log("[移除工作区] 断开登记 + 清会话 + 磁盘上的代码一行不动（规则 ③-D）");
@@ -3547,19 +3555,19 @@ export async function runDock(
     writeFileSync(keepFile, "用户的代码\n", "utf8");
     const doomed = upsertProject(doomedRoot);
     const doomedSession = createSession(doomed.id, join(sessionsRoot, doomed.id));
-    setKernelSessionId(doomedSession.id, "smoke-kernel-doomed");
-    // JSONL 与工具截图各落一份：删项目时它们必须一起消失
-    const doomedJsonl = join(sessionsRoot, doomed.id, "20260101_smoke-kernel-doomed.jsonl");
-    mkdirSync(dirname(doomedJsonl), { recursive: true });
-    writeFileSync(doomedJsonl, "{}\n", "utf8");
+    // 会话历史库与工具截图各落一份：删项目时它们必须一起消失。
+    // durable 起历史是 `sessions/durable-<会话 id>.db`（不再是 JSONL）——`removeSessionHistory`
+    // 按会话 id 删的就是这三个后缀，所以靶子必须按**同一个**命名造，否则断言验的是一个不存在的东西。
+    const doomedDb = join(sessionsRoot, `durable-${doomedSession.id}.db`);
     const doomedToolDir = toolOutputDir(doomedSession.id);
+    writeFileSync(doomedDb, "", "utf8");
     mkdirSync(doomedToolDir, { recursive: true });
     writeFileSync(join(doomedToolDir, "call_smoke.png"), pngBytes);
     // 前置**先自证**：下面三条「清掉了 / 没被删」全是否定断言，靶子若压根没建出来，
     // 它们会一起**必然为真**（AGENTS §五⑫）——那种绿比一条红更贵。
     checks.push([
-      "前置：JSONL / 落盘截图 / 代码目录三件靶子都真的建好了",
-      existsSync(doomedJsonl) && existsSync(doomedToolDir) && existsSync(keepFile),
+      "前置：会话历史库 / 落盘截图 / 代码目录三件靶子都真的建好了",
+      existsSync(doomedDb) && existsSync(doomedToolDir) && existsSync(keepFile),
     ]);
 
     const afterRemove = await run<{ ok: boolean }>(
@@ -3576,7 +3584,7 @@ export async function runDock(
         ".then((list) => list.length)",
     );
     checks.push(["名下的会话一并清掉（按库查询回空）", leftover === 0]);
-    checks.push(["JSONL 历史被清掉（不留孤儿文件）", !existsSync(doomedJsonl)]);
+    checks.push(["会话历史库被清掉（不留孤儿 .db）", !existsSync(doomedDb)]);
     checks.push(["落盘的工具截图被清掉（与 session.delete 同一套收尾）", !existsSync(doomedToolDir)]);
     checks.push(["**磁盘上的项目目录一行不动**（注销登记 ≠ 删代码）", existsSync(keepFile)]);
 

@@ -109,25 +109,27 @@
 
 ## 四、与 pi 内核的边界（升级依赖前必读）
 
-worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，工具与执行环境来自 `pi-agent-core` / `pi-ai`）。
+worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，模型层来自 `pi-ai`）。
+内置编码工具与执行环境也来自 durable 自己的子路径（`pi-durable/tools`、`pi-durable/env/node`），
+**`pi-agent-core` 已不是依赖**（2026-10 移除，见 §4.1）。
 **只走 pi 在 `package.json` 的 `exports` 里声明的公开入口**——没有一处 import `dist/` 下的内部模块，
 也没有 `patches/` / `overrides` / vendoring。这条「零补丁」是升级能一直是「改版本号 + 跑测试」的前提，**不要破坏它**。
 
 | 用到的内核能力 | 公开入口 | 我们的用法 |
 |---|---|---|
-| 工具集 | `createBashTool` / `createEditTool` / `createReadTool` / `createWriteTool` | `worker/durable/entry.ts` 组装工具集 |
-| 自定义工具 | `AgentHarnessTool` / `ExecutionToolContext`（类型） | `worker/lib/browser-tool.ts`、`computer-tool.ts` |
+| 工具集 | `pi-durable/tools` 的 `createBashTool` / `createEditTool` / `createReadTool` / `createWriteTool` | `worker/durable/entry.ts` 组装工具集；`read` 外面套一层项目根校验（`worker/lib/read-guard.ts`） |
+| 自定义工具 | `defineTool` / `ToolRegistration` / `ToolExecutionApi`（类型） | `worker/lib/{ask-user,todo,memory,search,browser,computer,mcp}-tool(s).ts` |
 | 钩子 | `hook(ToolTask, { beforeTool, afterTool })` / `hook(GenerationTask, { beforeRequest })` | 审批闸门、净值基线抓取、临时提醒注入（`durable/entry.ts`） |
 | 事件 | `conversation.watch` / `watchEvents` | 用量、工具状态与整份视图推送 |
 | 会话持久化 | `openNodeSqliteStorage`（每会话一个 `durable-<id>.db`） | **格式归 pi**；我们只在自己的库里存 `kernel_session_id`（`d<会话 id>`）做映射 |
 | 状态归约 | `ConversationView`（`entries` + `pi.live` / `pi.usage` 文档） | `durable/project.ts` 投影成我们自己的 `ConversationView` |
 | 模型 / provider | `createModels` / `createProvider` / `envApiKeyAuth` / `lazyApi` + `pi-ai/providers/*` + `pi-ai/api/*` | `shared/provider-factory.ts`、`main/providers.ts`、`main/approval/analyzer.ts` |
-| 执行环境 | `pi-agent-core/node` 的 `NodeExecutionEnv` | worker 里的 bash / fs |
-| 上下文 | `BACKGROUND_CONTEXT`（实为 `@earendil-works/chord/context` 经 pi 转出） | worker 的 `Context` |
+| 执行环境 | `pi-durable/env/node` 的 `NodeExecutionEnv`（经 `HarnessOptions.env` 按每个对话的 cwd 现建） | worker 里的 bash / fs |
+| 上下文 | `BACKGROUND_CONTEXT`（`@earendil-works/chord`） | worker 的 `Context` |
 
 **四条纪律**
 
-1. **只走公开入口**——根导出，或 `exports` 里声明过的子路径（如 `pi-agent-core/node`、`pi-ai/providers/*`）。
+1. **只走公开入口**——根导出，或 `exports` 里声明过的子路径（如 `pi-durable/tools`、`pi-durable/env/node`、`pi-ai/providers/*`）。
    pi 没声明、但恰好能 import 到的路径也是内部，别用。
 2. **pi 的类型只允许出现在 `worker/`**：`worker/lib/project.ts` 是唯一的投影出口，内核的数据结构在那里变成
    我们的 `ConversationView`；渲染层与主进程永远只认我们自己的类型。投影里还带一道**编译期哨兵**
@@ -140,7 +142,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，工具与执�
 **升级 pi 的清单**
 
 1. 读 pi 的 release notes，先列出改了什么。
-2. 改 `package.json` 的 pin（两个 pi 包 + `typebox`，理由见本节末）。
+2. 改 `package.json` 的 pin（四个 `@earendil-works/*` 包 + `typebox`，理由见本节末）。
 3. `npm install` → `npm run typecheck` → `npm test` → `npm run build`。
    **`typecheck` 这一步会替我们拦下内核新增的内容块类型**——见下面「纪律 2」的哨兵。
 4. 冒烟：`COLT_SMOKE_MODE=fixture` + `COLT_SMOKE_MODE=dock`。
@@ -158,11 +160,11 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，工具与执�
 
 | 内核已提供 | 我们的状态 |
 |---|---|
-| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 按优先级扫**三个**目录：`.agents/skills`（项目级）、`~/.agents/skills`（用户级）、随包分发的内置（`worker/lib/builtin-skills/`，排最后），同名先到者胜出（内置是最底层，磁盘上的同名技能可盖它，口径见 `docs/SECURITY.md`）；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**让模型看见必须由应用拼进系统提示词**——内核只导出拼装函数、自己从不调用，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住；输入框的 `/skill <名字>` 由 worker 把技能正文拼成一条 user 消息提交（v1.42） |
+| Agent Skills 装载（原 `pi-agent-core` 的能力） | **已自研**——`worker/lib/skills-loader.ts`（`SKILL.md` 优先、递归 + `.gitignore` 过滤）+ `skills.ts` 做会话级配置与格式化；`worker/lib/skills.ts` 按优先级扫**三个**目录：`.agents/skills`（项目级）、`~/.agents/skills`（用户级）、随包分发的内置（`worker/lib/builtin-skills/`，排最后），同名先到者胜出（内置是最底层，磁盘上的同名技能可盖它，口径见 `docs/SECURITY.md`）；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**让模型看见必须由应用拼进系统提示词**——格式化函数只有定义、没有任何自动调用，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住；输入框的 `/skill <名字>` 由 worker 把技能正文拼成一条 user 消息提交（v1.42） |
 | `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
 | 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
-| 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |
-| 插件 / 组合运行时（`@earendil-works/chord`，**已在依赖树里**） | **未启用**——只用了它的 `BACKGROUND_CONTEXT` 一个符号 |
+| 存储一致性套件（`pi-durable/testing`：`registerStorageConformance` / `createStorageConformance`） | 未使用——可把「存储适配器是否仍符合契约」变成可执行检查 |
+| 插件 / 组合运行时（`@earendil-works/chord`，**已在依赖树里**） | **未启用**——只用了它的 `Context` / `BACKGROUND_CONTEXT` 两个符号 |
 
 ⚠️ 还有一条**没有版本锚点**的耦合：worker 的集成形态是照 pi 仓库里
 `packages/coding-agent/src/experimental/mini/worker/run.ts` 抄的（`worker/durable/entry.ts` 的进程形态沿用同一套）。
@@ -175,6 +177,11 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，工具与执�
 （`Harness` / `Conversation` / `Task` / `Entry` / 文档 + 存储适配器）。
 旧的内核 worker（`AgentHarness` + lane + JSONL）**已删除**：当前没有存量用户，
 不需要兼容旧 JSONL 历史，也就没有「按会话回退」这套复杂度。
+
+**`pi-agent-core` 依赖本身也已移除（2026-10）**：内置 read / write / edit / bash 改用
+`pi-durable/tools`，执行环境改用 `pi-durable/env/node`，自定义工具是 durable 的
+`ToolRegistration`（`defineTool`），技能装载是 `worker/lib/skills-loader.ts` 的自研实现。
+`Context` 直接从 `@earendil-works/chord` 取。**不要为了省事把 `pi-agent-core` 加回来。**
 
 | 入口 | 内核 | 存储 |
 |---|---|---|
@@ -205,7 +212,7 @@ durable 侧真正用上的能力（不是「接进来放着」）：
 | 宿主给的权力 | 扩展怎么用 | 本仓对应 |
 |---|---|---|
 | **加载权**：`package.json` 的 `pi.extensions` + jiti 直接加载 `.ts`，调用默认导出的 `(pi: ExtensionAPI) => void` | 包的入口就是那个函数 | ❌ **不自建扩展宿主**；能力**内建**进 durable 的 `defineExtension({ tools })`（`worker/durable/entry.ts`） |
-| **提示词组装权**：`registerTool` 的 `promptSnippet` / `promptGuidelines` | 模型「知道该用这个工具」靠宿主把这些字符串拼进系统提示词 | ❌ 内核 `AgentTool` 只有 `name / label / description / parameters / execute`（`pi-agent-core/dist/types.d.ts`）——引导只能写进 `description` 或 `composeSystemPrompt` |
+| **提示词组装权**：`registerTool` 的 `promptSnippet` / `promptGuidelines` | 模型「知道该用这个工具」靠宿主把这些字符串拼进系统提示词 | ❌ durable 的 `ToolRegistration` 只有 `name / description / parameters / execute / replay`（`pi-ai` 的 `Tool` + durable 自己那层）——引导只能写进 `description` 或 `composeSystemPrompt` |
 | **TUI 渲染权**：`ctx.ui.setWidget(key, factory, { placement })`（`render(width) => string[]`）、`ui.custom` / `ui.notify` / `ui.onTerminalInput` | 面板、交互表单、键盘拦截 | ❌ 本仓是 React + 主进程原生视图；对应物是渲染层组件 + IPC 通道 |
 | **会话生命周期**：`pi.on("session_start" / "session_compact" / "session_tree" / "session_shutdown")` | 重放状态、按前台 / 子会话分派、清理 | 🔸 内核**没有同名事件**；对应点要在 `session-manager` 与 worker 侧自己找 |
 

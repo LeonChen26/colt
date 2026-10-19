@@ -595,9 +595,10 @@ export async function createMcpRuntime(
   /**
    * 汇总全量工具，并按**注册名**去重。
    *
-   * 去重不是可选项：内核 `validateToolNames` 见到重名会直接 `TypeError`——
-   * 两个 server 撞名（或同一 server 的两个工具清洗后撞名）会让整个
-   * `AgentHarness.create` 崩掉，那比"少一个工具"严重得多。这里保留先到的、
+   * 去重不是可选项：内核装扩展时会校验**同一扩展内**工具名不重复
+   * （durable `validateExtension`：`has two tools named …` 直接抛错），
+   * 而两个 server 撞名（或同一 server 的两个工具清洗后撞名）会让整个
+   * `Harness` 起不来，那比「少一个工具」严重得多。这里保留先到的、
    * 把后到的记进通知，让人去改配置。
    */
   const buildTools = (): { tools: ToolRegistration[]; collisions: string[] } => {

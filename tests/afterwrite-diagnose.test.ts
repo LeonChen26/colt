@@ -15,7 +15,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import type { Context } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
 import {
   ESLINT_MARKERS,
   fastChecksFor,

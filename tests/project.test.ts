@@ -5,17 +5,17 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { LaneSnapshot } from "@earendil-works/pi-agent-core";
 import {
   countPatchLines,
   extractImage,
   extractText,
   extractToolCalls,
   extractToolText,
-  project,
   projectTranscript,
   toRelative,
 } from "../src/worker/lib/project.ts";
+import { skillPathMatcher } from "../src/worker/lib/skills.ts";
+import type { ViewSkill } from "../src/shared/worker-protocol.ts";
 
 describe("extractText", () => {
   test("拼接多个 text 块", () => {
@@ -135,11 +135,8 @@ describe("toRelative", () => {
   });
 });
 
-describe("project：技能调用消息带上归属标记（别再冒充用户发言）", () => {
-  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
-    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
-
-  /** 内核 `formatSkillInvocation` 的真实形状（模板由 `skills.test.ts` 拿真函数钉住） */
+describe("projectTranscript：技能调用消息带上归属标记（别再冒充用户发言）", () => {
+  /** 技能消息的真实形状（模板由 `skills.test.ts` 拿真函数钉住） */
   const invocation = (instructions?: string): string => {
     const block =
       '<skill name="pdf" location="/u/skills/pdf/SKILL.md">\n' +
@@ -165,383 +162,149 @@ describe("project：技能调用消息带上归属标记（别再冒充用户发
     assert.ok(!("skill" in messages[0]!), "没有技能归属时不该多出这个键");
   });
 
-  test("整份视图里没有裸露的技能调用 XML（归属是标记，不是靠正则再认一遍）", () => {
+  test("视图里没有裸露的技能调用 XML（归属是标记，不是靠正则再认一遍）", () => {
     // 「同一份数据只出现一次」的另一面：原始 XML 只该留在 `text` 里（展开时看），
-    // 不该出现在 `skill` 标记或摘要里——否则界面会两处显示同一段内核文案
-    const snapshot = snapshotOf([userEntry("u1", invocation("只改这一处"))]);
-    const view = project(
-      snapshot,
-      {
-        sessionId: "s",
-        cwd: "/cwd",
-        model: "m",
-        imageInput: false,
-        thinkingLevel: "medium" as never,
-        skills: [],
-        fileChanges: [],
-        todos: [],
-        contextUsed: 0,
-      } as never,
-      new Map(),
-      [],
-    );
-    const marker = JSON.stringify(view.messages[0]?.skill);
+    // 不该出现在 `skill` 标记里——否则界面会两处显示同一段内核文案
+    const { messages } = projectTranscript([userEntry("u1", invocation("只改这一处"))], new Map());
+    const marker = JSON.stringify(messages[0]?.skill);
     assert.ok(!marker.includes("<skill"), marker);
     assert.ok(!marker.includes("References are relative to"), marker);
   });
 });
 
 /**
- * `project()` 整份视图。
+ * `projectTranscript` 投影出的「消息 + 工具结果」两列。
  *
- * 前面那些 describe 覆盖的是各个 `extract*` 助手，**没人管过投影出来的整份视图**——
- * 而这里的约定恰恰是「同一份数据在视图里只能出现一次」：视图是**全量快照**、流式期间
+ * 这里的约定是「同一份数据在视图里只能出现一次」：视图是**全量快照**、流式期间
  * 每 50ms 重推一次（见 `worker/durable/entry.ts` 的 `scheduleFlush`），放错位置的字段，
  * 代价要乘上「被推了几次」。
- *
- * 断言尽量落在**最终产物**（整份视图序列化后的字符串）上，而不是「某个字段被赋值了」——
- * 只有断言产物本身，才抓得住「发过去、但渲染层从来不用」这种浪费。
  */
-describe("project：工具结果只走 toolResults，不进 messages", () => {
-  /** 只造 project() 真正读到的字段，避免把测试绑在内核的完整形状上 */
-  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
-    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
-
-  const meta = {
-    providerId: "test-provider",
-    modelId: "test-model",
-    thinkingLevel: "medium",
-    skills: [],
-    fileChanges: [],
-    contextUsed: 0,
-  } as unknown as Parameters<typeof project>[1];
-
+describe("projectTranscript：工具结果只走 toolResults，不进 messages", () => {
   const entry = (id: string, message: unknown): unknown => ({ type: "message", id, message });
 
   /** 一轮完整对话：用户提问 → 助手带工具调用 → 工具结果 */
-  const conversation = (): LaneSnapshot =>
-    snapshotOf([
-      entry("u1", { role: "user", content: [{ type: "text", text: "帮我看看这个文件" }] }),
-      entry("a1", {
-        role: "assistant",
-        content: [
-          { type: "text", text: "我来读一下" },
-          { type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.ts" } },
-        ],
-      }),
-      entry("r1", {
-        role: "toolResult",
-        toolCallId: "call_1",
-        content: [{ type: "text", text: "这是文件正文标记TOOLTEXT" }],
-      }),
-    ]);
+  const conversation = (): unknown[] => [
+    entry("u1", { role: "user", content: [{ type: "text", text: "帮我看看这个文件" }] }),
+    entry("a1", {
+      role: "assistant",
+      content: [
+        { type: "text", text: "我来读一下" },
+        { type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.ts" } },
+      ],
+    }),
+    entry("r1", {
+      role: "toolResult",
+      toolCallId: "call_1",
+      content: [{ type: "text", text: "这是文件正文标记TOOLTEXT" }],
+    }),
+  ];
 
   test("messages 里只有用户与助手，工具结果走 toolResults", () => {
-    const view = project(conversation(), meta, new Map(), []);
+    const { messages, toolResults } = projectTranscript(conversation(), new Map());
     assert.deepEqual(
-      view.messages.map((message) => message.role),
+      messages.map((message) => message.role),
       ["user", "assistant"],
     );
     assert.deepEqual(
-      view.toolResults.map((result) => result.id),
+      toolResults.map((result) => result.id),
       ["call_1"],
     );
-    assert.equal(view.toolResults[0]?.output, "这是文件正文标记TOOLTEXT");
+    assert.equal(toolResults[0]?.output, "这是文件正文标记TOOLTEXT");
   });
 
-  test("同一段工具正文在整份视图里**只出现一次**（过去的重复就发生在这里）", () => {
-    const serialized = JSON.stringify(project(conversation(), meta, new Map(), []));
+  test("同一段工具正文在整份投影里**只出现一次**（过去的重复就发生在这里）", () => {
+    const serialized = JSON.stringify(projectTranscript(conversation(), new Map()));
     const occurrences = serialized.split("这是文件正文标记TOOLTEXT").length - 1;
     assert.equal(occurrences, 1, `工具正文在视图里出现了 ${occurrences} 次，应为 1 次`);
   });
 
   test("助手消息仍带着工具调用 id —— 工具卡就是靠它去 toolResults 取结果", () => {
-    const view = project(conversation(), meta, new Map(), []);
-    const assistant = view.messages.find((message) => message.role === "assistant");
-    assert.deepEqual(
-      assistant?.toolCalls.map((call) => call.id),
-      ["call_1"],
-    );
-    assert.equal(assistant?.toolCalls[0]?.name, "read");
-  });
-
-  test("结构节点（header / value 等）不产生消息", () => {
-    const view = project(
-      snapshotOf([
-        { kind: "header", id: "h1" },
-        entry("u1", { role: "user", content: [{ type: "text", text: "在吗" }] }),
-        { kind: "value", key: "x" },
-      ]),
-      meta,
-      new Map(),
-      [],
-    );
-    assert.deepEqual(
-      view.messages.map((message) => message.role),
-      ["user"],
-    );
-    assert.equal(view.toolResults.length, 0);
-  });
-
-  test("子代理总账原样带出（视图里的 subagents 是这条通道，不是从内核快照来的）", () => {
-    const subagent = {
-      id: "sub:researcher:abcd1234",
-      toolCallId: "call_sub",
-      name: "researcher",
-      title: "查一下 read 工具在哪注册",
-      status: "running" as const,
-      startedAt: 1,
-      tail: { streamingText: null, thought: null, runningTools: [], recentSteps: [], stepCount: 0 },
-      stats: { promptTokens: 0, outputTokens: 0, costUsd: 0 },
-    };
-    const view = project(conversation(), meta, new Map(), [subagent]);
-    assert.deepEqual(view.subagents, [subagent]);
-  });
-
-  test("「输入」按 prompt 总量投影（含缓存命中），不报内核的净输入", () => {
-    // 内核 `Usage.input` 是**扣除缓存后的净输入**（`pi-ai` 的 openai-completions：
-    // `input = prompt_tokens - cacheRead - cacheWrite`）。直接暴露它，长会话的
-    // 「输入」会比真实上下文小一个数量级——这里把 103K / 4.0M 那组实测数钉住。
-    const snapshot = {
-      transcript: [],
-      operation: undefined,
-      stats: {
-        messageCount: 7,
-        usage: {
-          input: 103_246,
-          output: 524,
-          cacheRead: 4_004_672,
-          cacheWrite: 0,
-          totalTokens: 4_108_442,
-          cost: { total: 0.5 },
-        },
-      },
-    } as unknown as LaneSnapshot;
-    const view = project(snapshot, meta, new Map(), []);
-    assert.equal(view.stats.promptTokens, 4_107_918);
-    assert.equal(view.stats.outputTokens, 524);
-    assert.equal(view.stats.totalTokens, 4_108_442);
+    const { messages } = projectTranscript(conversation(), new Map());
+    assert.deepEqual(messages[1]?.toolCalls.map((call) => call.id), ["call_1"]);
   });
 });
 
-describe("project：工具截图能落盘的只报 hasImage", () => {
-  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
-    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
-  const meta = {
-    providerId: "test-provider",
-    modelId: "test-model",
-    thinkingLevel: "medium",
-    skills: [],
-    fileChanges: [],
-    contextUsed: 0,
-  } as unknown as Parameters<typeof project>[1];
-  const shot = (toolCallId: string, mimeType: string): LaneSnapshot =>
-    snapshotOf([
-      {
-        type: "message",
-        id: "r1",
-        message: {
-          role: "toolResult",
-          toolCallId,
-          content: [
-            { type: "text", text: "已截取主屏画面" },
-            { type: "image", mimeType, data: "iVBORw0KGgoAAAANSUhEUg" },
-          ],
-        },
+describe("projectTranscript：工具截图能落盘的只报 hasImage", () => {
+  const shot = (toolCallId: string, mimeType: string): unknown[] => [
+    {
+      type: "message",
+      id: "r1",
+      message: {
+        role: "toolResult",
+        toolCallId,
+        content: [
+          { type: "text", text: "已截取主屏画面" },
+          { type: "image", mimeType, data: "iVBORw0KGgoAAAANSUhEUg" },
+        ],
       },
-    ]);
+    },
+  ];
   const base64 = "iVBORw0KGgoAAAANSUhEUg";
 
   test("png 截图：只留标记，base64 不进视图", () => {
-    const view = project(shot("call_shot", "image/png"), meta, new Map(), []);
-    assert.equal(view.toolResults[0]?.hasImage, true);
-    assert.equal(view.toolResults[0]?.image, undefined);
-    assert.ok(!JSON.stringify(view).includes(base64), "能落盘的截图不该把 base64 留在视图里");
+    const { toolResults } = projectTranscript(shot("call_shot", "image/png"), new Map());
+    assert.equal(toolResults[0]?.hasImage, true);
+    assert.equal(toolResults[0]?.image, undefined);
+    assert.ok(!JSON.stringify(toolResults).includes(base64), "能落盘的截图不该把 base64 留在视图里");
   });
 
   test("落不了盘的图片类型仍内联（宁可这一条大点，也别让用户看不到图）", () => {
-    const view = project(shot("call_tiff", "image/tiff"), meta, new Map(), []);
-    assert.equal(view.toolResults[0]?.hasImage, undefined);
-    assert.equal(view.toolResults[0]?.image?.data, base64);
-    assert.equal(view.toolResults[0]?.image?.mimeType, "image/tiff");
+    const { toolResults } = projectTranscript(shot("call_tiff", "image/tiff"), new Map());
+    assert.equal(toolResults[0]?.hasImage, undefined);
+    assert.equal(toolResults[0]?.image?.data, base64);
+    assert.equal(toolResults[0]?.image?.mimeType, "image/tiff");
   });
 
   test("对照：同一个 id 换成能落盘的 png，行为立刻反过来——证明上面的断言不是空转", () => {
-    const inline = project(shot("call_same", "image/tiff"), meta, new Map(), []);
-    const spilled = project(shot("call_same", "image/png"), meta, new Map(), []);
-    assert.notDeepEqual(inline.toolResults[0], spilled.toolResults[0]);
+    const inline = projectTranscript(shot("call_same", "image/tiff"), new Map()).toolResults[0];
+    const spilled = projectTranscript(shot("call_same", "image/png"), new Map()).toolResults[0];
+    assert.notDeepEqual(inline, spilled);
   });
 });
 
-describe("project：read 命中技能文件时工具卡带 skill 标记（P3）", () => {
-  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
-    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
+describe("projectTranscript：read 命中技能文件时工具卡带 skill 标记（P3）", () => {
   const cwd = join("/proj");
   const skillFile = join(cwd, ".agents", "skills", "pdf", "SKILL.md");
-  const meta = {
-    providerId: "test-provider",
-    modelId: "test-model",
-    thinkingLevel: "medium",
-    cwd,
-    skills: [
-      {
-        name: "pdf",
-        description: "处理 PDF",
-        source: "project",
-        modelInvocable: true,
-        filePath: skillFile,
-      },
-    ],
-    fileChanges: [],
-    contextUsed: 0,
-  } as unknown as Parameters<typeof project>[1];
-  const entry = (id: string, message: unknown): unknown => ({ type: "message", id, message });
+  const skills: ViewSkill[] = [
+    {
+      name: "pdf",
+      description: "处理 PDF",
+      source: "project",
+      modelInvocable: true,
+      filePath: skillFile,
+      disabled: false,
+    },
+  ];
 
   /** 一次助手轮次里同时出现：读技能文件、读普通文件、跑 bash */
-  const transcript = (): LaneSnapshot =>
-    snapshotOf([
-      entry("a1", {
+  const transcript = (): unknown[] => [
+    {
+      type: "message",
+      id: "a1",
+      message: {
         role: "assistant",
         content: [
           { type: "toolCall", id: "c_skill", name: "read", arguments: { path: skillFile } },
           { type: "toolCall", id: "c_other", name: "read", arguments: { path: "src/index.ts" } },
           { type: "toolCall", id: "c_bash", name: "bash", arguments: { command: "cat x" } },
         ],
-      }),
-    ]);
+      },
+    },
+  ];
 
   test("读技能文件的那次带 skill，读普通文件 / bash 都不带", () => {
-    const view = project(transcript(), meta, new Map(), []);
-    const calls = view.messages[0]?.toolCalls ?? [];
+    const { messages } = projectTranscript(transcript(), new Map(), skillPathMatcher(skills, cwd));
+    const calls = messages[0]?.toolCalls ?? [];
     assert.equal(calls.find((call) => call.id === "c_skill")?.skill, "pdf");
     assert.equal(calls.find((call) => call.id === "c_other")?.skill, undefined);
     assert.equal(calls.find((call) => call.id === "c_bash")?.skill, undefined);
   });
 
   test("没有装载技能时任何调用都不带标记（不给普通 read 无中生有）", () => {
-    const view = project(
-      transcript(),
-      { ...meta, skills: [] } as unknown as Parameters<typeof project>[1],
-      new Map(),
-      [],
-    );
+    const { messages } = projectTranscript(transcript(), new Map(), skillPathMatcher([], cwd));
     assert.equal(
-      view.messages[0]?.toolCalls.every((call) => call.skill === undefined),
+      messages[0]?.toolCalls.every((call) => call.skill === undefined),
       true,
     );
-  });
-});
-
-describe("project：runningOperation 投影「在忙什么」（v1.74 压缩期间的可辨识状态）", () => {
-  const meta = {
-    providerId: "test-provider",
-    modelId: "test-model",
-    thinkingLevel: "medium",
-    skills: [],
-    fileChanges: [],
-    contextUsed: 0,
-  } as unknown as Parameters<typeof project>[1];
-
-  /** 只造内核 operation 里 project() 读到的形状（id/kind/startedAt/…） */
-  const snapshotOf = (operation: unknown): LaneSnapshot =>
-    ({ transcript: [], operation }) as unknown as LaneSnapshot;
-
-  const op = (kind: "run" | "compaction" | "navigation"): unknown => ({
-    id: "op_1",
-    kind,
-    startedAt: 0,
-    fromTipId: null,
-    status: "open",
-    runningTools: [],
-  });
-
-  test("run / compaction / navigation / 空闲四态如实投影，不被 running 布尔压扁", () => {
-    const kinds = ["run", "compaction", "navigation"] as const;
-    for (const kind of kinds) {
-      assert.equal(project(snapshotOf(op(kind)), meta, new Map(), []).runningOperation, kind);
-    }
-    assert.equal(project(snapshotOf(null), meta, new Map(), []).runningOperation, null);
-  });
-
-  test("与 running 同源一致：压缩中 running=true 且 kind 可辨识，空闲两者都归位", () => {
-    const compacting = project(snapshotOf(op("compaction")), meta, new Map(), []);
-    assert.equal(compacting.running, true);
-    assert.equal(compacting.runningOperation, "compaction");
-    const idle = project(snapshotOf(null), meta, new Map(), []);
-    assert.equal(idle.running, false);
-    assert.equal(idle.runningOperation, null);
-  });
-});
-
-describe("project：压缩条目投影成可读的摘要消息（v1.75 压缩卡的数据源）", () => {
-  const snapshotOf = (transcript: unknown[]): LaneSnapshot =>
-    ({ transcript, operation: undefined }) as unknown as LaneSnapshot;
-  const meta = {
-    providerId: "test-provider",
-    modelId: "test-model",
-    thinkingLevel: "medium",
-    skills: [],
-    fileChanges: [],
-    contextUsed: 0,
-  } as unknown as Parameters<typeof project>[1];
-
-  /** 内核 CompactionEntry 的形状（EntryBase 的 id/timestamp + 自有字段） */
-  const compactionEntry = (over: Record<string, unknown> = {}): unknown => ({
-    type: "compaction",
-    id: "cp1",
-    timestamp: 1234,
-    summary: "此前讨论了三件事：排版令牌、输入卡高度、右栏宽度记忆。",
-    tokensBefore: 32000,
-    retainedTail: [],
-    fromHook: false,
-    ...over,
-  });
-  const messageEntry = (id: string, role: string, text: string): unknown => ({
-    type: "message",
-    id,
-    message: { role, content: [{ type: "text", text }], timestamp: 5678 },
-  });
-
-  test("压缩条目 → role=other + compaction 标记，摘要正文留在 text 里", () => {
-    const view = project(snapshotOf([compactionEntry()]), meta, new Map(), []);
-    assert.equal(view.messages.length, 1);
-    const card = view.messages[0]!;
-    assert.equal(card.role, "other");
-    assert.equal(card.id, "cp1");
-    assert.equal(card.timestamp, 1234);
-    assert.deepEqual(card.compaction, { tokensBefore: 32000 });
-    assert.ok(card.text.includes("排版令牌"), "摘要正文必须完整带到（压缩卡画的就是它）");
-    assert.deepEqual(card.toolCalls, []);
-  });
-
-  test("时序位保持：压缩卡在前、尾部保留消息在后（内核就是按这个顺序放回 transcript 的）", () => {
-    const view = project(
-      snapshotOf([compactionEntry(), messageEntry("a1", "assistant", "尾部保留的回复")]),
-      meta,
-      new Map(),
-      [],
-    );
-    assert.deepEqual(
-      view.messages.map((message) => message.id),
-      ["cp1", "a1"],
-    );
-  });
-
-  test("tokensBefore 缺失/非法时给 0（渲染层对 <=0 不显示数字，不写假值）", () => {
-    const missing = project(snapshotOf([compactionEntry({ tokensBefore: undefined })]), meta, new Map(), []);
-    assert.deepEqual(missing.messages[0]?.compaction, { tokensBefore: 0 });
-    const bogus = project(snapshotOf([compactionEntry({ tokensBefore: "many" })]), meta, new Map(), []);
-    assert.deepEqual(bogus.messages[0]?.compaction, { tokensBefore: 0 });
-  });
-
-  test("没有压缩条目时消息不带 compaction 键（不给普通消息无中生有）", () => {
-    const view = project(
-      snapshotOf([messageEntry("u1", "user", "在吗")]),
-      meta,
-      new Map(),
-      [],
-    );
-    assert.equal(view.messages[0]?.compaction, undefined);
-    assert.ok(!("compaction" in view.messages[0]!));
   });
 });

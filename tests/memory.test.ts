@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
-import type { Skill } from "@earendil-works/pi-agent-core";
+import type { Skill } from "../src/worker/lib/skills-loader.ts";
 import {
   appendMemoryBlock,
   compactMemoryReminder,
