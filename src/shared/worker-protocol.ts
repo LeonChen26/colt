@@ -34,6 +34,19 @@ export interface McpServerView {
   /** 注册给模型的工具名（`mcp__<server>__<tool>`） */
   tools: string[];
   error?: string;
+  /**
+   * 这条声明来自哪一层配置。**只由主进程填**（worker 不填）：
+   * worker 手上的是一份合并后的结果，它分不清「同名覆盖」里谁赢了——而那正是设置页
+   * 要说清的事（用户改了用户级那份却不生效，无从排查）。合并读取之后这个信息就丢了，
+   * 所以必须在 `loadMcpConfig` 里单独带出来。
+   */
+  scope?: "project" | "user" | "project-overrides";
+  /**
+   * 是否由**内置目录**装的（`MCP_CATALOG`）。判定在主进程：名字对得上 **且** 启动命令
+   * 与参数与目录里那条一致——用户完全可能手写一条自己的 CodeWiki（不同参数、不同 venv），
+   * 那不该被认成「我们装的」，更不该给它一个「卸载」按钮。同样只由主进程填。
+   */
+  origin?: "catalog" | "config";
 }
 
 /**

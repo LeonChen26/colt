@@ -25,6 +25,18 @@ import { removeUserServer, upsertUserServer } from "./user-config";
 /** venv / pip 这类步骤的时限：分钟级（首次装 codewiki 要下几十 MB） */
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 
+/**
+ * pip 的备用镜像源。
+ *
+ * 为什么需要它：官方源在国内经常不是「慢」而是「连不上」——实测 `pypi.org/simple/litellm/`
+ * 15 秒超时（curl exit 28），而同一个路径在阿里云 / 清华镜像上是 1.2s / 2.0s。官方源下
+ * 跑了 32 分钟只下到 13MB（litellm 一个 wheel 就花了 11 分钟）。
+ *
+ * **只在第一次失败后才用**，不替已经配好镜像的用户做选择；`git+https://` 的依赖不受它影响
+ * （仍走 GitHub），所以它只解决 PyPI 那一半。
+ */
+const PIP_MIRROR = "https://mirrors.aliyun.com/pypi/simple/";
+
 /** 运行时目录：放在 Colt 自己的 userData 下，不混进用户的 Python 环境 */
 export function presetRuntimeDir(userDataDir: string, presetId: string): string {
   return join(userDataDir, "runtimes", presetId);
@@ -63,7 +75,7 @@ export interface InstallDeps {
   /** 执行器（单测注入假实现；默认真 spawn，时限按安装级放宽） */
   run?: Runner;
   /**
-   * 四连检（默认 `probeCodewiki`）。做成可注入的，是因为单测不该依赖**跑测试的这台机器**
+   * 前置检查（默认 `probeCodewiki`）。做成可注入的，是因为单测不该依赖**跑测试的这台机器**
    * 上有没有 Python——那样这条用例的结论会随开发者的环境漂移（`AGENTS.md` §五⑬）。
    */
   probe?: () => Promise<ProbeResult>;
@@ -167,25 +179,49 @@ async function runInstall(deps: InstallDeps): Promise<McpInstallResult> {
   const pip = await push(
     { id: "pip", label: `安装 ${requirements.join(" ")}`, state: "running", detail: null },
     async () => {
-      const result = await run(venvPython(deps.runtimeDir), [
+      const args = [
         "-m",
         "pip",
         "install",
         "--disable-pip-version-check",
         "--no-input",
         ...requirements,
-      ]);
+      ];
+      // 第一次按用户自己的 pip 配置走（配过镜像的机器这里就成功了）
+      let result = await run(venvPython(deps.runtimeDir), args);
+      if (result.ok) return { state: "ok", detail: tail(result.stdout, 3) };
+
+      /**
+       * 失败后**自动换镜像再试一次**。
+       *
+       * 为什么值得替用户做这一步：官方源在国内经常不是「慢」而是「连不上」（实测 15s 超时，
+       * 跑了 32 分钟只下到 13MB），而 pip 的 stderr 只有 `Read timed out` / `schannel`——
+       * 用户看不出「换个源就好」。重试的成本很低：已下载的 wheel 在 pip 缓存里。
+       *
+       * 只覆盖 PyPI 那一半：`git+https://…` 的依赖不受 `--index-url` 影响，仍走 GitHub。
+       */
+      result = await run(venvPython(deps.runtimeDir), [...args, "--index-url", PIP_MIRROR]);
       if (!result.ok) {
         return {
           state: "failed",
-          detail: `${result.error ?? `退出码 ${String(result.code)}`}\n${tail(result.stderr)}`.trim(),
+          detail:
+            `官方源与镜像都失败（下面是镜像那次的输出）\n` +
+            `${result.error ?? `退出码 ${String(result.code)}`}\n${tail(result.stderr)}`.trim(),
         };
       }
-      return { state: "ok", detail: tail(result.stdout, 3) };
+      return { state: "ok", detail: `官方源失败，已自动改用镜像\n${tail(result.stdout, 3)}`.trim() };
     },
   );
   if (pip.state === "failed") {
-    return { ok: false, steps, error: "pip 安装失败（见上）" };
+    return {
+      ok: false,
+      steps,
+      // 失败收口必须给下一步：这条流水要同时够到 PyPI 和两个 GitHub 仓库，
+      // 网络稍差就卡在这里，而 stderr 里只有 timeout / schannel，用户看不出该动哪里
+      error:
+        "pip 安装失败（官方源与镜像都试过了，见上）。剩下的可能是到 GitHub 的连接——" +
+        "这一项要从两个 GitHub 仓库拉代码，可以换个网络或用代理再重试，也可以照「手动命令」自己在终端里装。",
+    };
   }
 
   // ④ 复检：以**venv 里那个解释器**读到的版本为准，不看 pip 的脸色

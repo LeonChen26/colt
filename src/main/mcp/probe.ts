@@ -20,6 +20,7 @@
  */
 import { spawn } from "node:child_process";
 import type { McpProbeItem } from "@shared/mcp-catalog";
+import { findPreset } from "@shared/mcp-catalog";
 
 /** 一次命令执行的结果（只关心「跑起来了没、说了什么」） */
 export interface CommandResult {
@@ -143,12 +144,18 @@ function lastLine(text: string): string {
 const HINT_PYTHON =
   "装 Python 3.12+：https://www.python.org/downloads/ （Windows 安装时勾选 Add python.exe to PATH）";
 const HINT_GIT = "装 git：https://git-scm.com/downloads （CodeWiki 用 git 判断产物落后几个提交）";
+const HINT_NODE =
+  "装 Node.js 18+：https://nodejs.org/ （npm 随它一起装；装期 PythonMonkey 会调 npm）";
 
 /**
- * 跑一次四连检。
+ * 跑一次前置检查（五项）。
  *
- * 顺序有讲究：先 Python（后面两项都要用它），再 git（与 Python 无关，缺了也照样报），
- * 最后才查包里那两个——没有 Python 时不能把「没装 codewiki」当成用户的问题。
+ * 顺序有讲究：先 Python（后面两项包里版本都要用它），再 git 与 npm（两个宿主机条件，
+ * 与 Python 无关，缺了也照样报），最后才查包里那两个——没有 Python 时不能把
+ * 「没装 codewiki」当成用户的问题。
+ *
+ * 这五项分两类（`kind`）：`host` 是机器上本来就该有的，`payload` 是装这一项时才由我们装的。
+ * 界面据此只把 `host` 当「能不能装」的门禁——未装时 `payload` 必然是「未安装」，摆出来是废话。
  */
 export async function probeCodewiki(
   run: Runner = nodeSpawnRunner,
@@ -187,6 +194,7 @@ export async function probeCodewiki(
     items.push({
       id: "python",
       label: "Python",
+      kind: "host",
       ok: false,
       version: null,
       detail: "没找到可用的 Python 解释器（试过 python / py -3 / python3）",
@@ -198,6 +206,7 @@ export async function probeCodewiki(
     items.push({
       id: "python",
       label: "Python",
+      kind: "host",
       ok,
       version: python.version,
       detail: ok
@@ -212,12 +221,38 @@ export async function probeCodewiki(
   items.push({
     id: "git",
     label: "git",
+    kind: "host",
     ok: git.ok,
     version: gitVersion === null ? null : gitVersion.join("."),
     detail: git.ok
       ? lastLine(git.stdout)
       : `git 不可用：${git.error ?? (lastLine(git.stderr) || `退出码 ${String(git.code)}`)}`,
     hint: git.ok ? null : HINT_GIT,
+  });
+
+  /**
+   * Node.js：这是**装期**依赖，不在任何 Python 依赖声明里。
+   *
+   * 依赖链是 `mermaid-parser-py` → PythonMonkey → 安装时 `pminit` 调 npm 拉 JS 依赖。
+   * 缺了 npm，pip 会在构建阶段失败，报错还不在 Python 的栈里——用户完全看不出
+   * "装个 Python 包为什么要 Node"。所以必须提前查、提前说。
+   *
+   * 探 `node` 而不是 `npm`：Windows 上 npm 是 `npm.cmd`，`spawn` 不能直接执行它
+   * （要 `shell: true`，而我们刻意不用 shell——那条路会把命令串交给 cmd.exe 解析）。
+   * `node` 是 `node.exe`，可以直连。npm 随 Node 一起装，存在性等同。
+   */
+  const node = await run("node", ["--version"]);
+  const nodeVersion = node.ok ? lastLine(node.stdout).replace(/^v/, "") : null;
+  items.push({
+    id: "node",
+    label: "Node.js",
+    kind: "host",
+    ok: node.ok,
+    version: nodeVersion,
+    detail: node.ok
+      ? `node ${nodeVersion ?? "已安装"}（npm 随它一起装）`
+      : `node 不可用：${node.error ?? (lastLine(node.stderr) || `退出码 ${String(node.code)}`)}`,
+    hint: node.ok ? null : HINT_NODE,
   });
 
   // 后面两项都要用**选中的那个**解释器跑：`py -3` 与 `python` 可能是两个不同的环境
@@ -255,6 +290,7 @@ export async function probeCodewiki(
   items.push({
     id: "codewiki",
     label: "codewiki",
+    kind: "payload",
     ok: codewikiOk,
     version: codewiki.version,
     detail:
@@ -263,7 +299,9 @@ export async function probeCodewiki(
         : codewikiOk
           ? codewiki.detail
           : `${codewiki.version} 不是 2.0.0（工具入参与产物格式随版本变，必须钉住）`,
-    hint: codewikiOk ? null : 'pip install "codewiki==2.0.0" "mcp<2"',
+    // 手动命令**从目录里取**，不在这里重写一遍：安装串一变（比如从 PyPI 名改成 git 地址），
+    // 两处就会各说各的——而用户照着这里抄的那条才是他真会执行的
+    hint: codewikiOk ? null : (findPreset("codewiki")?.manualCommands[0] ?? null),
   });
 
   const mcp = await readPackageVersion("mcp");
@@ -272,6 +310,7 @@ export async function probeCodewiki(
   items.push({
     id: "mcp",
     label: "mcp",
+    kind: "payload",
     ok: mcpOk,
     version: mcp.version,
     detail:

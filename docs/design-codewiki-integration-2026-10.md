@@ -2,7 +2,7 @@
 
 > **状态**：P2（只读浏览 + 注入）与 P1（内置可选安装目录）**已实施**，见 §4 各节的状态段；
 > P0 是配置级方案（不写进本仓库的代码），P3 未做。
-> **设计输入**：2026-10-17 在**本仓库**上完整试跑过一次 CodeWiki 2.0（产物见 `docs/wiki/`，MCP 模式、零 API 花费）。文中的「实测」都指那一次，不是推演。
+> **设计输入**：2026-10-17 在**本仓库**上完整试跑过一次 CodeWiki 2.0（本地产物在 `docs/wiki/`，生成于 `2d1a9a4`、未入库；MCP 模式、零 API 花费）。文中的「实测」都指那一次，不是推演。
 > **本文回答三件事**：能不能接、接哪一层、分几步接。实施步骤落地时另开 impl-plan，不写在这里。
 
 ---
@@ -207,7 +207,7 @@ MCP 那 10 个工具的实际分工（读的是 `codewiki/mcp/server.py`）：
 | 文件 | 改动 | 规模 |
 |---|---|---|
 | `shared/mcp-catalog.ts` | **纯数据**目录：`id / 名称 / 一句话 / requirements / pins / 手动命令`。首条是 `codewiki` | +150 ✅ |
-| `main/mcp/install.ts` | 安装：探测 → `python -m venv` → `pip install codewiki==2.0.0 "mcp<2"` → 复检 → 写用户级 `~/.colt/mcp.json`；同目录单飞 | +250 ✅ |
+| `main/mcp/install.ts` | 安装：探测 → `python -m venv` → `pip install "codewiki @ git+https://github.com/FSoft-AI4Code/CodeWiki.git@5b95c8483b129c8f6c39f340c2ae660550967b18" "mcp<2"` → 复检 → 写用户级 `~/.colt/mcp.json`；同目录单飞 | +250 ✅ |
 | `main/mcp/probe.ts` | 四连检（python / git / codewiki / `mcp<2`），逐项返回「缺什么 + 一条可执行命令」；执行器可注入 | +250 ✅ |
 | `main/mcp/user-config.ts` | 用户级配置的**最小改动**读写（保留别人的条目与顶层未知字段；坏 JSON 报错不覆盖；临时文件 + rename） | +110 ✅ |
 | `shared/protocol.ts` | 通道 `mcp.catalog` / `mcp.install` / `mcp.uninstall`，事件 `mcp.installProgress` | +45 ✅ |
@@ -377,7 +377,7 @@ MCP 那 10 个工具的实际分工（读的是 `codewiki/mcp/server.py`）：
 
 ```bash
 # 1) 装 CodeWiki（Python 3.12+，mcp 必须 <2）
-pip install codewiki==2.0.0 "mcp<2"
+pip install "codewiki @ git+https://github.com/FSoft-AI4Code/CodeWiki.git@5b95c8483b129c8f6c39f340c2ae660550967b18" "mcp<2"
 
 # 2) 在目标仓库跑（会写 docs/wiki/）
 cd /path/to/repo && codewiki generate --output docs/wiki --language zh
@@ -387,3 +387,43 @@ cd /path/to/repo && codewiki generate --output docs/wiki --language zh
 ```
 
 本次由于 `caw` 拉取失败，采用「先装其余依赖 + `pip install --no-deps -e .`」的绕过方式；影响面仅订阅模式。
+
+---
+
+## 9. 安装可达性实测（2026-10-18）
+
+这一节是「一键安装」能不能承诺的底账。数字是本机实测，换环境会变，但结论的形状不会。
+
+| 探测 | 结果 |
+|---|---|
+| `pip install codewiki==2.0.0` | **PyPI 上没有这个版本**：`codewiki` 只有 0.1.0–0.6.5，且那些属于**另一个同名项目**（PorunC/CodeWiki）。上游自己的安装说明就是 `pip install git+https://github.com/FSoft-AI4Code/CodeWiki.git` |
+| `https://pypi.org/simple/litellm/` | **15s 超时**（curl exit 28） |
+| 阿里云镜像同一路径 | 1.2s |
+| 清华镜像 | 2.0s |
+| `git clone …/CodeWiki.git` | 一次成功；另一次 `schannel: server closed abruptly (missing close_notify)`——TLS 长连接被中断 |
+| 整装（官方源，跑 32 分钟后放弃） | 只下到 13MB：litellm 一个 wheel 就花了 11 分钟 |
+| 装期是否需要 npm | **需要**。`pyproject.toml` 的 `[external]` 写明：`mermaid-parser-py` → PythonMonkey 的 `pminit` 在安装时 shell 出去调 npm |
+| 依赖树 | litellm / fastapi / uvicorn / pydantic-ai / logfire / openai / keyring / GitPython / 十个 tree-sitter / **两个 GitHub 仓库** |
+
+由此定下三条：
+
+1. **依赖串必须是 git 直引 + commit**。这不是"更严谨"的问题：这个包在 PyPI 上根本不存在，按名字装要么失败、要么装成别人的项目。
+2. **npm 进前置检查**。它是装期依赖，而且**不在任何 Python 依赖声明里**——缺了会在 pip 阶段失败，报错还不在 Python 的栈里，用户完全看不出"装个 Python 包为什么要 Node"。
+3. **文案不许写「1–3 分钟 / 60MB」**。实测：分钟级起步、下载以百 MB 计、还可能因网络中断整批失败。安装失败时的收口必须点明「配 pip 镜像」这条出路，因为 stderr 里只有 timeout 和 schannel，用户看不出该动哪里。
+
+### 产品侧只做了一件事：失败后自动换镜像重试
+
+`install.ts` 的 pip 步骤：第一次按**用户自己的 pip 配置**走（配过镜像的机器这里就成功了），失败后**自动加 `--index-url` 用阿里云镜像再试一次**，并在步骤详情里写明「官方源失败，已自动改用镜像」。
+
+为什么值得替用户做：官方源在国内不是「慢」而是「连不上」，而 pip 的 stderr 只有 `Read timed out` / `schannel`——用户看不出「换个源就好」。重试成本很低，已下载的 wheel 在 pip 缓存里。
+
+**它只解决 PyPI 那一半。** `git+https://` 的依赖不受 `--index-url` 影响，仍走 GitHub：两次实测里一次成功、一次 `schannel: server closed abruptly`。所以两次都失败时，收口指向的是 GitHub 而不是源，并把手动命令留在折叠区。
+
+### 还有一个上游隐患
+
+`pyproject.toml` 的依赖里有一条 `coding-agent-wrapper @ git+https://github.com/anhnh2002/caw@main`——**指向别人的仓库、且钉在 `main` 上**。这意味着：
+
+- 我们钉了自己的 commit，但装出来的东西**仍然不可复现**（caw 会漂）；
+- 那个仓库哪天删了或改名，安装就整体失败（本次试跑已经遇到过一次）。
+
+这条只能在 Colt 侧兜住：`pins` 里如实说"依赖含外部仓库"，并保证失败时手动命令仍然可用。要真解决，得上游把 caw 换成钉版本的发布包——不在本仓范围。

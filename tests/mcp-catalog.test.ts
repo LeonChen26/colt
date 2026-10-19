@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 内置可选 MCP 目录的三层：目录数据 / 四连检 / 安装与卸载。
+ * 内置可选 MCP 目录的三层：目录数据 / 前置检查 / 安装与卸载。
  *
  * 三条判据各守一件最容易出的事：
  * 1. **目录**：钉住的版本与 `pip` 真正吃的依赖串必须一致——`pins` 是给人读的（`= 2.0.0`
@@ -48,13 +48,22 @@ function fakeRunner(
 }
 
 /** 一台「什么都装好了」的机器（Python 3.13 / git / codewiki 2.0.0 / mcp 1.30） */
-function healthyMachine(over: { python?: string; codewiki?: string; mcp?: string } = {}) {
+function healthyMachine(
+  over: { python?: string; codewiki?: string; mcp?: string; node?: string } = {},
+) {
   return fakeRunner([
     {
-      match: (_command, args) => args.at(-1) === "--version" && args[0] !== "-c",
+      // 按**命令名**限定，别只看 `--version`：`npm --version` 也是那个形状，
+      // 早先这条把它们一起接走，于是 npm 那项的版本读成了 "Python 3.13.12"。
+      // 路径也认（venv 里的 `/rt/Scripts/python.exe` 是「指定解释器」那条走的路）。
+      match: (command, args) =>
+        (["python", "python3", "py"].includes(command) ||
+          /[\\/]python(\.exe)?$/i.test(command)) &&
+        args.at(-1) === "--version",
       result: ok(`Python ${over.python ?? "3.13.12"}\n`),
     },
     { match: (command) => command === "git", result: ok("git version 2.47.1.windows.1\n") },
+    { match: (command) => command === "node", result: ok(`v${over.node ?? "22.22.2"}\n`) },
     {
       match: (_command, args) => args.join(" ").includes("import codewiki"),
       result: ok(`${over.codewiki ?? "2.0.0"}\n`),
@@ -82,12 +91,19 @@ describe("目录：内置条目与钉住的版本", () => {
     assert.equal(venvBinary("/tmp/rt", preset!.id).endsWith("codewiki" + (process.platform === "win32" ? ".exe" : "")), true);
   });
 
-  test("pip 依赖串与「钉住」的说法一致（2.0.0 / mcp<2）", () => {
+  test("pip 依赖串从 git 按 commit 装（PyPI 上的 codewiki 是别人的包）", () => {
     const preset = findPreset("codewiki")!;
-    assert.deepEqual(preset.requirements, ["codewiki==2.0.0", "mcp<2"]);
-    // 界面文案里说钉了什么，依赖串里就得真有那两条——两边走散就是「说得对、装得错」
+    // 关键事实：`pip install codewiki` 装到的是另一个同名项目，`codewiki==2.0.0` 在 PyPI
+    // 上根本不存在（实测 Could not find a version）。所以依赖串必须是 git 直引。
+    assert.match(
+      preset.requirements[0]!,
+      /^codewiki\s@\sgit\+https:\/\/github\.com\/FSoft-AI4Code\/CodeWiki\.git@[0-9a-f]{40}$/,
+      "依赖串不是 git 直引：按 PyPI 名装会装到别人的包或直接失败",
+    );
+    assert.equal(preset.requirements[1], "mcp<2");
+    // 界面文案里说钉了什么，依赖串里就得真有那几条——两边走散就是「说得对、装得错」
     const labels = preset.pins.map((pin) => pin.label);
-    assert.deepEqual(labels.sort(), ["Python", "codewiki", "mcp"].sort());
+    assert.deepEqual(labels.sort(), ["CodeWiki", "Node.js", "Python", "mcp"].sort());
     const mcpPin = preset.pins.find((pin) => pin.label === "mcp")!;
     assert.match(mcpPin.why, /list_tools/, "必须写清为什么要钉 mcp<2（实测崩点）");
   });
@@ -98,7 +114,7 @@ describe("目录：内置条目与钉住的版本", () => {
   });
 });
 
-describe("四连检：每个分支都说清「缺什么」", () => {
+describe("前置检查：每个分支都说清「缺什么」", () => {
   test("parseVersion 只认三段版本号，读不出就 null（不猜成 0.0.0）", () => {
     assert.deepEqual(parseVersion("Python 3.13.12"), [3, 13, 12]);
     assert.deepEqual(parseVersion("git version 2.47.1.windows.1"), [2, 47, 1]);
@@ -110,7 +126,7 @@ describe("四连检：每个分支都说清「缺什么」", () => {
 
   test("全绿：四项都过时 ready=true", async () => {
     const result = await probeCodewiki(healthyMachine());
-    assert.equal(result.items.length, 4);
+    assert.equal(result.items.length, 5);
     assert.equal(result.ready, true);
     assert.equal(result.python?.version, "3.13.12");
     assert.equal(itemOf(result.items, "codewiki").version, "2.0.0");
@@ -279,6 +295,7 @@ describe("安装 / 卸载：失败时什么都不写", () => {
             {
               id: "python",
               label: "Python",
+              kind: "host",
               ok: false,
               version: null,
               detail: "没找到",
@@ -336,7 +353,8 @@ describe("安装 / 卸载：失败时什么都不写", () => {
       // pip 真的拿到的就是钉住的那两条（拼错一个符号就是装错版本）
       const pipCall = run.calls.find((call) => call.includes("pip"));
       assert.notEqual(pipCall, undefined);
-      assert.deepEqual(pipCall!.slice(-2), ["codewiki==2.0.0", "mcp<2"]);
+      assert.equal(pipCall!.slice(-2)[1], "mcp<2");
+      assert.match(pipCall!.slice(-2)[0]!, /^codewiki @ git\+https:/);
 
       const raw = JSON.parse(await readFile(join(home, ".colt", "mcp.json"), "utf8")) as {
         mcpServers: Record<string, { command: string; args: string[] }>;

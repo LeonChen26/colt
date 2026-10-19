@@ -58,12 +58,36 @@ export interface McpPreset {
 }
 
 /**
+ * CodeWiki 的**源码地址**。
+ *
+ * ⚠️ 它不在 PyPI 上。`pip install codewiki` 装到的是**另一个同名项目**
+ * （作者 PorunC，最新 0.6.5，FastAPI + 数据库那套），与本目录指的 CodeWiki 毫无关系。
+ * 上游自己的安装说明也是 `pip install git+https://github.com/FSoft-AI4Code/CodeWiki.git`。
+ * 这一条是 2026-10-18 实测出来的：按 PyPI 名装直接报
+ * `Could not find a version that satisfies the requirement codewiki==2.0.0`。
+ */
+const CODEWIKI_REPO = "https://github.com/FSoft-AI4Code/CodeWiki.git";
+
+/**
+ * 钉版本只能钉 **commit**：仓库没有任何 tag（`git tag` 为空），`main` 会漂。
+ *
+ * 这个 hash 是本地 `origin/main` 的 HEAD，也是本条目唯一被验证过的版本。
+ * 换它之前请先真装一遍——commit 与 `pins` 里的人读版本必须对得上。
+ */
+const CODEWIKI_COMMIT = "5b95c8483b129c8f6c39f340c2ae660550967b18";
+
+/**
  * 首个条目：CodeWiki（仓库文档生成）。
  *
- * 实测结论都写进 `pins`，因为它们是这个条目存在的理由：`mcp>=2` 会让 CodeWiki 的 server
- * 直接起不来（2.x 移除了 `Server.list_tools()` 装饰器 API，`import codewiki.mcp.server`
- * 抛 AttributeError），而它自己的 `pyproject.toml` 只写了 `mcp>=1.0.0`——不钉就是我们
- * 把一个必然崩的组合推给用户。
+ * `pins` 里每一条都是实测结论，因为它们是这个条目存在的理由：
+ * - `mcp>=2` 会让 CodeWiki 的 server 直接起不来（2.x 移除了 `Server.list_tools()` 装饰器
+ *   API，`import codewiki.mcp.server` 抛 AttributeError），而它自己的 `pyproject.toml`
+ *   只写了 `mcp>=1.0.0`——不钉就是我们把一个必然崩的组合推给用户。
+ * - 装期还需要 **npm**：依赖链里的 `mermaid-parser-py` 会拉 PythonMonkey，而它的 `pminit`
+ *   会在安装时 shell 出去调 npm。这条不在任何 Python 依赖声明里，缺了会在 pip 阶段
+ *   失败得莫名其妙。
+ * - 依赖树很重（litellm / fastapi / pydantic-ai / logfire / 十个 tree-sitter / 两个 GitHub
+ *   仓库），所以安装是**分钟级起步**，不是"几秒钟的小工具"。
  */
 const CODEWIKI: McpPreset = {
   id: "codewiki",
@@ -71,9 +95,9 @@ const CODEWIKI: McpPreset = {
   tagline: "把仓库拆成模块树，逐页写 Markdown + Mermaid；模型据此先读文档、再读源码。",
   serverName: "codewiki",
   serverArgs: ["mcp"],
-  requirements: ["codewiki==2.0.0", "mcp<2"],
+  requirements: [`codewiki @ git+${CODEWIKI_REPO}@${CODEWIKI_COMMIT}`, "mcp<2"],
   manualCommands: [
-    'pip install "codewiki==2.0.0" "mcp<2"',
+    `pip install "codewiki @ git+${CODEWIKI_REPO}@${CODEWIKI_COMMIT}" "mcp<2"`,
     '再在 ~/.colt/mcp.json 里加一条：{ "mcpServers": { "codewiki": { "command": "codewiki", "args": ["mcp"] } } }',
   ],
   pins: [
@@ -83,9 +107,14 @@ const CODEWIKI: McpPreset = {
       why: "CodeWiki 2.0 用了 3.12 的语法与标准库，3.11 及以下装得上也跑不起来。",
     },
     {
-      label: "codewiki",
-      requirement: "= 2.0.0",
-      why: "MCP 工具的入参与模块树格式随版本变；跨版本混用会写出半份产物。",
+      label: "Node.js",
+      requirement: ">= 14（npm 要在 PATH 上）",
+      why: "装期依赖：依赖链里的 mermaid-parser-py 会拉 PythonMonkey，它安装时 shell 出去调 npm。缺 npm 会在 pip 阶段失败，而这条不在任何 Python 依赖声明里。",
+    },
+    {
+      label: "CodeWiki",
+      requirement: `commit ${CODEWIKI_COMMIT.slice(0, 7)}`,
+      why: "PyPI 上的 codewiki 不是这个项目（同名包属于别人，最新只有 0.6.5），所以只能从 git 装；仓库没有 tag，只有 commit 钉得住——main 会漂，装出来的东西不可复现。",
     },
     {
       label: "mcp",
@@ -93,7 +122,8 @@ const CODEWIKI: McpPreset = {
       why: "2.x 移除了 Server.list_tools() 装饰器 API——装了就 import 失败，server 起不来（实测）。",
     },
   ],
-  runtimeNote: "运行时是装在家目录里的独立 venv（约 60MB）。留着它，重装是秒级；清掉它，下次要重新下载。",
+  runtimeNote:
+    "运行时是装在家目录里的独立 venv。依赖树很重（litellm / fastapi / pydantic-ai / 十个 tree-sitter 加两个 GitHub 仓库），首次下载以百 MB 计、分钟级起步；留着它重装是秒级，清掉就要重来一遍。",
 };
 
 /** 全部可选安装项（顺序即界面顺序） */
@@ -104,11 +134,46 @@ export function findPreset(id: string): McpPreset | undefined {
   return MCP_CATALOG.find((preset) => preset.id === id);
 }
 
+/**
+ * 一条已声明的 server 是不是**我们装的**那条？是就返回对应条目。
+ *
+ * 为什么不能只比名字：用户完全可能手写一条自己的 `codewiki`——不同参数、不同 venv、
+ * 甚至指向一个自己 patch 过的分支。把那种声明认成「内置目录装的」，界面就会给它一个
+ * 卸载按钮（删的是用户的配置）和一句「由内置目录管理」（说的是假话）。
+ *
+ * 判定三件事都成立才算：同名、可执行文件名对得上、参数逐项相等。
+ * 可执行文件用 `startsWith` 而不是全等：落点是 venv 里的 `codewiki` /
+ * `codewiki.exe`（Windows 带后缀），全等会漏掉一半平台。调用方必须**在主进程**判定，
+ * 渲染层拿不到原始 command（`target` 是拼好的字符串，反解会得到猜测）。
+ */
+export function catalogPresetFor(
+  name: string,
+  config: { command?: string; args?: string[] },
+): McpPreset | undefined {
+  const preset = MCP_CATALOG.find((item) => item.serverName === name);
+  if (preset === undefined) return undefined;
+  if (config.command === undefined) return undefined; // url 型远程 server 不可能是目录装的
+  const base = config.command.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (!base.startsWith(preset.id)) return undefined;
+  const args = config.args ?? [];
+  if (args.length !== preset.serverArgs.length) return undefined;
+  return args.every((arg, index) => arg === preset.serverArgs[index]) ? preset : undefined;
+}
+
 /** 探测结果的单条读数（主进程产出、设置页展示，故类型放 shared） */
 export interface McpProbeItem {
   /** 与 `McpPresetPin.label` 对齐的机器可读 id */
-  id: "python" | "git" | "codewiki" | "mcp";
+  id: "python" | "git" | "node" | "codewiki" | "mcp";
   label: string;
+  /**
+   * `host` = 机器上本来就该有的（Python / git）；`payload` = 装这个 preset 时才由我们装的
+   * （codewiki / mcp 两个包）。
+   *
+   * 为什么由主进程标明而不是让界面按 `id` 猜：未安装时 `payload` 那两项必然是「未安装」，
+   * 摆出来是废话——界面要的是「能不能装」，那只跟 `host` 有关。按 id 硬编码的话，
+   * 目录里加第二个 preset（依赖别的包）就得回来改渲染层。
+   */
+  kind: "host" | "payload";
   ok: boolean;
   /** 读到的版本串（读不到为 null）——比「通过/不通过」多一层信息，排障时值这个宽度 */
   version: string | null;
@@ -123,11 +188,19 @@ export interface McpPresetState {
   id: string;
   name: string;
   tagline: string;
+  /**
+   * 装进 `~/.colt/mcp.json` 的 server 名。
+   *
+   * 界面必须拿到它：这一项装完之后，它的运行态出现在「已接入」段里，而那边是按
+   * **server 名**索引的。没有这个名字，渲染层只能拿 `name`（「CodeWiki（仓库文档生成）」）
+   * 去和 server 名比——那是猜，且一定猜错。
+   */
+  serverName: string;
   /** 用户级配置里已经有一条同名的 server 声明 */
   installed: boolean;
   /** 运行时（venv）还在不在——`installed` 但这里 false，说明配置指向的路径已经没了 */
   runtime: boolean;
-  /** 四连检（D7）：任何一项不过都不该让用户去点「生成」 */
+  /** 前置检查（D7）：任何一项不过都不该让用户去点「生成」 */
   probe: { ready: boolean; items: McpProbeItem[] };
   /** 用户级配置的绝对路径（界面照原样显示，不让人猜） */
   configPath: string;

@@ -11,7 +11,12 @@ import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from "node:fs
 import type { IpcChannel, IpcInvokeMap, SessionInfo } from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
 import { loadMcpConfig, mcpUserHome, targetOf, transportOf, userMcpConfigPath } from "@shared/mcp-config";
-import { findPreset, MCP_CATALOG, type McpPresetState } from "@shared/mcp-catalog";
+import {
+  catalogPresetFor,
+  findPreset,
+  MCP_CATALOG,
+  type McpPresetState,
+} from "@shared/mcp-catalog";
 import { probeCodewiki } from "../mcp/probe";
 import { installPreset, presetRuntimeDir, runtimeExists, uninstallPreset, venvPython } from "../mcp/install";
 import { readUserConfig } from "../mcp/user-config";
@@ -142,7 +147,7 @@ async function declaredMcpServers(
 ): Promise<{ servers: McpServerView[]; diagnostics: string[] }> {
   const project = getProject(projectId);
   if (project === undefined) return { servers: [], diagnostics: [] };
-  const { servers, diagnostics } = await loadMcpConfig(project.rootPath, mcpUserHome());
+  const { servers, diagnostics, scopes } = await loadMcpConfig(project.rootPath, mcpUserHome());
   return {
     servers: Object.entries(servers).map(([name, config]) => ({
       name,
@@ -150,9 +155,31 @@ async function declaredMcpServers(
       target: targetOf(config),
       status: "idle" as const,
       tools: [],
+      // 来源与「是不是我们装的」都能在这里说清：这是原始声明，别处（worker）拿不到
+      scope: scopes[name],
+      origin: catalogPresetFor(name, config) === undefined ? "config" : "catalog",
     })),
     diagnostics,
   };
+}
+
+/**
+ * 把声明里的**来源**信息合进 worker 报的运行态。
+ *
+ * 运行态只讲「连上了什么、有哪些工具」，它不知道这条声明是从哪个文件来的——合并读取
+ * 之后就分不清了。设置页要显示「项目级 · 覆盖了用户级」和「内置目录」两个标签，
+ * 所以按名字把声明侧的元数据补回来。worker 报了配置里没有的 server（理论上不该有）
+ * 就不补，宁可少一个标签，也不猜。
+ */
+function withOrigins(
+  live: McpServerView[],
+  declared: McpServerView[],
+): McpServerView[] {
+  const meta = new Map(declared.map((item) => [item.name, item]));
+  return live.map((server) => {
+    const from = meta.get(server.name);
+    return from === undefined ? server : { ...server, scope: from.scope, origin: from.origin };
+  });
 }
 
 /**
@@ -719,7 +746,7 @@ export function registerIpcHandlers(): void {
       return { ...declared, live: false } as const;
     }
     return {
-      servers: await sessionManager.mcpStatus(sessionId),
+      servers: withOrigins(await sessionManager.mcpStatus(sessionId), declared.servers),
       live: true,
       diagnostics: declared.diagnostics,
     } as const;
@@ -732,14 +759,14 @@ export function registerIpcHandlers(): void {
       return { ...declared, live: false } as const;
     }
     return {
-      servers: await sessionManager.mcpReload(sessionId),
+      servers: withOrigins(await sessionManager.mcpReload(sessionId), declared.servers),
       live: true,
       diagnostics: declared.diagnostics,
     } as const;
   });
 
   /**
-   * 内置可选 MCP 目录：每一项现在的安装态 + 四连检读数。
+   * 内置可选 MCP 目录：每一项现在的安装态 + 前置检查读数。
    *
    * 探测**优先对着我们自己装的运行时**（venv 里那个 Python）跑，而不是 PATH 上的：
    * 用户机器上多半还有一个全局 Python，它没装 codewiki 很正常——拿它去判「装好了没」，
@@ -769,6 +796,7 @@ export function registerIpcHandlers(): void {
         id: preset.id,
         name: preset.name,
         tagline: preset.tagline,
+        serverName: preset.serverName,
         installed: preset.serverName in declared,
         runtime: hasRuntime,
         probe: { ready: probe.ready, items: probe.items },

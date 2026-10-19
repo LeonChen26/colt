@@ -283,13 +283,41 @@ async function readConfigFile(
 export async function loadMcpConfig(
   cwd: string,
   home?: string,
-): Promise<{ servers: Record<string, McpServerConfig>; diagnostics: string[] }> {
+): Promise<{
+  servers: Record<string, McpServerConfig>;
+  diagnostics: string[];
+  /**
+   * 每个 server 的**最高优先来源**。`project-overrides` 表示两级都有同名声明、
+   * 项目级赢了——这是「改了用户级那份却不生效」的唯一可读证据，所以不能只留一个 `project`。
+   *
+   * 为什么必须单独带出来：`servers` 是合并结果，合并之后「这条是项目的还是用户级的」
+   * 就没了。这是纯附加字段，既有调用点解构 `{ servers, diagnostics }` 不受影响。
+   */
+  scopes: Record<string, "project" | "user" | "project-overrides">;
+}> {
   const project = await readConfigFile(mcpConfigPath(cwd), ".colt/mcp.json");
-  if (home === undefined) return project;
+  const asProject = (names: string[]): Record<string, "project"> =>
+    Object.fromEntries(names.map((name) => [name, "project" as const]));
+  if (home === undefined) {
+    return { ...project, scopes: asProject(Object.keys(project.servers)) };
+  }
   const user = await readConfigFile(userMcpConfigPath(home), "~/.colt/mcp.json");
+  const userNames = Object.keys(user.servers);
   return {
     servers: { ...user.servers, ...project.servers },
     diagnostics: [...project.diagnostics, ...user.diagnostics],
+    // 覆盖顺序与 `servers` 的展开顺序一致：后写的赢
+    scopes: {
+      ...Object.fromEntries(
+        userNames.map((name) => [
+          name,
+          (name in project.servers ? "project-overrides" : "user") as
+            | "project-overrides"
+            | "user",
+        ]),
+      ),
+      ...asProject(Object.keys(project.servers)),
+    },
   };
 }
 

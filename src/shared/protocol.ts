@@ -21,13 +21,14 @@ import type { McpCatalogView, McpInstallProgress, McpInstallResult } from "./mcp
 
 /** MCP server 现状的契约定义在 `@shared/worker-protocol`，这里转出去方便界面一处 import */
 export type { McpServerView } from "./worker-protocol";
-/** 内置可选 MCP 目录的视图类型（设置页「可选安装」分区用） */
+/** 内置可选 MCP 目录的视图类型（设置页「MCP」分区用） */
 export type {
   McpCatalogView,
   McpInstallProgress,
   McpInstallResult,
   McpInstallStep,
   McpPresetState,
+  McpProbeItem,
 } from "./mcp-catalog";
 /** 技能装载现状同理（设置页「技能」分区用） */
 export type { SkillsStatus } from "./worker-protocol";
@@ -862,7 +863,7 @@ export interface IpcInvokeMap {
     response: { servers: McpServerView[]; live: boolean; diagnostics: string[] };
   };
   /**
-   * 内置可选 MCP 目录（设置页「可选安装」分区）：每一项的安装态 + 四连检读数。
+   * 内置可选 MCP 目录（设置页「可选安装」分区）：每一项的安装态 + 前置检查读数。
    *
    * 为什么由主进程算而不是渲染层算：探测要 spawn（Python / git 版本查询），渲染层没有
    * Node 能力；而且这份结论要被「安装」这一步复用，两处各算一遍必然对不上。
