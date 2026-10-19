@@ -17,7 +17,7 @@
                 │ IPC（invoke / event）        │ 消息（WorkerCommand / WorkerMessage）
 ┌───────────────┴──────┐              ┌────────┴──────────────┐
 │ preload              │              │ worker（每会话一个）    │
-│  按通道名白名单桥接   │              │  · 持内核 harness/lane │
+│  按通道名白名单桥接   │              │  · 持 pi-durable Harness │
 └───────────────┬──────┘              │  · 跑工具、读文件、bash │
                 │                     │  · 投影 ConversationView│
 ┌───────────────┴──────┐              └───────────────────────┘
@@ -44,7 +44,7 @@
 ① ⑤ 输入区发送
       └─ window.colt.invoke("session.prompt") → preload → main/ipc
 ② main 查密钥、必要时拉起 worker（池内没有则开），下发 prompt
-③ worker 把 prompt 交给内核 lane → 模型流式返回
+③ worker 把 prompt 交给 durable conversation → 模型流式返回
 ④ 工具调用发生，按类型分两路：
       ├─ 内核侧工具（读文件 / bash …）→ 在 worker 里执行
       └─ 宿主能力（浏览器 / 电脑控制）→ toolRpc 反向上行 → main → 原生视图 → 结果回传
@@ -158,7 +158,7 @@ worker 里跑的是 pi 的内核（`@earendil-works/pi-durable`，工具与执�
 
 | 内核已提供 | 我们的状态 |
 |---|---|
-| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 按优先级扫**三个**目录：`.agents/skills`（项目级）、`~/.agents/skills`（用户级）、随包分发的内置（`worker/lib/builtin-skills/`，排最后），同名先到者胜出（内置是最底层，磁盘上的同名技能可盖它，口径见 `docs/SECURITY.md`）；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**内核这里是两套机制、缺一不可**：`resources.skills` 只管「按名显式调用」（`lane.skill`，界面入口是输入框的 `/skill <名字>`，v1.42），让模型**看见**必须由应用把 `formatSkillsForSystemPrompt` 拼进系统提示词——**内核只导出这个函数、自己从不调用**，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住 |
+| `loadSkills` + `formatSkillsForSystemPrompt` | **已接**——`worker/lib/skills.ts` 按优先级扫**三个**目录：`.agents/skills`（项目级）、`~/.agents/skills`（用户级）、随包分发的内置（`worker/lib/builtin-skills/`，排最后），同名先到者胜出（内置是最底层，磁盘上的同名技能可盖它，口径见 `docs/SECURITY.md`）；装载**状态**随视图下发（`ConversationView.skills`，整份 `ViewSkill[]`，v1.53），只把**告警**当事件播报（信任口径见 `docs/SECURITY.md`）。**让模型看见必须由应用拼进系统提示词**——内核只导出拼装函数、自己从不调用，漏拼是**静默失败**（装载、告警、计数全都正常，只有模型不知道），故有 `composeSystemPrompt` 与专门用例守住；输入框的 `/skill <名字>` 由 worker 把技能正文拼成一条 user 消息提交（v1.42） |
 | `loadPromptTemplates` / `parseCommandArgs` / `substituteArgs` | **未接**——斜杠命令是自研的一版平行实现 |
 | 遥测（`pi-telemetry`：`startHarnessSpan` / `defineTelemetrySchema`） | **未接**——自研 `worker/lib/telemetry.ts` |
 | 存储一致性套件（`pi-agent-core/harness/session/testing`） | 未使用——可把「是否仍兼容」变成可执行检查 |
@@ -258,7 +258,7 @@ toolResult，**未在本仓内核上验证**）；且本仓还多一条它没有
 ### E. 加一个工具（给模型用）
 
 1. `worker/lib/` 下写薄封装（现有：`browser-tool.ts`、`computer-tool.ts`）。
-2. 送进 lane 的工具集。
+2. 送进会话的工具集。
 3. **判断它是否只读**：只读就必须加进 `shared/readonly-tools.ts` 这个唯一真源，否则要么被误报、要么遮蔽真漏报。
 4. 需要宿主能力就走 `host-bridge`（`toolRpc`）。
 5. 若涉及写盘 / 危险命令，确认审批策略能识别它——见 `docs/SECURITY.md`。
