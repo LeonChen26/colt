@@ -95,9 +95,9 @@ describe("diagnose-config", () => {
 describe("execCheck", () => {
   const check = { label: "eslint", kind: "fast" as const, command: "eslint a.ts", timeoutSec: 60 };
 
-  test("非零退出 → problems，输出来自捕获视图", async () => {
+  test("非零退出 → problems，输出来自逐段收到的文本", async () => {
     const exec: ExecFn = async (_cmd, opts) => {
-      opts.onUpdate?.({ kind: "replace", output: { text: "a.ts:1:1 oops", truncation: {} as never } });
+      opts.onOutput?.("a.ts:1:1 oops");
       return { ok: true, value: { exitCode: 1 } };
     };
     const outcome = await execCheck(exec, "/p", ctx, check, check.command);
@@ -107,7 +107,7 @@ describe("execCheck", () => {
 
   test("零退出 → clean（哪怕有输出）", async () => {
     const exec: ExecFn = async (_cmd, opts) => {
-      opts.onUpdate?.({ kind: "replace", output: { text: "warning", truncation: {} as never } });
+      opts.onOutput?.("warning");
       return { ok: true, value: { exitCode: 0 } };
     };
     const outcome = await execCheck(exec, "/p", ctx, check, check.command);

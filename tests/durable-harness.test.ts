@@ -14,6 +14,9 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import {
   Harness,
@@ -26,6 +29,8 @@ import {
   section,
   type ConversationView,
 } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createWriteTool } from "@earendil-works/pi-durable/tools";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createModels,
@@ -33,6 +38,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
+import { createGuardedReadTool } from "../src/worker/lib/read-guard.ts";
 
 function textOf(message: { content?: unknown } | undefined): string {
   if (message === undefined) return "";
@@ -191,6 +197,62 @@ describe("pi-durable 最小接线", () => {
       }
     } finally {
       await harness.close(BACKGROUND_CONTEXT);
+    }
+  });
+
+  test("内置 coding 工具真的落到磁盘：`HarnessOptions.env` 的接线不能断", async () => {
+    // 这条防的是「工具注册了、env 没接」这类**静默失败**：durable 的 read / write 都从
+    // `api.env` 取执行环境，漏了 `HarnessOptions.env` 时工具只是报错，不会有人注意到。
+    // 判据取磁盘上的真实内容 + 模型收到的 read 结果，而不是「工具被调用过」。
+    const dir = mkdtempSync(join(tmpdir(), "colt-coding-tools-"));
+    const faux = fauxProvider();
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const registry = createRegistry();
+    registry.install(
+      defineExtension({
+        name: "coding",
+        tools: [createWriteTool(), createGuardedReadTool(dir)],
+      }),
+    );
+    const harness = await Harness.open(
+      new MemoryStorage(),
+      { models, registry, env: (target) => new NodeExecutionEnv({ cwd: target.cwd ?? dir }) },
+      BACKGROUND_CONTEXT,
+    );
+    try {
+      harness.resume();
+      const root = await harness.root(BACKGROUND_CONTEXT, {
+        agent: {
+          model: { provider: faux.provider.id, modelId: faux.getModel().id },
+          cwd: dir,
+        },
+      });
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("write", { path: "a.txt", content: "hello\n" })], {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage([fauxToolCall("read", { path: "a.txt" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage("done"),
+      ]);
+      const submission = await root.submit({ type: "input", content: "写再读" }, BACKGROUND_CONTEXT);
+      await submission.wait(BACKGROUND_CONTEXT);
+
+      assert.equal(readFileSync(join(dir, "a.txt"), "utf8"), "hello\n", "write 必须真的落盘");
+
+      const view = await root.viewState(BACKGROUND_CONTEXT);
+      try {
+        const results = view.value.entries
+          .filter((entry) => entry.kind === "pi.tool-result")
+          .map((entry) => entry.model?.[0] as { content?: unknown } | undefined);
+        assert.equal(results.length, 2, "两次工具调用都要有结果");
+        assert.ok(textOf(results[1]).includes("hello"), "read 的内容要回到模型");
+      } finally {
+        view.dispose();
+      }
+    } finally {
+      await harness.close(BACKGROUND_CONTEXT);
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

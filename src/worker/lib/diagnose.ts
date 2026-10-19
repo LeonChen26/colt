@@ -13,7 +13,7 @@
  * 内部行为，这条通道的正当性论证在 `docs/SECURITY.md` §写后诊断。
  */
 import { isAbsolute, resolve } from "node:path";
-import type { Context } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
   planDiagnose,

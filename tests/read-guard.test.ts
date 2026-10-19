@@ -1,7 +1,7 @@
 /**
  * `read` 工具的项目根边界。
  *
- * 内核的 `createReadTool()` 只做 `resolvePath(cwd, path)`，绝对路径 / `..` 原样通过；
+ * durable 的 `createReadTool()` 只做路径解析，绝对路径 / `..` 原样通过；
  * 而 `read` 在只读白名单里**免审批**（审批不看路径）。这层包装是唯一闸门，
  * 失败方式是**静默**的（文件被读进上下文而没有任何提示），所以把越界与放行两侧都钉住。
  */
@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { createGuardedReadTool } from "../src/worker/lib/read-guard.ts";
 
@@ -31,16 +32,16 @@ afterEach(() => {
 function run(path: string): Promise<unknown> {
   const tool = createGuardedReadTool(root);
   const env = new NodeExecutionEnv({ cwd: root });
-  // 越界分支在调用内核之前就抛错，`env` 只服务根内那一条用例。
-  return tool.execute("call-1", { path }, () => undefined, { env } as never, undefined as never, {} as never);
+  // 越界分支在调用 durable 工具之前就抛错，`env` 只服务根内那一条用例。
+  return tool.execute({ path }, { env } as never, BACKGROUND_CONTEXT);
 }
 
 describe("createGuardedReadTool：项目根边界", () => {
   test("根内相对路径正常读到内容", async () => {
     const result = (await run("inside.txt")) as {
-      content: { type: string; text?: string }[];
+      output: { type: string; text?: string }[];
     };
-    assert.ok(result.content.some((block) => block.text?.includes("hello")));
+    assert.ok(result.output.some((block) => block.text?.includes("hello")));
   });
 
   test("`..` 逃出项目根 → 拒绝，且报错说清是边界而不是文件不存在", async () => {

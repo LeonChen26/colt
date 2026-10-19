@@ -4,15 +4,15 @@
 /**
  * 写后诊断的执行封装：一次检查命令的受控执行 + 慢检查的防抖调度。
  *
- * 执行复用内核 bash 工具的同一条原语（`NodeExecutionEnv.exec` + `applyShellOutputUpdate`），
- * 输出经 capture 有界（上限见 `diagnose-config.ts`），超时由 exec 自己兑现。
+ * 执行复用 durable 的 `NodeExecutionEnv.exec`：输出经 `onOutput` 逐段到达，这里按
+ * `diagnose-config.ts` 的上限**只留尾部**（与内核 bash 工具的 retain=tail 同口径），
+ * 超时由 exec 自己兑现。
  * 失败三态必须可区分：`skipped`（起不来 / 没得查）、`problems`（非零退出）、`clean`
  * ——绝不让「检查器坏了」伪装成「检查过了，没问题」（`docs/ERRORS.md` 失败可见原则）。
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { applyShellOutputUpdate } from "@earendil-works/pi-agent-core";
-import type { Context, ShellOutputView } from "@earendil-works/pi-agent-core";
+import type { Context } from "@earendil-works/chord";
 import {
   DIAGNOSE_OUTPUT_LIMIT_BYTES,
   DIAGNOSE_OUTPUT_LIMIT_LINES,
@@ -22,16 +22,16 @@ import {
 } from "./diagnose-config";
 
 /**
- * 执行原语：与 `NodeExecutionEnv.exec` 同形（收敛成这个窄签名以便单测注入）。
- * Result/E 的结构按内核实际返回做结构化收窄，不引入内核内部类型。
+ * 执行原语：与 durable `ExecutionEnv.exec` 同形（收敛成这个窄签名以便单测注入）。
+ * Result/E 的结构按实际返回做结构化收窄，不引入内核内部类型。
  */
 export type ExecFn = (
   command: string,
   options: {
     cwd: string;
     timeout: number;
-    capture?: { limits: { maxBytes: number; maxLines: number; retain?: "head" | "tail" } };
-    onUpdate?: (update: Parameters<typeof applyShellOutputUpdate>[1]) => void;
+    /** 逐段的原始输出（stdout / stderr 按到达顺序合并） */
+    onOutput?: (text: string) => void;
   },
   context: Context,
 ) => Promise<
@@ -60,21 +60,14 @@ export async function execCheck(
   check: DiagnoseCheck,
   command: string,
 ): Promise<DiagnoseOutcome> {
-  let view: ShellOutputView | undefined;
+  let output = "";
   const result = await exec(
     command,
     {
       cwd,
       timeout: check.timeoutSec,
-      capture: {
-        limits: {
-          maxBytes: DIAGNOSE_OUTPUT_LIMIT_BYTES,
-          maxLines: DIAGNOSE_OUTPUT_LIMIT_LINES,
-          retain: "tail",
-        },
-      },
-      onUpdate: (update) => {
-        view = applyShellOutputUpdate(view, update);
+      onOutput: (chunk) => {
+        output = keepTail(output + chunk);
       },
     },
     context,
@@ -96,10 +89,29 @@ export async function execCheck(
       label: check.label,
       kind: check.kind,
       status: "problems",
-      output: view?.text ?? "(无输出)",
+      output: output === "" ? "(无输出)" : output,
     };
   }
   return { label: check.label, kind: check.kind, status: "clean" };
+}
+
+/**
+ * 只留尾部（行数与字节数双双设限，与内核 bash 的 retain=tail 同口径）。
+ *
+ * 为什么按尾部保留：检查器的结论总在最后几行，头部多半是「正在检查…」这类噪音。
+ * 这里逐段裁剪而不是最后一次裁——否则一次全仓 tsc 的输出会在内存里长到完整体量。
+ */
+function keepTail(text: string): string {
+  let next = text;
+  const lines = next.split("\n");
+  if (lines.length > DIAGNOSE_OUTPUT_LIMIT_LINES) {
+    next = lines.slice(lines.length - DIAGNOSE_OUTPUT_LIMIT_LINES).join("\n");
+  }
+  if (Buffer.byteLength(next, "utf8") > DIAGNOSE_OUTPUT_LIMIT_BYTES) {
+    const bytes = Buffer.from(next, "utf8");
+    next = bytes.subarray(bytes.length - DIAGNOSE_OUTPUT_LIMIT_BYTES).toString("utf8");
+  }
+  return next;
 }
 
 /**

@@ -35,15 +35,11 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, type AssistantMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
-import {
-  createBashTool,
-  createEditTool,
-  createWriteTool,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -198,6 +194,8 @@ interface WorkerState {
   subagents: DurableSubagents;
   /** MCP 工具每次重载后重建扩展用：保留当前旧工具清单 */
   legacyTools: LegacyTool[];
+  /** durable 原生工具（read / write / edit / bash）：与 MCP 重载无关，建一次复用 */
+  builtinTools: ToolRegistration[];
 }
 
 let state: WorkerState | undefined;
@@ -514,9 +512,10 @@ function replaySafe(name: string): boolean {
   return REPLAY_SAFE_TOOLS.has(name);
 }
 
-/** 当前工具集：旧工具适配 + MCP 工具适配 */
+/** 当前工具集：durable 原生 + 旧工具适配 + MCP 工具适配 */
 function currentTools(current: WorkerState): ToolRegistration[] {
   return [
+    ...current.builtinTools,
     ...adaptLegacyTools(current.legacyTools, current.env, replaySafe),
     ...adaptLegacyTools(current.mcp.tools, current.env, replaySafe),
     current.subagents.tool(),
@@ -574,7 +573,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const model = models.getModel(command.provider.id, command.model);
   if (model === undefined) throw new Error(`模型不可用：${command.provider.id}/${command.model}`);
 
-  // 旧工具仍吃旧 NodeExecutionEnv（cwd / shell 与旧内核逐字一致），适配器把它闭包进工具
+  // 诊断复用 durable 的执行环境（cwd 与会话一致）；工具侧的环境由 `HarnessOptions.env`
+  // 按每个对话的 cwd 现建（见下方 `Harness.open`）。
   const env = new NodeExecutionEnv({ cwd });
 
   const diagnose = createDiagnoseController({
@@ -583,10 +583,14 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     exec: (cmd, opts, ctx) =>
       env.exec(
         cmd,
-        { cwd: opts.cwd, timeout: opts.timeout, capture: opts.capture, onUpdate: opts.onUpdate },
+        {
+          cwd: opts.cwd,
+          timeout: opts.timeout,
+          onOutput: (text) => opts.onOutput?.(text),
+        },
         ctx,
       ),
-    context: context as never,
+    context,
     onSlowResult: (message) => pendingEphemeralNotices.push(message),
   });
 
@@ -668,11 +672,15 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   );
   const basePrompt = systemPrompt(cwd, { computerEnabled: command.computerEnabled });
 
-  const legacyTools: LegacyTool[] = [
+  // durable 原生工具：read 包了一层项目根边界，其余直接用内核实现（与审批闸门同名同义）
+  const builtin: ToolRegistration[] = [
     createGuardedReadTool(cwd),
     createWriteTool(),
     createEditTool(),
     createBashTool(),
+  ];
+
+  const legacyTools: LegacyTool[] = [
     ...createBrowserTools(hostBridge),
     ...(command.computerEnabled ? createComputerTools(hostBridge) : []),
     ...createMemoryTools(hostBridge),
@@ -684,6 +692,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const registry = createRegistry<ToolRegistration>();
   // 工具清单在每次请求解析时活读；MCP 重载后同名替换整个扩展即可。
   const toolsOf = (): ToolRegistration[] => [
+    ...builtin,
     ...adaptLegacyTools(legacyTools, env, replaySafe),
     ...adaptLegacyTools(mcp.tools, env, replaySafe),
     subagents.tool(),
@@ -712,6 +721,9 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       models,
       registry,
       settings,
+      // 工具执行环境按「每个对话自己的 cwd」现建——与旧内核「一个会话一个 env」等价，
+      // 但子对话（子代理）也有自己的一份，不会互相改 cwd。
+      env: (target) => new NodeExecutionEnv({ cwd: target.cwd ?? cwd }),
       onReport: (error) =>
         send({
           type: "log",
@@ -786,6 +798,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     toolStarts: new Map(),
     subagents,
     legacyTools,
+    builtinTools: builtin,
   };
   state = current;
 

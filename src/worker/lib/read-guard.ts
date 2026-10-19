@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * 给内核的 `read` 工具加**项目根边界**。
+ * 给 durable 的 `read` 工具加**项目根边界**。
  *
- * 为什么需要这一层：内核 `createReadTool()` 经 `NodeExecutionEnv.absolutePath()`
- * 只做 `resolvePath(cwd, path)`——绝对路径、`~/`、`../../..` 都原样通过，没有任何
- * 根校验（见 `node_modules/@earendil-works/pi-agent-core/dist/harness/env/nodejs.js`）。
+ * 为什么需要这一层：durable `createReadTool()` 经 `ExecutionEnv.absolutePath()`
+ * 只做路径解析——绝对路径、`~/`、`../../..` 都原样通过，没有任何根校验。
  * 而 `read` 在 `READONLY_TOOLS` 里**免审批**（`approval/policy.ts` 直接 allow，不看路径），
  * 于是不包这一层，模型一句 `read C:/Users/<user>/.ssh/id_rsa` 就能把项目外文件读进上下文。
  *
@@ -17,7 +16,7 @@
  * 写侧（write / edit）不在这里包：它们走审批闸门，`policy.ts` 已经做了同一套判定
  * 并会弹卡，而 `read` 是唯一「免审批」的落盘读取入口。
  */
-import { createReadTool } from "@earendil-works/pi-agent-core";
+import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { isWithinRootReal } from "@shared/path-guard";
 
 type ReadTool = ReturnType<typeof createReadTool>;
@@ -26,14 +25,13 @@ export function createGuardedReadTool(cwd: string): ReadTool {
   const inner = createReadTool();
   return {
     ...inner,
-    async execute(...args: Parameters<ReadTool["execute"]>) {
-      const params = args[1] as { path: string };
-      if (!isWithinRootReal(cwd, params.path)) {
+    async execute(args, api, context) {
+      if (!isWithinRootReal(cwd, args.path)) {
         throw new Error(
-          `拒绝读取项目外的文件：${params.path}。read 只能访问项目根（${cwd}）之内的路径。`,
+          `拒绝读取项目外的文件：${args.path}。read 只能访问项目根（${cwd}）之内的路径。`,
         );
       }
-      return inner.execute(...args);
+      return inner.execute(args, api, context);
     },
   };
 }
