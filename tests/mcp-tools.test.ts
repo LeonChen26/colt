@@ -1233,9 +1233,13 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
         .map(Number);
       assert.equal(starts.length, 3, `应当起了三个进程，实测：${starts.join(",")}`);
       const spread = Math.max(...starts) - Math.min(...starts);
+      // 阈值 1000ms（原来 600）：串行时第二台的 spawn 必然晚于第一台**连上**，也就是
+      // ≥ 1200ms 之后——1000 仍能一刀切开两种实现，但对并行侧宽容得多。
+      // 600 在满负载机器上会被 spawn 抖动假红（整套 361 个 suite 并发跑时实测过两次），
+      // 而那种红与「并行没做对」长得一模一样，是最费时间的一类假失败。
       assert.ok(
-        spread < 600,
-        `三台应当同时起来（并行），实测错开 ${spread}ms——错开 ≥ 一台耗时的一半就是串行了`,
+        spread < 1000,
+        `三台应当同时起来（并行），实测错开 ${spread}ms——串行时第二台要等第一台连完（≥1200ms）`,
       );
       assert.deepEqual(
         runtime.tools.map((tool) => tool.name).sort(),
@@ -1289,9 +1293,10 @@ describe("启动预算：MCP 不阻塞会话启动（并行 + 超预算转后台
     const runtime = await createMcpRuntime(dir, (message) => notices.push(message), undefined, {
       // 预算得**远大于**「spawn 一个不存在的命令 → 拿到 ENOENT」的往返：那条本该是毫秒级，
       // 可在全量并行跑（本仓默认多文件并行）的 Windows 上实测会到秒级——800ms 时这条曾红成
-      // 「bad 被当成还在路上」。同时慢的那台要**远大于**预算，否则后台那一支也会在摘要前连上，
-      // 「还在路上」这条事实就没了。两边各留一个数量级的余量，判据不跟着负载抖。
-      startupBudgetMs: 2_500,
+      // 「bad 被当成还在路上」，2500ms 时整套并发跑仍偶发红过一次。同时慢的那台要**远大于**
+      // 预算，否则后台那一支也会在摘要前连上，「还在路上」这条事实就没了。
+      // 3500 / 6000 仍留 1.7 倍余量，判据不跟着负载抖。
+      startupBudgetMs: 3_500,
     });
     try {
       const first = notices.join(" | ");
