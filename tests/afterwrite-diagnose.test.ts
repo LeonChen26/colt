@@ -17,6 +17,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/chord";
 import {
+  DIAGNOSE_OUTPUT_LIMIT_BYTES,
   ESLINT_MARKERS,
   fastChecksFor,
   materializeCommand,
@@ -139,6 +140,25 @@ describe("execCheck", () => {
     await execCheck(exec, "/proj", ctx, { ...check, timeoutSec: 42 }, check.command);
     assert.equal(seen.cwd, "/proj");
     assert.equal(seen.timeout, 42);
+  });
+
+  test("超限截尾不把多字节字符切成 U+FFFD（保留文本从完整字符开始）", async () => {
+    // 「汉」每字 3 字节：3000 字 = 9000 字节 > 8192。按字节砍尾时截断点
+    // 必然落在某个字符中间（9000-8192=808，808 % 3 = 1），正是这条要防的场景。
+    const text = "汉".repeat(3000);
+    const exec: ExecFn = async (_cmd, opts) => {
+      opts.onOutput?.(text);
+      return { ok: true, value: { exitCode: 1 } };
+    };
+    const outcome = await execCheck(exec, "/p", ctx, check, check.command);
+    assert.equal(outcome.status, "problems");
+    const output = outcome.output ?? "";
+    assert.ok(!output.includes("\uFFFD"), "保留文本里不该出现替换字符");
+    assert.ok(output.startsWith("汉"), `截断后必须从完整字符开始：${output.slice(0, 4)}`);
+    assert.ok(
+      Buffer.byteLength(output, "utf8") <= DIAGNOSE_OUTPUT_LIMIT_BYTES,
+      "跳过多字节残缺后仍不得超过上限",
+    );
   });
 });
 

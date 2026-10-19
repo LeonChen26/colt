@@ -3120,8 +3120,8 @@ export async function runDock(
 
     // ---- `/skill` 斜杠命令（显式调用技能）----
     // 「技能」在内核里是**两条互不相干的通道**：模型能不能看见清单（靠应用自己把
-    // `formatSkillsForSystemPrompt` 拼进系统提示词），与 `resources.skills` 提供的
-    // 「按名显式调用」完全是两码事——详见 ARCHITECTURE §四。本条验的是**输入框能不能
+    // `formatSkillsForSystemPrompt` 拼进系统提示词），与 `/skill` 按名显式调用
+    // 完全是两码事——详见 ARCHITECTURE §四。本条验的是**输入框能不能
     // 把后者叫出来**，以及三个最容易出事的边界：
     //   · 名字打错 → **就地拦下**：不发 IPC、**输入一个字都不丢**（v1.43 修掉的那件事：
     //     原先先清空再发，worker 报错时用户已经白敲了一整句），且错误可见、点出正确写法；

@@ -9,7 +9,7 @@
  * 为什么单独一条：单测覆盖了装载纯函数与 `skills-command` 的编排，但**从渲染层到主进程、
  * 再到 worker、再绕回来**这一段——`skills.status` / `skills.rescan` 两个 IPC →
  * `SessionManager` 的 FIFO 兑现 → worker 的 `skillsStatus` / `skillsRescan` 命令 →
- * 重扫 + `harness.setResources` 写回——此前**一个字节都没验过**。这段全是「名字对不上就
+ * 重扫 + 替换 worker 手里的技能清单——此前**一个字节都没验过**。这段全是「名字对不上就
  * 静默失效」的接线（协议字段名、FIFO 配对、命令路由），与 `mcp-reload` 同源
  * （`AGENTS.md` §四「只有定义、没有调用」那一类，必须跑一遍真实链路才放得下心）。
  *

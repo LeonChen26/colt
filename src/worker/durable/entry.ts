@@ -519,14 +519,29 @@ function applyReplay(tool: ToolRegistration): ToolRegistration {
   return replaySafe(tool.name) ? { ...tool, replay: "safe" } : tool;
 }
 
-/** 当前工具集：durable 原生 + 自研 + MCP */
+/**
+ * 工具集**唯一**的组装口径：durable 原生 + 自研 + MCP + 子代理，统一补重放策略。
+ *
+ * 初始化（`toolsOf`）与 MCP 热重载（`currentTools`）必须走同一份——两份拷贝时新增一类工具
+ * 只改一处，另一处不会报错，只会在「重载后工具消失」这种路径上发作。
+ */
+function assembleTools(
+  builtin: readonly ToolRegistration[],
+  custom: readonly ToolRegistration[],
+  mcp: readonly ToolRegistration[],
+  subagent: ToolRegistration,
+): ToolRegistration[] {
+  return [...builtin, ...custom, ...mcp, subagent].map(applyReplay);
+}
+
+/** 当前工具集（MCP 重载后重建扩展用） */
 function currentTools(current: WorkerState): ToolRegistration[] {
-  return [
-    ...current.builtinTools,
-    ...current.customTools,
-    ...current.mcp.tools,
+  return assembleTools(
+    current.builtinTools,
+    current.customTools,
+    current.mcp.tools,
     current.subagents.tool(),
-  ].map(applyReplay);
+  );
 }
 
 /** MCP 热重载 / 后台补挂后重建扩展（registry 同名替换） */
@@ -699,7 +714,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const registry = createRegistry<ToolRegistration>();
   // 工具清单在每次请求解析时活读；MCP 重载后同名替换整个扩展即可。
   const toolsOf = (): ToolRegistration[] =>
-    [...builtin, ...customTools, ...mcp.tools, subagents.tool()].map(applyReplay);
+    assembleTools(builtin, customTools, mcp.tools, subagents.tool());
   registry.install(buildExtension(toolsOf()));
 
   // 压缩配置必须**活读**：设置页改完下一次操作就生效（与旧内核同一承诺）。

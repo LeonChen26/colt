@@ -184,7 +184,7 @@ export type SkillInvocation = { ok: true; text: string } | { ok: false; error: s
  *
  * 为什么先自查再投递：名字是用户在磁盘上定的，打错时给一条**可见报错并列出可用名**
  * 最有用；而且只有渲染层/入口在提交那一刻判成败，才能做到「拦下时不清空输入」。
- * 正文按 `MAX_SKILL_BODY_CHARS` 截断——与旧内核 `resources.skills` 的行为一致，
+ * 正文按 `MAX_SKILL_BODY_CHARS` 截断——`/skill` 投递的是**正文**（不是提示词里那份清单），
  * 告警里那句「模型只会收到截断后的正文」才不会变成假话。
  */
 export function resolveSkillInvocation(

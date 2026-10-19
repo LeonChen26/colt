@@ -153,18 +153,14 @@ function sourceText(loaded: LoadedSkills, index: number | undefined): string {
 }
 
 /**
- * 可交给模型的技能（滤掉被禁用的）：`resources.skills` 与系统提示词的**共同输入**。
- * 两者必须同源——只滤一处会出现「提示词里没有、却能按名调用」或者反过来的错位。
+ * 可交给模型的技能（滤掉被禁用的）：系统提示词里 `<available_skills>` 的输入。
+ * 「模型看得见」与「`/skill` 能按名调用」必须同一份禁用口径，否则会出现
+ * 「提示词里没有、却能按名调用」或者反过来的错位。
  */
 export function enabledSkills(loaded: LoadedSkills): Skill[] {
   if (loaded.disabled.length === 0) return loaded.skills;
   const off = new Set(loaded.disabled);
   return loaded.skills.filter((skill) => !off.has(skill.name));
-}
-
-/** 给模型的最终副本：先滤掉被禁用的，再对超长正文截断 + 指回文件（P7） */
-export function modelSkills(loaded: LoadedSkills): Skill[] {
-  return capSkillBodies(enabledSkills(loaded));
 }
 
 /**

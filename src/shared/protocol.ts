@@ -951,8 +951,8 @@ export interface IpcInvokeMap {
     response: SkillsStatus;
   };
   /**
-   * 重新扫描技能目录并**热更新**当前会话：重扫 `.agents/skills`、写回 harness 的
-   * `resources.skills`，下一次模型请求的系统提示词立即反映新清单（不必重启会话）。
+   * 重新扫描技能目录并**热更新**当前会话：重扫 `.agents/skills`、替换 worker 手里的清单，
+   * 下一次模型请求的系统提示词立即反映新清单（不必重启会话）。
    * 没有活会话时退化成 `live: false` 的空回复——那时重扫也无处生效（下次开会话自然重装）。
    */
   "skills.rescan": {

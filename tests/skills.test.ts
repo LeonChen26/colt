@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { makeTempDirAsync, removeTempDirAsync } from "./helpers/temp";
-import { formatSkillInvocation, type Skill } from "../src/worker/lib/skills-loader.ts";
+import { formatSkillInvocation, loadSkills, type Skill } from "../src/worker/lib/skills-loader.ts";
 import {
   MAX_SKILL_BODY_CHARS,
   builtinSkillsDir,
@@ -23,7 +23,6 @@ import {
   describeSkillWarnings,
   enabledSkills,
   loadSkillsForSession,
-  modelSkills,
   parseSkillInvocation,
   skillDirSources,
   skillPathMatcher,
@@ -483,7 +482,7 @@ describe("toSkillDetails（P6：设置页看全文）", () => {
   });
 });
 
-describe("enabledSkills / modelSkills（P6：禁用 = 完全不装载）", () => {
+describe("enabledSkills（P6：禁用 = 完全不装载）", () => {
   test("被禁用的不进给模型那一份；没禁用时**原样**返回（不复制）", () => {
     const loaded: LoadedSkills = {
       skills: [skill("a"), skill("b")],
@@ -504,34 +503,6 @@ describe("enabledSkills / modelSkills（P6：禁用 = 完全不装载）", () =>
       loaded.skills,
       "没有禁用项时不该制造一次无谓的复制",
     );
-  });
-
-  test("modelSkills 是「先滤禁用、再截断」——两道关都要过", () => {
-    const long = "z".repeat(MAX_SKILL_BODY_CHARS + 10);
-    const loaded: LoadedSkills = {
-      skills: [skill("a"), { ...skill("big"), content: long }],
-      disabled: ["big"],
-      disabledByUser: [],
-      shadowed: [],
-      sources: [0, 0],
-      diagnostics: [],
-      counts: [2],
-      dirSources: ["project"],
-    };
-    // big 被禁用 → 连截断都不必做（它压根不进模型上下文）
-    assert.deepEqual(
-      modelSkills(loaded).map((item) => item.name),
-      ["a"],
-    );
-    // 解开禁用后，截断那道关照样生效
-    const capped = modelSkills({ ...loaded, disabled: [] }).find((item) => item.name === "big");
-    assert.ok(capped !== undefined);
-    // ⚠️ 别拿「变短了」当判据：尾部那句「完整内容见 <路径>」也是字数，**刚好超限**的正文
-    // 截完反而更长。判据要落在语义上——限内那截照旧、限外那截不在、且指回了文件。
-    assert.ok(capped.content.startsWith("z".repeat(MAX_SKILL_BODY_CHARS)));
-    assert.ok(!capped.content.includes("z".repeat(MAX_SKILL_BODY_CHARS + 1)));
-    assert.match(capped.content, /正文过长已截断/);
-    assert.match(capped.content, /big\/SKILL\.md/);
   });
 
   test("禁用名单里的名字可以**不在**清单里（先禁用、后安装）——不影响别的技能", () => {
@@ -716,6 +687,52 @@ describe("真装载（本地 loader + 真目录）", () => {
     const notice = describeSkillWarnings(loaded);
     assert.ok(notice?.includes("同一目录下有同名技能"), notice ?? "");
     assert.ok(!notice?.includes("项目级覆盖了同名用户级技能"), notice ?? "");
+  });
+});
+
+describe("装载器本体：技能名取**目录名**，不是父目录的绝对路径", () => {
+  // 这条防的是一次真实退化：移植内核装载器时，调用点把 `dirname(filePath)`（完整路径）
+  // 当成「父目录名」传进去。后果有两层——没写 `name` 的技能拿到绝对路径当名字；
+  // 写了 `name` 的合规技能每次装载都被误报「与父目录不一致」，于是每个会话启动都弹一条假告警。
+  let root = "";
+
+  before(async () => {
+    root = await makeTempDirAsync("colt-skill-loader-");
+    // ① 标准写法：frontmatter 的 name 与目录名一致
+    await mkdir(join(root, "standard"), { recursive: true });
+    await writeFile(
+      join(root, "standard", "SKILL.md"),
+      "---\nname: standard\ndescription: 标准技能。\n---\n\n正文\n",
+      "utf8",
+    );
+    // ② 省略 name：按 agentskills.io 约定回退到目录名
+    await mkdir(join(root, "no-name"), { recursive: true });
+    await writeFile(
+      join(root, "no-name", "SKILL.md"),
+      "---\ndescription: 没写名字。\n---\n\n正文\n",
+      "utf8",
+    );
+  });
+
+  after(async () => {
+    await removeTempDirAsync(root);
+  });
+
+  test("省略 name 时回退到目录名；任何技能名里都不该出现路径分隔符", async () => {
+    const loaded = await loadSkills(root);
+    assert.deepEqual(loaded.skills.map((item) => item.name).sort(), ["no-name", "standard"]);
+    for (const item of loaded.skills) {
+      assert.ok(!/[\\/]/.test(item.name), `技能名里不该出现路径：${item.name}`);
+    }
+  });
+
+  test("合规技能装载后**零告警**（假告警会经 notice 灌进「事件」页签）", async () => {
+    const loaded = await loadSkills(root);
+    assert.deepEqual(
+      loaded.diagnostics,
+      [],
+      `合规技能不该产生告警：${loaded.diagnostics.map((item) => item.message).join("；")}`,
+    );
   });
 });
 

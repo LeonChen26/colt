@@ -109,7 +109,11 @@ function keepTail(text: string): string {
   }
   if (Buffer.byteLength(next, "utf8") > DIAGNOSE_OUTPUT_LIMIT_BYTES) {
     const bytes = Buffer.from(next, "utf8");
-    next = bytes.subarray(bytes.length - DIAGNOSE_OUTPUT_LIMIT_BYTES).toString("utf8");
+    // 截断点可能落在一个多字节字符**中间**：跳过开头的续字节（0b10xxxxxx），
+    // 否则解码会在保留文本最前面吐出 1~3 个 U+FFFD（中文输出下概率不低）。
+    let start = bytes.length - DIAGNOSE_OUTPUT_LIMIT_BYTES;
+    while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
+    next = bytes.subarray(start).toString("utf8");
   }
   return next;
 }

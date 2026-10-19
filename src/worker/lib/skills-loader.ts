@@ -16,7 +16,7 @@
  * 但 `read_failed` / `parse_failed` 要如实报出——静默跳过会让用户以为「技能装了」。
  */
 import { readdir, readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import ignore from "ignore";
 import { parse } from "yaml";
 
@@ -127,7 +127,7 @@ async function walk(
     const kind = await resolveKind(fullPath, diagnostics);
     if (kind !== "file") continue;
     if (matcher.ignores(relativePath(rootDir, fullPath))) continue;
-    const result = await loadSkillFromFile(fullPath, dirname(fullPath), diagnostics);
+    const result = await loadSkillFromFile(fullPath, diagnostics);
     if (result !== null) skills.push(result);
     return skills;
   }
@@ -145,7 +145,7 @@ async function walk(
       continue;
     }
     if (!includeRootFiles || !entry.name.endsWith(".md")) continue;
-    const result = await loadSkillFromFile(fullPath, dirname(fullPath), diagnostics);
+    const result = await loadSkillFromFile(fullPath, diagnostics);
     if (result !== null) skills.push(result);
   }
   return skills;
@@ -203,10 +203,13 @@ function prefixIgnorePattern(line: string, prefix: string): string | null {
 
 async function loadSkillFromFile(
   filePath: string,
-  parentDirName: string,
   diagnostics: SkillDiagnostic[],
 ): Promise<Skill | null> {
   const isDeclaredSkill = filePath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() === "SKILL.md";
+  // 父目录**名**（不是完整路径）：缺省 name 取它，`validateName` 也拿它做对比口径。
+  // 由本函数自己算而不是交给调用方传：传错一次（比如传 `dirname(filePath)`）就会让
+  // 「没写 name 的技能」拿到绝对路径当名字，而且每个合规技能都会被误报「与目录不一致」。
+  const parentDirName = basename(dirname(filePath));
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");

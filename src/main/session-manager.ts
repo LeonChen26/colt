@@ -1474,8 +1474,8 @@ export class SessionManager {
   }
 
   /**
-   * 重扫技能目录并**热更新**该会话：worker 重扫 `.agents/skills`，把新清单写回 harness 的
-   * `resources.skills`（下次请求的系统提示词随之更新）。与 `skillsStatus` 共用一条往返。
+   * 重扫技能目录并**热更新**该会话：worker 重扫 `.agents/skills`，替换它手里的技能清单
+   * （下次请求重拼系统提示词时随之更新）。与 `skillsStatus` 共用一条往返。
    */
   skillsRescan(sessionId: string): Promise<SkillsStatus> {
     return this.#querySkills(sessionId, { type: "skillsRescan" });

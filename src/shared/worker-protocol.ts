@@ -276,7 +276,7 @@ export interface ViewSkill {
    *
    * 被禁用的技能**仍然列在这里**：设置页要靠它把开关画成「关」，不列出来就再也没处改回来。
    * 但**调用侧一律据此拒绝**（渲染层的 `/` 候选要滤掉，`/skill <名字>` 要给一句明说），
-   * 模型那侧更彻底——它根本不在 `resources.skills` 里（见 `enabledSkills`）。
+   * 模型那侧更彻底——它根本不进系统提示词的技能清单（见 `enabledSkills`）。
    */
   disabled: boolean;
 }
@@ -557,7 +557,7 @@ export type WorkerCommand =
   | { type: "setThinkingLevel"; level: ThinkingLevel }
   | { type: "compact" }
   /**
-   * 显式调用一个技能：内核按名从 `resources.skills` 取出**整份正文**，作为一条 user 消息发出
+   * 显式调用一个技能：worker 按名从已装载清单取出**整份正文**，作为一条 user 消息发出
    * （不只是提示词里那份清单）。名字不存在时**不回落**成普通提问——worker 回一条可见报错并
    * 列出可用名：技能名是用户在磁盘上自己定的，打错时必须给回正确写法（见 `@shared/skill-error`）。
    */
@@ -597,8 +597,7 @@ export type WorkerCommand =
   | { type: "skillsStatus" }
   /**
    * 重新扫描技能目录：按优先级重扫项目级 `.agents/skills`、用户级 `~/.agents/skills` 与内置
-   * 目录，把新清单写回 harness
-   * （`setResources`）并让**下一次请求**的系统提示词立即反映它——不必重启会话
+   * 目录，替换 worker 手里的已装载清单，并让**下一次请求**的系统提示词立即反映它——不必重启会话
    * （技能装载原本是 create-time 一次，见报告 A2）。同样以 `skillsStatus` 消息回复。
    */
   | { type: "skillsRescan" }
