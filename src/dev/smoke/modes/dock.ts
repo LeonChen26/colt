@@ -2151,10 +2151,6 @@ export async function runDock(
       compactCard !== null && compactCard.title.includes("已压缩上下文"),
     ]);
     checks.push([
-      "压缩卡带一句说明（更早的对话已收进摘要；算不出规模就不摆数字）",
-      compactCard !== null && compactCard.fullText.includes("更早的对话已收进这条摘要"),
-    ]);
-    checks.push([
       "摘要正文可读（排版令牌那一条在卡里）",
       compactCard !== null && compactCard.fullText.includes("排版令牌"),
     ]);

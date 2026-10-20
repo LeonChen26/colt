@@ -29,7 +29,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 
-import { durableTranscript, projectDurableView } from "../src/worker/durable/project.ts";
+import { durableTranscript, projectDisplay, projectDurableView } from "../src/worker/durable/project.ts";
 import type { ConversationView } from "../src/shared/worker-protocol.ts";
 
 const meta = {
@@ -178,5 +178,77 @@ describe("durable → ConversationView 投影", () => {
     } finally {
       await harness.close(BACKGROUND_CONTEXT);
     }
+  });
+});
+
+/**
+ * 产品原则：压缩解决的是**发给模型的上下文**，会话历史是**用户看的**，两者不能混为一谈。
+ * 所以界面投影吃「全部条目」，不认 durable 的 head；只有上下文占用这类模型侧指标
+ * 才按 head 之后的可见范围算。
+ */
+describe("界面历史与模型上下文分离", () => {
+  const user = (id: number, text: string) => ({
+    id: id as never,
+    conversationId: 1 as never,
+    kind: "pi.user",
+    model: [{ role: "user", content: text, timestamp: id } as never],
+  });
+  const assistant = (id: number, text: string) => ({
+    id: id as never,
+    conversationId: 1 as never,
+    kind: "pi.assistant",
+    model: [
+      { role: "assistant", content: [{ type: "text", text }], timestamp: id } as never,
+    ],
+  });
+  const compaction = (id: number, text: string, head: number) => ({
+    id: id as never,
+    conversationId: 1 as never,
+    kind: "pi.compaction",
+    head: head as never,
+    data: { reason: "manual" } as never,
+    model: [{ role: "user", content: text, timestamp: id } as never],
+  });
+
+  test("projectDisplay 不认 head：压缩之前的提问/回答仍在消息流里", () => {
+    const entries = [
+      user(1, "压缩前的提问"),
+      assistant(2, "压缩前的回答"),
+      compaction(3, "摘要正文", 5),
+      user(5, "压缩后的新提问"),
+    ];
+    const display = projectDisplay(entries as never, { skills: [], cwd: process.cwd() });
+    assert.deepEqual(
+      display.messages.map((message) => message.text),
+      ["压缩前的提问", "压缩前的回答", "摘要正文", "压缩后的新提问"],
+    );
+    assert.equal(display.messages[2]?.compaction, true, "压缩条目仍是一张卡");
+    assert.equal(display.messageCount, 4, "用户看到的条数包含压缩之前的历史");
+  });
+
+  test("projectDurableView 用全部条目出消息，上下文占用仍按模型那一份算", () => {
+    const all = [
+      user(1, "压缩前的提问"),
+      assistant(2, "压缩前的回答"),
+      compaction(3, "摘要正文", 5),
+      user(5, "压缩后的新提问"),
+    ];
+    const display = projectDisplay(all as never, { skills: [], cwd: process.cwd() });
+    // view.entries 是模型可见的那一段：压缩卡 + head 之后的条目
+    const view = {
+      head: 3,
+      entries: [all[2], all[3]],
+      contributions: [],
+      messages: [],
+      docs: {},
+    } as never;
+    const out = projectDurableView(
+      view,
+      { ...meta, cwd: process.cwd() },
+      { entries: all as never, projected: display },
+    );
+    assert.equal(out.messages[0]?.text, "压缩前的提问", "压缩不掉用户能看到的历史");
+    assert.equal(out.stats.messageCount, 4);
+    assert.equal(out.stats.contextUsed, 0, "模型上下文里没有 assistant usage，就不能算进占用");
   });
 });

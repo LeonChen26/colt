@@ -30,10 +30,12 @@ import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type {
   ConversationView,
   ViewFileChange,
+  ViewMessage,
   ViewRunningTool,
   ViewRunOutcome,
   ViewSkill,
   ViewSubagent,
+  ViewToolResult,
 } from "@shared/worker-protocol";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import type { ViewTodo } from "@shared/todo";
@@ -45,6 +47,7 @@ import {
   extractToolCalls,
   projectTranscript,
 } from "../lib/project";
+import { spillToolImages } from "../lib/tool-image-spill";
 import { skillPathMatcher } from "../lib/skills";
 
 const ZERO_USAGE: Usage = {
@@ -210,6 +213,62 @@ export function livePartialText(live: LiveState | undefined): {
   };
 }
 
+/** 条目投影结果：界面消息 + 工具结果 + 消息数（全是「用户看的」，与模型上下文无关） */
+export interface ProjectedDisplay {
+  messages: ViewMessage[];
+  toolResults: ViewToolResult[];
+  messageCount: number;
+}
+
+export interface DisplayProjectionOptions {
+  skills: readonly ViewSkill[];
+  cwd: string;
+  /** 给了就把工具图片落盘（worker 的 pushView 会传；纯单测不传） */
+  toolOutputDir?: string;
+  /** 图片落盘的记账（每个 worker 生命周期一份，避免每轮重扫磁盘） */
+  spilled?: Set<string>;
+}
+
+/**
+ * 把**条目序列**投影成界面消息。
+ *
+ * 调用方通常传「会话的全部条目」（从存储按 id 升序读出），而不是 durable 的
+ * `view.entries`——后者从压缩的 head 标记开始，会丢掉已被摘要替换的历史。
+ * 压缩只改**发给模型的上下文**；用户看的历史必须完整（产品原则：两者不混为一谈）。
+ *
+ * 也正因为与模型上下文无关，这里**不认 head**：压缩条目仍按时间顺序投影成一张卡，
+ * 它前面的消息照样保留。
+ */
+export function projectDisplay(
+  entries: readonly EntryRecord[],
+  options: DisplayProjectionOptions,
+): ProjectedDisplay {
+  const transcript = durableTranscript(entries);
+  if (options.toolOutputDir !== undefined) {
+    spillToolImages(transcript, options.toolOutputDir, options.spilled ?? new Set<string>());
+  }
+  const { messages, toolResults } = projectTranscript(
+    transcript,
+    new Map<string, number>(),
+    skillPathMatcher(options.skills, options.cwd),
+  );
+
+  // 工具耗时由结果条目自带（`ToolResultMessage.durationMs`），重启后仍可重建，
+  // 不依赖内存里的 tracker —— 这比旧内核靠事件配对更耐崩。
+  for (const entry of entries) {
+    if (entry.kind !== ToolResultEntry.kind) continue;
+    const message = entry.model?.[0] as { toolCallId?: string; durationMs?: number } | undefined;
+    if (typeof message?.toolCallId !== "string" || typeof message.durationMs !== "number") continue;
+    for (const item of messages) {
+      for (const call of item.toolCalls) {
+        if (call.id === message.toolCallId) call.durationMs = message.durationMs;
+      }
+    }
+  }
+
+  return { messages, toolResults, messageCount: countMessages(entries) };
+}
+
 export interface DurableProjectionMeta {
   sessionId: string;
   cwd: string;
@@ -230,26 +289,16 @@ export interface DurableProjectionMeta {
 export function projectDurableView(
   view: DurableConversationView,
   meta: DurableProjectionMeta,
+  /**
+   * 界面消息的来源（可选）。`entries` 是**全部条目**（含压缩之前的历史），
+   * `projected` 由调用方缓存（条目不变时不必重投影）。
+   * 不传时退回 `view.entries`——测试与子代理预览仍走这条。
+   */
+  display?: { entries: readonly EntryRecord[]; projected: ProjectedDisplay },
 ): ConversationView {
-  const transcript = durableTranscript(view.entries);
-  const { messages, toolResults } = projectTranscript(
-    transcript,
-    new Map<string, number>(),
-    skillPathMatcher(meta.skills, meta.cwd),
-  );
-
-  // 工具耗时由结果条目自带（`ToolResultMessage.durationMs`），重启后仍可重建，
-  // 不依赖内存里的 tracker —— 这比旧内核靠事件配对更耐崩。
-  for (const entry of view.entries) {
-    if (entry.kind !== ToolResultEntry.kind) continue;
-    const message = entry.model?.[0] as { toolCallId?: string; durationMs?: number } | undefined;
-    if (typeof message?.toolCallId !== "string" || typeof message.durationMs !== "number") continue;
-    for (const item of messages) {
-      for (const call of item.toolCalls) {
-        if (call.id === message.toolCallId) call.durationMs = message.durationMs;
-      }
-    }
-  }
+  const entries = display?.entries ?? view.entries;
+  const projected =
+    display?.projected ?? projectDisplay(view.entries, { skills: meta.skills, cwd: meta.cwd });
 
   const live = view.docs["pi.live"] as unknown as LiveState | undefined;
   const inbox = view.docs["pi.inbox"] as unknown as InboxState | undefined;
@@ -265,24 +314,26 @@ export function projectDurableView(
     imageInput: meta.imageInput,
     thinkingLevel: meta.thinkingLevel,
     skills: meta.skills,
-    messages,
-    toolResults,
+    messages: projected.messages,
+    toolResults: projected.toolResults,
     fileChanges: meta.fileChanges,
     todos: meta.todos,
     streamingText: streaming.text,
     thought: streaming.thought,
-    runningTools: liveRunningTools(live, view.entries),
+    runningTools: liveRunningTools(live, entries),
     subagents: [...meta.subagents],
     running: running || compactions > 0,
     runningOperation: running ? (compactions > 0 ? "compaction" : "run") : compactions > 0 ? "compaction" : null,
     lastRun: meta.lastRun,
     queuedCount: inbox?.items.length ?? 0,
     stats: {
-      messageCount: countMessages(view.entries),
+      // 用户看的消息数：算全部历史（含压缩前），与模型上下文的上限无关
+      messageCount: projected.messageCount,
       promptTokens: promptTokensOf(usage),
       outputTokens: usage.output,
       totalTokens: usage.totalTokens,
       costUsd: usage.cost.total,
+      // 上下文占用算的是**模型**那一份：压缩之后只剩 head 之后的条目
       contextUsed: contextUsedOf(view.entries),
     },
   };

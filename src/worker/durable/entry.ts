@@ -32,6 +32,7 @@ import {
   type EntryId,
   type HarnessSettings,
   type Registry,
+  type Storage,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -73,7 +74,6 @@ import { createGuardedReadTool } from "../lib/read-guard";
 import { isSubagentTool } from "../lib/subagent";
 import { captureBaseline } from "../lib/baseline";
 import { countPatchLines, projectTranscript, toRelative } from "../lib/project";
-import { spillToolImages } from "../lib/tool-image-spill";
 import { createDiagnoseController, type DiagnoseController } from "../lib/diagnose";
 import { createMcpRuntime, mcpUserHome, type McpRuntime } from "../lib/mcp-tools";
 import { composeMcpInstructions } from "../lib/mcp-reload";
@@ -113,7 +113,8 @@ import { renderTodoBlock } from "@shared/todo";
 import { toImageContent } from "../lib/attachments";
 import { describeCompactOutcome } from "../lib/compact-error";
 
-import { durableTranscript, projectDurableView } from "./project";
+import { projectDisplay, projectDurableView, type ProjectedDisplay } from "./project";
+import { appendDisplayEntries, loadDisplayState, type DisplayState } from "./display";
 import { DurableSubagents } from "./subagent";
 import { runMemoryTidy } from "./memory-tidy";
 
@@ -159,10 +160,18 @@ interface WorkerMeta {
 interface WorkerState {
   harness: Harness;
   conversation: Conversation;
+  /** 会话库句柄：界面历史要从**全部条目**重建（压缩只改模型上下文） */
+  storage: Storage;
   registry: Registry<ToolRegistration>;
   watch: ConversationWatch;
   events: AgentEventStream;
   latest: DurableConversationView;
+  /** 界面历史缓存：全部条目（含压缩前），与 `latest.entries` 的 head 截断无关 */
+  display: DisplayState;
+  /** 界面投影缓存：条目没变就不重投影（流式期间每 50ms 会推一次视图） */
+  displayProjected: ProjectedDisplay | undefined;
+  /** 技能清单的签名：变了要重投影（read 卡片上的技能标记依赖它） */
+  displaySkillsKey: string;
   models: ReturnType<typeof createModels>;
   providerId: string;
   cwd: string;
@@ -212,20 +221,36 @@ function scheduleFlush(): void {
  */
 function pushView(): void {
   if (!state) return;
-  const transcript = durableTranscript(state.latest.entries);
-  spillToolImages(transcript, state.toolOutputDir, spilledImages);
-  const view = projectDurableView(state.latest, {
-    sessionId: state.meta.sessionId,
-    cwd: state.cwd,
-    model: state.meta.model,
-    imageInput: state.meta.imageInput,
-    thinkingLevel: state.meta.thinkingLevel,
-    skills: state.meta.skills,
-    fileChanges: state.meta.fileChanges,
-    todos: state.meta.todos,
-    lastRun: state.lastRun,
-    subagents: state.subagents.toView(),
-  });
+  // 界面历史与模型上下文是两件事：消息来自**全部条目**（压缩掉的历史照样显示），
+  // 「上下文占用」这类模型侧指标仍取 latest（head 之后的可见范围）。
+  const skillsKey = state.meta.skills
+    .map((skill) => `${skill.name}:${skill.disabled ? 1 : 0}`)
+    .join(",");
+  if (state.displayProjected === undefined || state.displaySkillsKey !== skillsKey) {
+    state.displayProjected = projectDisplay(state.display.entries, {
+      skills: state.meta.skills,
+      cwd: state.cwd,
+      toolOutputDir: state.toolOutputDir,
+      spilled: spilledImages,
+    });
+    state.displaySkillsKey = skillsKey;
+  }
+  const view = projectDurableView(
+    state.latest,
+    {
+      sessionId: state.meta.sessionId,
+      cwd: state.cwd,
+      model: state.meta.model,
+      imageInput: state.meta.imageInput,
+      thinkingLevel: state.meta.thinkingLevel,
+      skills: state.meta.skills,
+      fileChanges: state.meta.fileChanges,
+      todos: state.meta.todos,
+      lastRun: state.lastRun,
+      subagents: state.subagents.toView(),
+    },
+    { entries: state.display.entries, projected: state.displayProjected },
+  );
   const digest = createHash("sha256").update(JSON.stringify(view)).digest("hex");
   if (digest === lastPushedDigest) return;
   lastPushedDigest = digest;
@@ -779,10 +804,15 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   const current: WorkerState = {
     harness,
     conversation,
+    storage,
     registry,
     watch: undefined as never,
     events: undefined as never,
     latest: undefined as never,
+    // 全量条目（含压缩之前的历史）：界面历史与模型上下文分开维护
+    display: await loadDisplayState(storage, conversation.id, context),
+    displayProjected: undefined,
+    displaySkillsKey: "",
     models,
     providerId: command.provider.id,
     cwd,
@@ -825,6 +855,8 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
   watch.start(async (value) => {
     if (!state) return;
     state.latest = value;
+    // 只追加、不因 head 前移而丢条目——压缩不该让用户看不到历史
+    if (appendDisplayEntries(state.display, value.entries)) state.displayProjected = undefined;
     scheduleFlush();
   });
 
@@ -863,12 +895,16 @@ async function replaceConversation(next: Conversation): Promise<void> {
   await current.watch.stop().catch(() => undefined);
   await current.events.stop().catch(() => undefined);
   current.conversation = next;
+  // 切分支 = 换了一条祖先链：显示缓存必须整份重建（旧分支的条目不能混进来）
+  current.display = await loadDisplayState(current.storage, next.id, context);
+  current.displayProjected = undefined;
   const watch = await next.watch(context);
   current.watch = watch;
   current.latest = watch.value;
   watch.start(async (value) => {
     if (!state) return;
     state.latest = value;
+    if (appendDisplayEntries(state.display, value.entries)) state.displayProjected = undefined;
     scheduleFlush();
   });
   const events = await watchEvents(current.harness, next.id, context);

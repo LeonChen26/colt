@@ -229,6 +229,7 @@
 | `mcp-reload` | MCP 热重载 + 设置页可见性的 **renderer → main → worker** 接线（冷启动装载 / 热加 / 热删 / 两个 IPC 形状 / 慢 server 不误判超时） | 否 | 夹具含一个**刻意全程不开会话**的项目专验退路与诊断 |
 | `mcp-catalog` | 内置可选 MCP 目录的**界面与 IPC**（设置页那一行在不在 / 四连检四项摆没摆 / 「可选」是否真可选——没装就没有卸载、打开页面不写盘 / `mcp.catalog` 形状） | 否 | **不断言探测结论**（随机器而变），只断言结构；分支判定由 `tests/mcp-catalog.test.ts` 用注入执行器钉住 |
 | `crash-resume` | durable **应用层崩溃恢复**：模型请求飞行中强杀真实 worker → 重开同一会话 → 未完成的生成任务自动续跑、`read` 结果回到模型、最终答复落视图、提问不重复 | 否（本地 OpenAI 兼容桩） | 需要 `sessionManager.workerPidForSmoke()`（仅 dev）杀**真实进程**；夹具在 `out/smoke-crash-resume-fixture` |
+| `compaction-history` | **界面历史与模型上下文分离**：把压缩策略调到下界、发两轮带标记的长消息后手动 `/compact`，断言压缩卡出现、**压缩前的消息仍留在消息流里**且顺序在卡之前。桩模型的 `contextWindow` 给到 200k、且断言调用前**没有**压缩卡，确保那张卡只可能来自这次手动调用（8192 会让自动压缩抢在两轮之间发生，手动压缩变成空操作） | 否（本地 OpenAI 兼容桩） | 改的是**全局**压缩配置，收尾按 `compaction.config.get` 的快照原样还回去；夹具在 `out/smoke-compaction-history`；若渲染层抢先打开了这条会话（先到者定模型），用例会显式 `session.setModel` 切回本地桩再发 prompt |
 | `model` | 模型选择 / 会话生命周期六段（`[model]` / `fallback` / `keyless` / `no-usable` / `during-init` / `[session/draft]`） | 部分（含真调模型段） | 三段「这台机器上只有用例的服务」前提必须**显式建立**（`stashUsableProviders()`：带密钥的服务只删密钥、不删条目） |
 | `memory` | 记忆检索**跨进程链路**（含项目隔离 / 关会话清上下文 / 二字词 LIKE 兜底） | 否 | **会话必须建在夹具项目下**，且跑完把仓库项目顶回 `project.list[0]`（最近打开优先） |
 | `memory-e2e` | 记忆**行为质量**（固定 4 次真实调用） | 是 | 与 `memory` **相反**：夹具会话必须是渲染层自动打开的那个，**不要**顶回 `list[0]` |
@@ -243,7 +244,7 @@
 - 冒烟把主窗口钉为「始终可见」并关掉后台节流（`src/dev/smoke/index.ts` 的 `pinVisibility`）——F11 之后「窗口不可见就停表」是产品行为，遮挡（Windows occlusion → `document.hidden`）期会假红；「不可见时暂停」本身由 `tests/visible-interval.test.ts` 单测覆盖。
 - `npm run dev` 报 `Error: spawn UNKNOWN`（errno **-4094**）是本机「智能应用控制」拦了未签名的 `electron.exe`（与业务代码无关，`electron` 已精确 pin）；报 `does not provide an export named 'BrowserWindow'` 是 `ELECTRON_RUN_AS_NODE` 把 Electron 按成了 Node（**要 unset，设成空串没用**）——两条都见 `AGENTS.md` 最后一节。
 
-**计费模式清单**：`dock`、`fixture`、`memory`、`perf`、`ask-user`、`todo`、`mcp-reload`、`mcp-catalog`、`subagent`、`crash-resume` 是**不调用模型**的模式；其余模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）都会真实打模型并计费。`dock` 曾经的 `/compact` 段会把打桩转发给真实现而真发 prompt、写进用户真实会话历史，v1.41 起该段改为**只记账、不转发**（测试装置不许有副作用，`AGENTS.md` §五⑩）。
+**计费模式清单**：`dock`、`fixture`、`memory`、`perf`、`ask-user`、`todo`、`mcp-reload`、`mcp-catalog`、`subagent`、`crash-resume`、`compaction-history` 是**不调用模型**的模式；其余模式（含不给 `COLT_SMOKE_MODE` 时的 `basic`）都会真实打模型并计费。`dock` 曾经的 `/compact` 段会把打桩转发给真实现而真发 prompt、写进用户真实会话历史，v1.41 起该段改为**只记账、不转发**（测试装置不许有副作用，`AGENTS.md` §五⑩）。
 
 ---
 
