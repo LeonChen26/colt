@@ -14,6 +14,7 @@ import { Database, FolderOpen, RefreshCw, Trash2 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { FirstRunChoice, FirstRunReport } from "@shared/protocol";
 import { cn } from "../lib/utils";
+import { ErrorNotice } from "../components/ErrorNotice";
 
 export function FirstRunGate({
   report,
@@ -89,11 +90,7 @@ export function FirstRunGate({
           )}
         </div>
 
-        {error && (
-          <p className="mt-3 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger-fg">
-            {error}
-          </p>
-        )}
+        {error && <ErrorNotice message={error} compact className="mt-3" />}
 
         <div className="mt-5 flex justify-end gap-2">
           {historical ? (

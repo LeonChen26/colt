@@ -38,6 +38,7 @@ import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } 
 import { deriveSessionTitle } from "@shared/session-title";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { Conversation } from "./features/Conversation";
+import { ErrorNotice } from "./components/ErrorNotice";
 import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
 import { ProjectChanges } from "./features/ProjectChanges";
@@ -900,11 +901,6 @@ export default function App(): React.JSX.Element {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* env 尚未探测完成（null）时不能渲染红条：那只是「还不知道」，不是「确认没有」——
-              否则每次启动都会先闪一帧「未找到 bash」再消失（探测要做多轮文件系统访问）。 */}
-          {env !== null && !env.bashPath ? (
-            <span className="text-xs text-danger">未找到 bash，命令工具不可用</span>
-          ) : null}
           <div className="flex items-center gap-0.5 rounded-sm border border-line p-0.5">
             {THEME_OPTIONS.map((item) => (
               <button
@@ -1165,15 +1161,31 @@ export default function App(): React.JSX.Element {
 
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
-            <div className="m-3.5 shrink-0 rounded-md border border-danger/40 bg-danger-soft px-3.5 py-3 text-sm text-danger-fg">
-              {error}
-            </div>
+            <ErrorNotice
+              message={error}
+              onDismiss={() => setError(null)}
+              className="m-3.5 shrink-0"
+            />
           )}
 
           {modelServiceReady === false && (
             <div className="m-3.5 shrink-0 rounded-md border border-line bg-warning-soft px-3.5 py-3 text-sm text-warning-fg">
               尚未配置任何模型服务的 API Key，无法开始对话。请在设置中填写密钥（内置
               DeepSeek 或自建的 OpenAI 兼容服务均可）。
+            </div>
+          )}
+
+          {/* 环境体检的问题（缺 bash / node:sqlite 不可用）原先只在 `env.problems` 里，界面
+              从来没人读——顶部那行「未找到 bash」既没原因也没下一步。这里统一摊开：
+              `env === null` 表示还在探测，不能报（否则每次启动先闪一帧假红）。 */}
+          {env !== null && env.problems.length > 0 && (
+            <div
+              data-env-problems=""
+              className="m-3.5 shrink-0 rounded-md border border-warning/40 bg-warning-soft px-3.5 py-3 text-xs leading-relaxed text-warning-fg"
+            >
+              {env.problems.map((problem) => (
+                <p key={problem}>{problem}</p>
+              ))}
             </div>
           )}
 

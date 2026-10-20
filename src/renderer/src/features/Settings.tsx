@@ -29,6 +29,7 @@ import {
 import { ICON } from "@/lib/icon";
 import type { Project } from "@shared/protocol";
 import { cn } from "@/lib/utils";
+import { ErrorNotice } from "../components/ErrorNotice";
 import { ApprovalPanel, CompactionPanel, ComputerPanel, DiagnosePanel } from "./settings/Behavior";
 import { McpPanel, useMcpInstallBusy } from "./settings/Mcp";
 import { ProvidersPanel } from "./settings/ProvidersSection";
@@ -142,9 +143,12 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
             </div>
           )}
           {error !== null && (
-            <div className="mb-3 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-xs text-danger-fg">
-              {error}
-            </div>
+            <ErrorNotice
+              message={error}
+              compact
+              onDismiss={() => setError(null)}
+              className="mb-3"
+            />
           )}
 
           {/*
@@ -157,7 +161,7 @@ export function Settings({ project }: { project: Project | null }): React.JSX.El
           {active === "computer" && <ComputerPanel onSaved={notify} onError={fail} />}
           {active === "compaction" && <CompactionPanel onSaved={notify} onError={fail} />}
           {active === "mcp" && <McpPanel project={project} />}
-          {active === "skills" && <SkillsPanel project={project} />}
+          {active === "skills" && <SkillsPanel project={project} onSaved={notify} />}
         </div>
       </div>
     </div>

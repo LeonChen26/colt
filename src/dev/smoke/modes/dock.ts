@@ -20,7 +20,7 @@ import { sessionManager } from "../../../main/session-manager";
 import { toolOutputDir } from "../../../main/tool-output";
 import { dirname, join, resolve } from "node:path";
 import type { ConversationView, ViewFileChange, ViewMessage, ViewSkill } from "@shared/worker-protocol";
-import type { ApprovalRequest } from "@shared/protocol";
+import type { ApprovalRequest, BrowserViewState } from "@shared/protocol";
 import { DEFAULT_THINKING_LEVEL } from "@shared/thinking-level";
 import { createFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import { sleep, uncaughtErrors } from "../context";
@@ -716,6 +716,32 @@ export async function runDock(
     // ensureInstance 幂等：浏览器页签本就存在，自动切换不该重复建页签
     checks.push(["⑦-F 幂等：未重复建页签", afterNav.tabCount === 2]);
     checks.push(["浏览器原生视图已就绪且可见", await waitVisible(true)]);
+
+    // ---- 加载失败必须在页面区域之外说给用户听 ----
+    // 页面区域被原生视图盖着，失败时那里只是一片空白——「网址打错了」与「浏览器坏了」
+    // 在界面上长得一模一样。这里用受控状态验渲染层的出口（主进程的 did-fail-load 分支
+    // 与观测抽屉共用同一条记录，见 browser-host）；验完把真实状态原样推回去。
+    const realBrowserState = await run<BrowserViewState>(
+      `window.colt.invoke("browser.state.get", { sessionId: ${JSON.stringify(sessionId)} })`,
+    );
+    window.webContents.send("browser.state", {
+      ...realBrowserState,
+      loadError: "页面加载失败：ERR_NAME_NOT_RESOLVED（-105）",
+    });
+    await sleep(300);
+    const loadErrorText = await run<string>(
+      `(document.querySelector("[data-browser-load-error]")?.textContent ?? "")`,
+    );
+    checks.push([
+      "加载失败在页面区域上方给出可读原因（不是只躺在观测抽屉里）",
+      loadErrorText.includes("找不到这个地址") && loadErrorText.includes("重试"),
+    ]);
+    window.webContents.send("browser.state", realBrowserState);
+    await sleep(300);
+    checks.push([
+      "恢复真实状态后失败横条消失",
+      (await run<boolean>(`document.querySelector("[data-browser-load-error]") === null`)),
+    ]);
 
     // ---- A2：折叠必须同步收起原生视图 ----
     log("[A2] 折叠工作区，预期原生视图同步收起");

@@ -37,6 +37,7 @@ import {
 import { ICON } from "@/lib/icon";
 import type { FsEntry } from "@shared/protocol";
 import { cn } from "../../../lib/utils";
+import { errorSummary } from "../../../lib/error-text";
 import { FilePreview } from "./FilePreview";
 
 /** 树区固定宽度：够看全常见文件名，又不至于把预览挤没（预览才需要横向空间） */
@@ -176,7 +177,7 @@ function DirNode({
               className="flex items-center gap-1.5 py-1 text-2xs leading-relaxed text-text-muted"
               style={{ paddingLeft: depth * 12 + 30 }}
             >
-              <span className="min-w-0 flex-1">无法读取该目录：{state.error}</span>
+              <span className="min-w-0 flex-1">无法读取该目录：{errorSummary(state.error)}</span>
               <button
                 type="button"
                 onClick={() => onRetry(entry.path)}
@@ -371,7 +372,7 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             ) : root === undefined || root.error !== null ? (
               <div className="flex flex-col items-center gap-2 px-3 py-10 text-center">
                 <p className="text-xs leading-relaxed text-text-secondary">
-                  无法读取目录：{root?.error ?? "未知原因"}
+                  无法读取目录：{errorSummary(root?.error ?? "未知原因")}
                 </p>
                 <button
                   type="button"

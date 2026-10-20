@@ -82,7 +82,7 @@ export async function runEnvCheck(customShellPath?: string): Promise<EnvReport> 
   const bash = await resolveBash(customShellPath);
   if (!bash) {
     problems.push(
-      "未找到 bash。Agent 的 bash 工具将不可用。请安装 Git for Windows（https://git-scm.com/download/win），或在设置中指定 shellPath。",
+      "未找到 bash，命令工具将不可用。请安装 Git for Windows（https://git-scm.com/download/win）后重启应用。",
     );
   }
 

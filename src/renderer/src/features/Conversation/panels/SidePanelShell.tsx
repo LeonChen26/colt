@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { cn } from "../../../lib/utils";
+import { ErrorNotice } from "../../../components/ErrorNotice";
 
 export function SidePanelShell({
   title,
@@ -64,11 +65,7 @@ export function SidePanelShell({
         </div>
       </div>
 
-      {error && (
-        <div className="m-2 whitespace-pre-wrap break-words rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
-          {error}
-        </div>
-      )}
+      {error && <ErrorNotice message={error} compact className="m-2" />}
 
       {summary}
 

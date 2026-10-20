@@ -220,6 +220,7 @@ export class BrowserHost {
       // 窗口到点会再推一次状态，界面因此不必自己计时
       agentActing: Date.now() - entry.lastAgentActedAt < AGENT_ACTING_WINDOW_MS,
       controlledByUser: entry.controlledByUser,
+      loadError: entry.loadError,
     };
   }
 
@@ -430,6 +431,7 @@ export class BrowserHost {
           zoom: 1,
           agentActing: false,
           controlledByUser: false,
+          loadError: null,
         } satisfies BrowserViewState);
     this.#onState(state);
   }
@@ -625,12 +627,20 @@ export class BrowserHost {
       "did-fail-load",
       (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
         if (!isMainFrame || errorCode === ERR_ABORTED) return;
+        const message = `页面加载失败：${errorDescription}（${errorCode}）`;
         capture.recordConsole({
           level: "error",
-          message: `页面加载失败：${errorDescription}（${errorCode}）`,
+          message,
           source: validatedURL,
           line: 0,
         });
+        // 除了留给 agent 看的那条控制台记录，还要让**用户**看得见：
+        // 页面区域被原生视图盖住，失败时那里只是一片空白，与「浏览器坏了」无从区分。
+        const entry = this.#sessions.get(sessionId);
+        if (entry !== undefined) {
+          entry.loadError = message;
+          this.#emitState(sessionId, true);
+        }
       },
     );
     // 捕获缓冲的语义是「自上次导航以来」，清空必须挂在导航**开始**（did-start-navigation）：
@@ -642,7 +652,12 @@ export class BrowserHost {
     contents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
       if (!isMainFrame || isInPlace) return;
       const current = this.#sessions.get(sessionId);
-      if (current !== undefined) current.navSeq += 1;
+      if (current !== undefined) {
+        current.navSeq += 1;
+        // 新导航一开始就撤掉上一次的失败横条：否则重试成功后、新页加载完成前，
+        // 用户还会看到上一页的错误（界面在撒谎）。
+        current.loadError = null;
+      }
       capture.reset();
       // 缩放是按视图隔离的、且**跨导航保留**（见 setZoomMode），于是新页面会带着上一页的比例
       // 出生。必须先回到 100% 再量再算：否则「需要多宽」量到的是缩放后的假象，
@@ -692,6 +707,7 @@ export class BrowserHost {
       navSeq: 0,
       controlledByUser: false,
       lastAgentActedAt: 0,
+      loadError: null,
     });
     owner.contentView.addChildView(view);
     return view;

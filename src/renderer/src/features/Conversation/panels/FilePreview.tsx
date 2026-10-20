@@ -23,6 +23,7 @@ import { AlertTriangle, FileWarning, Loader2, RotateCw } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import { formatBytes } from "@/lib/format";
 import { detectLanguage } from "@/lib/code-lang";
+import { errorSummary } from "../../../lib/error-text";
 import type { FileReadResult } from "@shared/protocol";
 import { CodeView } from "../../../components/CodeView";
 import { Markdown } from "../../../components/Markdown";
@@ -129,7 +130,7 @@ export function FilePreview({
         <Placeholder
           icon={<AlertTriangle className="text-warning" {...ICON.xl} />}
           title="无法预览该文件"
-          body={error}
+          body={errorSummary(error)}
         />
       ) : result === null ? null : result.kind === "text" ? (
         MARKDOWN_EXT.test(path) ? (

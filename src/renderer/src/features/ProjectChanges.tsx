@@ -10,6 +10,7 @@ import { ICON } from "@/lib/icon";
 import type { ProjectFileChange } from "@shared/protocol";
 import { DiffView } from "../components/DiffView";
 import { cn } from "../lib/utils";
+import { ErrorNotice } from "../components/ErrorNotice";
 
 export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.Element {
   const [changes, setChanges] = useState<ProjectFileChange[]>([]);
@@ -75,11 +76,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
         </button>
       </div>
 
-      {error && (
-        <div className="m-3 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-sm text-danger-fg">
-          {error}
-        </div>
-      )}
+      {error && <ErrorNotice message={error} onDismiss={() => setError(null)} className="m-3" />}
 
       {changes.length === 0 ? (
         <p className="mt-20 text-center text-sm text-text-muted">

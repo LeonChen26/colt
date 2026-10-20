@@ -31,8 +31,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Activity,
+  AlertTriangle,
   BookOpen,
   ChartColumn,
+  Check,
   ChevronLeft,
   ChevronRight,
   Globe,
@@ -54,6 +56,7 @@ import { useVisibleInterval } from "@/lib/use-visible-interval";
 import type { BrowserNavAction, BrowserViewState } from "@shared/protocol";
 import type { ConversationView } from "@shared/worker-protocol";
 import { cn } from "../../lib/utils";
+import { errorSummary } from "../../lib/error-text";
 import { FollowPanel } from "./FollowPanel";
 import { ObserveDrawer } from "./ObserveDrawer";
 import { ChangeDrilldown, type DrillLayer, type DrillRequest } from "./panels/ChangeDrilldown";
@@ -446,6 +449,8 @@ export function WorkspaceDock({
    * 页面明明已经装下、横条却仍挂在那里说「右侧看不到」——一条立刻在撒谎的提示。
    */
   const zoom = browser?.zoom ?? 1;
+  /** 主文档加载失败（主进程在 did-fail-load 时写入）：页面区域会被原生视图盖成空白，必须单独说 */
+  const loadError = browser?.loadError ?? null;
   // 控制态：谁在操作这个浏览器。两个标记都由主进程算好（含 30 秒窗口），渲染层不自己计时
   const controlledByUser = browser?.controlledByUser === true;
   const agentActing = browser?.agentActing === true;
@@ -633,7 +638,12 @@ export function WorkspaceDock({
                     <span className="truncate text-xs text-text-muted">{meta.desc}</span>
                   )}
                 </span>
-                {opened && <span className="shrink-0 text-2xs text-text-muted">已打开</span>}
+                {opened && (
+                  <span className="flex shrink-0 items-center gap-0.5 text-2xs text-text-muted">
+                    <Check {...ICON.xs} />
+                    已打开
+                  </span>
+                )}
               </button>
             );
           })}
@@ -835,6 +845,24 @@ export function WorkspaceDock({
                   适应宽度
                 </button>
               )}
+            </div>
+          )}
+          {loadError !== null && (
+            <div
+              data-browser-load-error=""
+              className="flex shrink-0 items-start gap-1.5 border-b border-danger/40 bg-danger-soft px-2.5 py-1.5 text-xs leading-relaxed text-danger-fg"
+            >
+              <AlertTriangle {...ICON.sm} className="mt-px shrink-0" />
+              <span className="min-w-0 flex-1" title={loadError}>
+                {errorSummary(loadError)}
+              </span>
+              <button
+                type="button"
+                onClick={() => onBrowserNav("reload")}
+                className="shrink-0 self-center rounded-xs border border-danger/40 px-1.5 py-[3px] text-xs text-danger-fg transition hover:bg-danger/10"
+              >
+                重试
+              </button>
             </div>
           )}
           {loaded ? (

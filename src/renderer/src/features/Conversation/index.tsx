@@ -38,6 +38,7 @@ import {
   type ThinkingLevel,
 } from "@shared/thinking-level";
 import { cn } from "../../lib/utils";
+import { ErrorNotice } from "../../components/ErrorNotice";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
 import { disabledSkillMessage } from "@shared/skill-error";
@@ -1378,11 +1379,12 @@ export function Conversation({
             搬出来顺带解决另一个问题：它们不再影响起手态的判定（见 `empty`）。
           */}
           {error && (
-            <div
-              data-conv-error
-              className="mb-2 rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-sm text-danger-fg"
-            >
-              {error}
+            <div data-conv-error>
+              <ErrorNotice
+                message={error}
+                onDismiss={() => setError(null)}
+                className="mb-2"
+              />
             </div>
           )}
           {notice && (

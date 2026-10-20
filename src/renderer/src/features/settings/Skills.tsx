@@ -17,12 +17,21 @@ import type { Project, SkillsStatus } from "@shared/protocol";
 import type { ViewSkillDetail } from "@shared/worker-protocol";
 import { contentStats } from "../../lib/format";
 import { cn } from "@/lib/utils";
+import { errorSummary } from "../../lib/error-text";
 import { Chip, Notice, PanelHead, Switch } from "./parts";
 
 const BTN =
   "rounded-sm border border-line px-2 py-0.5 text-2xs text-text-secondary transition hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40";
 
-export function SkillsPanel({ project }: { project: Project | null }): React.JSX.Element {
+export function SkillsPanel({
+  project,
+  onSaved,
+}: {
+  project: Project | null;
+  /** 成功后的统一提示（设置页顶层那条 2.5s 提示条）：开/关技能原本是静默的，
+   *  用户点完开关只看到样式变了，分不清「真的写盘了」还是「只是 UI 翻了一下」 */
+  onSaved?: (text: string) => void;
+}): React.JSX.Element {
   const [status, setStatus] = useState<SkillsStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [rescanning, setRescanning] = useState(false);
@@ -74,6 +83,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
       setStatus(await window.colt.invoke("skills.rescan", { projectId }));
       setError(null);
       setActionError(null);
+      onSaved?.("已重新扫描技能");
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -95,6 +105,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
       setStatus(await window.colt.invoke("skills.setDisabled", { projectId, name, disabled }));
       setError(null);
       setActionError(null);
+      onSaved?.(`已${disabled ? "停用" : "启用"}「${name}」`);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -173,7 +184,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
         {project === null ? (
           <Notice>先打开一个项目，才能看到它装载的技能。</Notice>
         ) : error !== null ? (
-          <Notice tone="danger">{error}</Notice>
+          <Notice tone="danger">{errorSummary(error)}</Notice>
         ) : loading ? (
           <Notice>读取中…</Notice>
         ) : status === null ? null : !status.live ? (

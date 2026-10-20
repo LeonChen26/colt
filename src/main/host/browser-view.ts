@@ -86,6 +86,8 @@ export interface SessionBrowser {
   controlledByUser: boolean;
   /** agent 最近一次改动类动作的时刻（0 = 从未）；界面上的 `agentActing` 由它按窗口算出来 */
   lastAgentActedAt: number;
+  /** 主文档加载失败的原因（null = 没有失败）；成功导航时清掉 */
+  loadError: string | null;
   /**
    * 「agentActing 窗口到期」的定时器：到点推一次状态，界面据此把「Agent 正在操作」撤掉。
    * 没有它的话，界面只能靠自己的定时器轮询，或者永远不撤。

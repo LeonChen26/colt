@@ -21,6 +21,7 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Eraser, RotateCw, SquareTerminal } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { describeError } from "../../../lib/error-text";
 import "@xterm/xterm/css/xterm.css";
 
 /** 与 styles.css 的 --font-mono 同一份清单（CSS 变量进不了 xterm 的 canvas，只能带字面量副本） */
@@ -60,6 +61,7 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
   const [shellName, setShellName] = useState<string | null>(null);
   /** 起不来终端的原因（node-pty 装载失败 / shell 一个都没有）；正常为 null */
   const [openError, setOpenError] = useState<string | null>(null);
+  const terminalError = openError === null ? null : describeError(openError);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -186,7 +188,12 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
             data-terminal-error
             className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-code px-6 text-center"
           >
-            <p className="text-xs leading-relaxed text-danger-fg">终端起不来：{openError}</p>
+            <p className="text-xs leading-relaxed text-danger-fg">
+              终端起不来：{terminalError?.summary}
+            </p>
+            {terminalError?.hint !== undefined && (
+              <p className="text-2xs leading-relaxed text-text-muted">{terminalError.hint}</p>
+            )}
             <button
               type="button"
               onClick={() => setReopenToken((t) => t + 1)}

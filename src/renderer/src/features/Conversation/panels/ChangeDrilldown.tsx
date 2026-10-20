@@ -32,6 +32,7 @@ import { ICON } from "@/lib/icon";
 import { buildChangeList, type ChangeFile } from "@/lib/change-list";
 import { formatAgo, samePath } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { errorSummary } from "../../../lib/error-text";
 import { DiffView } from "../../../components/DiffView";
 import type { NetChangeResult } from "@shared/protocol";
 import type { ViewFileChange, ViewSubagent } from "@shared/worker-protocol";
@@ -208,7 +209,7 @@ function NetDiff({
   if (error !== null) {
     return (
       <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
-        无法获取净变化：{error}
+        无法获取净变化：{errorSummary(error)}
       </p>
     );
   }
