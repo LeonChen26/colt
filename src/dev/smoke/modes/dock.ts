@@ -2119,7 +2119,7 @@ export async function runDock(
             role: "other",
             text: "此前讨论了三件事：排版令牌、输入卡高度、右栏宽度记忆。",
             toolCalls: [],
-            compaction: { tokensBefore: 32000 },
+            compaction: true,
           },
           ...viewBase.messages,
         ],
@@ -2151,8 +2151,8 @@ export async function runDock(
       compactCard !== null && compactCard.title.includes("已压缩上下文"),
     ]);
     checks.push([
-      "压缩卡带压缩前规模（32k，与完成通知同口径）",
-      compactCard !== null && compactCard.fullText.includes("32k"),
+      "压缩卡带一句说明（更早的对话已收进摘要；算不出规模就不摆数字）",
+      compactCard !== null && compactCard.fullText.includes("更早的对话已收进这条摘要"),
     ]);
     checks.push([
       "摘要正文可读（排版令牌那一条在卡里）",

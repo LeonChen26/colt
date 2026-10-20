@@ -1336,7 +1336,7 @@ describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
       role: "other",
       text: "压缩后的摘要",
       toolCalls: [],
-      compaction: { tokensBefore: 32000 },
+      compaction: true,
     };
     const turns = groupTurns([compaction, reply("a1"), user("u1"), reply("a2")]);
     assert.equal(turns.length, 2);
@@ -1365,7 +1365,7 @@ describe("turnGroups（一轮 = 一条提问 + 它的最终回复）", () => {
       role: "other",
       text: "压缩后的摘要",
       toolCalls: [],
-      compaction: { tokensBefore: 32000 },
+      compaction: true,
     };
     const messages = [compaction, reply("a1"), user("u1"), reply("a2")];
     assert.equal(groupTurns(messages).length, 2);

@@ -87,8 +87,11 @@ export interface ViewMessage {
    * 有值即「这条是内核的压缩条目」：`text` 是压缩产出的会话摘要，不是任何人说的话。
    * 内核压缩完成后会把 transcript 整体替换成「压缩条目 + 尾部保留」——不认它的话，
    * 投影出的消息流只剩尾部，用户看到的就是「历史全没了 / 像开了个新会话」。
+   *
+   * 只是**标记**（`true`）：压缩前的规模（旧内核的 `tokensBefore`）durable 的条目里没有，
+   * 算不出就不摆数字——卡片只说明「更早的对话已收进摘要」。
    */
-  compaction?: { tokensBefore: number };
+  compaction?: true;
   /**
    * 助手消息里的工具调用。
    *

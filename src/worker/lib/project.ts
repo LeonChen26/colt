@@ -165,7 +165,6 @@ export function projectTranscript(
       const record = entry as unknown as {
         id: string;
         summary: string;
-        tokensBefore: number;
         timestamp?: number;
       };
       messages.push({
@@ -173,10 +172,7 @@ export function projectTranscript(
         // `other`：摘要不是任何人说的话，气泡署名谁都不对——渲染层按 compaction 标记画卡
         role: "other",
         text: typeof record.summary === "string" ? record.summary : "",
-        compaction: {
-          // 缺失/非法给 0：渲染层对 <=0 不显示数字（与完成通知 compactDoneMessage 同口径）
-          tokensBefore: typeof record.tokensBefore === "number" ? record.tokensBefore : 0,
-        },
+        compaction: true,
         toolCalls: [],
         timestamp: record.timestamp,
       });

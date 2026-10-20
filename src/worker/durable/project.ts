@@ -75,7 +75,7 @@ function normalizeMessage(message: Message): Message {
  *
  * 映射规则：
  *  - `pi.user` / `pi.assistant` / `pi.tool-result` → `{ type: "message", message }`；
- *  - `pi.compaction` → `{ type: "compaction", summary, tokensBefore }`（摘要正文在 model[0] 里）；
+ *  - `pi.compaction` → `{ type: "compaction", summary }`（摘要正文在 model[0] 里）；
  *  - `pi.system` → **跳过**：它是提示词 / 工具清单的位置性条目，不是对话内容；
  *  - `pi.reset` → 有 handoff 文本时按 user 消息展示，没有就跳过（它标记新上下文起点）；
  *  - 其它（应用自己的展示性条目）→ 有 model 消息就展示，没有就跳过。
@@ -90,8 +90,6 @@ export function durableTranscript(entries: readonly EntryRecord[]): unknown[] {
         type: "compaction",
         id: String(entry.id),
         summary: message === undefined ? "" : textOf(message.content),
-        // durable 的压缩条目只记 reason；旧界面在 <=0 时不显示数字（见 ViewMessage.compaction）
-        tokensBefore: 0,
         timestamp: message?.timestamp,
       });
       continue;

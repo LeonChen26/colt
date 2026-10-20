@@ -781,19 +781,13 @@ function formatTurnClock(timestamp: number | undefined): string | null {
  * 卡片留在压缩发生时的时序位（transcript 头部），翻旧消息能一路翻到它。
  */
 function CompactionCard({ message }: { message: ViewMessage }): React.JSX.Element {
-  const before = message.compaction?.tokensBefore ?? 0;
-  // 数字口径与完成通知一致（worker 侧 compactDoneMessage）：>=1000 折成 k、保留一位小数；
-  // <=0 不写数字（算不出就别下结论，与「写个假 0」是两回事）
-  const label = before > 0 ? (before >= 1000 ? `${Math.round(before / 100) / 10}k` : `${before}`) : null;
   return (
     <div className="flex justify-start" data-conv-compaction={message.id}>
       <div className="flex max-w-[86%] flex-col gap-1.5 rounded-md border border-line bg-surface-raised px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs">
           <Archive {...ICON.sm} className="shrink-0 text-accent-dim" />
           <span className="font-medium text-text-primary">已压缩上下文</span>
-          {label !== null && (
-            <span className="text-text-muted">· 压缩前约 {label} tokens，更早的对话已收进这条摘要</span>
-          )}
+          <span className="text-text-muted">· 更早的对话已收进这条摘要</span>
         </div>
         {message.text && <Markdown>{message.text}</Markdown>}
       </div>
