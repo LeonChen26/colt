@@ -46,6 +46,7 @@ import { ICON } from "@/lib/icon";
 import { resolveWikiLink } from "@/lib/wiki-link";
 import { parseWikiComponent, componentsForPage } from "@shared/wiki-tree";
 import { cn } from "../../../lib/utils";
+import { errorSummary } from "../../../lib/error-text";
 import { CodeBlock, Markdown } from "../../../components/Markdown";
 import { SidePanelShell } from "./SidePanelShell";
 import { MermaidBlock } from "./MermaidBlock";
@@ -182,7 +183,7 @@ function JobCard({ job }: { job: WikiGenerateSnapshot }): React.JSX.Element {
         )}
       </div>
       {job.error === null ? null : (
-        <p className="mt-1 whitespace-pre-wrap break-words">{job.error}</p>
+        <p className="mt-1 whitespace-pre-wrap break-words">{errorSummary(job.error)}</p>
       )}
       {running ? (
         job.lines.length === 0 ? (
@@ -286,7 +287,7 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
           (mode === "update"
             ? "会在项目根运行 codewiki generate --update --output docs/wiki，只重写与代码差异相关的组件。"
             : "会在项目根运行 codewiki generate --output docs/wiki，全量重写 docs/wiki/。") +
-          "\n\n这会花模型额度并修改工作区；写入路径由 Colt 固定，不需要逐页批准。" +
+          "\n\n这会花模型额度并改动项目里的文件；写入路径由 Colt 固定，不需要逐页批准。" +
           "需要先为 CodeWiki 配好 provider 与密钥（codewiki config set）。" +
           "\n\n可以随时取消；已写出的半成品会保留，之后用「更新」接着修。",
         confirmLabel: mode === "update" ? "更新" : "生成",
@@ -482,7 +483,7 @@ export function WikiPanel({ sessionId }: { sessionId: string }): React.JSX.Eleme
               <p className="py-8 text-center text-xs text-text-muted">加载中…</p>
             ) : pageError !== null ? (
               <div className="rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs text-danger-fg">
-                {pageError}
+                {errorSummary(pageError)}
               </div>
             ) : page === null ? null : (
               <Markdown components={components}>{page.text}</Markdown>

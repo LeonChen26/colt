@@ -69,7 +69,7 @@ export function StartPanel({
         今天要修哪个 bug？
       </h2>
       <p className="m-0 text-sm text-text-secondary">
-        描述你想做的事，Colt 会先给你一份计划。
+        描述你想做的事，Colt 会在这个目录里动手；有风险的操作会先征求你的同意。
       </p>
       <div className="mt-4 flex max-w-[560px] flex-wrap justify-center gap-2">
         {SUGGESTIONS.map((suggestion) => (
@@ -105,7 +105,7 @@ export function StartPanel({
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             data-conv-dirmenu
-            title="换一个目录，或新建一个工作目录"
+            title="换一个目录，或新建一个项目目录"
             className="flex h-6 w-6 items-center justify-center rounded-sm border border-line transition hover:border-line-strong hover:text-text-primary"
           >
             <FolderOpen {...ICON.sm} />
@@ -145,10 +145,10 @@ export function StartPanel({
               >
                 <span className="flex items-center gap-1.5 text-text-primary">
                   <FolderPlus {...ICON.xs} className="shrink-0 text-text-muted" />
-                  新建工作目录
+                  新建项目目录
                 </span>
                 <span className="text-2xs leading-snug text-text-muted">
-                  不用自己挑：在家目录的 ~/.colt 下按时间建一个空目录并切过去
+                  不用自己挑：在家目录的 ~/.colt 下按时间新建一个空项目并切过去
                 </span>
               </button>
             </div>

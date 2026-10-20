@@ -339,6 +339,8 @@ export const IPC_CHANNELS = [
   "providers.list",
   "providers.save",
   "providers.remove",
+  /** 连一次服务商的 /models：验证地址可达、密钥被接受（不花模型额度） */
+  "providers.test",
   "mcp.status",
   "mcp.reload",
   "mcp.catalog",
@@ -892,6 +894,16 @@ export interface IpcInvokeMap {
     response: { ok: true };
   };
   /**
+   * 测试连接：由主进程带密钥请求 `{baseUrl}/models`。
+   *
+   * 请求体可带 `apiKey`——「先粘贴密钥再测」是常见顺序，若只能用已保存的密钥，
+   * 用户会先看到一次假失败。明文只走这一次 IPC，不落库。
+   */
+  "providers.test": {
+    request: { id: string; apiKey?: string };
+    response: ProviderTestResult;
+  };
+  /**
    * 某项目声明的 MCP server 现状（设置页可见性）。
    *
    * `live` 说清这份数据从哪来：true = 该项目的活 worker 报的**真实运行态**（连上了没、
@@ -1317,6 +1329,21 @@ export interface ProviderConfig {
    * 「是否需要鉴权」是服务的属性，只能由用户显式声明，推断不出来。
    */
   requiresKey: boolean;
+}
+
+/**
+ * 「测试连接」的结果。
+ *
+ * `ok: false` 时 `error` 是**原始信息**（HTTP 状态行 + 服务端 detail，或 fetch 的底层错误）：
+ * 渲染层用 `errorSummary` 翻成人话，这里不预先翻译——否则同一句话会有两份。
+ */
+export interface ProviderTestResult {
+  ok: boolean;
+  error?: string;
+  /** 成功时 `/models` 报的模型数；服务不实现该端点时为 null */
+  modelCount?: number | null;
+  /** 往返耗时（毫秒），供界面显示「快不快」 */
+  latencyMs: number;
 }
 
 /** 一条工具调用记录 */

@@ -28,6 +28,7 @@ import type {
 } from "@shared/protocol";
 import { cn } from "@/lib/utils";
 import { Chip, Details, Notice, PanelHead, SectionLabel } from "./parts";
+import { errorSummary } from "../../lib/error-text";
 
 /**
  * 目录探测要 spawn 5 条命令（`python --version` × 3 候选 + `git --version` + 两次 import 探版本），
@@ -514,7 +515,7 @@ function ServerRow({
       )}
 
       {server?.error !== undefined && (
-        <div className="mt-1 text-2xs text-danger">{server.error}</div>
+        <div className="mt-1 text-2xs text-danger">{errorSummary(server.error)}</div>
       )}
 
       {server !== null && server.tools.length > 0 && (

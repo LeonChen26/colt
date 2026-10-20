@@ -10,11 +10,12 @@
  * 各自的边框），三层边界叠在同一屏，边界比内容还抢眼。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Brain, Image as ImageIcon, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
+import { Brain, Image as ImageIcon, KeyRound, Pencil, PlugZap, Plus, Trash2 } from "lucide-react";
 import { ICON } from "@/lib/icon";
-import type { ModelOption, ProviderConfig } from "@shared/protocol";
+import type { ModelOption, ProviderConfig, ProviderTestResult } from "@shared/protocol";
 import { DEFAULT_CONTEXT_WINDOW, LEGACY_MAX_TOKENS } from "@shared/model-option";
 import { cn } from "@/lib/utils";
+import { errorSummary } from "../../lib/error-text";
 import { PanelHead } from "./parts";
 
 const BTN =
@@ -106,6 +107,38 @@ function ProviderCard({
 }): React.JSX.Element {
   const [key, setKey] = useState("");
   const [editing, setEditing] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
+
+  // 地址改了（编辑表单保存后），上一次「连接正常」就不再是当前配置的结论
+  useEffect(() => {
+    setTestResult(null);
+  }, [provider.baseUrl]);
+
+  /**
+   * 测试连接：优先用输入框里**刚粘贴、还没保存**的密钥——「粘贴 → 测 → 保存」是常见顺序，
+   * 只用已保存的那份会让第一次测试显示「未配置」，像产品在撒谎。
+   */
+  const test = async (): Promise<void> => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(
+        await window.colt.invoke("providers.test", {
+          id: provider.id,
+          apiKey: key.trim() || undefined,
+        }),
+      );
+    } catch (e) {
+      setTestResult({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        latencyMs: 0,
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const saveKey = async (): Promise<void> => {
     if (!key.trim()) return;
@@ -239,7 +272,11 @@ function ProviderCard({
         <input
           type="password"
           value={key}
-          onChange={(e) => setKey(e.target.value)}
+          onChange={(e) => {
+            setKey(e.target.value);
+            // 换了密钥，上一次的结论就不再对应当前输入
+            setTestResult(null);
+          }}
           placeholder={
             !provider.requiresKey
               ? "可留空（该服务无需密钥）"
@@ -251,6 +288,17 @@ function ProviderCard({
         />
         <button
           type="button"
+          data-provider-test={provider.id}
+          onClick={() => void test()}
+          disabled={testing}
+          title="用当前地址与密钥请求一次服务商的 /models：只验证连通与鉴权，不花模型额度"
+          className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2.5 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <PlugZap {...ICON.xs} />
+          {testing ? "测试中…" : "测试连接"}
+        </button>
+        <button
+          type="button"
           onClick={() => void saveKey()}
           disabled={!key.trim()}
           className="rounded-md bg-accent px-3 py-1.5 text-xs text-accent-fg transition disabled:cursor-not-allowed disabled:opacity-40"
@@ -258,6 +306,23 @@ function ProviderCard({
           保存
         </button>
       </div>
+
+      {testResult !== null && (
+        <p
+          data-provider-test-result={provider.id}
+          title={testResult.ok ? undefined : testResult.error}
+          className={cn(
+            "mt-1.5 text-2xs leading-relaxed",
+            testResult.ok ? "text-success-fg" : "text-danger-fg",
+          )}
+        >
+          {testResult.ok
+            ? `连接正常 · ${Math.max(1, Math.round(testResult.latencyMs))} ms${
+                testResult.modelCount != null ? ` · 服务报告 ${testResult.modelCount} 个模型` : ""
+              }`
+            : `连接失败：${errorSummary(testResult.error)}`}
+        </p>
+      )}
 
       {editing && (
         <ProviderForm
@@ -464,7 +529,7 @@ function ProviderForm({
           className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-[var(--color-accent)]"
         />
         <span>
-          该服务不需要 API Key（本地 / 自建 endpoint，如 ollama、vLLM、llama.cpp）
+          该服务不需要 API Key（本地或自建服务，如 ollama、vLLM、llama.cpp）
           <span className="mt-0.5 block text-text-muted">
             不勾选时，未填密钥的服务会被判定为「还不能用」，默认也不会选中它。
           </span>

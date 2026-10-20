@@ -133,7 +133,7 @@ const DOCK_KIND_META: Record<
   rules: { label: "规则", Icon: ShieldCheck, closable: true, desc: "本次会话记住的审批规则" },
   // F3：安全事件流（技能装载告警、同名覆盖、读取失败等）。它们发生时只弹 5 秒 toast、
   // 无从回查——主进程把它们同时落库（session_events），这个页签是持久记录的回看入口。
-  events: { label: "事件", Icon: ShieldAlert, closable: true, desc: "本次会话的事件记录，重启后仍可回看" },
+  events: { label: "事件", Icon: ShieldAlert, closable: true, desc: "本次会话的安全事件记录，重启后仍可回看" },
   // CodeWiki 仓库文档（docs/wiki）：只读呈现「模块树 → 页面」。
   // 与「文件」页签分工：那边是「项目里有什么文件」，这边是「这些模块在讲什么」——
   // 不做文件树、不做搜索，避免两个入口职责重叠（AGENTS.md §3.6）。

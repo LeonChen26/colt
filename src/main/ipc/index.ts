@@ -86,6 +86,7 @@ import {
   removeProvider,
   saveProvider,
 } from "../providers";
+import { testProvider } from "../provider-test";
 
 /** app.whenReady 阶段采集的首启报告，供渲染层首屏查询（需早于 openDatabase） */
 let firstRunReport: FirstRunReport | null = null;
@@ -769,6 +770,10 @@ export function registerIpcHandlers(): void {
     deleteSecret(request.id);
     return { ok: true } as const;
   });
+
+  handle("providers.test", (request) =>
+    testProvider({ id: request.id, apiKey: request.apiKey }),
+  );
 
   handle("mcp.status", async (request) => {
     // 配置诊断**一律由主进程自己解析**（两条路都要）：活 worker 那份运行态只讲

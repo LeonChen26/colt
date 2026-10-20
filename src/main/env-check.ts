@@ -76,7 +76,9 @@ export async function runEnvCheck(customShellPath?: string): Promise<EnvReport> 
 
   const sqliteAvailable = checkSqlite();
   if (!sqliteAvailable) {
-    problems.push("node:sqlite 不可用，无法创建工作台数据库。");
+    problems.push(
+      "内置数据库组件不可用（node:sqlite），会话与设置都无法保存。请重新安装应用；仍然出现请反馈。",
+    );
   }
 
   const bash = await resolveBash(customShellPath);

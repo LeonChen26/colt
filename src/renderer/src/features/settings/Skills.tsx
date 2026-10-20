@@ -176,7 +176,7 @@ export function SkillsPanel({
       {/* 动作级失败：只加一条说明，**不动清单**（见 `actionError` 的注释） */}
       {actionError !== null && (
         <div className="mt-2">
-          <Notice tone="danger">{actionError}</Notice>
+          <Notice tone="danger">{errorSummary(actionError)}</Notice>
         </div>
       )}
 

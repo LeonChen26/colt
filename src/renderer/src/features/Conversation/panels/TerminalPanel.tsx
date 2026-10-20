@@ -214,7 +214,7 @@ export function TerminalPanel({ sessionId }: { sessionId: string }): React.JSX.E
                 ? "终端已退出（已终止）"
                 : exitCode === 0
                   ? "终端已退出"
-                  : `终端已退出（代码 ${exitCode}）`}
+                  : `终端已退出（退出码 ${exitCode}）`}
             </p>
             <button
               type="button"

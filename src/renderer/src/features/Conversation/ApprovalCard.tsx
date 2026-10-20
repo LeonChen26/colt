@@ -142,7 +142,7 @@ export function ApprovalCard({
               disabled={busy}
               onClick={() => resolve(true, { remember: "tool" })}
               className="rounded-md border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:text-text-primary disabled:opacity-50"
-              title={`本次会话内不再询问 ${mcpToolLabel(request.toolName) ?? request.toolName} 的同级风险调用`}
+              title={`本次会话内，这个工具（${mcpToolLabel(request.toolName) ?? request.toolName}）的非高风险调用不再询问`}
             >
               本会话内始终允许
             </button>

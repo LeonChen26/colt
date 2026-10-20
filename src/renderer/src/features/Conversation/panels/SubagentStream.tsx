@@ -22,6 +22,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ViewMessage, ViewSubagent, ViewToolResult } from "@shared/worker-protocol";
 import { MessageBubble, type ToolResult } from "../MessageList";
 import { SubagentPreview } from "../SubagentPreview";
+import { errorSummary } from "../../../lib/error-text";
 
 type StreamState =
   | { status: "loading" }
@@ -123,7 +124,7 @@ function FetchedStream({
   if (state.status === "failed") {
     return (
       <p className="px-3 py-6 text-center text-xs leading-relaxed text-text-muted">
-        读取子代理过程失败：{state.message}
+        读取子代理过程失败：{errorSummary(state.message)}
       </p>
     );
   }

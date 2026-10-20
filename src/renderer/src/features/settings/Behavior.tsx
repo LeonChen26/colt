@@ -73,7 +73,7 @@ export function ApprovalPanel({
       <PanelHead
         title="审批"
         scope="全局"
-        lede="自动审批模式下，只有首词在这里的命令才会交给模型分析后自动放行；其余操作一律弹窗确认。"
+        lede="自动审批模式下：只读命令直接放行；首词在这张清单里的命令交给模型复核后自动执行；其余操作一律弹窗确认。"
       />
       <div className="mt-3">
         <RowGroup>
@@ -375,7 +375,7 @@ export function CompactionPanel({
       <PanelHead
         title="上下文压缩"
         scope="全局"
-        lede="对话变长时把较早的历史摘要成一段，只保留最近的原话——这样长会话也能继续。摘要保大意、不保细节，重要结论建议写进记忆文件。"
+        lede="对话变长时，把较早的内容摘要成一段再发给模型——发给模型的上下文只保留最近的原话，界面里的历史仍然完整。摘要保大意、不保细节，重要结论建议写进记忆文件。"
       />
       <div className="mt-3">
         <RowGroup>

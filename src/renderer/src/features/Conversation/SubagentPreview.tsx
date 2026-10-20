@@ -12,6 +12,8 @@
  */
 import { Brain } from "lucide-react";
 import { ICON } from "@/lib/icon";
+import { formatTokenCount } from "@/lib/session-stats";
+import { errorSummary } from "../../lib/error-text";
 import type { ViewSubagent } from "@shared/worker-protocol";
 
 export function SubagentPreview({
@@ -25,12 +27,12 @@ export function SubagentPreview({
     <div data-subagent-preview={subagent.id} className="flex flex-col gap-1.5">
       {subagent.error !== undefined && (
         <p className="rounded-md border border-danger/40 bg-danger-soft px-2 py-1.5 text-xs leading-relaxed text-danger-fg">
-          {subagent.error}
+          {errorSummary(subagent.error)}
         </p>
       )}
       {hidden > 0 && (
         <p className="rounded-xs bg-surface-overlay/60 px-2 py-1 text-2xs text-text-muted">
-          只列出最近 {recentSteps.length} 步（共 {stepCount} 步）——完整过程见「在右栏查看完整过程」
+          只列出最近 {recentSteps.length} 步（共 {stepCount} 步）——完整过程可在右栏查看
         </p>
       )}
       {recentSteps.map((step) => (
@@ -89,8 +91,8 @@ export function SubagentPreview({
       )}
       {(subagent.stats.promptTokens > 0 || subagent.stats.outputTokens > 0) && (
         <p className="text-2xs text-text-muted">
-          这个子代理自己的消耗：输入 {subagent.stats.promptTokens} · 输出{" "}
-          {subagent.stats.outputTokens} tokens
+          这个子代理自己的消耗：输入 {formatTokenCount(subagent.stats.promptTokens)} · 输出{" "}
+          {formatTokenCount(subagent.stats.outputTokens)} tokens
           {subagent.stats.costUsd > 0 ? ` · $${subagent.stats.costUsd.toFixed(4)}` : ""}
         </p>
       )}

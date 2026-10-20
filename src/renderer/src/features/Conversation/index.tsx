@@ -39,6 +39,7 @@ import {
 } from "@shared/thinking-level";
 import { cn } from "../../lib/utils";
 import { ErrorNotice } from "../../components/ErrorNotice";
+import { errorSummary } from "../../lib/error-text";
 import { runStateOf } from "../../lib/format";
 import { parseSlashCommand, resolveSkillCommand, slashCandidates, type SlashCandidate } from "../../lib/slash-command";
 import { disabledSkillMessage } from "@shared/skill-error";
@@ -1152,7 +1153,7 @@ export function Conversation({
               type="button"
               onClick={() => void compact()}
               className="flex items-center gap-1.5 rounded-sm border border-warning/50 px-2 py-1 text-xs text-warning transition hover:bg-warning-soft"
-              title="上下文已较满，压缩可释放空间"
+              title="上下文已较满，压缩可腾出余量"
             >
               <Shrink {...ICON.sm} />
               压缩上下文
@@ -1620,7 +1621,7 @@ export function Conversation({
                 data-slash-command="compact"
                 title={
                   running
-                    ? "运行中无法压缩上下文（压缩会重写会话记录）"
+                    ? "运行中无法压缩上下文（请先停止当前运行）"
                     : "压缩上下文（也可在输入框敲 /compact 回车）"
                 }
                 className="flex h-7 shrink-0 items-center rounded-sm px-2 text-text-secondary transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
@@ -1759,7 +1760,7 @@ export function Conversation({
                       className="lb-err truncate font-mono text-xs text-danger-fg"
                       title={runError}
                     >
-                      {runError}
+                      {errorSummary(runError)}
                     </span>
                   )}
                 </span>
