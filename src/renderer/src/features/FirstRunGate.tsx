@@ -29,6 +29,19 @@ export function FirstRunGate({
     setBusy(choice);
     setError(null);
     try {
+      // 「清空重来」是不可恢复的破坏性动作：走一次原生确认，别让一次误点带走全部项目与会话
+      if (choice === "fresh") {
+        const { confirmed } = await window.colt.invoke("dialog.confirm", {
+          message: "清空后重新开始？",
+          detail:
+            "本机已登记的项目与会话记录会被永久删除，且不可恢复。磁盘上的代码文件不受影响，之后可以重新打开目录。",
+          confirmLabel: "清空重来",
+        });
+        if (!confirmed) {
+          setBusy(null);
+          return;
+        }
+      }
       await window.colt.invoke("firstRun.resolve", { choice });
       onResolved(choice);
     } catch (e) {

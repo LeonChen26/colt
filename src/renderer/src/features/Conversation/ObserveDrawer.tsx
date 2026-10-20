@@ -39,6 +39,7 @@ import {
   consoleRowKey,
   downloadFields,
   downloadRowKey,
+  downloadStateLabel,
   networkFields,
   networkRowKey,
   observeCopyText,
@@ -323,7 +324,7 @@ function Detail({ fields }: { fields: ObsField[] }): React.JSX.Element {
 }
 
 function ConsoleRows({ entries, expandedKey, onToggle }: RowsProps<ConsoleEntry>): React.JSX.Element {
-  if (entries.length === 0) return <Empty text="自上次导航以来没有输出。" />;
+  if (entries.length === 0) return <Empty text="本页暂无控制台输出。" />;
   return (
     <>
       {entries.map((entry, index) => {
@@ -359,12 +360,12 @@ function ConsoleRows({ entries, expandedKey, onToggle }: RowsProps<ConsoleEntry>
 }
 
 function NetworkRows({ entries, expandedKey, onToggle }: RowsProps<NetworkEntry>): React.JSX.Element {
-  if (entries.length === 0) return <Empty text="自上次导航以来没有捕获到请求。" />;
+  if (entries.length === 0) return <Empty text="本页暂无网络请求。" />;
   return (
     <>
       {entries.map((entry, index) => {
         const problem = isNetworkProblem(entry);
-        const tag = entry.error !== undefined ? entry.error : String(entry.statusCode ?? "?");
+        const tag = entry.error !== undefined ? entry.error : String(entry.statusCode ?? "未知");
         const rowKey = networkRowKey(entry);
         const open = expandedKey === rowKey;
         return (
@@ -414,7 +415,7 @@ function DownloadRows({ entries, expandedKey, onToggle }: RowsProps<DownloadEntr
                   >
                     {entry.state === "completed"
                       ? formatBytes(entry.bytes)
-                      : `${entry.state}${entry.note !== undefined ? `：${entry.note}` : ""}`}
+                      : `${downloadStateLabel(entry.state)}${entry.note !== undefined ? `：${entry.note}` : ""}`}
                   </span>
                 </span>
                 <span className="block truncate font-mono text-2xs text-text-muted">

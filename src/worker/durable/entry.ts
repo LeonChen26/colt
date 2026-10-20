@@ -654,25 +654,48 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
 
   const agents = await loadAgentDefs(agentDirs(cwd, homedir()));
   const agentsNotice = describeAgents(agents);
-  if (agentsNotice !== null) send({ type: "notice", message: agentsNotice, kind: "security" });
+  if (agentsNotice !== null) {
+    // 只有「覆盖 / 读取失败」才是要留痕的告警；「已加载 N 个子代理定义」是正常启动信息，
+    // 不该染黄、更不该落进「事件」（否则每个干净会话都自带一条安全事件）
+    const warn = agents.failures.length > 0 || agents.shadowed.length > 0;
+    send({ type: "notice", message: agentsNotice, kind: warn ? "security" : undefined });
+  }
 
   const agentsMd = await loadAgentsMd(cwd);
   const agentsMdNotice = describeAgentsMd(agentsMd);
   if (agentsMdNotice !== null) {
-    send({ type: "notice", message: agentsMdNotice, kind: "security" });
+    // 同上的口径：成功注入不告警，读取失败才告警
+    send({
+      type: "notice",
+      message: agentsMdNotice,
+      kind: agentsMd.errors.length > 0 ? "security" : undefined,
+    });
   }
   const agentsMdInjector = createAgentsMdInjector(cwd, (message) =>
     send({ type: "notice", message, kind: "security" }),
   );
-  const wiki = createWikiMapInjector(cwd, (message) => send({ type: "notice", message }));
+  // wiki 地图只有读坏时才发通知（其余静默），所以这条恒为告警
+  const wiki = createWikiMapInjector(cwd, (message) =>
+    send({ type: "notice", message, kind: "security" }),
+  );
 
   const memory = await loadProjectMemory(cwd);
   const memoryNotice = describeMemory(memory, "project");
-  if (memoryNotice !== null) send({ type: "notice", message: memoryNotice, kind: "security" });
+  if (memoryNotice !== null) {
+    send({
+      type: "notice",
+      message: memoryNotice,
+      kind: memory.error === undefined ? undefined : "security",
+    });
+  }
   const userMemoryFile = await readMemoryFile(userMemoryFilePath(homedir()));
   const userMemoryNotice = describeMemory(userMemoryFile, "user");
   if (userMemoryNotice !== null) {
-    send({ type: "notice", message: userMemoryNotice, kind: "security" });
+    send({
+      type: "notice",
+      message: userMemoryNotice,
+      kind: userMemoryFile.error === undefined ? undefined : "security",
+    });
   }
   const reportMemoryIndex = createMemoryIndexReporter(send);
   if (memory.error === undefined) reportMemoryIndex("project", memory.content);

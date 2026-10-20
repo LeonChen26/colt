@@ -387,7 +387,7 @@ export async function runMemoryE2e(
       const deadline = Date.now() + 280_000;
       while (Date.now() < deadline && tidyNotice === null && tidyError === null) {
         const notice = await run<string | null>(
-          `(() => { const el = document.querySelector("[data-conv-compact-notice]"); return el ? el.textContent : null; })()`,
+          `(() => { const els = Array.from(document.querySelectorAll("[data-conv-compact-notice]")); return els.length ? els.map((el) => el.textContent).join("｜") : null; })()`,
         ).catch(() => null);
         if (notice !== null && notice.includes("记忆整理完成")) {
           tidyNotice = notice;

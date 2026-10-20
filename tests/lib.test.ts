@@ -806,7 +806,7 @@ const fieldOf = (
 describe("观测条目详情（N1）", () => {
   test("控制台：给的是**完整来源**，不再是概览里的文件名", () => {
     const fields = consoleFields(consoleEntry());
-    assert.equal(fieldOf(fields, "级别"), "error");
+    assert.equal(fieldOf(fields, "级别"), "错误");
     assert.equal(fieldOf(fields, "消息"), "夹具：这是一条脚本报错");
     assert.equal(fieldOf(fields, "来源"), "http://127.0.0.1:8123/");
     assert.equal(fieldOf(fields, "行"), "71");
@@ -824,7 +824,7 @@ describe("观测条目详情（N1）", () => {
     const fields = networkFields(networkEntry());
     assert.equal(fieldOf(fields, "方法"), "GET");
     assert.equal(fieldOf(fields, "状态码"), "404");
-    assert.equal(fieldOf(fields, "类型"), "fetch");
+    assert.equal(fieldOf(fields, "类型"), "接口请求");
     assert.equal(fieldOf(fields, "URL"), "http://127.0.0.1:8123/api/missing");
     assert.equal(fieldOf(fields, "错误"), undefined);
   });
@@ -843,13 +843,13 @@ describe("观测条目详情（N1）", () => {
     assert.equal(fieldOf(fields, "文件"), "1-colt-payload.txt");
     assert.equal(fieldOf(fields, "路径"), entry.path);
     assert.equal(fieldOf(fields, "大小"), "2.0 KB");
-    assert.equal(fieldOf(fields, "状态"), "completed");
+    assert.equal(fieldOf(fields, "状态"), "已完成");
     assert.equal(fieldOf(fields, "备注"), undefined);
   });
 
   test("下载：未完成时备注跟着出现，0 字节也要给一行", () => {
     const fields = downloadFields(downloadEntry({ state: "cancelled", note: "体积超限", bytes: 0 }));
-    assert.equal(fieldOf(fields, "状态"), "cancelled");
+    assert.equal(fieldOf(fields, "状态"), "已取消");
     assert.equal(fieldOf(fields, "备注"), "体积超限");
     assert.equal(fieldOf(fields, "大小"), "0 B");
   });

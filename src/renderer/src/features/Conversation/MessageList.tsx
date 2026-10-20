@@ -854,9 +854,14 @@ function describeTool(
     case "write":
       return { icon: <FilePlus {...ICON.sm} />, subtitle: path };
     case "read":
+      return { icon: <Eye {...ICON.sm} />, subtitle: path };
+    // grep / glob 的入参是 pattern（不是 command，path 只是范围）——取错字段会让卡片上
+    // 看不到「在搜什么」，是实打实的信息缺失
     case "grep":
-    case "glob":
-      return { icon: <Eye {...ICON.sm} />, subtitle: command ?? path };
+    case "glob": {
+      const pattern = typeof args.pattern === "string" ? args.pattern : undefined;
+      return { icon: <Eye {...ICON.sm} />, subtitle: pattern ?? path };
+    }
     case "bash":
       return { icon: <Terminal {...ICON.sm} />, subtitle: command };
     case "browser_read":

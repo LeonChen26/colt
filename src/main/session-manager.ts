@@ -709,6 +709,8 @@ export class SessionManager {
       this.#emit("session.notice", {
         sessionId: options.sessionId,
         message: `记忆索引失败（检索将停在当前状态）：${error instanceof Error ? error.message : String(error)}`,
+        // 这是真失败：按警示显示并落进「事件」，别用成功色一闪而过
+        kind: "security",
       });
     }
   }

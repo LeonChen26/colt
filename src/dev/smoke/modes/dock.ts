@@ -2372,7 +2372,7 @@ export async function runDock(
         (downloadDetail.fields["路径"] ?? "").includes("browser-downloads") &&
         (downloadDetail.fields["路径"] ?? "").endsWith(payloadName) &&
         (downloadDetail.fields["大小"] ?? "") !== "" &&
-        downloadDetail.fields["状态"] === "completed" &&
+        downloadDetail.fields["状态"] === "已完成" &&
         downloadDetail.truncated.length === 0,
     ]);
     log(`  下载详情路径：${downloadDetail.fields["路径"]}`);

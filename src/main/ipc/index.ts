@@ -481,10 +481,10 @@ export function registerIpcHandlers(): void {
    * 这样拒绝时库与磁盘都还没动过。
    */
   handle("project.delete", (request) => {
-    if (!getProject(request.projectId)) throw new Error("工作区不存在或已被移除");
+    if (!getProject(request.projectId)) throw new Error("项目不存在或已被移除");
     const sessions = listSessions(request.projectId);
     const busy = sessions.find((session) => sessionManager.isRunning(session.id));
-    if (busy) throw new Error(`会话「${busy.title}」正在运行，请先中止后再移除工作区`);
+    if (busy) throw new Error(`会话「${busy.title}」正在运行，请先中止后再移除项目`);
 
     // 先关 worker（若已加载）释放文件句柄，再删库与文件——与 session.delete 同一顺序
     for (const session of sessions) sessionManager.close(session.id);

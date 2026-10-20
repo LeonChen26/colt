@@ -37,10 +37,48 @@ function compact(fields: (ObsField | null)[]): ObsField[] {
   return fields.filter((item): item is ObsField => item !== null);
 }
 
+/** 英文枚举 → 用户能读的中文。认不出就原样返回，不吞信息。 */
+const LEVEL_LABELS: Record<string, string> = {
+  error: "错误",
+  warning: "警告",
+  info: "信息",
+  debug: "调试",
+};
+
+const RESOURCE_TYPE_LABELS: Record<string, string> = {
+  mainFrame: "页面",
+  xhr: "接口请求",
+  fetch: "接口请求",
+  script: "脚本",
+  stylesheet: "样式表",
+  image: "图片",
+  font: "字体",
+  media: "媒体",
+  other: "其他",
+};
+
+const DOWNLOAD_STATE_LABELS: Record<string, string> = {
+  completed: "已完成",
+  cancelled: "已取消",
+  interrupted: "已中断",
+};
+
+export function consoleLevelLabel(level: string): string {
+  return LEVEL_LABELS[level] ?? level;
+}
+
+export function resourceTypeLabel(type: string): string {
+  return RESOURCE_TYPE_LABELS[type] ?? type;
+}
+
+export function downloadStateLabel(state: string): string {
+  return DOWNLOAD_STATE_LABELS[state] ?? state;
+}
+
 /** 控制台一条：级别 / 完整消息 / **完整来源**（概览里只有文件名） / 行号 */
 export function consoleFields(entry: ConsoleEntry): ObsField[] {
   return compact([
-    field("级别", entry.level),
+    field("级别", consoleLevelLabel(entry.level)),
     field("消息", entry.message),
     field("来源", entry.source, true),
     entry.line > 0 ? field("行", String(entry.line), true) : null,
@@ -53,7 +91,7 @@ export function networkFields(entry: NetworkEntry): ObsField[] {
     field("方法", entry.method, true),
     entry.statusCode !== undefined ? field("状态码", String(entry.statusCode), true) : null,
     field("错误", entry.error ?? ""),
-    field("类型", entry.resourceType),
+    field("类型", resourceTypeLabel(entry.resourceType)),
     field("URL", entry.url, true),
   ]);
 }
@@ -65,7 +103,7 @@ export function downloadFields(entry: DownloadEntry): ObsField[] {
     field("路径", entry.path, true),
     field("来源", entry.url, true),
     field("大小", formatBytes(entry.bytes)),
-    field("状态", entry.state),
+    field("状态", downloadStateLabel(entry.state)),
     field("备注", entry.note ?? ""),
   ]);
 }

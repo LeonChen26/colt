@@ -705,7 +705,7 @@ export default function App(): React.JSX.Element {
     async (project: Project) => {
       try {
         const { confirmed } = await window.colt.invoke("dialog.confirm", {
-          message: `确定移除工作区「${project.name}」？`,
+          message: `确定移除项目「${project.name}」？`,
           detail:
             "该项目下的会话记录会被一并清除，且不可恢复。磁盘上的文件不受影响，之后重新打开该目录即可恢复登记。",
           confirmLabel: "移除",
@@ -976,7 +976,7 @@ export default function App(): React.JSX.Element {
               }}
               disabled={!taskProject}
               data-sidebar-new-session
-              title={taskProject ? "新建会话（不指定空间，归入任务栏）" : "正在准备任务目录…"}
+              title={taskProject ? "新建会话（不指定项目，归入任务栏）" : "正在准备任务目录…"}
               className="flex w-full items-center justify-center gap-1.5 rounded-sm border border-line px-2 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus {...ICON.sm} />
@@ -995,8 +995,8 @@ export default function App(): React.JSX.Element {
                 onChange={(event) => setSidebarQuery(event.target.value)}
                 disabled={projects.length === 0}
                 data-sidebar-search
-                placeholder="搜索会话 / 空间"
-                aria-label="搜索会话或空间"
+                placeholder="搜索会话 / 项目"
+                aria-label="搜索会话或项目"
                 className="w-full rounded-sm border border-line bg-transparent py-1.5 pl-6 pr-7 text-xs text-text-primary outline-none transition placeholder:text-text-muted focus:border-line-strong disabled:cursor-not-allowed disabled:opacity-40"
               />
               {sidebarQuery !== "" && (
@@ -1039,7 +1039,7 @@ export default function App(): React.JSX.Element {
                 searching ? (
                   <div className="px-2 py-1.5 text-xs text-text-muted">没有匹配的任务会话</div>
                 ) : (
-                  <Empty>不指定空间的新会话会落在这里，点上方「新建会话」开始</Empty>
+                  <Empty>不指定项目的新会话会落在这里，点上方「新建会话」开始</Empty>
                 )
               ) : (
                 taskRows.map((session) => renderSessionRow(session, false))
@@ -1047,16 +1047,16 @@ export default function App(): React.JSX.Element {
             </SidebarSection>
           )}
           <SidebarSection
-            title="空间"
+            title="项目"
             action={{ label: "打开", icon: <FolderOpen {...ICON.xs} />, onClick: () => void pickProject() }}
           >
             {spaceProjects.length === 0 ? (
-              <Empty>还没有空间，点「打开」选择目录</Empty>
+              <Empty>还没有项目，点「打开」选择目录</Empty>
             ) : searching && searchSessions === null ? (
               <div className="px-2 py-1.5 text-xs text-text-muted">搜索中…</div>
             ) : searching && sidebarRows.length === 0 ? (
               <div className="px-2 py-1.5 text-xs text-text-muted">
-                没有匹配「{sidebarQuery.trim()}」的会话或空间
+                没有匹配「{sidebarQuery.trim()}」的会话或项目
               </div>
             ) : (
               sidebarRows.map(({ project, sessions, expanded: rowExpanded }) => {
@@ -1353,7 +1353,7 @@ function ProjectRow({
         onClick={onDelete}
         disabled={busy}
         data-project-remove
-        title={busy ? "有会话正在运行，不可移除工作区" : "移除工作区（不影响磁盘上的文件）"}
+        title={busy ? "有会话正在运行，暂不能移除项目" : "移除项目（不影响磁盘上的文件）"}
         className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
       >
         <Trash2 {...ICON.xs} />

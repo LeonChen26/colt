@@ -186,13 +186,17 @@ export function Conversation({
   const [notice, setNotice] = useState<string | null>(null);
   /**
    * 瞬时提示条（`session.notice`）。带 `kind` 是因为它其实承载**两类**语义：
-   * - 缺省（压缩完成这类成功 / 信息反馈）：绿色、5 秒消失；
-   * - `security`（技能装载告警、MCP 掉线等「如实告知」类）：**不是成功**——用警示色、
+   * - 缺省（压缩完成、启动注入成功这类信息反馈）：绿色、5 秒消失；
+   * - `security`（技能装载告警、MCP 掉线、读取失败等「如实告知」类）：**不是成功**——用警示色、
    *   停留更久，别让它在用户没看着的那几秒里溜走（落库那份在「事件」页签可回查）。
+   *
+   * 用**队列**而不是单槽：worker 启动阶段会连着发技能 / 子代理 / AGENTS.md / 记忆等多条，
+   * 单槽会让后一条直接盖掉前一条（用户只看得到最后一条，等于其余的没说）。
    */
-  const [compactNotice, setCompactNotice] = useState<{ message: string; kind?: "security" } | null>(
-    null,
-  );
+  const [sessionNotices, setSessionNotices] = useState<
+    { id: number; message: string; kind?: "security" }[]
+  >([]);
+  const noticeSeqRef = useRef(0);
   /**
    * 附件被拒/被跳过的说明，**贴在输入卡片里**而不是顶部的消息区。
    *
@@ -534,7 +538,7 @@ export function Conversation({
     setOpening(true);
     setError(null);
     setNotice(null);
-    setCompactNotice(null);
+    setSessionNotices([]);
 
     const offView = window.colt.on("session.view", (next) => {
       if (disposed || next.sessionId !== sessionId) return;
@@ -569,16 +573,15 @@ export function Conversation({
       );
     });
     // 压缩完成由 worker 在**真的压缩完**后推来（invoke 提前返回的是「已入队」，不可作数）。
-    // 提示是瞬时的：几秒后自动消失，不占用黄条的位置。
-    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    // 每条提示各自计时、各自消失：后到的不再顶掉先到的（启动阶段会连发多条）。
     const offNotice = window.colt.on("session.notice", (payload) => {
       if (disposed || payload.sessionId !== sessionId) return;
-      setCompactNotice({ message: payload.message, kind: payload.kind });
-      clearTimeout(noticeTimer);
+      const id = (noticeSeqRef.current += 1);
+      setSessionNotices((prev) => [...prev, { id, message: payload.message, kind: payload.kind }]);
       // security 类（技能/MCP 装载告警、掉线等）**不是成功提示**：给更长的停留时间，
       // 别让「服务器掉线了」这种话在 5 秒里溜走。
-      noticeTimer = setTimeout(
-        () => setCompactNotice(null),
+      setTimeout(
+        () => setSessionNotices((prev) => prev.filter((item) => item.id !== id)),
         payload.kind === "security" ? 12_000 : 5_000,
       );
     });
@@ -624,7 +627,6 @@ export function Conversation({
 
     return () => {
       disposed = true;
-      clearTimeout(noticeTimer);
       offView();
       offError();
       offStatus();
@@ -1201,22 +1203,6 @@ export function Conversation({
             </div>
           )}
 
-          {compactNotice && (
-            <div
-              {...(compactNotice.kind === "security"
-                ? { "data-conv-security-notice": "" }
-                : { "data-conv-compact-notice": "" })}
-              className={cn(
-                "mb-3 rounded-md border border-line px-3 py-2 text-sm",
-                compactNotice.kind === "security"
-                  ? "bg-warning-soft text-warning-fg"
-                  : "bg-success-soft text-success-fg",
-              )}
-            >
-              {compactNotice.message}
-            </div>
-          )}
-
           {/*
             选定已失效（服务被删 / 模型下线）：抬头显示的是**实际会被使用**的模型，
             因此要明说原来的选择去哪了，否则用户会以为自己切错了模型。
@@ -1407,6 +1393,22 @@ export function Conversation({
               {notice}
             </div>
           )}
+          {sessionNotices.map((item) => (
+            <div
+              key={item.id}
+              {...(item.kind === "security"
+                ? { "data-conv-security-notice": "" }
+                : { "data-conv-compact-notice": "" })}
+              className={cn(
+                "mb-2 rounded-md border border-line px-3 py-2 text-sm",
+                item.kind === "security"
+                  ? "bg-warning-soft text-warning-fg"
+                  : "bg-success-soft text-success-fg",
+              )}
+            >
+              {item.message}
+            </div>
+          ))}
           {/*
             输入卡片：对齐高保真 .cbox（边框圆角卡片，内含输入区与工具行）。
             `data-conv-session` 标出「输入框此刻属于哪条会话」——草稿会话不进侧栏，
