@@ -113,6 +113,7 @@ import { runBasic } from "./modes/basic";
 import { runAdvanced } from "./modes/advanced";
 import { runApproval } from "./modes/approval";
 import { runCrash } from "./modes/crash";
+import { runCrashResume } from "./modes/crash-resume";
 import { runDock } from "./modes/dock";
 import { runUiLogic } from "./modes/ui-logic";
 import { runFixture } from "./modes/fixture";
@@ -288,6 +289,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runReenter(window, project.id, sessionsDir, log, run);
     } else if (mode === "crash") {
       await runCrash(window, project.id, sessionsDir, log, run);
+    } else if (mode === "crash-resume") {
+      await runCrashResume(window, log, run);
     } else if (mode === "memory") {
       await runMemory(log, run);
     } else if (mode === "memory-e2e") {

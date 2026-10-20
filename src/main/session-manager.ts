@@ -1633,6 +1633,17 @@ export class SessionManager {
   }
 
   /**
+   * **冒烟专用**：会话 worker 的操作系统进程 id（没有 worker 时为 undefined）。
+   *
+   * 崩溃恢复的冒烟要在**真实进程**上强杀：`close()` 是优雅退出（`dispose` 命令），
+   * 验不到 durable 的 resume。只在开发态返回，打包后一律 undefined——
+   * 这不是产品能力，别在业务代码里调它。
+   */
+  workerPidForSmoke(sessionId: string): number | undefined {
+    return isDev ? this.#workers.get(sessionId)?.child.pid : undefined;
+  }
+
+  /**
    * 关闭会话 worker。
    * 运行中的会话不关闭——避免掐断正在进行的 Agent 运行，让它在空闲回收或下次 open 时自然收敛。
    * 2026-09-18 起渲染层**不再**在卸载时调它：切走只是失焦，worker 交给空闲回收与进程池上限兜底
