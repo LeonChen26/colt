@@ -17,7 +17,7 @@
 export function unknownSkillMessage(name: string, available: readonly string[]): string {
   const head = `技能「${name}」不存在`;
   if (available.length === 0) {
-    return `${head}：本会话没有装载任何技能。技能放在 <项目>/.agents/skills 或 ~/.agents/skills 下（新建会话时装载）。`;
+    return `${head}：本会话没有装载任何技能。技能放在 <项目>/.agents/skills 或 ~/.agents/skills 下；装好后在「设置 → 技能」里点重新扫描。`;
   }
   return `${head}。可用：${available.join("、")}`;
 }

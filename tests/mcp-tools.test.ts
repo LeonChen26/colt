@@ -796,7 +796,7 @@ describe("连接生命周期：失败可重试、掉线如实上报", () => {
       const dropped = notices.filter((message) => message.includes("掉线"));
       assert.equal(dropped.length, 1, `掉线通知应当恰好一条，实得：${JSON.stringify(notices)}`);
       assert.match(dropped[0] ?? "", /"crash"/);
-      assert.match(dropped[0] ?? "", /重新加载/);
+      assert.match(dropped[0] ?? "", /刷新/);
       assert.equal(notices.length, loaded + 1);
 
       // 掉线态同样走「重载可救回」：重载会拉一个全新进程起来

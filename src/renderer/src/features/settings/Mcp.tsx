@@ -142,12 +142,10 @@ async function runInstall(
   const { confirmed } = await window.colt.invoke("dialog.confirm", {
     message: `安装「${preset.name}」？`,
     detail:
-      `会做两件事：① 在 ${preset.configPath} 里加一条 ${preset.name} 的 server 声明` +
-      `（**用户级，对全部项目生效**）；② 在 Colt 的数据目录里建一个独立的 Python 运行时，` +
-      `用它装这一项钉住的版本。` +
-      `\n\nCodeWiki 不在 PyPI 上（同名包是别人的项目），要从 GitHub 按 commit 装；` +
-      `依赖树很重，首次下载以百 MB 计、分钟级起步。需要 git 与 npm 在 PATH 上，` +
-      `网络不稳时建议先配 pip 镜像。不装不影响任何现有功能，随时可以卸载。`,
+      `会在 ${preset.configPath} 里加一条 ${preset.name} 声明（用户级，对全部项目生效），` +
+      `并在 Colt 的数据目录建一个独立的 Python 运行时来装它。` +
+      `\n\n首次下载约百 MB、分钟级起步；需要 git 与 npm 在 PATH 上。` +
+      `不装不影响现有功能，随时可以卸载。`,
     confirmLabel: "安装",
   });
   if (!confirmed) return;
@@ -511,7 +509,7 @@ function ServerRow({
         </div>
       ) : (
         <div className="mt-0.5 text-2xs text-text-muted">
-          声明已在 {preset?.configPath} 里，但当前读不到它的运行态。
+          声明已在 {preset?.configPath} 里，但当前读不到它的连接状态。
         </div>
       )}
 
@@ -568,7 +566,7 @@ function ServerRow({
               onChange={(event) => setPurge(event.target.checked)}
               className="h-3 w-3"
             />
-            连运行时一起清
+            同时删除独立 Python 环境（下次安装需重新下载）
           </label>
         </div>
       )}
@@ -611,10 +609,6 @@ function PresetRow({
     >
       <div className="flex items-center gap-2">
         <span className="truncate text-xs font-medium text-text-primary">{preset.name}</span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs text-text-muted">
-          <span className="h-[7px] w-[7px] rounded-full bg-text-muted" />
-          未安装
-        </span>
       </div>
       <div className="mt-0.5 text-2xs leading-relaxed text-text-muted">{preset.tagline}</div>
 

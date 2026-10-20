@@ -989,7 +989,7 @@ async function compact(): Promise<void> {
     return;
   }
   pushView();
-  send({ type: "notice", message: "上下文已压缩：较早的对话已替换为摘要。" });
+  send({ type: "notice", message: "上下文已压缩：更早内容已收进摘要（界面历史保留）。" });
   const reminder = compactMemoryReminder(state.cwd);
   if (!pendingEphemeralNotices.includes(reminder)) pendingEphemeralNotices.push(reminder);
 }

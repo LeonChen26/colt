@@ -30,7 +30,7 @@ export function SubagentPreview({
       )}
       {hidden > 0 && (
         <p className="rounded-xs bg-surface-overlay/60 px-2 py-1 text-2xs text-text-muted">
-          只列出最近 {recentSteps.length} 步（共 {stepCount} 步）——完整过程在右上「在右栏查看完整过程」
+          只列出最近 {recentSteps.length} 步（共 {stepCount} 步）——完整过程见「在右栏查看完整过程」
         </p>
       )}
       {recentSteps.map((step) => (

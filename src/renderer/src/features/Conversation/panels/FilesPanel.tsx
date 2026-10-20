@@ -176,7 +176,7 @@ function DirNode({
               className="flex items-center gap-1.5 py-1 text-2xs leading-relaxed text-text-muted"
               style={{ paddingLeft: depth * 12 + 30 }}
             >
-              <span className="min-w-0 flex-1">列不出来：{state.error}</span>
+              <span className="min-w-0 flex-1">无法读取该目录：{state.error}</span>
               <button
                 type="button"
                 onClick={() => onRetry(entry.path)}
@@ -309,7 +309,7 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
         {!treeCollapsed && (
           <span
             className="shrink-0 text-2xs text-text-muted"
-            title="这些目录不参与浏览：内容是哈希对象 / 依赖黑盒，列出来没有意义"
+            title="这些目录不参与浏览：Git 内部数据与依赖包，列出来没有浏览价值"
           >
             已隐藏 .git · node_modules
           </span>
@@ -371,7 +371,7 @@ export function FilesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
             ) : root === undefined || root.error !== null ? (
               <div className="flex flex-col items-center gap-2 px-3 py-10 text-center">
                 <p className="text-xs leading-relaxed text-text-secondary">
-                  目录读取失败：{root?.error ?? "未知原因"}
+                  无法读取目录：{root?.error ?? "未知原因"}
                 </p>
                 <button
                   type="button"

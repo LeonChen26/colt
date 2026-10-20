@@ -116,7 +116,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
     <div>
       <PanelHead
         title="技能"
-        scope="本项目"
+        scope="本项目 + 用户级 / 内置"
         scopeTone="project"
         action={
           <button
@@ -126,7 +126,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
             disabled={projectId === undefined || rescanning}
             className={BTN}
           >
-            {rescanning ? "重扫中…" : "重新扫描"}
+            {rescanning ? "正在重新扫描…" : "重新扫描"}
           </button>
         }
         lede={
@@ -134,7 +134,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
             在项目根的{" "}
             <span className="font-mono">{".agents/skills/<名字>/SKILL.md"}</span> 或用户级的{" "}
             <span className="font-mono">{"~/.agents/skills/<名字>/SKILL.md"}</span>{" "}
-            里放技能，项目级同名覆盖用户级；另有一层随应用分发的内置技能排在最后。用{" "}
+            里放技能。项目级同名覆盖用户级，内置技能排在最后；用{" "}
             <span className="font-mono">{"/skill <名字>"}</span> 调用。
           </>
         }
@@ -179,7 +179,7 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
         ) : status === null ? null : !status.live ? (
           // 「没开会话」不是「没装」：分开说，否则是一句反话
           <Notice>
-            本项目当前没有开着的会话——打开一个会话后这里会显示它装载的技能（「重新扫描」也要有会话才生效）。
+            打开一个会话后才能查看技能；「重新扫描」也需要活会话。
           </Notice>
         ) : skills.length === 0 ? (
           <Notice>还没有装任何技能。把技能目录放进去，再点「重新扫描」。</Notice>
@@ -203,8 +203,8 @@ export function SkillsPanel({ project }: { project: Project | null }): React.JSX
         <p className="mt-3 max-w-[600px] text-2xs leading-relaxed text-text-muted">
           关掉某个技能 = <strong>不再装载</strong>：不进系统提示词、模型看不见，
           <span className="font-mono">/skill</span> 也会被明确拒绝；文件仍在磁盘上，随时可以开回来
-          （偏好写在项目根的 <span className="font-mono">{".colt/skills.json"}</span>，`.colt/`
-          已被 gitignore，不会跟着提交）。
+          （偏好写在项目根的 <span className="font-mono">{".colt/skills.json"}</span>；
+          建议把 <span className="font-mono">.colt/</span> 加入项目的 .gitignore）。
         </p>
       )}
     </div>
@@ -254,7 +254,7 @@ function SkillCard({
         <Chip tone={skill.source === "project" ? "project" : "plain"}>
           {SKILL_SOURCE_LABEL[skill.source]}
         </Chip>
-        {!skill.modelInvocable && <Chip>仅手动调用</Chip>}
+        {!skill.modelInvocable && <Chip>仅 /skill 手动调用</Chip>}
         <span data-skill-switch={skill.name} className="ml-auto shrink-0">
           <Switch
             checked={!skill.disabled}

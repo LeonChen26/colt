@@ -61,8 +61,7 @@ function LiveStream({ subagent }: { subagent: ViewSubagent }): React.JSX.Element
   return (
     <div data-subagent-live={subagent.id} className="flex flex-col gap-2 p-3">
       <p className="rounded-sm border border-line bg-surface-raised px-2 py-1.5 text-xs leading-relaxed text-text-muted">
-        还在跑：这一层**跟着实时刷新**，但只画视图里带的**最近几步**——完整过程要等它跑完
-        （那时会自动换成整份）。
+        运行中只显示最近几步，跑完后会自动换成完整过程。
       </p>
       <SubagentPreview subagent={subagent} />
     </div>

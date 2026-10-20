@@ -523,7 +523,7 @@ async function connectServer(
       state.error = MCP_DROPPED;
       notify(
         `MCP server "${name}" 连上后掉线：${MCP_DROPPED}。` +
-          `它的工具仍在清单里、调用会失败；在设置页点「重新加载」可恢复。`,
+          `它的工具仍在清单里、调用会失败；在设置页点「刷新」可恢复。`,
         "security",
       );
     });

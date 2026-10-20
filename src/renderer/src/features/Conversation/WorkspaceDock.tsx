@@ -118,7 +118,7 @@ const DOCK_KIND_META: Record<
   files: { label: "文件", Icon: FolderTree, closable: true, desc: "浏览项目内的文件" },
   // 交互终端（v1.78）：xterm.js + 主进程 PTY，跑在会话所属项目根下；用户直操作，
   // 模型工具面零入口（安全边界见 docs/SECURITY.md 的终端条目）
-  terminal: { label: "终端", Icon: SquareTerminal, closable: true, desc: "在项目根下开一个 shell" },
+  terminal: { label: "终端", Icon: SquareTerminal, closable: true, desc: "在项目根下开一个命令行" },
   // A3-5 迁入、⑦-H / ⑦-G 收敛后剩下的两个附属面板：「统计」「规则」。
   // 标签沿用产品既有措辞（不改成设计稿的「代码变更」），免得同一件东西在 ② 与 ⑦ 上出现两套叫法——
   // 故 ⑦-H 把「用量」改名「统计」时，② 的按钮与本表的页签标签**同批**改（v1.30）。
@@ -126,15 +126,15 @@ const DOCK_KIND_META: Record<
   // 与明细**都**并进了「统计」，故本表不再有 `tools`——它不是被藏起来，而是没有这个视图了。
   // ⑦-G（v1.32）同理取消了 `changes` 与 `file`：两者都是「本次改动」的不同粒度，
   // 合并成了「任务摘要」的下钻（`ChangeDrilldown`），不再是并列页签。
-  usage: { label: "统计", Icon: ChartColumn, closable: true, desc: "本次会话的用量、工具调用与失败统计" },
+  usage: { label: "统计", Icon: ChartColumn, closable: true, desc: "本次会话的用量与工具调用统计" },
   rules: { label: "规则", Icon: ShieldCheck, closable: true, desc: "本次会话记住的审批规则" },
   // F3：安全事件流（技能装载告警、同名覆盖、读取失败等）。它们发生时只弹 5 秒 toast、
   // 无从回查——主进程把它们同时落库（session_events），这个页签是持久记录的回看入口。
-  events: { label: "事件", Icon: ShieldAlert, closable: true, desc: "本次会话的安全事件记录，重启后仍可回看" },
+  events: { label: "事件", Icon: ShieldAlert, closable: true, desc: "本次会话的事件记录，重启后仍可回看" },
   // CodeWiki 仓库文档（docs/wiki）：只读呈现「模块树 → 页面」。
   // 与「文件」页签分工：那边是「项目里有什么文件」，这边是「这些模块在讲什么」——
   // 不做文件树、不做搜索，避免两个入口职责重叠（AGENTS.md §3.6）。
-  wiki: { label: "Wiki", Icon: BookOpen, closable: true, desc: "仓库模块文档（CodeWiki 生成的 docs/wiki）" },
+  wiki: { label: "Wiki", Icon: BookOpen, closable: true, desc: "仓库模块文档（由 CodeWiki 生成）" },
 };
 
 /** 该视图能否关闭（⑦-E：默认视图不可关闭） */
@@ -691,7 +691,7 @@ export function WorkspaceDock({
               className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary"
               title={browser?.title || url || undefined}
             >
-              {loaded ? url || "about:blank" : "尚未加载"}
+              {loaded ? url || "空白页" : "尚未加载"}
             </span>
             {/* 视口联调覆盖是**持久**状态（只在显式「恢复」时撤销），且会让原生视图比停靠区更大：
                 实测 1280×800 的覆盖在 823×643 的停靠区里，右侧 209px 被窗口边缘裁掉、下方 157px
@@ -708,7 +708,7 @@ export function WorkspaceDock({
             {override !== null && (
               <span
                 data-browser-viewport={`${override.width}x${override.height}`}
-                title={`响应式联调视口 ${override.width}×${override.height}（agent 设置）：页面按这个尺寸重排，超出停靠区的部分看不到。点「恢复」交还给按停靠区尺寸的自适应布局。`}
+                title={`响应式视口 ${override.width}×${override.height}（Agent 设置）：页面按这个尺寸重排，超出右栏的部分看不到。点「恢复」交还给跟随右栏宽度的布局。`}
                 className="flex min-w-0 items-center gap-1.5 rounded-sm border border-warning bg-warning-soft px-2 py-1 text-xs font-medium leading-none text-warning-fg"
               >
                 <MonitorSmartphone {...ICON.sm} className="shrink-0" />
@@ -815,13 +815,12 @@ export function WorkspaceDock({
               <span className="min-w-0 flex-1">
                 {zoom === 1 ? (
                   <>
-                    这个页面需要 {contentWidth}px 宽，可视区只有 {areaWidth}px，而它禁用了横向滚动——
-                    右边 {contentWidth - areaWidth}px 现在看不到、也够不到。
+                    页面比右栏宽 {contentWidth - areaWidth}px，且无法横向滚动——右侧内容看不到也够不到。
                   </>
                 ) : (
                   <>
-                    已经缩到 {Math.round(zoom * 100)}%（再小就认不出字了）仍差 {needWidth - areaWidth}px——
-                    这个页面本身就比停靠区宽，只能拖宽右栏或最大化窗口。
+                    已缩到 {Math.round(zoom * 100)}%（再小就看不清）仍差 {needWidth - areaWidth}px——
+                    页面本身比右栏宽，只能拖宽右栏或最大化窗口。
                   </>
                 )}
               </span>
@@ -858,9 +857,9 @@ export function WorkspaceDock({
           ) : (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
               <Globe className="text-text-muted" {...ICON.xl} />
-              <p className="mt-2 text-sm text-text-secondary">浏览器尚未加载</p>
+              <p className="mt-2 text-sm text-text-secondary">还没有打开页面</p>
               <p className="max-w-[240px] text-xs leading-relaxed text-text-muted">
-                agent 使用浏览器时会自动打开；在此之前不占用资源。
+                Agent 使用浏览器时会自动打开，在此之前不占用资源。
               </p>
             </div>
           )}

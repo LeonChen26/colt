@@ -66,7 +66,7 @@ export function memoryTidyTask(): string {
 export function memoryTidyDoneNotice(): string {
   return (
     `记忆整理完成（项目记忆 ${MEMORY_RELATIVE_PATH}）。` +
-    "被合并或删除的条目已进入检索冷层，需要时仍可用 memory_search 找回。"
+    "被合并或删除的条目已归档，需要时仍可让 Agent 用 memory_search 找回。"
   );
 }
 

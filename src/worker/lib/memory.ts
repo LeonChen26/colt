@@ -216,7 +216,7 @@ export function createMemoryInjector(options: MemoryInjectorOptions): MemoryInje
           truncationNoticed = true;
           const display = SCOPE_DISPLAY[scope];
           onError?.(
-            `${display.word}（${display.displayPath}）超过 ${MAX_MEMORY_CHARS} 字上限，注入已被截断——模型只能看到前半部分。被截掉的尾部仍可用 memory_search 检索到；可输入 /memory-tidy 整理记忆（合并重复、删过时条目）。`,
+            `${display.word}（${display.displayPath}）超过 ${MAX_MEMORY_CHARS} 字，注入已截断（模型只看到前半部分）。输入 /memory-tidy 可整理记忆；被截掉的尾部仍可被 memory_search 检索到。`,
           );
         }
       } else {

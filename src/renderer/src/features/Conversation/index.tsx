@@ -86,7 +86,7 @@ const MAX_ATTACHMENTS = 4;
 
 const MODE_OPTIONS: { value: ApprovalMode; label: string; hint: string }[] = [
   { value: "approval", label: "审批模式", hint: "只读命令放行，其余逐条确认" },
-  { value: "auto", label: "自动审批模式", hint: "只读命令直接放行；白名单内操作经模型复核后自动执行，其余逐条确认" },
+  { value: "auto", label: "自动审批模式", hint: "只读放行 · 白名单模型复核 · 其余确认" },
   { value: "full-access", label: "全权执行模式", hint: "本会话内一律放行；已弹出的卡片仍需逐条确认" },
 ];
 
@@ -604,7 +604,7 @@ export function Conversation({
           if (!disposed) {
             if (snapshot) setView(snapshot);
             setNotice(
-              `尚未配置 ${target.name} 的 API Key，暂时无法对话。请到设置中填写，或在上方切换到其他已配置的模型。`,
+              `尚未配置 ${target.name} 的 API Key，暂时无法对话。请到设置中填写，或切换到其他模型。`,
             );
           }
           return;
@@ -924,7 +924,7 @@ export function Conversation({
         // 免得用户对着一行红字反复重选。
         if (result.needsKey) {
           const name = providers.find((item) => item.id === providerId)?.name ?? providerId;
-          setNotice(`已选择 ${name}，但它尚未配置 API Key，请到设置中填写后再发送消息。`);
+          setNotice(`已选择 ${name}，但它尚未配置 API Key，发送前请先填写。`);
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -1272,7 +1272,7 @@ export function Conversation({
                   >
                     <span className="live-dot" />
                     <span>正在压缩上下文</span>
-                    <span className="text-text-muted">· 生成摘要中，完成后历史将替换为摘要</span>
+                    <span className="text-text-muted">· 生成摘要中，界面历史保留</span>
                   </div>
                 )}
                 {view?.thought && <ThinkingRail text={view.thought} />}
@@ -1458,8 +1458,7 @@ export function Conversation({
             )}
             {attachments.length > 0 && view && !view.imageInput && (
               <p className="mb-1.5 rounded-xs border border-line bg-warning-soft px-2 py-1 text-xs text-warning-fg">
-                当前模型不支持图片输入，发送前请切换到支持视觉的模型（如
-                deepseek-v4-flash-vision-exp）
+                当前模型不支持图片输入，发送前请切换到支持视觉的模型
               </p>
             )}
             {attachNotice && (
@@ -1534,7 +1533,7 @@ export function Conversation({
                 placeholder={
                   running
                     ? "运行中：Enter 发送插话，按钮停止"
-                    : "帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
+                    : "描述任务，Enter 发送"
                 }
                 className={cn(
                   // 非起手态 2 行基线（v1.83 起）：原先只有 1 行高（约 31px），太局促；

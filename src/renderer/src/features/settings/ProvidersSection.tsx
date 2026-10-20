@@ -89,7 +89,7 @@ export function ProvidersPanel({
       </div>
 
       <p className="mt-3 max-w-[600px] text-2xs leading-relaxed text-text-muted">
-        删除服务时，它的密钥一起消失，且不可恢复。若只是换密钥，用编辑。
+        换成新密钥直接在服务卡下方填写并保存；删除服务会同时删除密钥，且不可恢复。
       </p>
     </div>
   );
@@ -404,7 +404,7 @@ function ProviderForm({
     <div className="mb-4 rounded-lg border border-accent/40 bg-surface-raised p-3">
       <div className="grid grid-cols-2 gap-2">
         <Field
-          label="标识（英文，唯一）"
+          label="标识（唯一，建议用英文）"
           value={id}
           onChange={setId}
           placeholder="my-endpoint"
@@ -413,7 +413,7 @@ function ProviderForm({
         <Field label="显示名" value={name} onChange={setName} placeholder="我的服务" />
       </div>
       {editing && (
-        <p className="mb-1 text-xs text-text-muted">标识是服务的唯一 key，不可修改。</p>
+        <p className="mb-1 text-xs text-text-muted">标识是服务的唯一内部名称，创建后不可修改。</p>
       )}
       <Field
         label="Base URL"
@@ -444,8 +444,8 @@ function ProviderForm({
           ))}
         </div>
         <p className="mt-1.5 text-xs text-text-muted">
-          价格为美元 / 百万 tokens，留空按 0 计；最大输出留空按 min(上下文,{" "}
-          {LEGACY_MAX_TOKENS})；勾选「图片」后才会放开图片上传，「推理」影响思考输出的处理。
+          价格按美元 / 百万 tokens 计，留空按 0；最大输出留空时取上下文与 {LEGACY_MAX_TOKENS}{" "}
+          中较小者。勾选「图片」才允许上传图片，「推理」影响思考输出的处理。
         </p>
       </div>
       <Field

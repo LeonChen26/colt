@@ -72,7 +72,7 @@ export function EventsPanel({ sessionId }: { sessionId: string }): React.JSX.Ele
       loading={loading}
       error={error}
       isEmpty={events.length === 0}
-      empty="还没有安全事件。技能装载告警、同名技能覆盖、AGENTS.md 与记忆读取失败等会记录在此（重启后仍可回看）。"
+      empty="还没有记录。技能装载告警、同名覆盖、AGENTS.md 与记忆读取失败等会记录在此（重启后仍可回看）。"
       onRefresh={() => void load()}
     >
       <div className="mb-3 text-2xs leading-relaxed text-text-muted">

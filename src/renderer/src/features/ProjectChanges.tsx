@@ -83,7 +83,7 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
 
       {changes.length === 0 ? (
         <p className="mt-20 text-center text-sm text-text-muted">
-          {loading ? "加载中…" : error !== null ? "加载失败，请重试" : "该项目还没有任何文件改动"}
+          {loading ? "加载中…" : error === null ? "该项目还没有任何文件改动" : ""}
         </p>
       ) : (
         <div className="flex min-h-0 flex-1">

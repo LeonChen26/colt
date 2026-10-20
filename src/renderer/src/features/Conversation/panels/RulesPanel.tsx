@@ -165,7 +165,7 @@ export function RulesPanel({ sessionId }: { sessionId: string }): React.JSX.Elem
       onRefresh={() => void load()}
     >
       <div className="mb-3 text-2xs leading-relaxed text-text-muted">
-        规则仅存于内存，以会话为单位存活：删除会话或退出应用即失效。
+        规则仅存于内存，以会话为单位存活：删除会话、退出应用或切到全权执行模式即失效。
       </div>
       {section("放行", "allow", allowed)}
       {section("拒绝", "deny", denied)}

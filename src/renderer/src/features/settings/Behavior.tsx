@@ -102,9 +102,9 @@ export function ApprovalPanel({
         </div>
       </div>
       <p className="mt-2 max-w-[600px] text-2xs leading-relaxed text-text-muted">
-        想精确到子命令，就把整串写进去（如 <span className="font-mono">git push</span>
-        ）；写{" "}
-        <span className="font-mono">git</span> 会连带放行它的所有子命令。
+        这里只按命令的<strong>首词</strong>匹配：填{" "}
+        <span className="font-mono">git</span> 会放行它的所有子命令，填{" "}
+        <span className="font-mono">git push</span> 则永远不会命中。
       </p>
     </div>
   );
@@ -163,7 +163,7 @@ export function DiagnosePanel({
         <RowGroup>
           <Row
             label="写完文件后自动运行项目检查"
-            hint="默认关闭。开启后，全仓类型检查在写入停止约 2 秒后于后台运行，不阻塞回复。"
+            hint="默认关闭。开启后会在后台运行项目检查，不阻塞回复。"
           >
             <Switch
               checked={enabled}
@@ -432,7 +432,7 @@ export function CompactionPanel({
           )}
         </div>
         <p className="mt-1 text-2xs text-text-muted">
-          合法区间 {COMPACTION_TOKENS_MIN} – {COMPACTION_TOKENS_MAX}：越界会被钳制，输入框随后回填真实值。
+          合法区间 {COMPACTION_TOKENS_MIN} – {COMPACTION_TOKENS_MAX}：超出范围会自动改成最接近的合法值。
         </p>
       </div>
     </div>

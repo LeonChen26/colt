@@ -195,7 +195,7 @@ export const MessageBubble = memo(function MessageBubble({
             <div className="flex items-center gap-1.5 text-xs">
               <ScrollText {...ICON.sm} className="shrink-0 text-accent-dim" />
               <span className="font-medium text-text-primary">技能 {name}</span>
-              <span className="text-text-muted">· 本会话装载，非你的发言</span>
+              <span className="text-text-muted">· 由 /skill 调用生成，不是你输入的消息</span>
             </div>
             {instructions !== undefined && (
               // `[overflow-wrap:anywhere]` 而不是 `break-words`：后者只在**排版**时断词，
@@ -658,7 +658,7 @@ export function MessageWindow({
             onClick={() => onBranchTurn(targetId)}
             title={
               blocked
-                ? "这一轮还在跑——等它结束，再从这里分叉"
+                ? "会话正在运行，结束后才能分叉"
                 : "从这一轮之后分叉：之后的提问会形成新分支"
             }
             className={`flex items-center gap-1.5 rounded-sm border border-line px-2.5 py-1 text-xs text-text-muted ${
@@ -684,7 +684,7 @@ export function MessageWindow({
               onClick={loadEarlier}
               className="rounded-sm border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
-              载入更早的 {chunkSize(total, head, chunk)} {unitWord}（还有 {start} {unitWord}）
+              载入更早 {chunkSize(total, head, chunk)} {unitWord}（剩余 {start} {unitWord}）
             </button>
           )}
           {below > 0 && (
@@ -694,7 +694,7 @@ export function MessageWindow({
               onClick={loadLater}
               className="rounded-sm border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
-              载入更晚的 {Math.min(chunk, below)} {unitWord}（还有 {below} {unitWord}）
+              载入更晚 {Math.min(chunk, below)} {unitWord}（剩余 {below} {unitWord}）
             </button>
           )}
           {/* 浮动段的「底」不是会话的底：得给一个回到**真正**末尾的出口，
@@ -706,7 +706,7 @@ export function MessageWindow({
               onClick={gotoLatest}
               className="rounded-sm border border-line px-2.5 py-1 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary"
             >
-              回到最新
+              跳到最新
             </button>
           )}
         </div>
@@ -723,7 +723,7 @@ export function MessageWindow({
                 type="button"
                 data-conv-steps-summary={turn.key}
                 onClick={() => toggleTurn(turn.key)}
-                title="这一轮的中间步骤已收起，点开看思考与工具调用"
+                title="过程已收起，点开查看思考与工具调用"
                 className="flex items-center gap-1.5 self-start rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-text-muted transition hover:border-line-strong hover:text-text-primary"
               >
                 <ChevronRight {...ICON.sm} className="shrink-0" />

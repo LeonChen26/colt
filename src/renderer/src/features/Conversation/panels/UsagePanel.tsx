@@ -301,7 +301,7 @@ export function UsagePanel({ sessionId }: { sessionId: string }): React.JSX.Elem
           {...ICON.xs}
           className={cn("shrink-0 transition-transform", detailOpen && "rotate-90")}
         />
-        按轮次明细
+        工具调用明细
         <span className="text-text-muted">（{filtered.length} 条）</span>
       </button>
 

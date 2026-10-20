@@ -543,7 +543,7 @@ export function ChangeDrilldown({
                           </span>
                           <span className="truncate text-2xs text-text-muted">
                             {many && <span className="text-text-secondary">×{file.history.length} </span>}
-                            {file.kind === "write" ? "新建" : "编辑"} · {formatAgo(file.latestAt)}
+                            {file.kind === "write" ? "写入" : "编辑"} · {formatAgo(file.latestAt)}
                             {/* 已提交：改动记录不归 0（它是会话轨迹），只给「这件事翻篇了」的标注。
                                 口径见 `git.committed`——比内容不比 hash，amend 后与 HEAD 一致也算 */}
                             {committed?.has(file.path) && (
@@ -588,7 +588,12 @@ export function ChangeDrilldown({
                               className="shrink-0 font-mono text-2xs"
                             >
                               {file.netAddedLines === null || file.netRemovedLines === null ? (
-                                <span className="text-text-muted">—</span>
+                                <span
+                                  className="text-text-muted"
+                                  title="没有改动前的基线，算不出净值"
+                                >
+                                  —
+                                </span>
                               ) : (
                                 <NetNumbers
                                   added={file.netAddedLines}
@@ -736,7 +741,7 @@ export function ChangeDrilldown({
             ) : (
               <p className="px-2 py-6 text-center text-xs leading-relaxed text-text-muted">
                 {revision
-                  ? "该改动由 write 工具整文件写入，内核未提供 diff。点右上「看文件」看结果。"
+                  ? "这次是整份写入，没有差异片段。点「看文件」查看结果。"
                   : "这次改动没有可显示的 diff。"}
               </p>
             )}
