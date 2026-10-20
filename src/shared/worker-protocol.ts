@@ -489,8 +489,14 @@ export type WorkerCommand =
       cwd: string;
       /** Colt 自有的会话 ID，投影与路由均以它为准 */
       externalSessionId: string;
-      /** 内核 JSONL 会话 ID，有则续接历史，无则新建 */
+      /** 内核会话 ID（`d<对话 id>`），有则续接历史，无则新建 */
       kernelSessionId?: string;
+      /**
+       * 分叉目标（内核条目 id）。给了它，worker 打开 `kernelSessionId` 对应的父对话后，
+       * 先在**本会话自己的库**（源库的快照副本）里 fork 到该条目，再把分叉出来的对话
+       * 作为本会话的根对话。分叉到新会话只走这一条路：源库此时已经关闭，一个字节都不会动。
+       */
+      forkAt?: string;
       provider: ProviderBuildConfig;
       model: string;
       /**
@@ -581,7 +587,6 @@ export type WorkerCommand =
    * worker 以消息形式回复，主进程按 FIFO 排队兑现。
    */
   | { type: "subagentTranscript"; id: string }
-  | { type: "navigate"; targetId: string }
   /**
    * 查 MCP server 现状（设置页可见性）。同样以 `mcpStatus` 消息回复，主进程排队兑现。
    * 只用当前进程里那份运行态，**不重读配置**——要看配置改动请发 `mcpReload`。

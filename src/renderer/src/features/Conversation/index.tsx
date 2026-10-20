@@ -28,7 +28,14 @@ import {
 } from "lucide-react";
 import { ICON } from "@/lib/icon";
 import type { ConversationView } from "@shared/worker-protocol";
-import type { ApprovalMode, BrowserNavAction, BrowserViewState, GitStatus, ProviderConfig } from "@shared/protocol";
+import type {
+  ApprovalMode,
+  BrowserNavAction,
+  BrowserViewState,
+  GitStatus,
+  ProviderConfig,
+  SessionInfo,
+} from "@shared/protocol";
 import { mcpToolLabel } from "@shared/mcp-label";
 import { displayModelRef, resolveSessionModel, splitModelRef } from "@shared/model-ref";
 import {
@@ -135,6 +142,7 @@ export function Conversation({
   onThinkingLevelSelected,
   onPickDirectory,
   onNewWorkspace,
+  onSessionForked,
 }: {
   sessionId: string;
   cwd: string;
@@ -164,6 +172,11 @@ export function Conversation({
   onPickDirectory: () => void;
   /** 起手态里按「新建工作目录」：不必自己挑，让主进程在家目录下造一个空的并切过去 */
   onNewWorkspace: () => void;
+  /**
+   * ④「从这里分叉」成功后的落点。主进程已经把新会话建好（库快照 + 新对话），
+   * App 负责把它加进侧栏并切过去；本组件不持有会话列表。
+   */
+  onSessionForked: (session: SessionInfo) => void;
 }): React.JSX.Element {
   // 初值取缓存：本会话若是重挂（切走切回 / worker 被空闲回收后重开），立刻就有内容可画，
   // 不必干等 worker 把整份 JSONL 重放完——那段时间原本是纯白 + 转圈（见 view-cache.ts）。
@@ -370,19 +383,22 @@ export function Conversation({
   /**
    * ④ 每条回复下面那行「从这里分叉」的落点（规则 ④-K）。
    *
-   * 走 `session.navigate`：内核把历史指针移回这条最终回复，**之后的提问落成新分支**，
-   * 已走过的那条留在内核（与 JSONL）里不动——本版**没有**回看旧分支的界面入口，
-   * 所以按钮上必须写清「之后的提问会形成新分支」而不是「回到这里」。
+   * 走 `session.fork`：主进程把本会话的库**快照复制**成一条新会话，并在副本里从这条
+   * 最终回复 fork。本会话（消息、标题、内核对话 id）**一个字节都不动**，旧分支不再
+   * 被截断；成功后由 `onSessionForked` 把新会话交给 App，切过去继续提问。
    *
    * 为什么不抽 `useCallback`：本文件的内建 hook 数被 `tests/size-guard.test.ts` 卡在 50
    * （今天正好 50），而 `MessageWindow` 没包 `memo`——父组件重渲染时它本来就要重渲染，
-   * 这个函数引用稳不稳定不改变任何行为。worker 没开着时主进程 `#post` 会抛「会话未运行」，
-   * 交给 `setError` 显示，不静默吞掉（失败必须可见）。
+   * 这个函数引用稳不稳定不改变任何行为。失败必须可见：复制库、起新 worker 都可能失败
+   * （源会话正忙、历史文件缺失、模型密钥没配），一律交给 `setError` 显示，不静默吞掉。
    */
-  function branchFrom(targetId: string): void {
-    void window.colt.invoke("session.navigate", { sessionId, targetId }).catch((e: unknown) => {
+  async function branchFrom(targetId: string): Promise<void> {
+    try {
+      const { session } = await window.colt.invoke("session.fork", { sessionId, targetId });
+      onSessionForked(session);
+    } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    });
+    }
   }
 
   /**

@@ -311,6 +311,27 @@ export default function App(): React.JSX.Element {
     if (draftRef.current && activeSession?.id !== draftRef.current.id) discardDraft();
   }, [activeSession, discardDraft]);
 
+  /**
+   * ④「从这里分叉」成功：主进程已经建好新会话（源库快照 + 新对话），这里只负责
+   * 「进侧栏 + 切过去」。新会话的 `key` 变了，`Conversation` 会重挂载并自己 `session.open`。
+   *
+   * 同 id 时保留侧栏里已有的标题/消息数（冒烟会用它替换 `sessionManager.fork` 来记账，
+   * 那时返回的是当前会话本身；真分叉永远是新 id）。
+   */
+  const handleSessionForked = useCallback((session: SessionInfo) => {
+    setSessionsByProject((map) => {
+      const next = new Map(map);
+      const list = next.get(session.projectId) ?? [];
+      const existing = list.find((item) => item.id === session.id);
+      next.set(session.projectId, [
+        existing ? { ...session, ...existing } : session,
+        ...list.filter((item) => item.id !== session.id),
+      ]);
+      return next;
+    });
+    setActiveSession(session);
+  }, []);
+
   // 全局监听会话视图：后台会话也能刷新标题、消息数与运行状态
   // （若只靠当前会话的回调，未选中的会话永远停在「新会话」）
   useEffect(() => {
@@ -1220,6 +1241,7 @@ export default function App(): React.JSX.Element {
                 }
                 onPickDirectory={() => void pickProject()}
                 onNewWorkspace={() => void createWorkspace()}
+                onSessionForked={handleSessionForked}
               />
             ) : (
               <div className="flex h-full items-center justify-center">

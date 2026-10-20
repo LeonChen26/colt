@@ -335,8 +335,8 @@ export function MessageWindow({
   onAbortSubagent?: (id: string) => void;
   /**
    * 从某一轮的**最终回复之后分叉**（④ 每条回复下面那一行按钮）。
-   * 传的是**那条最终回复的消息 id** = 内核条目 id，worker 拿它 `navigateTree`——
-   * 指针移回此处，**之后的提问落成新分支**、原有记录不动。
+   * 传的是**那条最终回复的消息 id** = 内核条目 id；主进程据此把本会话复制成一条新会话，
+   * 并在副本里从该条目 fork。本会话保持不动。
    */
   onBranchTurn?: (targetId: string) => void;
   openState: ReadonlyMap<string, boolean>;
@@ -351,10 +351,9 @@ export function MessageWindow({
   followNonce: number;
   /**
    * 会话是否正在跑一轮——取的就是 ⑤ 输入区那份 `view.running`（**不另算一套**，免得两处判据漂）。
-   * 跑着的时候「从这里分叉」**置灰**：worker 的消息循环是 `void handle(command)`，**不排队**，
-   * 而 `navigate` 要挪历史指针 + 重拍快照 + 推一次视图；跟正在跑的那一轮交叠，指针与视图会被
-   * 那一轮边跑边覆盖。置灰而不是藏起来——藏了会让这一行在每次运行时跳进跳出（版式抖），
-   * 而它其实只是**暂时**不可用（原因写在标题里）。
+   * 跑着的时候「从这里分叉」**置灰**：分叉要关掉 worker、复制 SQLite 库快照；跟正在跑的那一轮
+   * 交叠，复制到的就是「边写边拷」的库。置灰而不是藏起来——藏了会让这一行在每次运行时
+   * 跳进跳出（版式抖），而它其实只是**暂时**不可用（原因写在标题里）。
    */
   running: boolean;
 }): React.JSX.Element {
@@ -619,8 +618,8 @@ export function MessageWindow({
   /**
    * 「从这里分叉」：挂在一轮**最终回复下面一行**（`turn.final` 之后，与 `row()` 平级）。
    *
-   * 两条语义都在这里定：① **落点是尖端就不给**——指针已经在尖端，从尖端分叉等于原地不动；
-   * ② 交给 `onBranchTurn` 的是**最终回复的消息 id**（= 内核条目 id），不是轮的 key、
+   * 两条语义都在这里定：① **落点是尖端就不给**——从尖端分叉等于复制一份完全相同的会话，
+   * 没有意义；② 交给 `onBranchTurn` 的是**最终回复的消息 id**（= 内核条目 id），不是轮的 key、
    * 也不是那一轮的用户消息——用户看到按钮贴在最终回复下面，就得从最终回复之后长出新枝。
    *
    * 为什么做成 `row()` 的**兄弟**而不是塞进 `MessageBubble`：那会让每条消息都随这个按钮重渲染，
@@ -631,8 +630,8 @@ export function MessageWindow({
     if (onBranchTurn === undefined || turn.final === null) return null;
     if (turn.final.id === tipId) return null;
     const targetId = turn.final.id;
-    // 跑着的时候不给点：`navigate` 会挪指针 + 重拍快照 + 推视图，而 worker 的消息循环
-    // 不排队，正跑的那一轮会把指针和视图边跑边覆盖（详见 props 里 `running` 那段）。
+    // 跑着的时候不给点：分叉要关掉 worker、复制库快照，正在跑的那一轮会把这次复制
+    // 变成「边写边拷」（详见 props 里 `running` 那段）。
     const blocked = running;
     // 问答结束时间（= 这轮最终回复的时刻）：旧会话的消息没有 timestamp 就不写
     // ——不猜一个「现在」上去（与「净值算不出就不显示数字」同一条纪律）。
@@ -659,7 +658,7 @@ export function MessageWindow({
             title={
               blocked
                 ? "会话正在运行，结束后才能分叉"
-                : "从这一轮之后分叉：之后的提问会形成新分支"
+                : "分叉到新会话：复制到这一轮为止的对话，原会话保持不变（文件改动不会回滚）"
             }
             className={`flex items-center gap-1.5 rounded-sm border border-line px-2.5 py-1 text-xs text-text-muted ${
               blocked ? "cursor-not-allowed opacity-50" : "transition hover:border-line-strong hover:text-text-primary"

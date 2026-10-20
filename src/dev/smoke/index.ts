@@ -35,6 +35,9 @@
  *       subagent 调用免闸、子 lane 的内部 write 照常弹审批卡（带「来自 demo」归属）→
  *       点「允许一次」→ 子代理结论回主模型；fresh 隔离用「主对话密语缺席于子代理
  *       transcript」的确定性判据。夹具 `.agents/agents/demo.md` 与生产发现路径同构
+ * fork：「从这里分叉」的**真实编排**（不打模型、不计费；本地 OpenAI 兼容桩）——真 worker
+ *       跑两轮 → `session.fork` → 断言新会话是独立一条（自己的内核对话 id 与库文件）、
+ *       历史只到目标轮；源会话行与源库一个字节不动，切回去两轮仍完整
  * dock：工作区（右栏）界面行为——折叠/展开、拖拽调宽与上下限、宽度记忆、⑦-F 自动展开、
  *       ⑦-G 的「任务摘要」（v1.67 起三段：本次用量 → 计划 → 紧跟的一行总账）与它的下钻（清单 → diff → 内容）、
  *       点文件路径 → 下钻内容层（工具卡入口）、页签关闭与「+」新增视图、
@@ -115,6 +118,7 @@ import { runApproval } from "./modes/approval";
 import { runCrash } from "./modes/crash";
 import { runCrashResume } from "./modes/crash-resume";
 import { runCompactionHistory } from "./modes/compaction-history";
+import { runFork } from "./modes/fork";
 import { runDock } from "./modes/dock";
 import { runUiLogic } from "./modes/ui-logic";
 import { runFixture } from "./modes/fixture";
@@ -294,6 +298,8 @@ export async function runSmoke(window: BrowserWindow, outputPath: string): Promi
       await runCrashResume(window, log, run);
     } else if (mode === "compaction-history") {
       await runCompactionHistory(window, log, run);
+    } else if (mode === "fork") {
+      await runFork(window, log, run);
     } else if (mode === "memory") {
       await runMemory(log, run);
     } else if (mode === "memory-e2e") {

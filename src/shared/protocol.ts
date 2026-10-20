@@ -375,7 +375,8 @@ export const IPC_CHANNELS = [
   /** 自动压缩的阈值与开关（A2：原先吃内核默认值、应用层零感知） */
   "compaction.config.get",
   "compaction.config.set",
-  "session.navigate",
+  /** 从某一轮最终回复分叉到**新会话**（源会话保持不动） */
+  "session.fork",
   /** 中止单个子代理（`ViewSubagent.id` = lane 名） */
   "session.subagentAbort",
   /** 按需拉一个子代理的完整流（视图只带有界尾部） */
@@ -1039,10 +1040,16 @@ export interface IpcInvokeMap {
     request: { sessionId: string };
     response: { ok: true };
   };
-  /** 切换到指定节点 */
-  "session.navigate": {
+  /**
+   * 从某一轮的最终回复分叉到**一条新会话**。
+   *
+   * 语义与旧版不同：源会话**不被改写**（消息、标题、内核对话 id 都不动），新会话以
+   * 「源库快照」起步，并且只继承到 `targetId` 这一条为止的历史；之后的提问落在新会话里。
+   * 返回新会话的索引信息，渲染层据此把它加进侧栏并切过去。
+   */
+  "session.fork": {
     request: { sessionId: string; targetId: string };
-    response: { ok: true };
+    response: { session: SessionInfo };
   };
   /**
    * 中止**单个**子代理（`ViewSubagent.id`）。与 `session.abort` 分开：那个中断整个会话，

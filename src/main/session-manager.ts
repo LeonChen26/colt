@@ -21,7 +21,7 @@ import type {
   WorkerCommand,
   WorkerMessage,
 } from "@shared/worker-protocol";
-import type { ApprovalMode, ProviderConfig } from "@shared/protocol";
+import type { ApprovalMode, ProviderConfig, SessionInfo } from "@shared/protocol";
 import { APPROVAL_TIMEOUT_MS, MCP_STARTUP_BUDGET_MS, MCP_STEP_TIMEOUT_MS } from "@shared/limits";
 import { resolveThinkingLevel, type ThinkingLevel } from "@shared/thinking-level";
 import { getDiagnoseEnabled } from "./diagnose-config";
@@ -175,6 +175,13 @@ export interface WorkerEntry {
    */
   ready: Promise<void>;
   /**
+   * 进程真正退出的信号（只 resolve，不 reject）。
+   *
+   * 分叉要复制库文件，必须等源 worker **确实退出**（而不是只发出 dispose 命令）才能开始；
+   * 这个 promise 在 exit 回调最前面 resolve，连 `#disposeWorker` 删条目后的退出也能等到。
+   */
+  exit: Promise<void>;
+  /**
    * 就绪**之前**收到的命令暂存队列。undefined 表示已就绪，命令直接下发。
    *
    * 条目在 fork 之后立刻进 `#workers`，而 worker 的 `init`（重放整份 JSONL，历史大时要好几秒）
@@ -219,6 +226,21 @@ export class SessionManager {
   readonly #workers = new Map<string, WorkerEntry>();
   /** 正在启动中的 worker，按 sessionId 去重并发 ensureWorker */
   readonly #pending = new Map<string, Promise<void>>();
+  /**
+   * 正在分叉的源会话。分叉要「关 worker → 复制库」，这期间**绝不能**让它重新起 worker：
+   * `session.prompt` / `session.open` 都会走 `ensureWorker`，一进来就等于在拷贝时往源库写。
+   */
+  readonly #forking = new Set<string>();
+  /** 等某会话第一份视图的等待方（分叉后要把新会话的消息数/标题带回渲染层） */
+  readonly #viewWaiters = new Map<string, Array<() => void>>();
+  /**
+   * 分叉编排的落点（由 `ipc/index.ts` 装配）。
+   *
+   * 为什么用注入而不是直接写在 SessionManager 里：编排要碰 `app.getPath`、会话行、
+   * 模型解析与 `openSessionWorker`，这些都属于主进程 IPC 那一层；而冒烟需要把
+   * 「点了按钮之后到底交给谁、送了哪个 id」单独钉住，所以留一个可替换的出口。
+   */
+  #forkDriver?: (sourceId: string, targetId: string) => Promise<SessionInfo>;
   /** 审批状态中枢，与 worker 生命周期解耦 */
   readonly approvals = new ApprovalStore();
 
@@ -784,7 +806,13 @@ export class SessionManager {
     cwd: string;
     model: string;
     provider: ProviderConfig;
+    /** 新会话分叉：worker 在副本库里从该条目 fork（见 WorkerCommand.init.forkAt） */
+    forkAt?: string;
   }): Promise<void> {
+    // 源会话正在分叉：复制库期间绝不能重新起 worker（那等于在拷贝时写入源库）
+    if (this.#forking.has(options.sessionId)) {
+      throw new Error("会话正在分叉，请稍后再试。");
+    }
     // 已在启动中：复用同一个 Promise（StrictMode 双执行 / 快速切会话均会命中）
     const pending = this.#pending.get(options.sessionId);
     if (pending) return pending;
@@ -801,6 +829,7 @@ export class SessionManager {
     cwd: string;
     model: string;
     provider: ProviderConfig;
+    forkAt?: string;
   }): Promise<void> {
     const existing = this.#workers.get(options.sessionId);
     if (existing) {
@@ -858,6 +887,7 @@ export class SessionManager {
     // 就绪信号携带失败出口：worker 在发回 ready 之前退出时，exit 回调会 reject 它；
     // 进程活着但迟迟不发 ready（init 卡死）时由超时兑底。两者都保证 session.open 不会永久挂起。
     const readyDeferred = createDeferred<void>();
+    const exitDeferred = createDeferred<void>();
     const readyTimer = setTimeout(() => {
       readyDeferred.reject(new Error(`会话进程启动超时（${READY_TIMEOUT_MS / 1000}s），请重试。`));
       // 卡死的进程留着只会占坑，连同回收。已由 session.open 报错，无需再提示休眠
@@ -876,6 +906,7 @@ export class SessionManager {
       provider: options.provider,
       modelId: options.model,
       ready: readyDeferred.promise,
+      exit: exitDeferred.promise,
       // 非空即表示「尚未就绪」：ready 一到就清空，命令恢复直接下发
       pendingCommands: [],
       pendingTranscripts: [],
@@ -922,6 +953,8 @@ export class SessionManager {
             deriveSessionTitle(message.view.messages),
           );
           this.#emit("session.view", entry.view);
+          // 分叉流程在等第一份视图（标题与消息数要靠它落库），到了就放行
+          this.#resolveViewWaiters(options.sessionId);
           break;
         }
         case "error": {
@@ -1122,6 +1155,9 @@ export class SessionManager {
     });
 
     child.on("exit", (code) => {
+      // **先**兑现退出信号：`#disposeWorker` 已经把这个 entry 从池里删掉，下面那道
+      // 「身份不符就返回」会让分叉的 `closeAndWait` 永远等不到结果。
+      exitDeferred.resolve();
       // 先认身份再动池：`#disposeWorker` 是「先删条目 → 发 dispose → 等进程退出」，
       // 这中间的窗口里用户可能已重开同一会话（新 worker 已入池）。旧进程此刻若
       // 再按 sessionId 删池，删掉的是**新那一个**——后续所有消息都会找不到 entry。
@@ -1182,6 +1218,8 @@ export class SessionManager {
       cwd: options.cwd,
       externalSessionId: options.sessionId,
       kernelSessionId: getSession(options.sessionId)?.kernelSessionId ?? undefined,
+      // 新会话分叉：worker 打开父对话后在副本库里 fork 到该条目（增量字段，普通启动不带）
+      ...(options.forkAt === undefined ? {} : { forkAt: options.forkAt }),
       provider: {
         id: options.provider.id,
         name: options.provider.name,
@@ -1444,8 +1482,79 @@ export class SessionManager {
     this.#post(sessionId, { type: "memoryTidy" });
   }
 
-  navigate(sessionId: string, targetId: string): void {
-    this.#post(sessionId, { type: "navigate", targetId });
+  /**
+   * 装配「从某一轮最终回复分叉到新会话」的编排（`ipc/index.ts` 启动时调用一次）。
+   * 方法本身留在本类，冒烟才能像以前替换 `navigate` 一样替换它来记账。
+   */
+  setForkDriver(driver: (sourceId: string, targetId: string) => Promise<SessionInfo>): void {
+    this.#forkDriver = driver;
+  }
+
+  /** 从 `targetId` 分叉到**一条新会话**；源会话保持不动。 */
+  async fork(sourceId: string, targetId: string): Promise<SessionInfo> {
+    if (this.#forkDriver === undefined) throw new Error("分叉能力尚未装配，请重启应用。");
+    return this.#forkDriver(sourceId, targetId);
+  }
+
+  /** 标记源会话进入分叉流程（复制库期间禁止它重新起 worker）。 */
+  beginFork(sessionId: string): void {
+    this.#forking.add(sessionId);
+  }
+
+  endFork(sessionId: string): void {
+    this.#forking.delete(sessionId);
+  }
+
+  isForking(sessionId: string): boolean {
+    return this.#forking.has(sessionId);
+  }
+
+  /**
+   * 关闭 worker 并**等它真正退出**。
+   *
+   * 分叉复制库之前必须走这一步：`close()` 只发 dispose 命令就返回，进程可能还攥着库句柄；
+   * `VACUUM INTO` 要读一个没有写入者、也没有未落盘事务的库。
+   */
+  async closeAndWait(sessionId: string): Promise<void> {
+    const entry = this.#workers.get(sessionId);
+    if (entry === undefined) return;
+    if (entry.running) throw new Error("会话正在运行，结束后才能分叉。");
+    this.#disposeWorker(entry, "closed");
+    await entry.exit;
+  }
+
+  /**
+   * 等某会话的第一份视图（已有一份则立即返回）。
+   *
+   * 分叉返回给渲染层的 `SessionInfo` 要带正确的标题与消息数，而这两样是在 worker 的
+   * 第一份 `view` 到达时才由 `touchSession` 写进库的。超时只兜底、不报错：会话已经建好，
+   * 视图晚到不影响后续使用。
+   */
+  waitForView(sessionId: string, timeoutMs = 10_000): Promise<void> {
+    const entry = this.#workers.get(sessionId);
+    if (entry === undefined || entry.view !== undefined) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
+      let settled = false;
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        resolve();
+      };
+      const waiters = this.#viewWaiters.get(sessionId) ?? [];
+      waiters.push(settle);
+      this.#viewWaiters.set(sessionId, waiters);
+      timer = setTimeout(settle, timeoutMs);
+      timer.unref?.();
+    });
+  }
+
+  #resolveViewWaiters(sessionId: string): void {
+    const waiters = this.#viewWaiters.get(sessionId);
+    if (waiters === undefined) return;
+    this.#viewWaiters.delete(sessionId);
+    for (const settle of waiters) settle();
   }
 
   /**
@@ -1680,6 +1789,8 @@ export class SessionManager {
     entry.pendingTranscripts.length = 0;
     // MCP 查询当场失败（理由见崩溃那条分支：它的超时预算是分钟级，拖着就是假「重载中…」）
     this.#drainPendingQueries(entry, "会话已回收，设置页查询已取消。");
+    // 等视图的一方不能再等一个已经没了的 worker（分叉失败时会走清理）
+    this.#resolveViewWaiters(entry.sessionId);
     try {
       entry.child.postMessage({ type: "dispose" } satisfies WorkerCommand);
     } catch {

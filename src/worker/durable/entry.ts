@@ -806,7 +806,18 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     thinkingLevel: command.thinkingLevel,
     cwd,
   };
-  const conversation = await openConversation(harness, command.kernelSessionId, agentChange);
+  let conversation = await openConversation(harness, command.kernelSessionId, agentChange);
+  if (command.forkAt !== undefined) {
+    const at = Number.parseInt(command.forkAt, 10);
+    if (!Number.isFinite(at)) throw new Error(`无法定位分叉目标：${command.forkAt}`);
+    // 「分叉到新会话」：本会话的库是源库的快照副本，在这里从目标条目分叉，
+    // 分叉出来的对话就是本会话的根对话。源会话此刻已关闭，它的库一个字节都不会动。
+    conversation = await conversation.fork(
+      at as EntryId,
+      { ownership: { kind: "ownerless" } },
+      context,
+    );
+  }
   await configureConversation(conversation, {
     model: { provider: command.provider.id, modelId: command.model },
     thinkingLevel: command.thinkingLevel,
@@ -910,40 +921,6 @@ function armMcpLateAttach(current: WorkerState): void {
     reinstallTools(current);
     send({ type: "mcpStatus", servers: current.mcp.status() });
   });
-}
-
-async function replaceConversation(next: Conversation): Promise<void> {
-  if (!state) return;
-  const current = state;
-  await current.watch.stop().catch(() => undefined);
-  await current.events.stop().catch(() => undefined);
-  current.conversation = next;
-  // 切分支 = 换了一条祖先链：显示缓存必须整份重建（旧分支的条目不能混进来）
-  current.display = await loadDisplayState(current.storage, next.id, context);
-  current.displayProjected = undefined;
-  const watch = await next.watch(context);
-  current.watch = watch;
-  current.latest = watch.value;
-  watch.start(async (value) => {
-    if (!state) return;
-    state.latest = value;
-    if (appendDisplayEntries(state.display, value.entries)) state.displayProjected = undefined;
-    scheduleFlush();
-  });
-  const events = await watchEvents(current.harness, next.id, context);
-  current.events = events;
-  events.start(async (batch) => {
-    for (const event of batch) handleAgentEvent(event);
-  });
-  // 新分支的 id 必须让主进程持久化——否则重开会话会回到旧分支
-  send({
-    type: "ready",
-    externalSessionId: current.meta.sessionId,
-    kernelSessionId: encodeKernelSessionId(next.id),
-    cwd: current.cwd,
-    model: current.meta.model,
-  });
-  pushView();
 }
 
 /** 把用户输入（文本 + 图片）拼成 durable 的 content */
@@ -1185,32 +1162,6 @@ async function handle(command: WorkerCommand): Promise<void> {
         handleSkillsCommand(command, current.skills.host),
       );
       send({ type: "skillsStatus", status });
-      return;
-    }
-
-    case "navigate": {
-      if (!state) throw new Error("会话尚未初始化");
-      const target = Number.parseInt(command.targetId, 10);
-      if (!Number.isFinite(target)) {
-        send({ type: "error", message: `无法定位分支目标：${command.targetId}`, fatal: false });
-        return;
-      }
-      try {
-        // durable 的分支语义是 fork（head write 只是回卷，不会砍掉未来）。
-        // 新会话继承到目标条目为止的历史，之后的提问落在新分支上。
-        const forked = await state.conversation.fork(
-          target as EntryId,
-          { ownership: { kind: "ownerless" } },
-          context,
-        );
-        await replaceConversation(forked);
-      } catch (error) {
-        send({
-          type: "error",
-          message: `分支跳转失败：${error instanceof Error ? error.message : String(error)}`,
-          fatal: false,
-        });
-      }
       return;
     }
 

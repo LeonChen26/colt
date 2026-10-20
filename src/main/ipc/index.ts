@@ -49,11 +49,14 @@ import {
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  setKernelSessionId,
   setSessionModel,
   setSessionThinkingLevel,
   setSessionStatus,
+  touchSession,
   upsertProject,
 } from "../db/repo";
+import { copySessionDatabase } from "../session-fork";
 import { sessionManager } from "../session-manager";
 import { dropSessionPin, listPinnedSessions, setSessionPinned } from "../session-pins";
 import { readToolImage, removeToolOutput } from "../tool-output";
@@ -204,6 +207,8 @@ function withOrigins(
 async function openSessionWorker(input: {
   sessionId: string;
   model?: string;
+  /** 新会话分叉：worker 在自己的库（源库快照）里从该条目 fork */
+  forkAt?: string;
 }): Promise<void> {
   const providers = listProviders();
   const { providerId, modelId } = resolveSessionModel(
@@ -217,7 +222,67 @@ async function openSessionWorker(input: {
     cwd: resolveSessionRoot(input.sessionId),
     model: modelId,
     provider,
+    ...(input.forkAt === undefined ? {} : { forkAt: input.forkAt }),
   });
+}
+
+/**
+ * 「从某一轮最终回复分叉」→ **一条新会话**。
+ *
+ * 为什么不是把 fork 出来的对话挂到新会话行上：durable 的 fork 是**库内**操作，而 Colt
+ * 一个会话一个库、一个库只归一个 worker。新会话必须有自己的库，所以链路是：
+ *
+ *   冻结源会话 → 关源 worker（等它真正退出）→ `VACUUM INTO` 复制库快照
+ *   → 建新会话行 → 新 worker 在**副本**里 fork → 切过去。
+ *
+ * 源会话的消息、标题、`kernel_session_id` 全部不动；它下次打开仍回到原来的尖端。
+ * 文件系统不参与分叉：两个会话共用同一个工作目录，已经改过的文件不会回滚（界面文案已写明）。
+ */
+async function forkSessionIntoNewSession(sourceId: string, targetId: string): Promise<SessionInfo> {
+  const source = getSession(sourceId);
+  if (!source) {
+    throw new Error(drafts.has(sourceId) ? "这个会话还没有消息，无法分叉。" : "会话不存在，无法分叉。");
+  }
+  const sourceKernelId = source.kernelSessionId;
+  if (!sourceKernelId) throw new Error("会话历史尚未就绪，请稍后再试。");
+  if (sessionManager.isRunning(sourceId)) throw new Error("会话正在运行，结束后才能分叉。");
+
+  const sessionsRoot = join(app.getPath("userData"), "sessions");
+  const sourceDb = join(sessionsRoot, `durable-${sourceId}.db`);
+  if (!existsSync(sourceDb)) throw new Error("找不到会话历史文件，无法分叉。");
+
+  const newId = randomUUID();
+  sessionManager.beginFork(sourceId);
+  let created = false;
+  try {
+    // 冻结与关闭之间可能刚好有一轮开始：再判一次，别把正在写的库复制走
+    if (sessionManager.isRunning(sourceId)) throw new Error("会话正在运行，结束后才能分叉。");
+    await sessionManager.closeAndWait(sourceId);
+    copySessionDatabase(sourceDb, join(sessionsRoot, `durable-${newId}.db`));
+
+    createSession(source.projectId, jsonlPathFor(source.projectId), newId, source.cwd);
+    created = true;
+    // 新 worker 先用它打开父对话，再按 forkAt 在副本里分叉；ready 会把这一列改写成新对话 id
+    setKernelSessionId(newId, sourceKernelId);
+    if (source.modelRef) setSessionModel(newId, source.modelRef);
+    if (source.thinkingLevel) setSessionThinkingLevel(newId, source.thinkingLevel);
+    touchSession(newId, 0, source.title);
+
+    await openSessionWorker({ sessionId: newId, forkAt: targetId });
+    // 标题与消息数由第一份视图落库；等它到了再把 SessionInfo 交给渲染层
+    await sessionManager.waitForView(newId);
+
+    const result = getSession(newId);
+    if (!result) throw new Error("分叉会话创建失败。");
+    return result;
+  } catch (error) {
+    await sessionManager.closeAndWait(newId).catch(() => undefined);
+    if (created) deleteSession(newId);
+    removeSessionHistory(newId);
+    throw error;
+  } finally {
+    sessionManager.endFork(sourceId);
+  }
 }
 
 /**
@@ -358,6 +423,9 @@ function broadcastWikiGenerate(event: WikiGenerateEvent): void {
 }
 
 export function registerIpcHandlers(): void {
+  // 分叉编排需要主进程侧的路径 / 会话行 / worker 启动，装配在 IPC 这一层
+  sessionManager.setForkDriver(forkSessionIntoNewSession);
+
   handle("env.check", () => runEnvCheck());
 
   // 首启报告在 app.whenReady 时就已采集（需早于 openDatabase）
@@ -574,6 +642,10 @@ export function registerIpcHandlers(): void {
     // 运行中的会话拒绝删除：避免删除正在写入的 SQLite 库与后台进程错配
     if (sessionManager.isRunning(request.sessionId)) {
       throw new Error("会话正在运行，请先中止后再删除");
+    }
+    // 分叉正在复制这个库：此刻删行 / 删文件会让复制到一半的副本失去来源
+    if (sessionManager.isForking(request.sessionId)) {
+      throw new Error("会话正在分叉，请稍后再删除");
     }
     // 先关 worker（若已加载），释放文件句柄，再删数据与文件
     sessionManager.close(request.sessionId);
@@ -1011,10 +1083,9 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
-  handle("session.navigate", (request) => {
-    sessionManager.navigate(request.sessionId, request.targetId);
-    return { ok: true } as const;
-  });
+  handle("session.fork", async (request) => ({
+    session: await sessionManager.fork(request.sessionId, request.targetId),
+  }));
 
   handle("session.subagentAbort", (request) => {
     sessionManager.subagentAbort(request.sessionId, request.id);

@@ -3622,10 +3622,10 @@ export async function runDock(
     // 断言都取完再清场：那个「代码目录」留着只是垃圾（它已经证明过自己没被删）
     rmSync(doomedRoot, { recursive: true, force: true });
 
-    // ---- ④ 每条回复下面「从这里分叉」（v1.66）----
-    // 分支能力从左栏树面板**迁进会话区**（`UI-REGIONS` 规则 ④-K）：左栏那个面板连同
-    // `features/BranchTree.tsx` 已删，本按钮是分支的**唯一界面入口**。四件事必须钉住：
-    //   ① **落点是尖端就不给**——指针已在尖端，点它指针不动、视图不变，那是**假入口**。
+    // ---- ④ 每条回复下面「从这里分叉」（v1.66；v2.15 起分叉到新会话）----
+    // 分叉能力从左栏树面板**迁进会话区**（`UI-REGIONS` 规则 ④-K）：左栏那个面板连同
+    // `features/BranchTree.tsx` 已删，本按钮是分叉的**唯一界面入口**。四件事必须钉住：
+    //   ① **落点是尖端就不给**——从尖端分叉等于复制一份完全相同的会话，那是**假入口**。
     //      这条要验**两种切法**：正常两轮（末轮不给），**以及**末轮比窗口还高、被窗口切在半截时
     //      ——第二种是「判据写成『末轮的 key』」会误判的地方（见下面 tallTurn 那段）。
     //   ② 送出的是**这一轮最终回复的 id**（= 内核条目 id），不是轮的 key、更不是用户消息；
@@ -3652,13 +3652,15 @@ export async function runDock(
     window.webContents.send("session.view", smokeView({ messages: forkMessages }));
     await sleep(400);
 
-    // 打桩**只记账、不转发**（`AGENTS.md` §五 ⑩）：转发给真实现会去 navigate 一个真会话、
-    // 往用户真实数据里改历史；而这里要验的只是「渲染层交给主进程的是哪个 id」。
+    // 打桩**只记账、不转发**（`AGENTS.md` §五 ⑩）：真实现会复制库、起新 worker、往
+    // 用户真实数据里加会话；而这里要验的只是「渲染层交给主进程的是哪个 id」。
+    // 返回当前会话本身（同 id）→ 渲染层不会重挂载，后面的受控视图断言照旧可用。
     // 桩的存活窗口**收到最小**：只包住下面那一次点击，并在 `finally` 里恢复。
-    const realNavigate = sessionManager.navigate.bind(sessionManager);
+    const realFork = sessionManager.fork.bind(sessionManager);
     const branchTargets: string[] = [];
-    sessionManager.navigate = (_id: string, targetId: string): void => {
+    sessionManager.fork = async (_id: string, targetId: string) => {
       branchTargets.push(targetId);
+      return session;
     };
 
     const forkProbe = await run<{
@@ -3749,10 +3751,10 @@ export async function runDock(
       clicked = await clickBranch("smoke-a1");
       await sleep(150);
     } finally {
-      sessionManager.navigate = realNavigate;
+      sessionManager.fork = realFork;
     }
     checks.push([
-      "点了才发出分叉：把**该轮最终回复的 id** 交给 session.navigate（不是轮的 key）",
+      "点了才发出分叉：把**该轮最终回复的 id** 交给 session.fork（不是轮的 key）",
       beforeClick === 0 && clicked && branchTargets.join(",") === "smoke-a1",
     ]);
 
@@ -3783,10 +3785,10 @@ export async function runDock(
     );
     checks.push(["当天的问答结束时间只显示 HH:mm（今天 09:41）", todayClock === "09:41"]);
 
-    // 运行中**必须点不动**：worker 的消息循环是 `void handle(command)`——**不排队**，
-    // 而 `navigate` 要挪历史指针 + 重拍快照 + 推视图；与在飞的那一轮交叠，指针和视图会被
-    // 那一轮边跑边覆盖。判据**不能只看按钮在不在**（那是另一种坏法：按钮冒出来却是死的），
-    // 所以两个状态都先证「按钮在」，再证 disabled 真的翻过来、且原因写出来了。
+    // 运行中**必须点不动**：分叉要关 worker、复制 SQLite 库快照，与在飞的那一轮交叠时
+    // 复制到的就是「边写边拷」的库。判据**不能只看按钮在不在**（那是另一种坏法：
+    // 按钮冒出来却是死的），所以两个状态都先证「按钮在」，再证 disabled 真的翻过来、
+    // 且原因写出来了。
     const branchState = (): Promise<{ present: boolean; disabled: boolean; title: string }> =>
       run<{ present: boolean; disabled: boolean; title: string }>(`(() => {
         const btn = document.querySelector("[data-conv-branch]");

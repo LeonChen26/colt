@@ -200,7 +200,9 @@ durable 侧真正用上的能力（不是「接进来放着」）：
 - **崩溃恢复**：工具任务是持久状态机，`harness.resume()` 会接着跑未完成的任务；
 - **工具重放**：只读工具标 `replay: "safe"`，崩溃后重跑而不是留一条 interrupted 结果；
 - **子代理 = 任务拥有的会话**：中止调用会中止子代理、父任务空闲前子代理必须先空闲；
-- **分支**：`conversation.fork(at)`（`head` write 是回卷，不是分支）；
+- **分支**：`conversation.fork(at)`（`head` write 是回卷，不是分支）；**跨会话分叉 = 复制库快照**——
+  一个 storage 同一时间只能归一个进程，所以「新会话指向源库里的 fork 对话」不可行；`main/session-fork.ts`
+  在源 worker 退出后用 `VACUUM INTO` 拷出副本，worker 再在副本里 fork（见 `UI-REGIONS.md` v2.15）；
 - **SQLite 长会话**：单文件库 + WAL，不再受 JSONL 单文件重写成本约束。
 
 
