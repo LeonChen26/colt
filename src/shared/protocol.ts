@@ -116,6 +116,12 @@ export interface ArtifactFileEntry {
 export interface ArtifactGroup {
   /** 目录名（容器下的单层名字；「打开位置」按它定位） */
   dirName: string;
+  /**
+   * 属主会话 id（manifest 的 `sessionId`）。搜索按产物文件名命中时靠它把目录映射回
+   * 会话行；manifest 缺失（未关联目录 / 旧版本目录）时为 null——那时的目录不属于
+   * 任何在册会话，搜索无处可挂。
+   */
+  sessionId: string | null;
   title: string;
   createdAt: number;
   /** 会话被删除的时刻；null = 仍在册 */
@@ -347,6 +353,10 @@ export const IPC_CHANNELS = [
   "project.delete",
   "project.remove",
   "project.restore",
+  /** 重新定位工作目录：选新文件夹修复同一条登记（历史保留、文件不搬移） */
+  "project.relocate",
+  /** 重建默认空间：容器整体不可用时批量补回在册会话缺失的产物目录 */
+  "project.rebuildDefaultSpace",
   "project.availability",
   "session.create",
   "session.list",
@@ -430,6 +440,10 @@ export const IPC_CHANNELS = [
   "file.list",
   "artifact.listDefaultSpace",
   "artifact.reveal",
+  /** 会话级产物清单（「查看产物」）：按目录内容列出，标注会话记录过的文件 */
+  "artifact.listForSession",
+  /** 打开会话产物里的文件 / 位置 */
+  "artifact.revealSession",
   "terminal.open",
   "terminal.input",
   "terminal.resize",
@@ -671,6 +685,26 @@ export interface IpcInvokeMap {
     response: { ok: true };
   };
   /**
+   * 重新定位工作目录（FR-04）：修复**同一条登记**——主进程弹文件夹选择器，确认后把登记
+   * 指到新文件夹（历史保留、文件不搬移；工作目录会话的 cwd 跟随登记，不逐条改路径）。
+   *
+   * 新目录已有登记时走「合并」：其下会话并入既有那条（`session.projectId` 改划，历史与
+   * 改动记录随行），旧登记删除，返回合并后的那条。选文件夹 / 确认 / 合并确认全在主进程；
+   * 用户取消返回 null。默认空间（kind = task）不可重新定位；有会话正在运行时拒绝。
+   */
+  "project.relocate": {
+    request: { projectId: string };
+    response: Project | null;
+  };
+  /**
+   * 重建默认空间（FR-02 异常路径）：容器整体不可用时的批量修复——建回容器，并只为
+   * **在册**会话补缺失的产物目录与 manifest（磁盘上还在的不动，不恢复已删除会话的目录）。
+   */
+  "project.rebuildDefaultSpace": {
+    request: undefined;
+    response: { ok: true; rebuilt: string[] };
+  };
+  /**
    * 工作位置可用性检查（FR-04）：应用启动、打开会话、发送消息前各查一次。
    *
    * 只返回**不可用**的项目 id——「可用」是常态，不必为它付一份清单。检查异步、带超时
@@ -678,7 +712,15 @@ export interface IpcInvokeMap {
    */
   "project.availability": {
     request: undefined;
-    response: { unavailable: string[]; unavailableSessions: string[] };
+    response: {
+      unavailable: string[];
+      unavailableSessions: string[];
+      /**
+       * 默认空间**容器**整体不可用（FR-02 异常路径）：侧栏据此给出「重建默认空间」
+       * （只为在册会话补缺失产物目录）与「选择工作位置…」两个入口。
+       */
+      defaultSpaceUnavailable: boolean;
+    };
   };
   /**
    * 新建会话：**只分配 id，不落库**（草稿）。
@@ -1323,6 +1365,32 @@ export interface IpcInvokeMap {
    */
   "artifact.reveal": {
     request: { dirName: string; file?: string };
+    response: { ok: true };
+  };
+  /**
+   * 会话级产物清单（FR-04「查看产物」）：按**目录内容**列出这条会话工作根下的文件，
+   * 并标注哪些路径被该会话的改动记录记过（`recorded`）。根由主进程按会话反查
+   * （`session.cwd` ?? 项目根），渲染层不能指定；目录不可读时 `readable = false`、
+   * `files` 为空，由界面如实呈现。
+   */
+  "artifact.listForSession": {
+    request: { sessionId: string };
+    response: {
+      root: string;
+      /** 会话所属位置：默认空间（产物目录）或工作目录（项目根） */
+      kind: "default" | "workspace";
+      locationName: string;
+      readable: boolean;
+      files: { path: string; size: number; mtime: number; recorded: boolean }[];
+    };
+  };
+  /**
+   * 打开会话产物里的文件 / 位置（FR-04）：`reveal` = 在文件管理器里**定位**该文件；
+   * 缺省 = 用系统默认应用**打开**该文件（不给 `file` 时打开会话的工作根）。
+   * 越界（`..` / 绝对路径）在任何 fs / shell 调用之前即被拒。
+   */
+  "artifact.revealSession": {
+    request: { sessionId: string; file?: string; reveal?: boolean };
     response: { ok: true };
   };
   /**

@@ -63,9 +63,11 @@ import {
   listProjects,
   listSessionChangeRoots,
   listSessionEvents,
+  listSessionFileChanges,
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  mergeProjects,
   recordSessionEvent,
   setKernelSessionId,
   setProjectRemoved,
@@ -73,6 +75,7 @@ import {
   setSessionThinkingLevel,
   setSessionStatus,
   touchSession,
+  updateProjectRoot,
   upsertProject,
 } from "../db/repo";
 import { copySessionDatabase } from "../session-fork";
@@ -771,6 +774,112 @@ export function registerIpcHandlers(): void {
   });
 
   /**
+   * 重新定位工作目录（FR-04）：把这条登记指到另一个文件夹——历史保留、文件不搬移，
+   * 会话按登记跟随新位置（工作目录会话的 cwd 是 NULL、跟随 rootPath，见 materializeDraft，
+   * 所以只改登记这一行）。默认空间不可重新定位；任一会话运行中时整次拒绝（与
+   * project.remove 同一条纪律——正在写 JSONL 的会话不能被换根）。
+   *
+   * 目标已有登记（root_key 命中另一条工作目录）→ 提示**合并**：把当前登记名下的会话
+   * 划给既有那条（`mergeProjects`），旧登记删除；已登记为默认空间的目标直接拒绝。
+   * 用户取消（关掉选择框 / 确认框）返回 null，渲染层据此保持原样、不刷新列表。
+   */
+  handleWithSender("project.relocate", async (sender, request) => {
+    const owner = BrowserWindow.fromWebContents(sender);
+    const project = getProject(request.projectId);
+    if (!project) throw new Error("项目不存在或已被移除");
+    if (project.kind === "task") throw new Error("默认空间不可重新定位");
+    const busy = listSessions(request.projectId).find((session) =>
+      sessionManager.isRunning(session.id),
+    );
+    if (busy) throw new Error(`会话「${busy.title}」正在运行，请先中止后再重新定位`);
+
+    const picked = await dialog.showOpenDialog({
+      title: "重新定位：选择新的文件夹",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return null;
+    const newPath = picked.filePaths[0]!;
+    // 同一个目录（规范化后同 key）：登记没变，原样返回（幂等，不改最近打开时间）
+    if (normalizeRootKey(newPath) === normalizeRootKey(project.rootPath)) return project;
+
+    const confirmBox = async (message: string, detail: string, confirmLabel: string) => {
+      const options: Electron.MessageBoxOptions = {
+        type: "warning",
+        noLink: true,
+        buttons: [confirmLabel, "取消"],
+        defaultId: 1,
+        cancelId: 1,
+        title: "Colt",
+        message,
+        detail,
+      };
+      const { response } = owner
+        ? await dialog.showMessageBox(owner, options)
+        : await dialog.showMessageBox(options);
+      // 焦点归还发起窗口（同 dialog.confirm：确认框不该把渲染层的焦点劫走）
+      if (owner && !owner.isDestroyed()) {
+        owner.focus();
+        owner.webContents.focus();
+      }
+      return response === 0;
+    };
+
+    // 目标已登记：合并（把当前登记的会话划给既有那条），还是直接改登记——两条路都先确认
+    const newKey = normalizeRootKey(newPath);
+    const existing = listProjects().find(
+      (item) => normalizeRootKey(item.rootPath) === newKey && item.id !== project.id,
+    );
+    if (existing) {
+      if (existing.kind === "task") throw new Error("目标文件夹是默认空间，请换一个文件夹");
+      const confirmed = await confirmBox(
+        `目标文件夹已登记为「${existing.name}」`,
+        "继续将把当前目录的会话并入既有登记（历史与改动记录保留）；取消则不做任何改动。",
+        "并入既有登记",
+      );
+      if (!confirmed) return null;
+      // 目标处于「已移除」区时一并恢复：用户把登记重新定位到这个文件夹，意图就是
+      // 用它（同 upsertProject「重新打开已移除目录 = 恢复」的语义）——否则会话会被
+      // 划进一条已移除的登记，在侧栏里「消失」到已移除分组。
+      if (existing.removedAt !== null) setProjectRemoved(existing.id, false);
+      mergeProjects(project.id, existing.id);
+      // 旧登记名下的草稿挂在即将消失的项目行下，清掉（同 project.delete）
+      const staleDrafts = [...drafts].filter(([, draft]) => draft.projectId === project.id);
+      for (const [id] of staleDrafts) drafts.delete(id);
+      return getProject(existing.id) ?? null;
+    }
+
+    const confirmed = await confirmBox(
+      `把「${project.name}」重新定位到新文件夹？`,
+      "历史与改动记录保留，磁盘文件不搬移；本目录下的会话将按新位置继续。",
+      "重新定位",
+    );
+    if (!confirmed) return null;
+    return updateProjectRoot(project.id, newPath) ?? null;
+  });
+
+  /**
+   * 重建默认空间（FR-02 异常路径）：容器整体不可用（被删 / 挪走）时的批量修复。
+   * 建回容器，并为**在册**会话补缺失的产物目录与 manifest——磁盘上还在的不动
+   * （不重建 manifest、不覆盖标题）；已删除会话没有库行，天然不参与。返回补建的目录。
+   */
+  handle("project.rebuildDefaultSpace", () => {
+    const task = listProjects().find((item) => item.kind === "task");
+    if (!task) return { ok: true as const, rebuilt: [] };
+    mkdirSync(task.rootPath, { recursive: true });
+    const rebuilt: string[] = [];
+    for (const session of listSessions(task.id)) {
+      const dir = session.cwd;
+      if (dir === null || existsSync(dir)) continue;
+      mkdirSync(dir, { recursive: true });
+      if (!readManifest(dir)) {
+        createManifest(dir, session.id, session.title, session.createdAt);
+      }
+      rebuilt.push(dir);
+    }
+    return { ok: true as const, rebuilt };
+  });
+
+  /**
    * 工作位置可用性检查（FR-04）：异步、带超时、不阻塞界面。
    *
    * 超时按「不可用」处理——网络盘或已断开的移动盘上 `stat` 会挂很久，界面不能因此卡住；
@@ -792,9 +901,13 @@ export function registerIpcHandlers(): void {
         (await isUsableDir(session.cwd as string)) ? null : session.id,
       ),
     );
+    // 默认空间容器本身也可能被外部删除（FR-02 异常路径）：侧栏据此给「重建默认空间」警示条
+    const task = listProjects().find((item) => item.kind === "task");
+    const defaultSpaceUnavailable = task ? !(await isUsableDir(task.rootPath)) : false;
     return {
       unavailable: projectResults.filter((id): id is string => id !== null),
       unavailableSessions: sessionResults.filter((id): id is string => id !== null),
+      defaultSpaceUnavailable,
     };
   });
 
@@ -1508,6 +1621,9 @@ export function registerIpcHandlers(): void {
           (manifest?.files ?? []).map((path) => ({ path, size: 0, mtime: 0 }));
       groups.push({
         dirName,
+        // 搜索「按产物文件名命中会话」要用：没有 manifest（或旧格式）时为 null，
+        // 这样的目录不参与会话命中，但仍显示在产物清单里
+        sessionId: manifest?.sessionId ?? null,
         title: manifest?.title || "未关联目录",
         createdAt: manifest?.createdAt ?? 0,
         deletedAt: manifest?.deletedAt ?? null,
@@ -1537,6 +1653,68 @@ export function registerIpcHandlers(): void {
       return { ok: true } as const;
     }
     const failure = await shell.openPath(dir);
+    if (failure) throw new Error(failure);
+    return { ok: true } as const;
+  });
+
+  /**
+   * 会话的「查看产物」（PRD FR-06）：按**目录内容**列文件——同 listDefaultSpace 的口径，
+   * agent 用命令行写的、外部程序产出的都能出现，不受 manifest 冻结清单的限制。
+   * `recorded` 标注「该会话的改动记录里有它」；不是产出的完整清单，只是「记录过」。
+   * 改动按「执行时根」分组（FR-06 不跨根合并）：复制会话带过去的旧改动不参与标注。
+   */
+  handle("artifact.listForSession", (request) => {
+    const session = getSession(request.sessionId);
+    if (!session) throw new Error("会话不存在");
+    const project = getProject(session.projectId);
+    if (!project) throw new Error("项目不存在");
+    const root = session.cwd ?? project.rootPath;
+    const kind = project.kind === "task" ? "default" : "workspace";
+    let readable = true;
+    try {
+      readable = statSync(root).isDirectory();
+    } catch {
+      readable = false;
+    }
+    if (!readable) return { root, kind, locationName: project.name, readable, files: [] };
+    const rootKey = normalizeRootKey(root);
+    const recorded = new Set(
+      listSessionFileChanges(request.sessionId)
+        .filter((change) => normalizeRootKey(change.execRoot ?? root) === rootKey)
+        .map((change) => change.path),
+    );
+    return {
+      root,
+      kind,
+      locationName: project.name,
+      readable,
+      files: listArtifactFiles(root).map((file) => ({ ...file, recorded: recorded.has(file.path) })),
+    };
+  });
+
+  /**
+   * 打开会话产物里的文件 / 位置：根**只由主进程反查**（resolveSessionRoot，同 file.read
+   * 的信任假设），渲染层只给相对路径，越界（`..` / 绝对路径）在任何 fs / shell 访问
+   * 之前被拒（同 artifact.reveal）。`reveal = true` 时「在文件夹中打开」（定位），
+   * 缺省直接打开文件；不给 file 时打开工作根。
+   */
+  handle("artifact.revealSession", async (request) => {
+    const root = resolve(resolveSessionRoot(request.sessionId));
+    if (!request.file) {
+      const failure = await shell.openPath(root);
+      if (failure) throw new Error(failure);
+      return { ok: true } as const;
+    }
+    const target = resolve(root, request.file);
+    if (target !== root && !target.startsWith(root + sep)) {
+      throw new Error("产物路径不合法");
+    }
+    if (request.reveal) {
+      // 在文件夹中打开（不直接执行文件）：与 artifact.reveal 同一条「清单是查看入口」
+      shell.showItemInFolder(target);
+      return { ok: true } as const;
+    }
+    const failure = await shell.openPath(target);
     if (failure) throw new Error(failure);
     return { ok: true } as const;
   });

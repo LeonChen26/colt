@@ -17,6 +17,8 @@ import { ICON } from "@/lib/icon";
 import { cn } from "@/lib/utils";
 import { ErrorNotice } from "../../components/ErrorNotice";
 
+export { SessionArtifacts } from "./SessionArtifacts";
+
 function formatStamp(value: number): string {
   if (!value) return "时间未知";
   const date = new Date(value);

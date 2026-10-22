@@ -18,6 +18,7 @@ import {
   Copy,
   Folder,
   FolderOpen,
+  FolderSync,
   GitBranch,
   ImagePlus,
   Loader2,
@@ -150,6 +151,7 @@ export function Conversation({
   onContinueAtNewLocation,
   locationUnavailable = false,
   onRebuildArtifactDir,
+  onRelocateLocation,
 }: {
   sessionId: string;
   cwd: string;
@@ -197,6 +199,11 @@ export function Conversation({
   locationUnavailable?: boolean;
   /** 重建默认空间会话的产物目录（仅默认空间有；工作目录不传） */
   onRebuildArtifactDir?: () => void;
+  /**
+   * 「重新定位…」（FR-04）：把这条会话所属目录的登记指到另一个文件夹——历史保留、
+   * 文件不搬移。选择与确认由 App + 主进程负责，本组件只提供入口；默认空间不传。
+   */
+  onRelocateLocation?: () => void;
 }): React.JSX.Element {
   // 初值取缓存：本会话若是重挂（切走切回 / worker 被空闲回收后重开），立刻就有内容可画，
   // 不必干等 worker 把整份 JSONL 重放完——那段时间原本是纯白 + 转圈（见 view-cache.ts）。
@@ -1179,6 +1186,16 @@ export function Conversation({
                   重建产物目录
                 </button>
               )}
+              {locationKind === "workspace" && onRelocateLocation && (
+                <button
+                  type="button"
+                  onClick={onRelocateLocation}
+                  data-conv-relocate-banner
+                  className="rounded-xs border border-warning/40 px-1.5 py-0.5 transition hover:bg-warning-soft"
+                >
+                  重新定位…
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onContinueAtNewLocation}
@@ -1219,6 +1236,25 @@ export function Conversation({
           >
             <FolderOpen {...ICON.xs} />
           </button>
+          {/* 「重新定位…」（FR-04）：把这条会话所属目录的登记指到另一个文件夹——历史保留、
+              文件不搬移。默认空间不提供；运行中置灰（主进程同样会拒绝，先给出可见原因）。 */}
+          {locationKind === "workspace" && onRelocateLocation && (
+            <button
+              type="button"
+              onClick={onRelocateLocation}
+              disabled={runStartedAt !== undefined}
+              title={
+                runStartedAt !== undefined
+                  ? "运行中不能重新定位，请先停止"
+                  : "重新定位：把此目录的登记指到另一个文件夹（历史保留，文件不搬移）"
+              }
+              aria-label="重新定位"
+              data-conv-relocate
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <FolderSync {...ICON.xs} />
+            </button>
+          )}
           {/* 「在新位置继续…」（FR-03）：复制对话与改动记录到另一个工作位置。
               运行中不能复制（要先冻结运行时），入口置灰并说明原因。 */}
           <button
@@ -1421,6 +1457,19 @@ export function Conversation({
                 request={request}
                 changes={changes}
                 onResolve={(input) => void resolveApproval(request.toolCallId, input)}
+                scope={{
+                  label:
+                    locationKind === "default" ? "默认空间 · 本会话" : `工作目录 · ${locationName}`,
+                  path: cwd,
+                  onReveal: () => {
+                    // 失败要看得见（同 data-conv-reveal）：目录被外部删除时主进程会拒绝
+                    void window.colt
+                      .invoke("session.reveal", { sessionId })
+                      .catch((cause: unknown) => {
+                        setError(cause instanceof Error ? cause.message : String(cause));
+                      });
+                  },
+                }}
               />
             ))}
             <QuestionCards

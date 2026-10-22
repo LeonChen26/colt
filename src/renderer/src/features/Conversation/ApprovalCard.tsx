@@ -28,6 +28,7 @@ export function ApprovalCard({
   request,
   changes,
   onResolve,
+  scope,
 }: {
   request: ApprovalRequest;
   changes: ViewFileChange[];
@@ -36,6 +37,11 @@ export function ApprovalCard({
     remember?: "signature" | "tool";
     deny?: "signature" | "tool";
   }) => void;
+  /**
+   * 审批范围（PRD FR-05）：这条调用落在哪个位置执行——「默认空间 · 本会话」或工作目录。
+   * 不传（草稿等还没有位置的会话）就不显示，不编造范围。
+   */
+  scope?: { label: string; path: string; onReveal: () => void };
 }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -92,6 +98,25 @@ export function ApprovalCard({
           </div>
           <p className="mt-1 break-all font-mono text-xs text-text-primary">{request.summary}</p>
           <p className="mt-1 text-xs text-text-muted">{request.reason}</p>
+          {/* 范围（PRD FR-05）：让用户在批准前看清「这次操作落在哪」——默认空间是本会话的
+              产物目录，工作目录是登记的那个文件夹。查看位置走 session.reveal，根由主进程反查。 */}
+          {scope && (
+            <p
+              className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-text-muted"
+              data-approval-scope={scope.label}
+            >
+              范围：{scope.label}
+              <button
+                type="button"
+                onClick={scope.onReveal}
+                data-approval-scope-reveal
+                title={scope.path}
+                className="rounded-xs border border-line px-1.5 py-0.5 transition hover:border-line-strong hover:text-text-primary"
+              >
+                查看位置
+              </button>
+            </p>
+          )}
         </div>
         <span
           className={cn(
@@ -112,6 +137,11 @@ export function ApprovalCard({
         {expanded ? <ChevronDown {...ICON.sm} /> : <ChevronRight {...ICON.sm} />}
         {change?.patch ? "查看改动" : "完整参数"}
       </button>
+      {expanded && scope && (
+        <p className="mt-1 break-all font-mono text-2xs text-text-muted" data-approval-scope-path>
+          {scope.path}
+        </p>
+      )}
       {expanded &&
         (change?.patch ? (
           <div className="mt-1">

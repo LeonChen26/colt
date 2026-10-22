@@ -25,6 +25,7 @@ import {
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  mergeProjects,
   purgeSessionScopedRows,
   recordFileBaseline,
   recordFileChange,
@@ -39,6 +40,7 @@ import {
   setProjectRemoved,
   setSetting,
   touchSession,
+  updateProjectRoot,
   upsertProject,
 } from "../src/main/db/repo.ts";
 
@@ -330,6 +332,43 @@ describe("deleteProject", () => {
 
   test("项目不存在返回 undefined（调用方据此如实报错，而不是静默成功）", () => {
     assert.equal(deleteProject("nope"), undefined);
+  });
+});
+
+describe("重新定位与合并（FR-04）", () => {
+  test("updateProjectRoot 改登记：根、key、名字更新；会话行不动（cwd=NULL 按登记跟随新根）", () => {
+    const project = upsertProject("E:/old-place");
+    const session = createSession(project.id, "E:/jsonl/x.jsonl");
+    const updated = updateProjectRoot(project.id, "E:/new-place");
+    assert.ok(updated, "登记存在时应返回更新后的行");
+    assert.equal(updated.rootPath, "E:/new-place");
+    assert.equal(updated.name, "new-place");
+    assert.equal(getProject(project.id)?.rootPath, "E:/new-place");
+    assert.equal(upsertProject("E:/new-place").id, project.id, "新根按 root_key 命中同一条");
+    // 工作目录会话的 cwd 保持 NULL：重新定位只改登记这一行，会话按登记跟随
+    assert.equal(getSession(session.id)?.cwd, null);
+    assert.equal(getSession(session.id)?.projectId, project.id);
+    assert.equal(listProjects().length, 1, "不因重新定位多出登记");
+  });
+
+  test("updateProjectRoot 对不存在的项目返回 undefined", () => {
+    assert.equal(updateProjectRoot("no-such", "E:/new"), undefined);
+  });
+
+  test("mergeProjects 把会话划给既有登记并删旧行，返回搬移数", () => {
+    const from = upsertProject("E:/old-place");
+    const to = upsertProject("E:/existing");
+    const first = createSession(from.id, "E:/jsonl/a.jsonl");
+    const second = createSession(from.id, "E:/jsonl/b.jsonl");
+    createSession(to.id, "E:/jsonl/c.jsonl");
+
+    const moved = mergeProjects(from.id, to.id);
+    assert.equal(moved, 2);
+    assert.equal(getSession(first.id)?.projectId, to.id);
+    assert.equal(getSession(second.id)?.projectId, to.id);
+    assert.equal(listSessions(to.id).length, 3);
+    assert.equal(getProject(from.id), undefined, "旧登记已删");
+    assert.equal(listProjects().length, 1);
   });
 });
 

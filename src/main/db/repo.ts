@@ -184,6 +184,46 @@ export function setProjectRemoved(projectId: string, removed: boolean): boolean 
 }
 
 /**
+ * 重新定位工作目录（FR-04）：把这条登记指到新文件夹——改 `root_path` / `root_key` / `name`。
+ *
+ * 工作目录会话的 `cwd` 是 NULL（跟随登记），所以**只改这一行**，其下所有会话（含归档、
+ * 已移除时的会话）按登记自动跟随，不逐条改路径。默认空间（kind = task）不可重新定位，
+ * 由调用方把关。新目录已有登记时由调用方走 `mergeProjects`。
+ */
+export function updateProjectRoot(projectId: string, rootPath: string): Project | undefined {
+  const db = getDatabase();
+  if (!getProject(projectId)) return undefined;
+  db.prepare(
+    "UPDATE projects SET root_path = ?, root_key = ?, name = ?, last_opened_at = ? WHERE id = ?",
+  ).run(rootPath, normalizeRootKey(rootPath), basename(rootPath) || rootPath, Date.now(), projectId);
+  return getProject(projectId);
+}
+
+/**
+ * 合并两条工作目录登记（重新定位的目标已有登记时，FR-04「提示合并」）：把 `fromId`
+ * 名下的会话全部划给 `toId`，然后删掉 `fromId` 那一行。返回搬过去的会话数。
+ *
+ * 会话侧的数据（历史 / 改动记录 / 基线 / 图钉）都以 session_id 为键，跟着会话走，
+ * 不需要另动；全程一个事务，搬一半失败就整体回滚。
+ */
+export function mergeProjects(fromId: string, toId: string): number {
+  const db = getDatabase();
+  const count = db
+    .prepare("SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?")
+    .get(fromId) as unknown as { n: number };
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE sessions SET project_id = ? WHERE project_id = ?").run(toId, fromId);
+    db.prepare("DELETE FROM projects WHERE id = ?").run(fromId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return count.n ?? 0;
+}
+
+/**
  * 读取单个项目。
  * 用途：会话工作目录的**回落值**——`sessions.cwd` 为 NULL（普通空间会话、以及 v1.94
  * 之前的旧行）时，根由主进程经 `sessionId → project_id → root_path` 推出，不经渲染层。
