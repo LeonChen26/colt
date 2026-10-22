@@ -41,6 +41,25 @@ describe("agentsMdCandidates", () => {
   test("cwd 本身就是根：只有一份候选", () => {
     assert.deepEqual(agentsMdCandidates("C:\\"), [join("C:\\", "AGENTS.md")]);
   });
+
+  test("stopAt：截止目录本身不收，只收到它的直接子目录（默认空间不越过容器根）", () => {
+    // cwd = <容器>/20261001-090503-a3f9
+    assert.deepEqual(agentsMdCandidates("/home/u/.colt/tasks/20261001-090503-a3f9", "/home/u/.colt/tasks"), [
+      join("/home/u/.colt/tasks/20261001-090503-a3f9", "AGENTS.md"),
+    ]);
+    // 容器与被查目录之间还有一层（嵌套场景）：中间那层照收，容器根仍被排除
+    assert.deepEqual(agentsMdCandidates("/home/u/.colt/tasks/a/b", "/home/u/.colt/tasks"), [
+      join("/home/u/.colt/tasks/a", "AGENTS.md"),
+      join("/home/u/.colt/tasks/a/b", "AGENTS.md"),
+    ]);
+  });
+
+  test("stopAt 与 cwd 不相干（上层目录）时行为不变：照旧收到文件系统根", () => {
+    assert.deepEqual(agentsMdCandidates("/proj", "/elsewhere"), [
+      join("/", "AGENTS.md"),
+      join("/proj", "AGENTS.md"),
+    ]);
+  });
 });
 
 describe("loadAgentsMd（真文件系统）", () => {

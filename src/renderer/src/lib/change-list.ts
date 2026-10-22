@@ -38,7 +38,16 @@ export function isProjectRelative(path: string): boolean {
 }
 
 export interface ChangeFile {
-  /** 项目内相对路径（反斜杠已归一） */
+  /**
+   * 稳定标识 = 执行时根 + 相对路径。
+   *
+   * 「在新位置继续」之后，同一条相对路径会在两个根下各有一条改动历史——它们**不是**
+   * 同一个文件的两次编辑，按 path 合并会把两个位置的事混成一条（FR-06「不跨根合并」）。
+   */
+  key: string;
+  /** 改动发生时的根；null = 旧行（按会话当前根解析） */
+  root: string | null;
+  /** 相对路径（相对它自己的根；反斜杠已归一） */
   path: string;
   /** 最后一段，清单里显示的名字 */
   name: string;
@@ -61,6 +70,10 @@ export interface ChangeFile {
 }
 
 export interface ChangeGroup {
+  /** 稳定标识 = 根 + 目录（同目录在不同根下是两个组） */
+  key: string;
+  /** 这个组的文件所属的根；null = 旧行（当前根） */
+  root: string | null;
   /** 整条目录路径；根目录下的文件归到 `""` */
   dir: string;
   files: ChangeFile[];
@@ -86,11 +99,29 @@ export interface ChangeList {
   netUnknown: number;
   /** 被丢掉的项目外文件数（按路径去重）——清单底部要如实说明「隐藏了几个」 */
   hidden: number;
+  /**
+   * 清单里出现了几个不同的执行时根。
+   *
+   * >1 时界面必须把根标出来：同一相对路径在两个根下是**两个文件**（FR-06）。只有一个根
+   * （绝大多数会话）时不必加噪声——那时根就是会话自己的位置。
+   */
+  rootCount: number;
+}
+
+/** 组/文件的身份键：根与路径之间用一个不可能出现在路径里的分隔符 */
+const rootKey = (root: string | null, tail: string): string => `${root ?? ""}\u0000${tail}`;
+
+/** 根的显示名：取最后一段（Windows / POSIX 都适用），去掉尾部分隔符 */
+export function rootLabel(root: string): string {
+  const trimmed = root.replace(/[\\/]+$/, "");
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || trimmed;
 }
 
 export function buildChangeList(changes: ViewFileChange[]): ChangeList {
-  const byPath = new Map<string, ChangeFile>();
+  const byKey = new Map<string, ChangeFile>();
   const hiddenPaths = new Set<string>();
+  const roots = new Set<string | null>();
 
   for (const change of changes) {
     const normalized = change.path.replaceAll("\\", "/");
@@ -102,7 +133,12 @@ export function buildChangeList(changes: ViewFileChange[]): ChangeList {
     }
 
     const path = segments.join("/");
-    const file = byPath.get(path) ?? {
+    const root = change.execRoot ?? null;
+    const key = rootKey(root, path);
+    roots.add(root);
+    const file = byKey.get(key) ?? {
+      key,
+      root,
       path,
       name: segments[segments.length - 1] as string,
       kind: change.kind,
@@ -119,7 +155,7 @@ export function buildChangeList(changes: ViewFileChange[]): ChangeList {
       file.netAddedLines = change.netAddedLines;
       file.netRemovedLines = change.netRemovedLines;
     }
-    byPath.set(path, file);
+    byKey.set(key, file);
   }
 
   const groups = new Map<string, ChangeGroup>();
@@ -128,7 +164,7 @@ export function buildChangeList(changes: ViewFileChange[]): ChangeList {
   let netRemovedLines = 0;
   let netUnknown = 0;
 
-  for (const file of byPath.values()) {
+  for (const file of byKey.values()) {
     // 历史倒序（同一毫秒内按输入顺序，`Array.sort` 是稳定排序）——最新在前
     file.history.sort((a, b) => b.timestamp - a.timestamp);
     places += file.history.length;
@@ -142,7 +178,10 @@ export function buildChangeList(changes: ViewFileChange[]): ChangeList {
     const dir = file.path.includes("/")
       ? file.path.slice(0, file.path.lastIndexOf("/"))
       : "";
-    const group = groups.get(dir) ?? {
+    const key = rootKey(file.root, dir);
+    const group = groups.get(key) ?? {
+      key,
+      root: file.root,
       dir,
       files: [],
       netAddedLines: 0,
@@ -153,23 +192,30 @@ export function buildChangeList(changes: ViewFileChange[]): ChangeList {
     group.netAddedLines += file.netAddedLines ?? 0;
     group.netRemovedLines += file.netRemovedLines ?? 0;
     group.latestAt = Math.max(group.latestAt, file.latestAt);
-    groups.set(dir, group);
+    groups.set(key, group);
   }
 
   const list = [...groups.values()];
   for (const group of list) {
     group.files.sort((a, b) => b.latestAt - a.latestAt || a.path.localeCompare(b.path));
   }
-  // 组与组之间也按「最近动过」排：刚干完的活在顶上，不用往下翻
-  list.sort((a, b) => b.latestAt - a.latestAt || a.dir.localeCompare(b.dir));
+  // 组与组之间也按「最近动过」排：刚干完的活在顶上，不用往下翻。
+  // 同一时刻的组再按根、目录排——顺序必须稳定，否则视图每推一次清单就跳一次。
+  list.sort(
+    (a, b) =>
+      b.latestAt - a.latestAt ||
+      (a.root ?? "").localeCompare(b.root ?? "") ||
+      a.dir.localeCompare(b.dir),
+  );
 
   return {
     groups: list,
     places,
-    fileCount: byPath.size,
+    fileCount: byKey.size,
     netAddedLines,
     netRemovedLines,
     netUnknown,
     hidden: hiddenPaths.size,
+    rootCount: roots.size,
   };
 }

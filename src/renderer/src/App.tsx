@@ -35,9 +35,10 @@ import { applyTheme, loadTheme, saveTheme, type Theme } from "@/lib/theme";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { hasUsableProvider } from "@shared/model-ref";
 import type { EnvReport, FirstRunReport, Project, ProviderConfig, SessionInfo } from "@shared/protocol";
-import { deriveSessionTitle } from "@shared/session-title";
+import { deriveSessionTitle, keepContinuationSuffix } from "@shared/session-title";
 import type { ThinkingLevel } from "@shared/thinking-level";
 import { Conversation } from "./features/Conversation";
+import { DefaultSpaceArtifacts } from "./features/Artifacts";
 import { ErrorNotice } from "./components/ErrorNotice";
 import { dropCachedView } from "./features/Conversation/view-cache";
 import { FirstRunGate } from "./features/FirstRunGate";
@@ -47,7 +48,7 @@ import { shouldKeepSessionOnLoad, shouldOfferDraft, splitArchived } from "./lib/
 import { cn } from "./lib/utils";
 
 /** 主区视图 */
-type MainView = "chat" | "changes" | "settings";
+type MainView = "chat" | "changes" | "settings" | "artifacts";
 
 /** 主题三态按钮（亮 / 暗 / 跟随系统） */
 const THEME_OPTIONS = [
@@ -67,6 +68,23 @@ export default function App(): React.JSX.Element {
    * 故不持久化。
    */
   const [archivedOpen, setArchivedOpen] = useState(false);
+  /** 侧栏底部「已移除」区是否展开（FR-07：默认收起，标题带数量；不持久化） */
+  const [removedOpen, setRemovedOpen] = useState(false);
+  /**
+   * 「在新位置继续」的目标选择框（FR-03）：`null` = 关着；有值 = 正在为这条会话选目标。
+   * `continuingTo` 是选中的目标项目 id（确认按钮据此置灰：与当前位置相同时不可确认）。
+   */
+  const [continueFor, setContinueFor] = useState<SessionInfo | null>(null);
+  const [continuingTo, setContinuingTo] = useState<string | null>(null);
+  const [continuing, setContinuing] = useState(false);
+  /**
+   * 当前不可用的工作目录 id（FR-04）：启动、回到窗口时各查一次，异步带超时。
+   * 它决定左栏的「位置不可用」标记与「不把新会话建进去」；**发送前**的拦截在主进程
+   * （那是唯一可靠的关口，界面上的状态只是提前告知）。
+   */
+  const [unavailableProjects, setUnavailableProjects] = useState<Set<string>>(() => new Set());
+  /** 产物目录当前不可用的默认空间会话 id（目录被外部删除等，FR-02 异常路径） */
+  const [unavailableSessions, setUnavailableSessions] = useState<Set<string>>(() => new Set());
   /**
    * 全量**已归档**会话，**跨项目**（侧栏底部那一个区里混着各项目的归档会话，每行标出所属项目）。
    *
@@ -158,15 +176,41 @@ export default function App(): React.JSX.Element {
     return projects.find((item) => item.id === activeSession.projectId) ?? activeProject;
   }, [projects, activeSession, activeProject]);
   /**
-   * 任务工作区：任务栏背后的那条项目行（启动时 `project.ensureTask` 保证存在）。
-   * 不指定空间（目录）新建的会话都归到它名下；worker 的 cwd 就是那个固定目录。
+   * 任务工作区：**默认空间**容器背后的那条项目行（启动时 `project.ensureTask` 保证存在）。
+   * 不指定工作位置新建的会话都归到它名下；每条会话落库时在自己的产物目录里干活。
    */
   const taskProject = useMemo(
     () => projects.find((item) => item.kind === "task") ?? null,
     [projects],
   );
-  /** 「空间」栏要画的项目：全部登记项目除去任务工作区——它有自己的栏，不进空间列表 */
-  const spaceProjects = useMemo(() => projects.filter((item) => item.kind !== "task"), [projects]);
+  /** 「工作目录」区要画的项目：除去默认空间（它有自己的分区）与已移除（收进底部「已移除」区） */
+  const spaceProjects = useMemo(
+    () => projects.filter((item) => item.kind !== "task" && item.removedAt === null),
+    [projects],
+  );
+  /** 已移除的工作目录（FR-07）：收进底部「已移除」区，登记与会话都还在 */
+  const removedProjects = useMemo(
+    () => projects.filter((item) => item.kind !== "task" && item.removedAt !== null),
+    [projects],
+  );
+  /**
+   * 顶部「新建会话」的落点（FR-01 跟随当前上下文）：当前会话属于某个工作目录 → 该目录；
+   * 当前在默认空间、没有会话、或所属目录已被移除 → 默认空间。用户想精确指定时走
+   * 目录行的「+」或默认空间分区头的「新建」，不依赖这里的推断。
+   */
+  const newSessionTarget = useMemo(() => {
+    const current = conversationProject;
+    if (
+      current &&
+      current.kind !== "task" &&
+      current.removedAt === null &&
+      !unavailableProjects.has(current.id)
+    ) {
+      return current;
+    }
+    // 当前目录不可用时不把新会话建进去（FR-01）：退回默认空间，用户想精确指定时走目录行「+」
+    return taskProject;
+  }, [conversationProject, taskProject, unavailableProjects]);
   const [now, setNow] = useState(() => Date.now());
 
   // 主题挂载到下 <html>，并在变更时持久化
@@ -213,6 +257,29 @@ export default function App(): React.JSX.Element {
       }
     })();
   }, []);
+
+  /**
+   * 位置可用性（FR-04）：启动、目录集合变化、窗口获焦、**恢复目录**、重建产物目录之后各查一次。
+   *
+   * 异步 + 主进程侧超时，界面从不等待它；查到的「不可用」只用来提前告知（左栏标记、
+   * 不把新会话建进去），真正的关卡是发送前那一次主进程检查。
+   */
+  const refreshAvailability = useCallback(async () => {
+    try {
+      const report = await window.colt.invoke("project.availability", undefined);
+      setUnavailableProjects(new Set(report.unavailable));
+      setUnavailableSessions(new Set(report.unavailableSessions));
+    } catch {
+      // 查不到 ≠ 可用：保留上一次结论；发送前主进程仍会按根做最后一道拒绝
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAvailability();
+    const check = (): void => void refreshAvailability();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, [projects.length, refreshAvailability]);
 
   // 侧栏搜索：查询非空才拉全量会话（空串不拉——不进搜索就不付这份代价）。
   // `stale` 守卫防「连打几个字、先发的响应后到」把结果写反。
@@ -349,7 +416,9 @@ export default function App(): React.JSX.Element {
               item.id === view.sessionId
                 ? {
                     ...item,
-                    title: derivedTitle ?? item.title,
+                    // 「（续）」后缀在这里同样要保住：主进程与渲染层各算一遍标题，
+                    // 两边的规则必须一致（见 `keepContinuationSuffix`）
+                    title: keepContinuationSuffix(derivedTitle, item.title) ?? item.title,
                     messageCount: view.messages.length,
                     updatedAt: Date.now(),
                   }
@@ -686,9 +755,15 @@ export default function App(): React.JSX.Element {
       try {
         // 走主进程的原生确认框，不用 `window.confirm`：后者的 JS 对话框关掉后会让页面
         // 失去焦点（输入框点不出光标、敲不进字，需窗口失焦再聚焦才恢复）。
+        // 文案**按位置区分**（FR-07）：默认空间的目录留着 manifest 可再找回；工作目录的
+        // 文件本来就在共享目录里，产品不再提供「这条会话碰过哪些文件」的线索——不对称如实说。
+        const project = projects.find((item) => item.id === session.projectId);
+        const isDefaultSpace = project?.kind === "task";
         const { confirmed } = await window.colt.invoke("dialog.confirm", {
           message: `确定删除会话「${session.title}」？`,
-          detail: "此操作不可恢复。",
+          detail: isDefaultSpace
+            ? "只删除对话与记录，不删除磁盘上的文件。默认空间的产物目录会保留，manifest 里仍有标题与文件列表，可在「产物」清单里再找回。"
+            : `只删除对话与记录，不删除磁盘上的文件——它们仍在「${project?.name ?? "该工作目录"}」里；删除后产品不再提供这条会话碰过哪些文件的线索。`,
           confirmLabel: "删除",
         });
         if (!confirmed) return;
@@ -713,74 +788,109 @@ export default function App(): React.JSX.Element {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [loadProjectSessions, refreshArchived],
+    [loadProjectSessions, refreshArchived, projects],
   );
 
   /**
-   * 移除工作区：断开登记并清掉它名下的全部会话；**磁盘上的代码一行不动**。
+   * 从列表移除工作目录（FR-07）：**只收进「已移除」区**——登记、会话记录与磁盘
+   * 全都不动，随时可恢复。P0 不提供「同时删除这里的会话记录」：删除会话是单条
+   * 会话的动作，避免一次误操作销毁一批对话。
    *
-   * 与 `deleteSession` 同一套纪律：先走主进程的原生确认框（不用 `window.confirm`，
-   * 理由见协议注释），再调后端，最后把渲染层里「与库同寿命」的状态全部收干净——
-   * 缓存视图、图钉、会话列表、展开态，以及删的正好是当前项目时的选中态。
+   * 运行中的会话由主进程拒绝（它知道哪条在跑），错误照常落到顶部的错误条。
    */
-  const deleteProject = useCallback(
+  const removeProject = useCallback(
     async (project: Project) => {
       try {
+        // 条数取自库而不是缓存：项目可能没展开，渲染层手里根本没有它的会话列表
+        const sessions = await window.colt.invoke("session.list", { projectId: project.id });
         const { confirmed } = await window.colt.invoke("dialog.confirm", {
-          message: `确定移除项目「${project.name}」？`,
-          detail:
-            "该项目下的会话记录会被一并清除，且不可恢复。磁盘上的文件不受影响，之后重新打开该目录即可恢复登记。",
+          message: `将把「${project.name}」从列表移除，并收进「已移除」。`,
+          detail: `磁盘上的文件夹与其中的文件不会被删除。这里的 ${sessions.length} 条会话会一并收起，随时可以恢复；不会删除任何会话记录。`,
           confirmLabel: "移除",
         });
         if (!confirmed) return;
-        // 先取一份 id 清单：删完再问就问不到了（`session.list` 读的是库）。它同时也覆盖
-        // 「该项目没展开、渲染层手里根本没有它的会话列表」这一档——不能拿缓存当依据。
-        const doomed = await window.colt.invoke("session.list", { projectId: project.id });
-        await window.colt.invoke("project.delete", { projectId: project.id });
+        await window.colt.invoke("project.remove", { projectId: project.id });
 
-        const removedIds = new Set(doomed.map((session) => session.id));
-        // 缓存与库同寿命：会话没了，渲染层那份「最后视图」也别留着
-        for (const id of removedIds) dropCachedView(id);
-        // 主进程那份图钉已随 project.delete 清掉（见 ipc），这里同步视觉状态
-        setPinnedSessions((set) => {
-          let changed = false;
-          const next = new Set(set);
-          for (const id of removedIds) if (next.delete(id)) changed = true;
-          return changed ? next : set;
-        });
-        // 草稿没落库、也不在 sessionsByProject 里：它属于被删项目时同样要丢掉
-        if (draftRef.current?.projectId === project.id) discardDraft();
-
-        setSessionsByProject((map) => {
-          if (!map.has(project.id)) return map;
-          const next = new Map(map);
-          next.delete(project.id);
-          return next;
-        });
         setExpandedProjects((set) => {
           if (!set.has(project.id)) return set;
           const next = new Set(set);
           next.delete(project.id);
           return next;
         });
-
         const list = await window.colt.invoke("project.list", undefined);
         setProjects(list);
-        // 该项目名下的**已归档**会话也一并被清了：底部那个跨项目列表要跟着刷新
-        void refreshArchived();
-        // 删的正好是当前项目：切到列表里的下一条**空间**（任务工作区不算，没有就留空，
-        // 「无空间时的兜底」那条 effect 会接着给一条任务草稿，中间区不落空）
+        // 被移除的目录不能继续当「当前项目」：切到下一条在列的**工作目录**（没有就留空，
+        // 「无位置时的兜底」那条 effect 会给一条默认空间草稿，中间区不落空）
         setActiveProject((current) =>
-          current?.id === project.id ? (list.find((item) => item.kind !== "task") ?? null) : current,
-        );
-        setActiveSession((current) =>
-          current && current.projectId === project.id ? null : current,
+          current?.id === project.id
+            ? (list.find((item) => item.kind !== "task" && item.removedAt === null) ?? null)
+            : current,
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [discardDraft, refreshArchived],
+    [],
+  );
+
+  /** 从「已移除」区恢复工作目录：登记与会话原样回来（FR-04；同一路径已重开则主进程合并到那一行） */
+  const restoreProject = useCallback(
+    async (project: Project) => {
+      try {
+        await window.colt.invoke("project.restore", { projectId: project.id });
+        const list = await window.colt.invoke("project.list", undefined);
+        setProjects(list);
+        // 恢复后必须复检：目录可能仍然缺失/不可访问，结论不能沿用「被移除」时的旧状态
+        await refreshAvailability();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [refreshAvailability],
+  );
+
+  /**
+   * 重建默认空间会话的产物目录（FR-02 异常路径）：只补目录与 manifest，保留对话。
+   * 重建后立刻重查一次可用性，横幅应随之消失。
+   */
+  const rebuildArtifactDir = useCallback(
+    async (sessionId: string) => {
+      try {
+        await window.colt.invoke("session.rebuildArtifactDir", { sessionId });
+        await refreshAvailability();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [refreshAvailability],
+  );
+
+  /**
+   * 执行「在新位置继续」（FR-03）：主进程复制对话与改动记录并建好新会话，这里只负责
+   * 把它接进侧栏、切过去。源会话保持原样——复制期间它只读，完成后可继续。
+   */
+  const continueAtNewLocation = useCallback(
+    async (source: SessionInfo, target: Project) => {
+      setContinuing(true);
+      try {
+        const { session } = await window.colt.invoke("session.continueAtNewLocation", {
+          sessionId: source.id,
+          projectId: target.id,
+        });
+        setContinueFor(null);
+        setContinuingTo(null);
+        await loadProjectSessions(target.id);
+        setProjects(await window.colt.invoke("project.list", undefined));
+        setActiveProject(target);
+        setActiveSession(session);
+        setMainView("chat");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setContinuing(false);
+      }
+    },
+    [loadProjectSessions],
   );
 
   const query = sidebarQuery.trim().toLowerCase();
@@ -854,7 +964,12 @@ export default function App(): React.JSX.Element {
       archived={archived}
       context={
         archived
-          ? (projects.find((item) => item.id === session.projectId)?.name ?? "未知项目")
+          ? (() => {
+              const owner = projects.find((item) => item.id === session.projectId);
+              // 默认空间的会话没有目录名可说：按「工作位置」的称呼写「默认空间」（FR-05）
+              if (!owner) return "未知位置";
+              return owner.kind === "task" ? "默认空间" : owner.name;
+            })()
           : undefined
       }
       active={session.id === activeSession?.id}
@@ -979,25 +1094,43 @@ export default function App(): React.JSX.Element {
           data-sidebar
           className="flex w-[240px] shrink-0 flex-col border-r border-line bg-surface-raised"
         >
-          {/* 全局「新建会话」，常驻在侧栏上方：它**不指定空间**——按「不指定空间（目录）
-              时，新建会话归任务栏」的规则建到任务工作区（启动时 project.ensureTask 已保证
-              存在）。想建到某个空间里，用空间行悬停出现的「+」。ensureTask 失败（IO 错误）
-              时如实置灰，不做成点了没反应。 */}
+          {/* 全局「新建会话」，常驻在侧栏上方。落点**跟随当前上下文**（FR-01）：当前会话
+              属于某工作目录 → 建到该目录；当前在默认空间 / 没有会话 → 建到默认空间。
+              按钮上直接写出将要落到的目标，用户不用猜。想精确指定时用目录行的「+」
+              或默认空间分区头的「新建」。ensureTask 失败（IO 错误）时如实置灰，
+              不做成点了没反应。 */}
           <div className="shrink-0 space-y-2 px-3 pt-3">
             <button
               type="button"
               onClick={() => {
-                if (!taskProject) return;
+                if (!newSessionTarget) return;
+                // 左栏高亮跟随「当前会话所属项目」——默认空间也是项目，目标为它时同样要同步，
+                // 否则新会话已经落在默认空间、左栏却还亮着原来的工作目录
+                if (newSessionTarget.id !== activeProject?.id) {
+                  setActiveProject(newSessionTarget);
+                }
                 setMainView("chat");
-                void newSession(taskProject.id);
+                void newSession(newSessionTarget.id);
               }}
-              disabled={!taskProject}
+              disabled={!newSessionTarget}
               data-sidebar-new-session
-              title={taskProject ? "新建会话（不指定项目，归入任务栏）" : "正在准备任务目录…"}
+              title={
+                newSessionTarget
+                  ? `新建会话 · ${newSessionTarget.kind === "task" ? "默认空间" : newSessionTarget.name}`
+                  : "正在准备默认空间…"
+              }
               className="flex w-full items-center justify-center gap-1.5 rounded-sm border border-line px-2 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus {...ICON.sm} />
-              新建会话
+              <span className="truncate">
+                新建会话
+                {newSessionTarget && (
+                  <span className="text-text-muted">
+                    {" · "}
+                    {newSessionTarget.kind === "task" ? "默认空间" : newSessionTarget.name}
+                  </span>
+                )}
+              </span>
             </button>
             {/* 侧栏搜索：过滤**这一份列表**（会话标题 / 项目名与路径），不是搜会话正文——
                 那是 ④ 会话头那枚「搜索」的事，两回事。命中后侧栏切成过滤视图，见 sidebarRows。 */}
@@ -1030,23 +1163,34 @@ export default function App(): React.JSX.Element {
             </div>
           </div>
           {/*
-            「任务」栏：与「空间」栏平级。不指定空间（目录）新建的会话全落这里——
-            任务工作区是**一条真实的项目行**（会话必须落在真实目录上，worker 的 cwd 由它推出），
-            只是它不进「空间」列表、也没有项目行与移除入口。平铺不折叠到项目行：
-            任务之间不分组，列表自身限高可滚，不把「空间」栏挤没。
+            「默认空间」栏：与「工作目录」栏平级。不指定工作位置新建的会话全落这里——
+            默认空间是**一条真实的项目行**（会话必须落在真实目录上），只是它不出现在
+            「工作目录」列表里、也没有移除入口（它承担所有未指定目录会话的落点，不能留空）。
+            会话平铺、不分组、不显示路径，列表自身限高可滚，不把下方目录区挤没。
           */}
           {taskProject && (
             <SidebarSection
-              title="任务"
+              title="默认空间"
               fill={false}
-              action={{
-                label: "新建",
-                icon: <Plus {...ICON.xs} />,
-                onClick: () => {
-                  setMainView("chat");
-                  void newSession(taskProject.id);
+              actions={[
+                {
+                  label: "产物",
+                  icon: <FolderOpen {...ICON.xs} />,
+                  title: "默认空间的跨会话产物清单（含已删除会话）",
+                  onClick: () => setMainView("artifacts"),
                 },
-              }}
+                {
+                  label: "新建",
+                  icon: <Plus {...ICON.xs} />,
+                  title: "在默认空间新建会话",
+                  onClick: () => {
+                    // 与顶部按钮一致：高亮跟随新会话所属项目（这里就是默认空间）
+                    if (taskProject.id !== activeProject?.id) setActiveProject(taskProject);
+                    setMainView("chat");
+                    void newSession(taskProject.id);
+                  },
+                },
+              ]}
             >
               {searching && searchSessions === null ? (
                 <div className="px-2 py-1.5 text-xs text-text-muted">搜索中…</div>
@@ -1054,9 +1198,11 @@ export default function App(): React.JSX.Element {
                 <div className="px-2 py-1.5 text-xs text-text-muted">加载中…</div>
               ) : taskRows.length === 0 ? (
                 searching ? (
-                  <div className="px-2 py-1.5 text-xs text-text-muted">没有匹配的任务会话</div>
+                  <div className="px-2 py-1.5 text-xs text-text-muted">没有匹配的默认空间会话</div>
                 ) : (
-                  <Empty>不指定项目的新会话会落在这里，点上方「新建会话」开始</Empty>
+                  <Empty>
+                    不指定目录的会话会出现在这里，每条都有自己的产物目录
+                  </Empty>
                 )
               ) : (
                 taskRows.map((session) => renderSessionRow(session, false))
@@ -1064,11 +1210,18 @@ export default function App(): React.JSX.Element {
             </SidebarSection>
           )}
           <SidebarSection
-            title="项目"
-            action={{ label: "打开", icon: <FolderOpen {...ICON.xs} />, onClick: () => void pickProject() }}
+            title="工作目录"
+            actions={[
+              {
+                label: "打开",
+                icon: <FolderOpen {...ICON.xs} />,
+                title: "打开一个工作目录",
+                onClick: () => void pickProject(),
+              },
+            ]}
           >
             {spaceProjects.length === 0 ? (
-              <Empty>还没有项目，点「打开」选择目录</Empty>
+              <Empty>还没有工作目录，点「打开」选择一个文件夹</Empty>
             ) : searching && searchSessions === null ? (
               <div className="px-2 py-1.5 text-xs text-text-muted">搜索中…</div>
             ) : searching && sidebarRows.length === 0 ? (
@@ -1089,6 +1242,7 @@ export default function App(): React.JSX.Element {
                       active={project.id === activeProject?.id}
                       expanded={expanded}
                       busy={list.some((session) => runningSessions.has(session.id))}
+                      unavailable={unavailableProjects.has(project.id)}
                       onToggle={() => {
                         // 搜索态：收起只作用于**本次搜索**——不写 expandedProjects（用户的展开态
                         // 不能被搜索污染），也不必重拉（结果集本就是从全量会话算出来的）。
@@ -1121,7 +1275,7 @@ export default function App(): React.JSX.Element {
                         setMainView("chat");
                         void newSession(project.id);
                       }}
-                      onDelete={() => void deleteProject(project)}
+                      onRemove={() => void removeProject(project)}
                     />
                     {expanded && (
                       <div className="mt-0.5 pl-3">
@@ -1143,8 +1297,67 @@ export default function App(): React.JSX.Element {
             )}
           </SidebarSection>
           {/*
-            「已归档」区：**钉在侧栏底部**（`shrink-0`，在任务 / 空间两栏之后），
-            跨空间汇总——归档的从上面的列表里收走、全落这里，默认收起。
+            「已移除」区（FR-07）：从列表移除的工作目录收在这里，默认收起、标题带数量。
+            展开只列目录名与「恢复」——登记与会话都还在，恢复后其下会话一起回来。
+            没有已移除目录时整个分区不显示。
+          */}
+          {removedProjects.length > 0 && (
+            <div className="flex min-h-0 shrink-0 flex-col border-t border-line">
+              <button
+                type="button"
+                data-removed-toggle
+                aria-expanded={removedOpen}
+                onClick={() => setRemovedOpen((value) => !value)}
+                className="flex shrink-0 items-center gap-1.5 px-3.5 py-2 text-left transition hover:bg-surface-overlay/60"
+              >
+                <ChevronRight
+                  {...ICON.xs}
+                  className={cn(
+                    "shrink-0 text-text-muted transition-transform",
+                    removedOpen && "rotate-90",
+                  )}
+                />
+                <span className="truncate text-xs font-semibold uppercase tracking-[.5px] text-text-muted">
+                  已移除
+                </span>
+                <span
+                  data-removed-count
+                  className="ml-auto shrink-0 text-2xs tabular-nums text-text-muted"
+                >
+                  {removedProjects.length}
+                </span>
+              </button>
+              {removedOpen && (
+                <div className="max-h-[30vh] min-h-0 overflow-y-auto px-2 pb-2">
+                  <div className="px-1.5 pb-1 text-2xs text-text-muted">
+                    恢复后其下会话一起回来
+                  </div>
+                  {removedProjects.map((project) => (
+                    <div
+                      key={project.id}
+                      data-removed-row={project.id}
+                      className="flex items-center gap-1.5 rounded-sm py-1 pl-1.5 pr-1.5 hover:bg-surface-overlay/60"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm text-text-secondary">
+                        {project.name}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void restoreProject(project)}
+                        data-removed-restore={project.id}
+                        className="shrink-0 rounded-xs px-1.5 py-0.5 text-2xs text-text-muted transition hover:bg-line-soft hover:text-text-primary"
+                      >
+                        恢复
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {/*
+            「已归档」区：**钉在侧栏底部**（`shrink-0`，在默认空间 / 工作目录 / 已移除之后），
+            跨位置汇总——归档的从上面的列表里收走、全落这里，默认收起。
             只有确实有归档会话时才出现（没有就不占地方）。展开后限高可滚，别把上面的栏挤没。
             收起状态下的条数也要如实，故 `archivedSessions` 在挂载时就拉好（见 refreshArchived）。
           */}
@@ -1222,15 +1435,32 @@ export default function App(): React.JSX.Element {
           <div className="min-h-0 flex-1">
             {mainView === "settings" ? (
               <Settings project={activeProject} />
+            ) : mainView === "artifacts" ? (
+              // 默认空间产物清单：不依赖当前会话 / 项目——它是整个容器的视图
+              <DefaultSpaceArtifacts onClose={() => setMainView("chat")} />
             ) : mainView === "changes" && activeProject ? (
               <ProjectChanges key={activeProject.id} projectId={activeProject.id} />
             ) : activeSession && conversationProject ? (
               <Conversation
                 key={activeSession.id}
                 sessionId={activeSession.id}
-                // 会话有自己的目录（任务会话的时间子目录）就显示它；null 回落项目根。
-                // 草稿 cwd 恒为 null——目录要等首条消息落库才建，草稿态先显示任务基目录
+                // 会话有自己的目录（默认空间会话的产物目录）就显示它；null 回落项目根。
+                // 草稿 cwd 恒为 null——目录要等首条消息落库才建，草稿态先按项目根走。
                 cwd={activeSession.cwd ?? conversationProject.rootPath}
+                locationKind={conversationProject.kind === "task" ? "default" : "workspace"}
+                locationName={conversationProject.name}
+                locationUnavailable={
+                  // 「已移除」也算不可用：目录可能还在盘上，但这条会话**不能运行**
+                  // （主进程会拒绝），横幅要如实提前告知（FR-07 / FR-08）
+                  conversationProject.removedAt !== null ||
+                  unavailableProjects.has(conversationProject.id) ||
+                  unavailableSessions.has(activeSession.id)
+                }
+                onRebuildArtifactDir={
+                  conversationProject.kind === "task"
+                    ? () => void rebuildArtifactDir(activeSession.id)
+                    : undefined
+                }
                 sessionModelRef={activeSession.modelRef}
                 sessionThinkingLevel={activeSession.thinkingLevel}
                 runStartedAt={runningSessions.get(activeSession.id)}
@@ -1242,6 +1472,10 @@ export default function App(): React.JSX.Element {
                 onPickDirectory={() => void pickProject()}
                 onNewWorkspace={() => void createWorkspace()}
                 onSessionForked={handleSessionForked}
+                onContinueAtNewLocation={() => {
+                  setContinueFor(activeSession);
+                  setContinuingTo(null);
+                }}
               />
             ) : (
               <div className="flex h-full items-center justify-center">
@@ -1256,23 +1490,156 @@ export default function App(): React.JSX.Element {
           </div>
         </main>
       </div>
+      {continueFor && (
+        <ContinueDialog
+          source={continueFor}
+          currentProjectId={continueFor.projectId}
+          targets={[taskProject, ...spaceProjects].filter(
+            (item): item is Project => item !== null,
+          )}
+          unavailableIds={unavailableProjects}
+          selectedId={continuingTo}
+          busy={continuing}
+          onSelect={setContinuingTo}
+          onCancel={() => {
+            if (continuing) return;
+            setContinueFor(null);
+            setContinuingTo(null);
+          }}
+          onConfirm={(target) => void continueAtNewLocation(continueFor, target)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 「在新位置继续…」的目标选择框（FR-03）。
+ *
+ * 只列**已登记**的工作目录与默认空间：目标必须是一个真实位置，选择与当前相同的位置时
+ * 确认按钮置灰（PRD：不产生任何变化）。复制期间显示不确定进度（「正在复制对话…」），
+ * 不承诺百分比，也不阻塞其他会话——它只是这一条会话的复制。
+ */
+function ContinueDialog({
+  source,
+  currentProjectId,
+  targets,
+  unavailableIds,
+  selectedId,
+  busy,
+  onSelect,
+  onCancel,
+  onConfirm,
+}: {
+  source: SessionInfo;
+  currentProjectId: string;
+  targets: Project[];
+  /** 当前查到的不可用工作目录（FR-04）：不可作为复制目标，按钮上直接说明 */
+  unavailableIds: ReadonlySet<string>;
+  selectedId: string | null;
+  busy: boolean;
+  onSelect: (projectId: string) => void;
+  onCancel: () => void;
+  onConfirm: (target: Project) => void;
+}): React.JSX.Element {
+  const selected = targets.find((item) => item.id === selectedId) ?? null;
+  const sameLocation = selected !== null && selected.id === currentProjectId;
+  const selectedUnavailable =
+    selected !== null && selected.kind !== "task" && unavailableIds.has(selected.id);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
+      <div
+        role="dialog"
+        aria-label="在新位置继续"
+        data-continue-dialog
+        className="flex max-h-[80vh] w-full max-w-[480px] flex-col overflow-hidden rounded-md border border-line bg-surface-raised shadow-lg"
+      >
+        <div className="shrink-0 border-b border-line px-4 py-3">
+          <h3 className="m-0 text-sm font-semibold text-text-primary">在新位置继续</h3>
+          <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+            「{source.title}」会复制成一条新会话，对话与改动记录一起带过去；原会话保持原样。
+            文件不会复制，旧工具卡仍可打开原文件。复制期间原会话暂时只读，完成后可以继续。
+          </p>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {targets.map((target) => {
+            const isCurrent = target.id === currentProjectId;
+            const isDefault = target.kind === "task";
+            const unavailable = !isDefault && unavailableIds.has(target.id);
+            return (
+              <button
+                key={target.id}
+                type="button"
+                disabled={isCurrent || unavailable || busy}
+                onClick={() => onSelect(target.id)}
+                data-continue-target={target.id}
+                data-continue-unavailable={unavailable ? "" : undefined}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm transition",
+                  selectedId === target.id ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",
+                  (isCurrent || unavailable) && "cursor-not-allowed opacity-40",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate text-text-primary">
+                  {isDefault ? "默认空间" : target.name}
+                </span>
+                {isCurrent && <span className="shrink-0 text-2xs text-text-muted">当前位置</span>}
+                {unavailable && (
+                  <span className="shrink-0 text-2xs text-warning-fg">位置不可用</span>
+                )}
+                {isDefault && !isCurrent && (
+                  <span className="shrink-0 text-2xs text-text-muted">分配独立产物目录</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-3">
+          {busy && <span className="mr-auto text-xs text-text-muted">正在复制对话…</span>}
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-sm border border-line px-3 py-1.5 text-xs text-text-secondary transition hover:border-line-strong hover:text-text-primary disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => selected && onConfirm(selected)}
+            disabled={!selected || sameLocation || selectedUnavailable || busy}
+            data-continue-confirm
+            title={
+              sameLocation
+                ? "目标与当前位置相同，不会产生变化"
+                : selectedUnavailable
+                  ? "目标目录当前不可用"
+                  : undefined
+            }
+            className="rounded-sm border border-line px-3 py-1.5 text-xs text-text-primary transition hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            继续
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 function SidebarSection({
   title,
-  action,
+  actions,
   collapsible = true,
   fill = true,
   children,
 }: {
   title: string;
-  action?: { label: string; icon: React.ReactNode; onClick: () => void };
+  /** 分区头右侧的动作（可多个：默认空间既有「产物」也有「＋ 新建」） */
+  actions?: { label: string; icon: React.ReactNode; onClick: () => void; title?: string }[];
   collapsible?: boolean;
   /**
-   * 是否吃满剩余高度（flex-1）。「空间」栏吃满；「任务」栏自适应内容、限高可滚
-   * （max-h-[40vh]）——任务通常不多，不该平白占掉半个侧栏把「空间」栏挤没。
+   * 是否吃满剩余高度（flex-1）。「工作目录」栏吃满；「默认空间」栏自适应内容、限高可滚
+   * （max-h-[40vh]）——默认空间的会话通常不多，不该平白占掉半个侧栏把目录区挤没。
    */
   fill?: boolean;
   children: React.ReactNode;
@@ -1299,16 +1666,19 @@ function SidebarSection({
             {title}
           </span>
         </button>
-        {action && (
+        {actions?.map((action) => (
           <button
+            key={action.label}
             type="button"
             onClick={action.onClick}
+            title={action.title}
+            data-section-action={action.label}
             className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-xs text-text-secondary opacity-0 transition group-hover:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus:opacity-100"
           >
             {action.icon}
             {action.label}
           </button>
-        )}
+        ))}
       </div>
       {!collapsed && (
         <div
@@ -1330,26 +1700,29 @@ function formatElapsed(startedAt: number, now: number): string {
   return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
 }
 
-/** 空间行：折叠三角 + 空间名 + 新建会话 + 移除工作区 */
+/** 工作目录行：折叠三角 + 目录名 + 新建会话 + 从列表移除 */
 function ProjectRow({
   project,
   active,
   expanded,
   busy,
+  unavailable,
   onToggle,
   onActivate,
   onNewSession,
-  onDelete,
+  onRemove,
 }: {
   project: Project;
   active: boolean;
   expanded: boolean;
-  /** 该项目下有会话正在运行（含等人回话）——此时不允许移除，与 session.delete 一致 */
+  /** 该目录下有会话正在运行（含等人回话）——此时不允许移除，与主进程的拒绝一致 */
   busy: boolean;
+  /** 位置不可用（FR-04）：仍可打开查看历史，但不把新会话建进去；标记要一直看得见 */
+  unavailable: boolean;
   onToggle: () => void;
   onActivate: () => void;
   onNewSession: () => void;
-  onDelete: () => void;
+  onRemove: () => void;
 }): React.JSX.Element {
   return (
     <div
@@ -1370,27 +1743,42 @@ function ProjectRow({
           className={cn("transition-transform", !expanded && "-rotate-90")}
         />
       </button>
-      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-muted" />
+      <span
+        className={cn(
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          unavailable ? "bg-danger" : "bg-text-muted",
+        )}
+      />
       <button type="button" onClick={onActivate} className="min-w-0 flex-1 text-left">
         <div className="truncate text-sm text-text-primary">{project.name}</div>
       </button>
+      {unavailable && (
+        <span
+          data-project-unavailable
+          title="目录不存在或暂时无法访问：会话可查看历史，但不能发送"
+          className="shrink-0 rounded-xs bg-warning-soft px-1.5 py-0.5 text-2xs text-warning-fg"
+        >
+          位置不可用
+        </span>
+      )}
       <button
         type="button"
         onClick={onNewSession}
-        title="新建会话"
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-text-primary focus:opacity-100"
+        disabled={unavailable}
+        title={unavailable ? "位置不可用：请重新定位或在别处新建" : "新建会话"}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-text-primary focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
       >
         <Plus {...ICON.xs} />
       </button>
       <button
         type="button"
-        onClick={onDelete}
+        onClick={onRemove}
         disabled={busy}
         data-project-remove
-        title={busy ? "有会话正在运行，暂不能移除项目" : "移除项目（不影响磁盘上的文件）"}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-danger-fg focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+        title={busy ? "有会话正在运行，暂不能移除目录" : "从列表移除（不影响磁盘上的文件，可恢复）"}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted opacity-0 transition group-hover:opacity-100 hover:bg-line-soft hover:text-text-primary focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
       >
-        <Trash2 {...ICON.xs} />
+        <X {...ICON.xs} />
       </button>
     </div>
   );

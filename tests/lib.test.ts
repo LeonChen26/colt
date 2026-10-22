@@ -224,9 +224,11 @@ const change = (
     added?: number;
     removed?: number;
     net?: { added: number; removed: number } | null;
+    /** 执行时根（FR-06）；缺省 null = 旧行，按会话当前根解析 */
+    root?: string | null;
   } = {},
 ): ViewFileChange => ({
-  id: `${path}@${options.at ?? 0}`,
+  id: `${path}@${options.at ?? 0}@${options.root ?? ""}`,
   path,
   kind: options.kind ?? "edit",
   patch: null,
@@ -235,6 +237,7 @@ const change = (
   timestamp: options.at ?? 0,
   netAddedLines: options.net?.added ?? null,
   netRemovedLines: options.net?.removed ?? null,
+  execRoot: options.root ?? null,
 });
 
 describe("isProjectRelative", () => {
@@ -413,6 +416,45 @@ describe("buildChangeList", () => {
     assert.equal(list.places, 0);
     assert.equal(list.fileCount, 0);
     assert.equal(list.hidden, 0);
+    assert.equal(list.rootCount, 0);
+  });
+
+  test("同一相对路径在不同执行时根下是两条，不跨根合并也不跨根相加（FR-06）", () => {
+    const list = buildChangeList([
+      change("a.ts", { root: "C:/old", at: 1, net: { added: 1, removed: 0 } }),
+      change("a.ts", { root: "C:/new", at: 2, net: { added: 5, removed: 0 } }),
+    ]);
+    assert.equal(list.fileCount, 2, "两个位置各自算一个文件");
+    assert.equal(list.rootCount, 2);
+    assert.equal(list.groups.length, 2, "同目录在不同根下也是两个组");
+    assert.deepEqual(
+      list.groups.map((group) => group.root).sort(),
+      ["C:/new", "C:/old"],
+    );
+    assert.equal(list.netAddedLines, 6, "净值按文件相加，而不是把同一路径的历史并成一条");
+  });
+
+  test("同一个根下同一路径仍折成一条（历史倒序），rootCount 为 1", () => {
+    const list = buildChangeList([
+      change("a.ts", { root: "C:/x", at: 1 }),
+      change("a.ts", { root: "C:/x", at: 9 }),
+    ]);
+    assert.equal(list.fileCount, 1);
+    assert.equal(list.rootCount, 1);
+    assert.equal(list.groups[0]?.files[0]?.history.length, 2);
+    assert.deepEqual(
+      list.groups[0]?.files[0]?.history.map((item) => item.timestamp),
+      [9, 1],
+    );
+  });
+
+  test("旧行（execRoot 为 null）与带根的行就算同路径也分开——不确定时宁可多一组", () => {
+    const list = buildChangeList([
+      change("a.ts", { at: 1 }),
+      change("a.ts", { root: "C:/new", at: 2 }),
+    ]);
+    assert.equal(list.fileCount, 2);
+    assert.equal(list.rootCount, 2);
   });
 });
 

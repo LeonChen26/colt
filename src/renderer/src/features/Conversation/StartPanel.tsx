@@ -24,11 +24,17 @@ const SUGGESTIONS = ["修复登录超时", "给 utils 补单测", "把日志换�
 
 export function StartPanel({
   cwd,
+  locationKind,
+  locationName,
   onPickDirectory,
   onNewWorkspace,
   onSuggestion,
 }: {
   cwd: string;
+  /** 位置类型：默认空间不显示任何系统代管路径；工作目录显示目录名（悬停给完整路径） */
+  locationKind: "default" | "workspace";
+  /** 工作目录的显示名（文件夹名）。默认空间不用 */
+  locationName: string;
   /** 走原生选目录框换一个已有目录（换过去=换项目，见 App 的 pickProject） */
   onPickDirectory: () => void;
   /** 不用挑目录：让主进程在家目录下造一个空的（App 的 createWorkspace） */
@@ -91,10 +97,25 @@ export function StartPanel({
         平时看它就够了，要看的地方是 ② 会话头。
       */}
       <div className="mt-4 flex max-w-[560px] flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 text-xs text-text-secondary">
-        <span className="flex min-w-0 items-center gap-1.5" title="这条会话的工作目录">
+        {/* 位置 chip（FR-06）：工作目录显示「工作目录 · 目录名」，悬停给完整路径；
+            默认空间只说「默认空间」——它的路径由系统代管，只从「查看产物 / 打开位置」里查，
+            不做成起手区上的正文。 */}
+        <span
+          className="flex min-w-0 items-center gap-1.5"
+          title={
+            locationKind === "default"
+              ? "默认空间：这条会话在自己的产物目录里工作"
+              : cwd
+          }
+        >
           <Folder {...ICON.xs} className="shrink-0 text-text-muted" />
-          <span data-conv-workdir className="truncate font-mono">
-            {cwd}
+          <span
+            data-conv-workdir
+            data-conv-location={locationKind}
+            title={locationKind === "default" ? undefined : cwd}
+            className="truncate"
+          >
+            {locationKind === "default" ? "默认空间" : `工作目录 · ${locationName}`}
           </span>
         </span>
         <div ref={dirRef} className="relative shrink-0">

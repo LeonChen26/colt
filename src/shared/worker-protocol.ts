@@ -228,6 +228,12 @@ export interface ViewFileChange {
    */
   netAddedLines: number | null;
   netRemovedLines: number | null;
+  /**
+   * 改动发生时的会话根（执行时根）。path 是相对路径，解析按它而不是会话当前根：
+   * 「在新位置继续」复制过去的旧改动仍指向旧位置（FR-06 按根分组、不跨根合并）。
+   * null = 旧行，按会话当前根回落。
+   */
+  execRoot?: string | null;
 }
 
 /**
@@ -487,6 +493,12 @@ export type WorkerCommand =
       type: "init";
       sessionsRoot: string;
       cwd: string;
+      /**
+       * AGENTS.md 向上查找的**截止目录**（不含它本身）。默认空间会话由主进程传容器根：
+       * 约定查找不越过容器，「不共享空间级记忆/约定」才不会被容器上层的一份 AGENTS.md
+       * 悄悄破坏（PRD FR-08）。工作目录会话不传，照旧走到文件系统根。
+       */
+      instructionsStopAt?: string;
       /** Colt 自有的会话 ID，投影与路由均以它为准 */
       externalSessionId: string;
       /** 内核会话 ID（`d<对话 id>`），有则续接历史，无则新建 */

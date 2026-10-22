@@ -6,7 +6,7 @@
  * 负责启动、路由命令、转发视图、进程池上限与回收
  */
 import { app, utilityProcess, type UtilityProcess, type BrowserWindow } from "electron";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -33,7 +33,8 @@ import { collectMcpEnvKeys } from "./mcp/env-keys";
 import { resolveRgPath } from "./lib/rg-path";
 import { listProviders } from "./providers";
 import { toProviderDirectory } from "@shared/provider-directory";
-import { deriveSessionTitle } from "@shared/session-title";
+import { deriveSessionTitle, keepContinuationSuffix } from "@shared/session-title";
+import { syncManifestTitle } from "./lib/artifact-manifest";
 import type { CompactionConfig } from "@shared/compaction-config";
 // 无需密钥的服务（requiresKey === false）装配时占位用的假密钥：pi-ai 的 openai-completions
 // 层无法表达「这个服务不需要鉴权」，apiKey 为空会直接抛「No API key for provider」。
@@ -42,7 +43,7 @@ import { KEYLESS_PLACEHOLDER } from "@shared/provider-factory";
 import { handleToolRpc } from "./host/tool-rpc";
 import { QuestionStore } from "./question-store";
 import { todoStore } from "./todo-store";
-import { getSession, listSessions, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed, recordSessionEvent, recordApprovalAudit } from "./db/repo";
+import { getSession, getProject, listSessions, setKernelSessionId, setSessionModel, setSessionThinkingLevel, touchSession, recordFileChange, recordFileBaseline, getFileBaseline, setChangeNet, recordUsage, recordToolCall, listSessionFileChanges, listSessionTodos, latestContextUsed, recordSessionEvent, recordApprovalAudit } from "./db/repo";
 import { normalizeRootKey } from "./db";
 import { indexMemorySnapshot } from "./db/memory-index";
 import { computeNetChange } from "./net-change";
@@ -220,6 +221,18 @@ export interface WorkerEntry {
    * （与「本会话内一律放行」的语义矛盾）。
    */
   modeEpoch: number;
+}
+
+/**
+ * 默认空间会话的 AGENTS.md 查找截止目录（PRD FR-08）：容器根 = 产物目录的父目录。
+ * 走到容器就停，容器根及上层目录里的约定不参与加载；工作目录会话返回 undefined，
+ * 照旧一路走到文件系统根。
+ */
+function instructionsBoundary(sessionId: string): string | undefined {
+  const session = getSession(sessionId);
+  if (!session?.cwd) return undefined;
+  if (getProject(session.projectId)?.kind !== "task") return undefined;
+  return dirname(session.cwd);
 }
 
 export class SessionManager {
@@ -947,11 +960,14 @@ export class SessionManager {
           entry.lastActiveAt = Date.now();
           // 用首条用户消息作为会话标题（派生规则在 `@shared/session-title`，
           // 渲染层侧栏用的是同一个函数——两边各写一遍就是「界面与侧栏标题不一致」的来源）
-          touchSession(
-            options.sessionId,
-            message.view.messages.length,
-            deriveSessionTitle(message.view.messages),
-          );
+          const derived = deriveSessionTitle(message.view.messages);
+          // 「在新位置继续」复制出来的标题带「（续）」：标题是每次视图重算的，所以这里必须
+          // 按原后缀补回，否则用户下一次发言后两个会话在左栏就同名了（FR-03）。
+          const title = keepContinuationSuffix(derived, getSession(options.sessionId)?.title);
+          touchSession(options.sessionId, message.view.messages.length, title);
+          // 默认空间会话：产物目录里的 manifest 标题跟随（PRD FR-02 生命周期）。
+          // 内部带缓存，标题没变时不做任何 IO；工作目录里的会话没有 manifest，读一次即止。
+          if (options.cwd && title) syncManifestTitle(options.cwd, title, options.sessionId);
           this.#emit("session.view", entry.view);
           // 分叉流程在等第一份视图（标题与消息数要靠它落库），到了就放行
           this.#resolveViewWaiters(options.sessionId);
@@ -993,16 +1009,23 @@ export class SessionManager {
         case "fileChange": {
           // 基线只在「本会话首次改动该文件」时随改动带来；落库按最早那份为准（见 recordFileBaseline）
           if (message.baseline !== undefined) {
-            recordFileBaseline(options.sessionId, message.change.path, message.baseline);
+            // 基线记下它是在哪个根上抓的（FR-06）：同一相对路径在别的根下是另一个文件
+            recordFileBaseline(
+              options.sessionId,
+              message.change.path,
+              message.baseline,
+              message.change.execRoot ?? options.cwd,
+            );
           }
           const rowId = recordFileChange(options.sessionId, message.change);
           // 净值在这里算、当场写死：**以库里的基线为准**，不用消息里带来的那份——
           // worker 重启后不记得发过基线，会把「已经改过」的内容再报一次，信它就等于
-          // 把会话前段的变化吃掉。算不出（没有基线 / 读不到）时写 NULL，界面因此不下结论。
+          // 把会话前段的变化吃掉。算不出（没有基线 / 读不到 / 根对不上）时写 NULL，
+          // 界面因此不下结论。
           const net = computeNetChange(
             options.cwd,
             message.change.path,
-            getFileBaseline(options.sessionId, message.change.path),
+            getFileBaseline(options.sessionId, message.change.path, options.cwd),
           );
           setChangeNet(rowId, net.status === "ok" ? { added: net.added, removed: net.removed } : null);
           // 唯一的写入点：缓存必须在此失效，否则后续投影会一直停在旧列表
@@ -1216,6 +1239,10 @@ export class SessionManager {
       type: "init",
       sessionsRoot: this.#sessionsRoot(),
       cwd: options.cwd,
+      // 默认空间会话：AGENTS.md 查找截止于容器根（PRD FR-08）。工作目录会话不传，照旧到根。
+      ...(instructionsBoundary(options.sessionId) === undefined
+        ? {}
+        : { instructionsStopAt: instructionsBoundary(options.sessionId) }),
       externalSessionId: options.sessionId,
       kernelSessionId: getSession(options.sessionId)?.kernelSessionId ?? undefined,
       // 新会话分叉：worker 打开父对话后在副本库里 fork 到该条目（增量字段，普通启动不带）

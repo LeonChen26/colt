@@ -180,7 +180,10 @@ export function FollowPanel({
   // 此前两处都叫「N 文件」却给出两个不同的数（段二写去重文件数、改动面板写条数），
   // 用户在同一屏看到「3 文件」与「7 处」无从理解——故两个数都必须显式命名。
   const places = changes.length;
-  const fileCount = new Set(changes.map((change) => change.path)).size;
+  // 去重键带上执行时根：同一相对路径在两个根下是两个文件（FR-06「不跨根合并」），
+  // 只按 path 去重会让「在新位置继续」之后的总账少算文件。
+  const fileCount = new Set(changes.map((change) => `${change.execRoot ?? ""}\u0000${change.path}`))
+    .size;
   // `+a −b` 是**净值**（基线 → 现在），与清单层的卡片、头部同一处算出（`buildChangeList`）——
   // 逐次相加会把「改了又退回去」读成实打实的改动，那正是总账最不该给的错觉。
   const net = buildChangeList(changes);

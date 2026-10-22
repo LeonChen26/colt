@@ -162,8 +162,13 @@ export const MessageBubble = memo(function MessageBubble({
   /** `toolCallId → 子代理`：`subagent` 那次调用据此特化成子代理卡 */
   subagents: ReadonlyMap<string, ViewSubagent>;
   onHoverFile?: (path: string | null) => void;
-  /** 点工具卡里的文件路径 → 在右栏预览它（A3-2） */
-  onOpenFile?: (path: string) => void;
+  /**
+   * 点工具卡里的文件路径 → 在右栏预览它（A3-2）。
+   *
+   * `root` 是这次改动**发生时的根**（`ViewFileChange.execRoot`）：「在新位置继续」之后同一
+   * 相对路径在两个根下各有一份文件，没有它就分不清点的是哪一份（PRD FR-06）。
+   */
+  onOpenFile?: (path: string, root?: string | null) => void;
   /** 点子代理卡上的「在右栏查看完整过程」→ 下钻到它的完整流 */
   onOpenSubagent?: (id: string) => void;
   /** 点运行中子代理卡上的「中止」→ 只收掉这一个子代理 */
@@ -330,7 +335,8 @@ export function MessageWindow({
   /** `toolCallId → 子代理`（④ 卡特化用；引用由 `useStableView` 稳定住） */
   subagents: Map<string, ViewSubagent>;
   onHoverFile?: (path: string | null) => void;
-  onOpenFile?: (path: string) => void;
+  /** 同 `ToolCard`：带上这次改动发生时的根（FR-06） */
+  onOpenFile?: (path: string, root?: string | null) => void;
   onOpenSubagent?: (id: string) => void;
   onAbortSubagent?: (id: string) => void;
   /**
@@ -956,8 +962,8 @@ export function ToolCard({
   /** 改动展开状态 → 回传真源 */
   onToggleOpen: (id: string, open: boolean) => void;
   onHoverFile?: (path: string | null) => void;
-  /** 点副标题里的文件路径 → 在右栏预览它（A3-2） */
-  onOpenFile?: (path: string) => void;
+  /** 点副标题里的文件路径 → 在右栏预览它（A3-2）；`root` = 这次改动的执行时根（FR-06） */
+  onOpenFile?: (path: string, root?: string | null) => void;
   /** 点子代理卡的「在右栏查看完整过程」→ 下钻到它的完整流 */
   onOpenSubagent?: (id: string) => void;
   /** 点运行中子代理卡上的「中止」→ 只收掉这一个子代理（不动主对话与其它子代理） */
@@ -1043,6 +1049,11 @@ export function ToolCard({
    */
   const previewPath =
     change?.path ?? (path !== undefined && path === subtitle ? path : undefined);
+  /**
+   * 这次预览对应的执行时根：有改动记录就带它的根；没记录（工具卡读的是没改过的文件）为
+   * null，由主进程回落到会话当前根。它在「在新位置继续」后才有分别（FR-06）。
+   */
+  const previewRoot = change?.execRoot ?? null;
   const clickable = previewPath !== undefined;
   const subtitleRef = useRef<HTMLSpanElement>(null);
   const [subtitleTruncated, setSubtitleTruncated] = useState(false);
@@ -1106,13 +1117,13 @@ export function ToolCard({
           title={clickable ? `点击预览 ${previewPath}` : subtitleTruncated ? subtitleText : undefined}
           role={clickable ? "button" : undefined}
           tabIndex={clickable ? 0 : undefined}
-          onClick={clickable ? () => onOpenFile?.(previewPath) : undefined}
+          onClick={clickable ? () => onOpenFile?.(previewPath, previewRoot) : undefined}
           onKeyDown={
             clickable
               ? (event) => {
                   if (event.key !== "Enter" && event.key !== " ") return;
                   event.preventDefault();
-                  onOpenFile?.(previewPath);
+                  onOpenFile?.(previewPath, previewRoot);
                 }
               : undefined
           }

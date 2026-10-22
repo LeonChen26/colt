@@ -15,7 +15,9 @@ import {
   ArrowDown,
   ArrowUp,
   ChartColumn,
+  Copy,
   Folder,
+  FolderOpen,
   GitBranch,
   ImagePlus,
   Loader2,
@@ -134,6 +136,8 @@ const THINKING_LEVEL_HINTS: Record<ThinkingLevel, string> = {
 export function Conversation({
   sessionId,
   cwd,
+  locationKind,
+  locationName,
   sessionModelRef,
   sessionThinkingLevel,
   runStartedAt,
@@ -143,9 +147,16 @@ export function Conversation({
   onPickDirectory,
   onNewWorkspace,
   onSessionForked,
+  onContinueAtNewLocation,
+  locationUnavailable = false,
+  onRebuildArtifactDir,
 }: {
   sessionId: string;
   cwd: string;
+  /** 这条会话的工作位置类型（FR-06）：默认空间 / 工作目录 */
+  locationKind: "default" | "workspace";
+  /** 工作目录的显示名（文件夹名）；默认空间不用 */
+  locationName: string;
   /** 会话上次选定的模型（"providerId/modelId"，未选过为 null），用于判断本次能否自动打开 */
   sessionModelRef: string | null;
   /** 会话上次选定的思考等级（未选过为 null，按默认值回显） */
@@ -177,6 +188,15 @@ export function Conversation({
    * App 负责把它加进侧栏并切过去；本组件不持有会话列表。
    */
   onSessionForked: (session: SessionInfo) => void;
+  /**
+   * 「在新位置继续…」（PRD FR-03）：复制对话与改动记录到另一个工作位置。
+   * 选择与确认由 App 负责（它持有项目列表与会话列表），本组件只提供入口。
+   */
+  onContinueAtNewLocation: () => void;
+  /** 这条会话的工作位置当前不可用（FR-04）：会话头给横幅与两个出路 */
+  locationUnavailable?: boolean;
+  /** 重建默认空间会话的产物目录（仅默认空间有；工作目录不传） */
+  onRebuildArtifactDir?: () => void;
 }): React.JSX.Element {
   // 初值取缓存：本会话若是重挂（切走切回 / worker 被空闲回收后重开），立刻就有内容可画，
   // 不必干等 worker 把整份 JSONL 重放完——那段时间原本是纯白 + 转圈（见 view-cache.ts）。
@@ -240,7 +260,12 @@ export function Conversation({
   const [dockActiveId, setDockActiveId] = useState<string>(DOCK_DEFAULT_KIND);
   /** 「要看某个文件」的请求（A3-2）；null = 尚未点过；seq 用于「同一文件再点一次也重读」。
    *  ⑦-G 之后它不再切「文件」页签，而是让「任务摘要」落到下钻的**内容层**。 */
-  const [dockFile, setDockFile] = useState<{ path: string; seq: number } | null>(null);
+  const [dockFile, setDockFile] = useState<{
+    path: string;
+    /** 执行时根（FR-06）：点的是哪个根下的那次改动；null = 会话当前根 */
+    root: string | null;
+    seq: number;
+  } | null>(null);
   /** 「要看某个子代理的完整过程」的请求（④ 子代理卡的按钮）；null = 尚未点过。
    *  与 `dockFile` 同形：都让「任务摘要」落到**下钻的某一层**，目标从文件内容多了一种到子代理流。 */
   const [dockSubagent, setDockSubagent] = useState<{ id: string; seq: number } | null>(null);
@@ -346,8 +371,8 @@ export function Conversation({
    * 文件与「本次改动」本就是同一个东西的不同粒度，不该分成两个并列页签让用户选。
    */
   const openFile = useCallback(
-    (path: string) => {
-      setDockFile((prev) => ({ path, seq: (prev?.seq ?? 0) + 1 }));
+    (path: string, root?: string | null) => {
+      setDockFile((prev) => ({ path, root: root ?? null, seq: (prev?.seq ?? 0) + 1 }));
       openDockKind(DOCK_DEFAULT_KIND);
     },
     [openDockKind],
@@ -1136,13 +1161,81 @@ export function Conversation({
     >
       <div className="conv-head col-start-1 row-start-1 flex shrink-0 items-center justify-between gap-2 border-b border-line px-4 py-2">
         <div className="flex min-w-0 items-center gap-2">
+          {/* 位置不可用的横幅（FR-04）：会话可以查看历史，但不能发送——给两个出路。
+              默认空间额外提供「重建产物目录」（目录被外部删除时的修复路径）。 */}
+          {locationUnavailable && (
+            <span
+              data-conv-unavailable
+              className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-sm bg-warning-soft px-2 py-1 text-xs text-warning-fg"
+            >
+              位置不可用
+              {locationKind === "default" && onRebuildArtifactDir && (
+                <button
+                  type="button"
+                  onClick={onRebuildArtifactDir}
+                  data-conv-rebuild
+                  className="rounded-xs border border-warning/40 px-1.5 py-0.5 transition hover:bg-warning-soft"
+                >
+                  重建产物目录
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onContinueAtNewLocation}
+                data-conv-continue-banner
+                className="rounded-xs border border-warning/40 px-1.5 py-0.5 transition hover:bg-warning-soft"
+              >
+                在新位置继续…
+              </button>
+            </span>
+          )}
+          {/* 位置 chip（FR-06）：默认空间不显示系统代管路径；工作目录显示「工作目录 · 目录名」，
+              悬停给完整路径。两条都只表达用户做过的选择，不是内部目录。 */}
           <span
             className="ch-ctx flex min-w-0 items-center gap-1.5 text-xs text-text-muted"
-            title="工作目录"
+            title={locationKind === "default" ? "默认空间：本会话在自己的产物目录里工作" : cwd}
+            data-conv-location={locationKind}
           >
             <Folder {...ICON.xs} className="shrink-0" />
-            <span className="c truncate font-mono text-text-secondary">{cwd}</span>
+            <span className="c truncate text-text-secondary">
+              {locationKind === "default" ? "默认空间" : `工作目录 · ${locationName}`}
+            </span>
           </span>
+          {/* 「打开此会话的位置」（FR-06 会话菜单的等价入口）：默认空间打开该会话自己的
+              产物目录，工作目录打开目录根。根由主进程按会话反查，界面不传路径。 */}
+          <button
+            type="button"
+            onClick={() => {
+              // 失败要看得见：草稿还没有位置、目录被外部删除时，主进程都会拒绝——
+              // 静默 catch 会变成「点了没反应」，比做不到更伤（AGENTS §3.6）
+              void window.colt.invoke("session.reveal", { sessionId }).catch((cause: unknown) => {
+                setError(cause instanceof Error ? cause.message : String(cause));
+              });
+            }}
+            title="打开此会话的位置"
+            aria-label="打开此会话的位置"
+            data-conv-reveal
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary"
+          >
+            <FolderOpen {...ICON.xs} />
+          </button>
+          {/* 「在新位置继续…」（FR-03）：复制对话与改动记录到另一个工作位置。
+              运行中不能复制（要先冻结运行时），入口置灰并说明原因。 */}
+          <button
+            type="button"
+            onClick={onContinueAtNewLocation}
+            disabled={runStartedAt !== undefined}
+            title={
+              runStartedAt !== undefined
+                ? "运行中的会话不能复制到新位置，请先停止"
+                : "在新位置继续：把对话与改动记录复制到另一个工作位置"
+            }
+            aria-label="在新位置继续"
+            data-conv-continue
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <Copy {...ICON.xs} />
+          </button>
           {git?.isRepo && (git.branch || git.detached) && (
             <span
               title={git.detached ? "游离 HEAD：当前不在任何分支上" : "当前 git 分支"}
@@ -1378,6 +1471,8 @@ export function Conversation({
         {empty && (
           <StartPanel
             cwd={cwd}
+            locationKind={locationKind}
+            locationName={locationName}
             onPickDirectory={onPickDirectory}
             onNewWorkspace={onNewWorkspace}
             onSuggestion={setInput}

@@ -35,8 +35,12 @@ export const MAX_AGENTS_MD_CHARS = 20000;
 /**
  * 从 cwd 向上收集候选路径（含 cwd 与文件系统根），**外层在前**。
  * 纯路径计算，不做任何 IO——方便测试与调用方自行决定读哪些。
+ *
+ * `stopAt` 非空时**不含它本身**：走到它的直接子目录就停。默认空间用它把查找截止在
+ * 容器根——容器根及上层目录里的 AGENTS.md 不参与加载（PRD FR-08），否则「每条会话
+ * 各自隔离」会被父目录里的一份约定悄悄破坏。
  */
-export function agentsMdCandidates(cwd: string): string[] {
+export function agentsMdCandidates(cwd: string, stopAt?: string): string[] {
   const innermost: string[] = [];
   let dir = cwd;
   const root = parse(dir).root;
@@ -45,6 +49,8 @@ export function agentsMdCandidates(cwd: string): string[] {
     if (dir === root) break;
     const parent = dirname(dir);
     if (parent === dir) break;
+    // 到截止目录就停：**不**收它的 AGENTS.md（它是容器的约定，不属于这条会话）
+    if (stopAt !== undefined && parent === stopAt) break;
     dir = parent;
   }
   return innermost.reverse();
@@ -66,10 +72,10 @@ export interface LoadedAgentsMd {
  * 逐个尝试读候选文件。任何单份失败都不抛出、也不拦其它文件——
  * 一份父目录的 AGENTS.md 读不了不该让整个会话起不来，但失败要上报、不能静默。
  */
-export async function loadAgentsMd(cwd: string): Promise<LoadedAgentsMd> {
+export async function loadAgentsMd(cwd: string, stopAt?: string): Promise<LoadedAgentsMd> {
   const files: AgentsMdFile[] = [];
   const errors: string[] = [];
-  for (const candidate of agentsMdCandidates(cwd)) {
+  for (const candidate of agentsMdCandidates(cwd, stopAt)) {
     try {
       const raw = await readFile(candidate, "utf8");
       const content = raw.trim();
@@ -158,12 +164,14 @@ export interface AgentsMdInjector {
 export function createAgentsMdInjector(
   cwd: string,
   onNotice?: (message: string) => void,
+  /** 向上查找的截止目录（不含），默认空间传容器根，见 FR-08 */
+  stopAt?: string,
 ): AgentsMdInjector {
   let failing = new Set<string>();
   let lastPaths: string[] | null = null;
   return {
     async systemPromptFor(base: string): Promise<string> {
-      const loaded = await loadAgentsMd(cwd);
+      const loaded = await loadAgentsMd(cwd, stopAt);
       const fresh = new Set(loaded.errors);
       for (const message of fresh) {
         if (!failing.has(message)) onNotice?.(`AGENTS.md 读取失败：${message}`);

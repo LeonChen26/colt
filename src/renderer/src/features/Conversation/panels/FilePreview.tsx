@@ -53,12 +53,18 @@ function Placeholder({
 export function FilePreview({
   sessionId,
   path,
+  root,
   reloadToken,
   onReload,
 }: {
   sessionId: string;
-  /** 项目内相对路径 */
+  /** 相对路径（相对 `root`） */
   path: string;
+  /**
+   * 执行时根（PRD FR-06）：清单里的文件属于它当时的根，「在新位置继续」后旧文件不能被
+   * 拿到新根下解释。null / 缺省 = 会话当前根，主进程按这条规则裁决（见 `resolveChangeRoot`）。
+   */
+  root?: string | null;
   /** 变化即重读（「重新读取」按钮与外部打开请求都用它） */
   reloadToken: number;
   onReload: () => void;
@@ -72,7 +78,7 @@ export function FilePreview({
     setLoading(true);
     setError(null);
     void window.colt
-      .invoke("file.read", { sessionId, path })
+      .invoke("file.read", { sessionId, path, root: root ?? null })
       .then((next) => {
         if (!disposed) setResult(next);
       })
@@ -87,7 +93,7 @@ export function FilePreview({
     return () => {
       disposed = true;
     };
-  }, [sessionId, path, reloadToken]);
+  }, [sessionId, path, root, reloadToken]);
 
   // 识别出的语言（只在文本分支有意义）。显示出来是为了「按格式渲染」这件事**可见**：
   // 颜色是主观的，语言名是可核对的。

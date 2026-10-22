@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase } from "../src/main/db/index.ts";
 import {
+  copyFileChanges,
   createSession,
   deleteProject,
   deleteSession,
@@ -19,6 +20,7 @@ import {
   listProjects,
   listSessionEvents,
   listSessionFileChanges,
+  listSessionChangeRoots,
   listSessionTodos,
   listSessionToolCalls,
   listSessionUsage,
@@ -34,6 +36,7 @@ import {
   setKernelSessionId,
   setSessionModel,
   setSessionStatus,
+  setProjectRemoved,
   setSetting,
   touchSession,
   upsertProject,
@@ -67,6 +70,21 @@ describe("projects", () => {
     assert.equal(listProjects().length, 1);
   });
 
+  test("已移除的项目重新打开同一路径即恢复（FR-04），不新增重复行", () => {
+    const project = upsertProject("E:/demo");
+    assert.ok(setProjectRemoved(project.id, true));
+    const removed = getProject(project.id);
+    assert.notEqual(removed?.removedAt, null, "移除后 removedAt 有值");
+    // 重新打开同一目录：root_key 命中同一行，且 removed_at 被清掉
+    const reopened = upsertProject("E:/demo");
+    assert.equal(reopened.id, project.id, "不应新增重复行");
+    assert.equal(reopened.removedAt, null, "重新打开即恢复");
+  });
+
+  test("setProjectRemoved 对不存在的项目返回 false（调用方据此报错）", () => {
+    assert.equal(setProjectRemoved("no-such", true), false);
+  });
+
   test("同一目录的不同路径写法视为同一项目", () => {
     const first = upsertProject("E:/code/demo");
     // 盘符大小写、分隔符差异都应命中同一条
@@ -86,10 +104,10 @@ describe("任务工作区（ensureTaskProject）", () => {
     assert.equal(listProjects().length, 1);
   });
 
-  test("新建时 kind=task、名字固定为「任务」", () => {
-    const project = ensureTaskProject("E:/colt-tasks/workspace");
+  test("新建时 kind=task、名字固定为「默认空间」", () => {
+    const project = ensureTaskProject("E:/home/.colt/tasks");
     assert.equal(project.kind, "task");
-    assert.equal(project.name, "任务");
+    assert.equal(project.name, "默认空间");
   });
 
   test("该目录此前被登记成普通项目时，原地转成任务工作区", () => {
@@ -461,6 +479,63 @@ describe("file changes", () => {
     setChangeNet(id, null);
     assert.equal(listSessionFileChanges(session.id)[0]?.netAddedLines, null);
   });
+
+  test("执行时根随改动落库并原样带出；旧行（NULL）读出时按会话当前根解析", () => {
+    const project = upsertProject("E:/demo");
+    const workspace = createSession(project.id, "E:/demo/jsonl");
+    const own = createSession(project.id, "E:/demo/jsonl2", undefined, "C:/tasks/20261001-090503-a3f9");
+    recordFileChange(workspace.id, { id: "c1", path: "a.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 1, execRoot: "C:/tasks/old-root" });
+    recordFileChange(workspace.id, { id: "c2", path: "b.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 2 });
+    recordFileChange(own.id, { id: "c3", path: "c.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 3 });
+    const changes = listSessionFileChanges(workspace.id);
+    assert.equal(changes[0]?.execRoot, "C:/tasks/old-root", "改动记录记住发生时的根");
+    assert.equal(
+      changes[1]?.execRoot,
+      "E:/demo",
+      "旧行为 NULL：工作目录会话按项目根解析（不折成「另一个根」，否则同一文件会裂成两条）",
+    );
+    assert.equal(
+      listSessionFileChanges(own.id)[0]?.execRoot,
+      "C:/tasks/20261001-090503-a3f9",
+      "默认空间会话的旧行按它自己的产物目录解析",
+    );
+  });
+
+  test("复制改动记录：保留执行时根与净值；旧行的 null 补成源会话根（FR-03）", () => {
+    const project = upsertProject("E:/demo");
+    const source = createSession(project.id, "E:/demo/jsonl");
+    const target = createSession(project.id, "E:/demo/jsonl2");
+    const known = recordFileChange(source.id, { id: "c1", path: "a.ts", kind: "edit", patch: "@@", addedLines: 3, removedLines: 1, timestamp: 1, execRoot: "C:/tasks/20261001-090503-a3f9" });
+    setChangeNet(known, { added: 2, removed: 0 });
+    recordFileChange(source.id, { id: "c2", path: "b.ts", kind: "write", patch: null, addedLines: 5, removedLines: 0, timestamp: 2 });
+
+    assert.equal(copyFileChanges(source.id, target.id, "C:/old-root"), 2);
+    const copied = listSessionFileChanges(target.id);
+    assert.deepEqual(copied.map((c) => c.path), ["a.ts", "b.ts"], "顺序与原会话一致");
+    assert.equal(copied[0]?.execRoot, "C:/tasks/20261001-090503-a3f9", "有执行时根的照抄");
+    assert.equal(copied[1]?.execRoot, "C:/old-root", "旧行没有执行时根：补成源会话的根，不在新位置重新解释");
+    assert.equal(copied[0]?.netAddedLines, 2, "净值一起带过去");
+    assert.equal(listSessionFileChanges(source.id).length, 2, "源会话一条不少");
+  });
+
+  test("复制改动记录不复制文件基线（基线在新位置重新建立）", () => {
+    const project = upsertProject("E:/demo");
+    const source = createSession(project.id, "E:/demo/jsonl");
+    const target = createSession(project.id, "E:/demo/jsonl2");
+    recordFileBaseline(source.id, "a.ts", { existed: true, text: "旧内容\n" });
+    copyFileChanges(source.id, target.id, "E:/demo");
+    assert.equal(getFileBaseline(target.id, "a.ts"), undefined, "新会话没有从源会话继承基线");
+  });
+
+  test("执行时根清单去重、忽略 null（file.read / netDiff 的合法根来源）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordFileChange(session.id, { id: "c1", path: "a.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 1, execRoot: "C:/old" });
+    recordFileChange(session.id, { id: "c2", path: "b.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 2, execRoot: "C:/old" });
+    recordFileChange(session.id, { id: "c3", path: "c.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 3, execRoot: "C:/new" });
+    recordFileChange(session.id, { id: "c4", path: "d.ts", kind: "edit", patch: null, addedLines: 1, removedLines: 0, timestamp: 4 });
+    assert.deepEqual(listSessionChangeRoots(session.id).sort(), ["C:/new", "C:/old"]);
+  });
 });
 
 describe("file baselines", () => {
@@ -473,6 +548,28 @@ describe("file baselines", () => {
     assert.deepEqual(getFileBaseline(session.id, "src/a.ts"), { existed: true, text: "旧内容\n" });
     assert.deepEqual(getFileBaseline(session.id, "src/new.ts"), { existed: false, text: "" });
     assert.equal(getFileBaseline(session.id, "src/other.ts"), undefined);
+  });
+
+  test("基线记下抓它的根：换一个根来问就不作数（FR-06 不跨根复用）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordFileBaseline(session.id, "a.ts", { existed: true, text: "新根\n" }, "C:/new");
+    assert.deepEqual(getFileBaseline(session.id, "a.ts", "C:/new"), {
+      existed: true,
+      text: "新根\n",
+    });
+    assert.equal(
+      getFileBaseline(session.id, "a.ts", "C:/old"),
+      undefined,
+      "拿新根的基线去比旧根的文件就是撒谎，宁可说「算不出」",
+    );
+  });
+
+  test("没有记根的旧基线按会话当前根算（那时一条会话只会有一个根）", () => {
+    const project = upsertProject("E:/demo");
+    const session = createSession(project.id, "E:/demo/jsonl");
+    recordFileBaseline(session.id, "a.ts", { existed: true, text: "旧\n" });
+    assert.equal(getFileBaseline(session.id, "a.ts", "E:/demo")?.text, "旧\n");
   });
 
   test("**只认最早那一份**：worker 重启后重报的基线不得覆盖（否则净值从那一刻起算）", () => {

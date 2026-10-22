@@ -42,6 +42,37 @@ import { skillInvocationLabel } from "./skill-invocation";
 export const SESSION_TITLE_MAX_CHARS = 30;
 
 /**
+ * 「在新位置继续」复制出来的会话标题后缀（PRD FR-03）。
+ *
+ * 标题是**派生**的（首条用户消息），而复制会话的首条消息与原会话相同——所以后缀不能
+ * 靠一次写入维持：每次视图推送重算标题时都要按这条规则补回来，否则用户下一次发言后
+ * 两个会话在左栏就同名了。
+ */
+export const CONTINUED_SUFFIX = "（续）";
+
+/** 给标题加上「（续）」（已有则不重复） */
+export function continuedTitle(title: string): string {
+  return title.endsWith(CONTINUED_SUFFIX) ? title : `${title}${CONTINUED_SUFFIX}`;
+}
+
+/**
+ * 派生标题的「沿用后缀」规则：当前标题带「（续）」而派生结果没有时，把后缀补回去。
+ *
+ * 两条调用链都要用（主进程落库、渲染层侧栏缓存），否则会出现「库里带后缀、左栏没后缀」
+ * 这类两边各说各话的状态。
+ */
+export function keepContinuationSuffix(
+  derived: string | undefined,
+  previous: string | undefined,
+): string | undefined {
+  if (derived === undefined || previous === undefined) return derived;
+  if (previous.endsWith(CONTINUED_SUFFIX) && !derived.endsWith(CONTINUED_SUFFIX)) {
+    return `${derived}${CONTINUED_SUFFIX}`;
+  }
+  return derived;
+}
+
+/**
  * 从消息列表派生会话标题；没有可用来源时返回 `undefined`（含义是「不要设标题」）。
  *
  * 入参只要求 `role` / `text` / `skill` 三个字段，故主进程的 `ViewMessage` 与渲染层手上的

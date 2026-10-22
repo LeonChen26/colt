@@ -1,0 +1,1632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRD · 会话与工作位置</title>
+<style>
+  :root {
+    --bg: #f4f6f9;
+    --paper: #ffffff;
+    --ink: #1b1f24;
+    --ink-2: #4b5560;
+    --ink-3: #78838f;
+    --line: #e3e7ec;
+    --line-strong: #cbd3dc;
+    --accent: #2f6fed;
+    --accent-soft: #eaf1ff;
+    --green: #1f8a5b;
+    --green-soft: #e7f6ee;
+    --amber: #9a6400;
+    --amber-soft: #fff4df;
+    --red: #b42318;
+    --red-soft: #fdeceb;
+    --mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 12.5px; background: #eef1f5; padding: 1px 5px; border-radius: 4px; }
+
+  .shell { display: flex; max-width: 1340px; margin: 0 auto; align-items: flex-start; }
+
+  /* ---------- 目录导航 ---------- */
+  .toc {
+    position: sticky; top: 0; flex: 0 0 238px; width: 238px; height: 100vh;
+    overflow: auto; padding: 34px 18px 40px 28px; border-right: 1px solid var(--line);
+  }
+  .toc .brand { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
+  .toc .docname { font-size: 15px; font-weight: 650; margin: 6px 0 20px; line-height: 1.4; }
+  .toc a { display: block; padding: 5px 8px; border-radius: 6px; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+  .toc a:hover { background: #e9edf2; text-decoration: none; }
+  .toc a.sub { padding-left: 20px; font-size: 12.5px; color: var(--ink-3); }
+  .toc .group { margin-top: 14px; }
+
+  main { flex: 1; min-width: 0; max-width: 1010px; padding: 50px 58px 110px; }
+
+  /* ---------- 文档头 ---------- */
+  .doc-head { padding-bottom: 30px; border-bottom: 1px solid var(--line); margin-bottom: 40px; }
+  .eyebrow { font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  h1 { font-size: 35px; line-height: 1.24; margin: 10px 0 12px; letter-spacing: -.02em; }
+  .subtitle { font-size: 17px; color: var(--ink-2); margin: 0 0 26px; max-width: 780px; }
+  .meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .meta div { background: var(--paper); border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; }
+  .meta .label { display: block; font-size: 11px; letter-spacing: .06em; color: var(--ink-3); margin-bottom: 2px; }
+  .meta .value { display: block; font-size: 13.5px; font-weight: 600; }
+
+  /* ---------- 章节 ---------- */
+  section { margin: 0 0 56px; scroll-margin-top: 22px; }
+  h2 { font-size: 23px; line-height: 1.35; margin: 0 0 8px; display: flex; gap: 10px; align-items: baseline; letter-spacing: -.01em; }
+  h2 .num { font-family: var(--mono); font-size: 13px; color: var(--ink-3); font-weight: 500; }
+  .sec-lead { color: var(--ink-2); margin: 0 0 22px; max-width: 820px; }
+  h3 { font-size: 16.5px; margin: 30px 0 10px; letter-spacing: -.005em; }
+  h4 { font-size: 14px; margin: 20px 0 8px; color: var(--ink-2); }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  strong { font-weight: 650; }
+
+  /* ---------- 表格 ---------- */
+  .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); margin: 0 0 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { background: #f8fafc; text-align: left; font-weight: 650; color: var(--ink-2); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.nw { white-space: nowrap; }
+
+  /* ---------- 卡片 / 需求块 ---------- */
+  .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin: 0 0 16px; }
+  .card h3 { margin-top: 0; }
+  .fr-head { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; flex-wrap: wrap; }
+  .fr-id { font-family: var(--mono); font-size: 11.5px; color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; }
+  .fr-title { font-size: 17px; font-weight: 700; margin: 0; }
+  .purpose { color: var(--ink-2); font-size: 14px; margin: 0 0 12px; }
+  .field { display: grid; grid-template-columns: 92px 1fr; gap: 14px; padding: 11px 0; border-top: 1px dashed var(--line); }
+  .field dt { font-size: 12.5px; color: var(--ink-3); font-weight: 650; padding-top: 3px; }
+  .field dd { margin: 0; font-size: 14px; min-width: 0; }
+  .field dd ul { margin-bottom: 0; }
+
+  /* ---------- 提示块 ---------- */
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; border-radius: 0 8px 8px 0; margin: 0 0 18px; }
+  .callout.warn { border-color: var(--amber); background: var(--amber-soft); }
+  .callout.never { border-color: var(--red); background: var(--red-soft); }
+  .callout .ct { font-weight: 700; font-size: 13.5px; display: block; margin-bottom: 4px; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  .pill { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-2); background: #fff; white-space: nowrap; }
+  .pill.blue { border-color: #bcd2ff; background: var(--accent-soft); color: #2453b8; }
+  .pill.green { border-color: #b9e2cd; background: var(--green-soft); color: #157148; }
+
+  /* ---------- 线框图 ---------- */
+  .wire { background: #edf1f5; border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 0 0 10px; }
+  .wire-inner { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .mock { background: #fff; border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 2px 8px rgba(20, 30, 50, .05); font-size: 11.5px; line-height: 1.55; color: var(--ink); }
+  .mock.sidebar { width: 252px; flex: 0 0 252px; padding: 10px; }
+  .mock.main { flex: 1; min-width: 300px; overflow: hidden; }
+  .mk-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; color: var(--ink-3); }
+  .mk-btn { display: flex; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px; margin: 3px 0 8px; color: var(--ink-2); }
+  .mk-search { border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; color: var(--ink-3); margin-bottom: 8px; }
+  .mk-sec { display: flex; justify-content: space-between; align-items: center; padding: 9px 6px 4px; color: var(--ink-3); font-size: 10.5px; letter-spacing: .06em; }
+  .mk-sec .act { color: var(--ink-3); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 10px; }
+  .mk-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 5px; }
+  .mk-row.active { background: var(--accent-soft); color: #2453b8; }
+  .mk-row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex: 0 0 6px; }
+  .mk-row .dot.idle { background: #c9d1da; }
+  .mk-row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mk-row .tag { color: var(--ink-3); font-size: 10px; }
+  .mk-dir { display: flex; align-items: center; gap: 5px; padding: 5px 6px; font-weight: 600; }
+  .mk-dir .caret { color: var(--ink-3); font-size: 9px; }
+  .mk-sub { color: var(--ink-3); font-size: 10px; padding: 1px 6px 3px 24px; font-family: var(--mono); word-break: break-all; }
+  .mk-nest { padding-left: 12px; }
+  .mk-top { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .mk-top .title { font-size: 12px; font-weight: 700; }
+  .mk-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line-strong); border-radius: 999px; padding: 1px 7px; font-size: 10.5px; color: var(--ink-2); background: #fafbfc; }
+  .mk-body { padding: 16px 14px 14px; }
+  .mk-hint { font-size: 10.5px; color: var(--ink-3); margin-bottom: 8px; letter-spacing: .04em; }
+  .mk-big { font-size: 14px; font-weight: 650; margin-bottom: 6px; }
+  .mk-input { border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px 10px; color: var(--ink-3); min-height: 44px; background: #fff; }
+  .mk-foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 10.5px; color: var(--ink-3); }
+
+  .badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; font-family: var(--mono); flex: 0 0 auto; }
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px 22px; font-size: 12.5px; color: var(--ink-2); margin: 12px 0 24px; }
+  .legend > div { display: flex; gap: 8px; align-items: flex-start; }
+
+  /* ---------- 流程图 ---------- */
+  .flow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 20px; }
+  .flow .node { background: #fff; border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px 14px; font-size: 13px; font-weight: 600; }
+  .flow .node.soft { border-style: dashed; color: var(--ink-2); font-weight: 500; }
+  .flow .arrow { color: var(--ink-3); font-size: 15px; }
+  .flow .arrow span { display: block; font-size: 10px; color: var(--ink-3); text-align: center; margin-top: -3px; }
+
+  /* ---------- 交互演示 ---------- */
+  .demo { display: flex; gap: 18px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 12px; background: #fbfcfe; padding: 16px; margin: 0 0 12px; }
+  .demo-pane { flex: 1; min-width: 260px; }
+  .demo-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .demo button { font: inherit; font-size: 12px; line-height: 1.5; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); cursor: pointer; }
+  .demo button:hover { border-color: var(--accent); color: var(--accent); }
+  .demo button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .demo button.primary:hover { color: #fff; opacity: .92; }
+  .demo .mk-row { cursor: pointer; }
+  .demo .mk-row button { padding: 0 5px; font-size: 10px; border-radius: 4px; }
+  .demo .mock.main { min-width: 0; }
+  .demo-note { font-size: 12.5px; color: var(--ink-2); min-height: 44px; margin-top: 10px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+
+  /* ---------- 引文 ---------- */
+  blockquote { margin: 0 0 16px; padding: 12px 16px; border-left: 3px solid var(--line-strong); background: #fafbfc; color: var(--ink-2); font-size: 13.5px; border-radius: 0 8px 8px 0; }
+  blockquote p:last-child { margin-bottom: 0; }
+  blockquote .q-label { display: block; font-size: 11px; letter-spacing: .08em; color: var(--ink-3); margin-bottom: 4px; }
+
+  footer { border-top: 1px solid var(--line); padding-top: 18px; color: var(--ink-3); font-size: 12.5px; }
+
+  @media (max-width: 980px) {
+    .toc { display: none; }
+    main { padding: 34px 22px 80px; }
+    .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    h1 { font-size: 28px; }
+  }
+  @media print {
+    @page { size: A4; margin: 14mm 13mm; }
+    body { background: #fff; font-size: 14px; }
+    .toc, .screen-only { display: none; }
+    main { max-width: none; padding: 0; }
+    .card { break-inside: auto; box-shadow: none; }
+    .table-wrap { break-inside: auto; overflow: visible; }
+    table { break-inside: auto; }
+    thead { display: table-header-group; }
+    h2, h3, h4 { break-after: avoid; }
+    .wire { break-inside: avoid; }
+    .doc-head { break-after: avoid; }
+    a { color: var(--ink); text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="toc">
+    <div class="brand">Product Requirements</div>
+    <div class="docname">会话与工作位置</div>
+    <a href="#summary">摘要与决策</a>
+    <a href="#background">1 背景与问题</a>
+    <a href="#scope">2 范围与用户场景</a>
+    <a href="#model">3 产品模型</a>
+    <a class="sub" href="#no-mode">3.1 为什么不选开局模式</a>
+    <a class="sub" href="#scratch-isolation">3.2 默认空间：容器与产物</a>
+    <a class="sub" href="#hide-path">3.3 为什么路径不是主标签</a>
+    <a class="sub" href="#migration">3.4 存量会话与旧目录</a>
+    <a href="#requirements">4 功能需求</a>
+    <a class="sub" href="#fr-01">FR-01 新建会话</a>
+    <a class="sub" href="#fr-02">FR-02 默认空间</a>
+    <a class="sub" href="#fr-03">FR-03 在新位置继续</a>
+    <a class="sub" href="#fr-04">FR-04 工作目录管理</a>
+    <a class="sub" href="#fr-05">FR-05 左栏组织</a>
+    <a class="sub" href="#fr-06">FR-06 位置信息呈现</a>
+    <a class="sub" href="#fr-07">FR-07 移除、删除、归档</a>
+    <a class="sub" href="#fr-08">FR-08 安全与共享约定</a>
+    <a href="#rules">5 共享规则</a>
+    <a href="#exceptions">6 边界与异常</a>
+    <a href="#decisions">7 设计取舍记录</a>
+    <a href="#open">8 开放问题</a>
+    <a href="#glossary">9 术语表</a>
+  </nav>
+
+  <main>
+    <header class="doc-head">
+      <div class="eyebrow">产品需求文档 · Colt 桌面端</div>
+      <h1>会话与工作位置</h1>
+      <p class="subtitle">让用户不必先想「在哪儿工作」，也永远知道 agent 正在哪儿动手。本方案重新定义会话、目录与左栏归属之间的关系。</p>
+      <div class="meta">
+        <div><span class="label">版本</span><span class="value">v0.9 定稿</span></div>
+        <div><span class="label">日期</span><span class="value">2026-10-21</span></div>
+        <div><span class="label">范围</span><span class="value">会话创建 · 工作位置 · 产物呈现 · 失效与移除</span></div>
+        <div><span class="label">状态</span><span class="value">已定稿 · 进入实现</span></div>
+      </div>
+    </header>
+
+    <section id="summary">
+      <h2><span class="num">00</span>摘要与决策</h2>
+      <p class="sec-lead">一句话：<strong>会话是「做什么」，工作位置是「在哪儿做」</strong>。位置在落库时确定，之后只读；选错了就用「在新位置继续」复制一条会话过去。默认空间是容器：每条会话有自己的产物目录；P0 不做空间级共享记忆，但产物必须随时找得到。</p>
+
+      <div class="card">
+        <h3 style="margin-top:0">四条核心决策</h3>
+        <ol>
+          <li><strong>新建会话不选目录，落在一个「默认空间」。</strong>所有没有指定目录的会话都落在这里；每条会话在落库时获得自己的产物目录，同名文件不会互相覆盖。默认空间在 P0 不共享记忆，只承担落点与容器。</li>
+          <li><strong>只有地点，没有「会话类型」。</strong>左栏按地点分区：默认空间与工作目录。路径不是身份，但随时可查（产物清单、「打开此会话的位置」、审批卡「查看位置」）。</li>
+          <li><strong>位置创建后只读。</strong>想换地方，用「在新位置继续」把对话与改动记录复制到目标位置；原会话与文件不变，旧工具卡仍按执行时的根打开旧文件。</li>
+          <li><strong>产物不打折。</strong>每条会话有产物清单；默认空间有跨会话产物清单，含已删除会话；默认空间删除会话时冻结 manifest 并保留目录；工作目录删除会话只保留文件、不保留按会话的线索（如实写明）；移除目录只隐藏、可恢复；默认空间不可移除。</li>
+        </ol>
+      </div>
+
+      <div class="callout">
+        <span class="ct">本方案不采用「开局选模式」</span>
+        <p>不把「工作模式 / 代码模式」做成创建会话时的二选一。模式是<strong>结果</strong>，不是<strong>前提</strong>：用户可以聊着聊着才决定把会话接到一个仓库，也可以一开始就指定目录。把可变的归属做成开局的开关，会增加一次不必要的决策；而「落库后位置只读」又保证了运行时不会被中途改动。理由见 <a href="#no-mode">3.1</a>。</p>
+      </div>
+    </section>
+
+    <section id="background">
+      <h2><span class="num">01</span>背景与问题</h2>
+      <p class="sec-lead">当前产品把「目录」同时当成三样东西：会话的归属、agent 的执行边界、左栏的分区依据。三者耦合后，用户看到的是一组彼此矛盾的行为。</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>观察到的行为</th><th>用户此刻的想法</th><th>造成的后果</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>顶部「新建会话」总是进「任务」栏，只有在某个项目行上点「+」才会进该项目。</td>
+              <td>「我明明在项目里，为什么新会话跑到任务里去了？」</td>
+              <td>会话建错地方，用户回左栏找不到它。</td>
+            </tr>
+            <tr>
+              <td>任务会话在会话头和起手区显示形如 <code>~/.colt/tasks/…</code> 的路径（落库后还会带上时间戳子目录）。</td>
+              <td>「这是什么？我什么时候选过这个目录？」</td>
+              <td>路径变成噪音；用户无法从中判断 agent 在哪儿动手。</td>
+            </tr>
+            <tr>
+              <td>起手区把目录摆在显眼位置，且第一条消息发出后目录不能再改。</td>
+              <td>「我开始时没想清楚，现在只能重开一条会话。」</td>
+              <td>已经积累的上下文与对话被迫丢弃。</td>
+            </tr>
+            <tr>
+              <td>不指定目录的会话产生的文件没有可识别的入口。</td>
+              <td>「它刚才写的文件去哪了？我能不能看？」</td>
+              <td>用户不敢让 agent 写文件，或事后找不到产物。</td>
+            </tr>
+            <tr>
+              <td>移除一个项目会连它名下所有会话记录一起删除。</td>
+              <td>「我只是不想在左栏看到它，没想删掉对话。」</td>
+              <td>不可恢复的对话丢失，信任受损。</td>
+            </tr>
+            <tr>
+              <td>文件夹被移动、改名或所在磁盘断开后，会话仍显示旧路径。</td>
+              <td>「它到底在哪儿跑？为什么还能发消息？」</td>
+              <td>失败不可见；agent 可能在错误的位置执行。</td>
+            </tr>
+            <tr>
+              <td>「任务 / 项目 / 空间」三个词在界面与文案里交替出现。</td>
+              <td>「这仨是一个东西吗？」</td>
+              <td>用户需要先学会产品内部的行话，才能找到自己的会话。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>问题本质</h3>
+      <p><strong>目录是 agent 的执行边界，但不该是创建会话的门槛。</strong>用户开始一件事时想的是「我要做什么」，而不是「我要在哪个文件夹里做」。产品却把后者前置成了必答题，还把它显示成一个用户从未选择过的路径。</p>
+      <p><strong>位置应当稳定，纠错应当保上下文。</strong>位置一旦落库就不再原地改动，避免界面与运行时各说一套；选错位置的真实代价应该是一次「把对话复制到新位置」，而不是重开会话、丢掉上下文。删除一条会话也不该让用户担心「文件是不是也没了」。</p>
+
+      <h3>目标（以可观察的行为描述）</h3>
+      <ul>
+        <li>用户第一次打开应用就能直接输入，全程不需要做出任何目录决策。</li>
+        <li>任意一条会话，用户都能在同一处看到它的工作位置，并在发送前知道 agent 的操作范围。</li>
+        <li>选错位置时，用户能把当前对话复制到正确位置继续，原会话与已经产生的文件都不受影响。</li>
+        <li>删除会话、移除工作目录都不会误删文件；移除目录不会默认销毁对话记录。</li>
+        <li>目录不可用时，用户能看到明确原因和恢复动作，而不是一条指向不存在路径的会话。</li>
+      </ul>
+    </section>
+
+    <section id="scope">
+      <h2><span class="num">02</span>范围与用户场景</h2>
+
+      <h3>最小完整旅程（P0）</h3>
+      <ol>
+        <li>首次打开应用，中间区直接是输入框；用户发出第一条消息。</li>
+        <li>该会话出现在左栏「默认空间」分区——所有不指定目录的会话都落在这里；它拥有自己的产物目录。</li>
+        <li>用户意识到要在这个仓库里改代码，在会话菜单里点「在新位置继续…」，选择该仓库。</li>
+        <li>产品新建一条会话：对话与改动记录复制到当前尖端，落在该目录下；原会话留在默认空间。旧工具卡仍指向旧文件，文件本身不复制。</li>
+        <li>几天后该文件夹被移动，新会话提示「位置不可用」，用户点「重新定位…」选中新位置后继续。</li>
+      </ol>
+      <p><strong>完成证据：</strong>新会话位于左栏该目录之下，原会话仍在默认空间；两边历史完整；重启后位置不变；「打开此会话的位置」分别进入各自的产物目录；默认空间的跨会话产物清单能找到两边碰过的文件，包括已删除会话的文件。</p>
+
+      <h3>三个典型场景</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>场景</th><th>用户想要</th><th>本方案给出的路径</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>A · 快速处理一件事，之后接着做</strong><br>贴一段报错，让 agent 看看；下周同类问题还想接着来。</td>
+              <td>不选目录、不建项目，立刻开始；产物下次找得到。</td>
+              <td>新建会话 → 落在默认空间；它有自己的产物目录；从「产物清单」或「打开此会话的位置」即可看到文件。</td>
+            </tr>
+            <tr>
+              <td><strong>B · 仓库内连续开发</strong><br>同一个仓库里开多条会话。</td>
+              <td>所有会话都在这个仓库里动手，共享项目约定。</td>
+              <td>从左栏目录行「+」新建，或在该目录的会话里点顶部「新建会话」；会话自动归入该目录。</td>
+            </tr>
+            <tr>
+              <td><strong>C · 选错位置后纠正</strong><br>默认空间的会话聊到一半，决定落到某个仓库。</td>
+              <td>不丢对话，在新位置接着做。</td>
+              <td>会话菜单 →「在新位置继续…」→ 选仓库；新会话带着对话与改动记录过去，原会话与旧文件留在原处；旧工具卡仍可打开旧文件。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>优先级边界</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>级别</th><th>内容</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="nw"><span class="pill blue">P0</span></td>
+              <td>FR-01 新建会话；FR-02 默认空间；FR-03 在新位置继续；FR-04 工作目录管理；FR-05 左栏组织；FR-06 位置信息呈现；FR-07 移除、删除、归档；FR-08 安全与边界。默认空间的跨会话产物清单（含已删除会话）属于 P0。</td>
+            </tr>
+            <tr>
+              <td class="nw"><span class="pill">P1</span></td>
+              <td>默认空间的空间级共享记忆与写入；默认空间的「新建命名空间」；工作目录的显示名重命名；按工作目录筛选会话；大历史的摘要交接；产物占用展示与自动清理；复制的精确进度条。</td>
+            </tr>
+            <tr>
+              <td class="nw"><span class="pill">不做</span></td>
+              <td>原地切换工作位置；把旧文件自动搬到新位置；Git 检出 / 分支写操作；云端同步与多端；自动清理默认空间产物；把旧会话文件自动搬进默认空间；替用户移动或删除磁盘上的文件。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="model">
+      <h2><span class="num">03</span>产品模型</h2>
+      <p class="sec-lead">用四个对象解释归属，再加一个产物视图：会话、工作位置、默认空间、工作目录、产物清单。前四个决定「在哪儿做」，最后一个回答「东西在哪」。</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>对象</th><th>用户视角的定义</th><th>例子</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>会话</strong></td>
+              <td>一次协作的完整记录：说过的话、agent 做过的动作、等待过的授权、产生的历史。</td>
+              <td>「修登录超时」这条会话。</td>
+            </tr>
+            <tr>
+              <td><strong>工作位置</strong></td>
+              <td>这条会话「在哪儿动手」，在落库时确定，之后只读。只有两种：默认空间，或某个工作目录。</td>
+              <td>默认空间；或「在 colt 目录中工作」。</td>
+            </tr>
+            <tr>
+              <td><strong>默认空间</strong></td>
+              <td>应用自带的容器：所有未指定目录的会话都落在这里；每条会话有自己的产物目录，文件不会互相覆盖。P0 不共享空间级记忆。</td>
+              <td>左栏的一行「默认空间」，展开是这些会话。</td>
+            </tr>
+            <tr>
+              <td><strong>产物目录</strong></td>
+              <td>agent 读写文件的地方。默认空间的会话各自一个子目录；工作目录的会话就是该目录。</td>
+              <td>默认空间里的一个会话子目录。</td>
+            </tr>
+            <tr>
+              <td><strong>产物清单</strong></td>
+              <td>按会话列出产物文件的产品内视图。默认空间的清单跨会话，包含正常、归档与已删除会话的目录。</td>
+              <td>「产物」入口；会话菜单里的「查看产物」。</td>
+            </tr>
+            <tr>
+              <td><strong>工作目录</strong></td>
+              <td>用户自己打开、并登记在左栏的文件夹。它既是其下会话的共享目录，也是它们的产物目录。</td>
+              <td><code>E:\code\opensource\colt</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>「产物目录」与「执行时根」是内部词，界面上不出现；用户只需要理解会话、工作位置、默认空间、工作目录与产物清单。</p>
+
+      <h3>关系</h3>
+      <div class="flow">
+        <div class="node">默认空间</div>
+        <div class="arrow">→<span>1 : N</span></div>
+        <div class="node">会话</div>
+      </div>
+      <div class="flow">
+        <div class="node">工作目录</div>
+        <div class="arrow">→<span>1 : N</span></div>
+        <div class="node">会话</div>
+      </div>
+
+      <ul>
+        <li><strong>一条会话在同一时刻只有一个工作位置。</strong></li>
+        <li><strong>位置在落库时确定，之后只读</strong>；草稿期可以改。要换位置，用「在新位置继续」新建一条会话，而不是原地搬家。</li>
+        <li><strong>工作目录内共享文件与目录级约定；默认空间只共享容器，不共享记忆。</strong>默认空间的每条会话有自己的产物目录；工作目录既是其下会话的共享目录，也是它们的产物目录。两类位置的产物目录都相互隔离。</li>
+        <li><strong>登记与磁盘是两件事。</strong>从左栏移除一个工作目录，不删除磁盘上的文件夹；在系统里删掉文件夹，也不会自动注销这条登记，只会让它变成「位置不可用」。</li>
+        <li><strong>删除会话不删除产物目录</strong>；manifest 冻结为删除时的快照，产物清单继续列出这个目录，便于之后找回。</li>
+      </ul>
+
+      <h3>状态</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>对象</th><th>状态</th><th>含义与用户可见结果</th></tr></thead>
+          <tbody>
+            <tr>
+              <td rowspan="5">会话</td>
+              <td>草稿</td>
+              <td>已创建但尚未发出第一条消息。只在当前窗口可见，不进左栏；位置仍可改。</td>
+            </tr>
+            <tr><td>已保存</td><td>发过消息，进入左栏对应分区，可再次打开；位置固定。</td></tr>
+            <tr><td>运行中</td><td>agent 正在执行。不能归档、不能在新位置继续、不能删除。</td></tr>
+            <tr><td>已归档</td><td>从常规列表收起，进入底部「已归档」区；数据完整保留，可恢复。</td></tr>
+            <tr><td>已删除</td><td>对话与历史被移除；产物目录与磁盘文件保留。</td></tr>
+            <tr>
+              <td rowspan="3">工作位置</td>
+              <td>可用</td>
+              <td>产物目录存在且可访问；会话可以发送消息。</td>
+            </tr>
+            <tr><td>不可用</td><td>目录被移动、改名、删除或所在磁盘断开；可查看历史，不能发送，直到重新定位或在别处继续。</td></tr>
+            <tr><td>已移除</td><td>工作目录被「仅从列表移除」；会话保留，但收进左栏底部的「已移除」区，可恢复。</td></tr>
+            <tr>
+              <td rowspan="2">归属</td>
+              <td>默认空间</td>
+              <td>没有指定工作目录；落在默认空间容器里，使用自己的产物目录。</td>
+            </tr>
+            <tr><td>工作目录</td><td>归属于某个工作目录；共享该目录的目录级约定与同一批文件。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>默认空间不可移除，也不会有「已移除」状态；它是所有未指定目录会话的保底落点。产物目录没有独立状态，它随会话存在；被外部删除时按「位置不可用」处理。</p>
+
+      <h3>用户与触发</h3>
+      <p><strong>主要用户：</strong>在本机使用 agent 做开发、排查、脚本与文档工作的个人用户。他们既会「随手问一句」，也会「在一个仓库里连续干几天」。</p>
+      <p><strong>触发：</strong>用户想开始一件事，但还没决定这件事是否要落到某个目录里。</p>
+      <p><strong>完成条件：</strong>用户能在不中断协作的前提下，把对话带到正确的位置继续，并始终知道 agent 的操作范围。</p>
+
+      <h3 id="no-mode">3.1 为什么不在开局让用户选「模式」</h3>
+      <p>把工作分成「工作模式 / 代码模式」看起来清晰，但它把一段可能持续很久的协作压缩成了一个开局开关。真实情况是：</p>
+      <ul>
+        <li>用户常在会话进行中才决定「要不要把这个结果落到某个仓库」。</li>
+        <li>用户常在开始时并不确定最终要动哪个目录。</li>
+        <li>「先随便聊聊，聊着聊着要改代码」不是例外，而是最常见的过程。</li>
+      </ul>
+      <p>因此本方案不设模式选择器：<strong>不指定目录就落在默认空间，选择目录就进入工作目录</strong>；左栏按「位置」分组，而不是按「模式」分组。位置在草稿期可以改，落库后只读——这样既不需要开局问一次，也不会在运行中把根换掉。</p>
+      <p>代价是用户需要理解两个动作：草稿期「选择工作位置」，落库后「在新位置继续」。前者用位置 chip 偿还，后者用会话菜单里的一个动作偿还；比在开局多问一个问题、再在意图变化时逼用户重开会话更划算。</p>
+
+      <h3 id="scratch-isolation">3.2 默认空间：容器与产物</h3>
+      <p>默认空间要解决两件事：开始时不要求选目录；不同工作的文件不要互相覆盖。做法是<strong>容器 + 隔离产物</strong>；空间级共享记忆不做，放 P1。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>默认空间</th><th>工作目录</th></tr></thead>
+          <tbody>
+            <tr><td>共享什么</td><td>只共享容器与左栏分区；不共享记忆</td><td>共享目录内的文件与目录级约定</td></tr>
+            <tr><td>产物目录</td><td>每条会话一个私有子目录</td><td>目录本身</td></tr>
+            <tr><td>记忆 / 约定</td><td>每条会话按自己的产物目录加载；用户级偏好生效</td><td>按该目录加载；同目录会话共享</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>为什么先不做共享记忆</strong>：一旦空间级记忆可被任一会话写入，就要回答「谁写的、写到哪、怎么撤销、会不会污染其他会话」。这些问题比产物隔离更贵，也更难向用户解释；P0 先把产物做扎实，记忆共享放 P1。</p>
+      <p>代价是跨会话的文件连续性没有：新会话看不到上一条会话写的文件。产品用<strong>产物清单</strong>偿还——每条会话的清单按目录内容列出文件，默认空间再提供跨会话清单（用户可查，agent 读不到别的会话的目录）；需要连续时，用「在新位置继续」带着对话过去，或显式复制文件。</p>
+      <p>「默认」描述的是<strong>没有指定目录时的落点</strong>，不是寿命短，也不是低优先级。一条落在默认空间的会话可以连续用上一周。</p>
+
+      <h3 id="hide-path">3.3 为什么路径不作为主标签</h3>
+      <p>路径只有在它是<strong>用户选择的结果</strong>时才有信息量。把系统路径当成会话的标题，会制造三个误解：「我需要管理这个目录」「这是一个项目」「换个会话就要换个目录」。</p>
+      <p>因此界面用<strong>空间名</strong>做主标签，路径退到次要位置，但<strong>不是永远不出现</strong>：</p>
+      <ul>
+        <li>工作目录行展开或悬停时显示完整路径；</li>
+        <li>默认空间的「产物」入口打开跨会话产物清单，按会话列出文件；会话菜单的「打开此会话的位置」直达当前会话的产物目录；</li>
+        <li>审批卡提供「查看位置」，展开后显示这条会话的产物目录——这是用户核对操作范围的关键时刻，不能用一句「默认空间」糊弄过去。</li>
+      </ul>
+      <p>原则是：<strong>路径不是身份，但必须随时可查</strong>。</p>
+
+      <h3 id="migration">3.4 存量会话与旧目录</h3>
+      <p>升级后用户最先问的是「我原来的会话去哪了」。一次性的过渡规则如下：</p>
+      <ul>
+        <li><strong>旧「任务」项目及其会话</strong>归入左栏的「默认空间」，不再单独占一个项目行。</li>
+        <li><strong>旧会话本来就有自己的时间戳目录</strong>，正好成为它的产物目录；文件不搬移。打开这些旧会话时，「打开此会话的位置」指向它原来的目录。</li>
+        <li><strong>新的默认空间会话</strong>在默认空间容器下各自分配一个子目录；不会落进旧的共享时间戳目录。</li>
+        <li><strong>旧「项目」→ 工作目录</strong>，名称、路径与旗下会话保持不变。</li>
+        <li><strong>记忆不迁移</strong>：旧会话目录里的说明文件与记忆继续按该目录加载；P0 不做空间级共享记忆，所以不需要把旧记忆汇入一个共享空间。</li>
+        <li><strong>旧已删除会话的目录</strong>如果还在，产物清单会把它列为「未关联目录」，按目录名中的时间与短 id 识别；有 manifest 的按 manifest 显示标题。</li>
+        <li>升级后给一次非阻塞说明，告知会话已归入默认空间或工作目录；不弹必须处理的对话框。</li>
+      </ul>
+      <p><span class="pill">Assumption</span> 旧时间戳目录里的文件默认不整理、不迁移。是否提供「把旧会话文件收进默认空间」的用户主动操作，见 <a href="#open">开放问题</a>。</p>
+    </section>
+
+    <section id="requirements">
+      <h2><span class="num">04</span>功能需求</h2>
+      <p class="sec-lead">按用户任务组织。每条需求给出触发、规则、结果与异常；跨模块共用的规则集中在 <a href="#rules">第 5 节</a>，不在这里重复。</p>
+
+      <!-- FR-01 -->
+      <div class="card" id="fr-01">
+        <div class="fr-head"><span class="fr-id">FR-01</span><h3 class="fr-title">新建会话</h3></div>
+        <p class="purpose">让「开始」不依赖任何目录决策，同时保证从任何入口新建的会话都落在用户预期的位置。</p>
+
+        <dl>
+          <div class="field"><dt>入口与目标</dt><dd>
+            <div class="table-wrap" style="margin-bottom:0">
+              <table>
+                <thead><tr><th>入口</th><th>会话目标</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>左栏顶部「新建会话」</td><td>跟随当前上下文</td><td>当前会话属于某工作目录 → 新会话加入该目录；当前在默认空间或没有会话 → 新会话落在默认空间。按钮必须显示将要落到的目标（如「＋ 新建会话 · colt」），没有上下文时显示「默认空间」。</td></tr>
+                  <tr><td>工作目录行「+」</td><td>该工作目录</td><td>精确指定，不依赖当前选中项。</td></tr>
+                  <tr><td>「默认空间」分区头「新建」</td><td>默认空间</td><td>在任何上下文里都能明确地拿到一条默认空间的会话。</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </dd></div>
+          <div class="field"><dt>处理规则</dt><dd>
+            <ul>
+              <li>不弹目录选择框，不要求用户先打开目录。</li>
+              <li>新会话先成为草稿：未发送第一条消息前不进左栏，避免「点了新建就退出」留下空行。</li>
+              <li>发送第一条消息后，会话立即出现在左栏对应分区，不依赖模型是否回复成功。</li>
+              <li>草稿期可以改工作位置；发出第一条消息后位置固定，见 5.4。</li>
+              <li>顶部入口不「继承」一个不存在的位置：当前在默认空间时，新建的仍在默认空间。</li>
+              <li>顶部入口不允许静默跟随：按钮上必须能看到这次会落到哪里，避免用户在 colt 会话里点新建、却不知道会话已经进了 colt。</li>
+              <li>当前会话所属目录已不可用时，不把新会话建进去；提示重新定位，或在别处继续。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>结果与状态</dt><dd>会话进入草稿；首条消息落库时，默认空间的会话获得自己的产物目录并写入 manifest；产物清单可打开；起手区显示位置 chip；进入左栏后草稿态消失。顶部按钮显示的目标与最终归属一致。</dd></div>
+          <div class="field"><dt>异常</dt><dd>
+            <ul>
+              <li>默认空间不可用（磁盘满、无权限）：不进入会话，显示真实原因，并提供「重试」与「选择工作位置…」两个动作。这是唯一要求用户选择工作目录的例外，文案必须写明「默认空间暂时不可用，请选择一个工作目录开始」。</li>
+              <li>目录不可用：见 FR-04。</li>
+            </ul>
+          </dd></div>
+        </dl>
+
+        <h4>左栏线框</h4>
+        <div class="wire">
+          <div class="wire-inner">
+            <div class="mock sidebar">
+              <div class="mk-head"><span>COLT</span><span class="badge">1</span></div>
+              <div class="mk-btn">＋ 新建会话 <span class="badge">2</span></div>
+              <div class="mk-search">搜索会话 / 目录 / 产物</div>
+              <div class="mk-sec"><span>默认空间</span><span class="act">产物 · ＋ 新建 <span class="badge">3</span></span></div>
+              <div class="mk-row active"><span class="dot"></span><span class="t">排查登录超时</span><span class="tag">12 分钟前</span></div>
+              <div class="mk-row"><span class="dot idle"></span><span class="t">写一个日志清洗脚本</span></div>
+              <div class="mk-sec"><span>工作目录</span><span class="act">打开…</span></div>
+              <div class="mk-dir"><span class="caret">▾</span><span>colt</span><span class="badge">4</span></div>
+              <div class="mk-sub">E:\code\opensource\colt</div>
+              <div class="mk-nest">
+                <div class="mk-row"><span class="dot idle"></span><span class="t">修复侧栏排序</span><span class="tag">昨天</span></div>
+                <div class="mk-row"><span class="dot"></span><span class="t">补充会话搜索</span></div>
+              </div>
+              <div class="mk-dir"><span class="caret">▸</span><span>docs-site</span></div>
+            </div>
+            <div class="mock main">
+              <div class="mk-top"><span class="title">排查登录超时</span><span class="mk-chip">默认空间</span><span class="mk-chip">空闲</span></div>
+              <div class="mk-body">
+                <div class="mk-hint">今天要处理什么？</div>
+                <div class="mk-big">描述你想做的事</div>
+                <div class="mk-input">帮我看一下这个超时报错……</div>
+                <div class="mk-foot"><span>模型 · 权限</span><span>发送</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="legend">
+          <div><span class="badge">1</span><span>顶部主入口：跟随当前上下文，不要求选目录。</span></div>
+          <div><span class="badge">2</span><span>当前在默认空间时，这里新建的仍在默认空间。</span></div>
+          <div><span class="badge">3</span><span>默认空间分区自己的入口：产物清单与新建，明确、无歧义。</span></div>
+          <div><span class="badge">4</span><span>用户打开的目录：显示名字，展开才显示完整路径。</span></div>
+        </div>
+
+        <h4 class="screen-only">试一试：新建会话 → 写入产物 → 查看产物 → 复制到工作目录</h4>
+        <div class="demo screen-only">
+          <div class="demo-pane">
+            <div class="demo-controls">
+              <button type="button" class="primary" id="demo-new">新建会话</button>
+              <button type="button" id="demo-open">打开工作目录</button>
+              <button type="button" id="demo-write">写入示例产物</button>
+              <button type="button" id="demo-artifacts">产物清单</button>
+              <button type="button" id="demo-reset">重置</button>
+            </div>
+            <div class="mock sidebar">
+              <div class="mk-head"><span>COLT</span></div>
+              <div class="mk-btn">＋ 新建会话</div>
+              <div class="mk-search">搜索会话 / 目录 / 产物</div>
+              <div id="demo-list"></div>
+            </div>
+          </div>
+          <div class="demo-pane">
+            <div class="mock main">
+              <div class="mk-top">
+                <span class="title">当前会话</span>
+                <span class="mk-chip" id="demo-chip">未选择会话</span>
+              </div>
+              <div class="mk-body">
+                <div class="mk-hint">今天要处理什么？</div>
+                <div class="mk-input">给 agent 的消息</div>
+              </div>
+            </div>
+            <div class="demo-note" id="demo-note">点「新建会话」开始。会话落在默认空间，并拥有自己的产物目录；点「写入示例产物」后，可以在「产物清单」里看到它。</div>
+            <div id="demo-artifacts" style="display:none;margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fff;font-size:12px;line-height:1.6;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FR-02 -->
+      <div class="card" id="fr-02">
+        <div class="fr-head"><span class="fr-id">FR-02</span><h3 class="fr-title">默认空间</h3></div>
+        <p class="purpose">默认空间是一个容器：所有不指定目录的会话都落在这里，每条会话有自己的产物目录。P0 不做空间级共享记忆，只把产物做扎实：每会话产物清单、跨会话清单（含已删除会话）、目录 manifest。这里的「默认」指<strong>没有指定目录时的落点</strong>，不指寿命短或优先级低。</p>
+
+        <dl>
+          <div class="field"><dt>触发</dt><dd>使用「新建会话」且当前没有目录上下文，或从「默认空间」分区头新建。首次启动时的第一条会话也落在这里。</dd></div>
+          <div class="field"><dt>处理规则</dt><dd>
+            <ul>
+              <li>所有没有指定目录的会话都落在默认空间，<strong>不要求用户选目录</strong>。</li>
+              <li>每条默认空间的会话<strong>各有一个私有产物目录</strong>，落库时分配并写入 manifest。同名文件不会互相覆盖。</li>
+              <li><strong>P0 不共享空间级记忆</strong>：每条会话按自己的产物目录加载说明文件与记忆；用户级偏好仍然生效。空间级共享记忆放 P1。</li>
+              <li>默认空间是持久容器，不是缓存：不做自动清理，不因会话结束而回收。</li>
+              <li>界面不展示默认空间的路径。会话头与位置 chip 只显示「默认空间」；会话菜单提供「打开此会话的位置」，直接进入该会话的产物目录。</li>
+              <li>默认空间分区提供<strong>「产物」</strong>入口，打开跨会话产物清单：按会话分组，包含正常、归档与已删除会话；每行显示标题、时间与目录里的文件，可打开文件或位置。支持按标题、时间与文件名查找；「在文件夹中打开」只作为兜底。</li>
+              <li><strong>清单口径以目录内容为准</strong>：清单列出产物目录里<strong>实际存在的文件</strong>，按修改时间排序；改动记录只用来标注「哪条会话记录过这个文件」，不作为清单的唯一来源。这样 agent 通过命令行写入、外部程序产出、用户自己放进去的文件都能出现，不会出现「磁盘里有、清单里没有」。</li>
+              <li>清单不承诺「只列 agent 写过的文件」，也不承诺目录被外部改动后立即刷新：打开清单时重读目录，并提供刷新动作。</li>
+              <li>产物目录名是内部标识（时间 + 短 id），展示标题以 manifest 为准，不承诺目录名等于「时间 + 标题」。</li>
+              <li><strong>manifest 生命周期</strong>：落库时创建（标题、创建时间），标题随会话更新；删除时补写文件列表并冻结。清单以目录内容为准，manifest 的文件列表只在目录不可读时兜底。</li>
+              <li>默认空间<strong>不可移除</strong>，界面不提供「移除」；它是所有未指定目录会话的保底落点。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>结果与状态</dt><dd>会话归属「默认空间」，拥有独立产物目录与 manifest；产物清单可打开；可在别处「在新位置继续」，或按 FR-07 归档、删除。</dd></div>
+          <div class="field"><dt>异常</dt><dd>
+            <ul>
+              <li>默认空间无法初始化（磁盘满、无权限）：不创建会话，显示真实原因；提供「重试」与「选择工作位置…」。这是唯一要求用户选择工作目录的例外。</li>
+              <li>某条会话的产物目录被外部删除：会话仍可查看历史；下一次发送前提示「位置不可用」，提供「重建此会话的产物目录（保留对话）」与「在新位置继续…」；产物清单标记「目录缺失」。</li>
+              <li>默认空间容器整体不可用：已存在会话只读；提供「重建默认空间」与「选择工作位置…」。重建只为在册会话补缺失的产物目录（磁盘上还在的不动），不恢复已删除会话的目录。</li>
+              <li>删除会话时 manifest 写入失败：删除继续，产物清单按目录内容显示，并标记「缺少 manifest」；不因此阻断删除。</li>
+            </ul>
+          </dd></div>
+        </dl>
+
+        <div class="callout">
+          <span class="ct">产物怎么找回来</span>
+          <p>当前会话：工具卡里的路径、会话菜单「查看产物」和「打开此会话的位置」。其他会话：默认空间的「产物」清单按会话分组，支持按标题、时间与文件名查找。会话已删除：目录与文件仍在，manifest 保留标题与文件列表，产物清单继续列出它；旧版本的无 manifest 目录显示为「未关联目录」。</p>
+        </div>
+
+        <div class="callout warn">
+          <span class="ct">不显示路径，不等于没有边界</span>
+          <p>默认空间的审批卡写明「范围：默认空间 · 本会话」，并提供「查看位置」：展开后显示<strong>这条会话的产物目录</strong>。用户可以不知道路径，但必须能在关键时刻核对 agent 的操作范围——它只在这条会话的产物目录里，不会伸到其他默认空间会话，更不会伸到整个磁盘。</p>
+        </div>
+
+        <div class="callout">
+          <span class="ct">为什么 P0 不做共享记忆</span>
+          <p>共享记忆需要回答「谁写的、写到哪、怎么撤销、会不会污染其他会话」。这些问题比产物隔离更贵。P0 先把产物清单与 manifest 做扎实；空间级共享记忆作为 P1，届时再补写入审批与可见性。</p>
+        </div>
+      </div>
+
+      <!-- FR-03 -->
+      <div class="card" id="fr-03">
+        <div class="fr-head"><span class="fr-id">FR-03</span><h3 class="fr-title">在新位置继续</h3></div>
+        <p class="purpose">选错位置的纠错成本应该是一次复制，而不是重开一条会话。产品不复用「原地切换」：目标位置确定后，复制一条带完整对话的新会话过去，原会话保持原样。</p>
+
+        <dl>
+          <div class="field"><dt>触发</dt><dd>
+            <ul>
+              <li>会话菜单：「在新位置继续…」。</li>
+              <li>会话头位置 chip 菜单：同一条动作；已保存会话不提供「切换」或「移到默认空间」。</li>
+              <li>草稿期改位置不走本流程，见 5.4。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>可用条件</dt><dd>会话已保存、不在运行中，也不在等待授权或等待回答。运行中入口置灰，并说明「运行中的会话不能复制到新位置，请先停止」。</dd></div>
+          <div class="field"><dt>处理规则</dt><dd>
+            <ul>
+              <li>先列出已登记的工作目录，再给「选择其他文件夹…」；目标为默认空间时是一个独立选项「默认空间」。</li>
+              <li>选择已登记的目录：直接使用，不新增重复行。</li>
+              <li>选择与当前相同的位置：不产生任何变化，确认按钮置灰。</li>
+              <li>确认后<strong>新建一条会话</strong>：复制源会话到当前尖端，标题沿用并加「（续）」（已以「（续）」结尾时不重复追加），落在目标位置；打开新会话，源会话保持不变。</li>
+              <li>目标为默认空间时，<strong>先为新会话分配它自己的产物目录，再以该目录作为运行时根创建会话</strong>；新会话不存在「没有根」的中间状态。目标为工作目录时，产物目录就是该目录。</li>
+              <li><strong>对话与改动记录一起复制</strong>：应用侧的改动记录连同执行时的根（<code>root_path</code>）与净值复制到新会话；<strong>不复制文件基线</strong>，新改动在目标位置重新建立基线。</li>
+              <li>不移动、不复制磁盘上的文件；不改源会话的标题、位置与历史。</li>
+              <li><strong>旧工具卡仍按执行时的根解析旧路径</strong>，旧文件仍可打开；文件已不存在时如实报告失败，不静默跳过。</li>
+              <li><strong>复制需要先冻结源会话的运行时</strong>（停掉源会话的执行进程、等它退出）再复制历史。复制期间源会话只读，不能发送消息；完成后重新打开源会话即可继续，不需要用户做额外操作。界面必须写明「复制期间源会话暂时只读」。</li>
+              <li>复制期间显示不确定进度（「正在复制对话…」），不承诺百分比，不阻塞其他会话；大历史可能需要等待。失败时源会话不受影响，未完成的新会话不留下。</li>
+              <li>草稿没有历史，不走本流程；输入框里未发送的内容与附件不在历史中，不会被复制。</li>
+            </ul>
+          </dd></div>
+
+          <div class="field"><dt>新会话 / 源会话</dt><dd>
+            <div class="table-wrap" style="margin-bottom:0">
+              <table>
+                <thead><tr><th></th><th>源会话</th><th>新会话</th></tr></thead>
+                <tbody>
+                  <tr><td>对话与工具历史</td><td>不变</td><td>复制到当前尖端</td></tr>
+                  <tr><td>改动记录 / 净值</td><td>不变</td><td>复制，并保留执行时的根与当时算出的净值</td></tr>
+                  <tr><td>文件基线</td><td>不变</td><td>不复制；新改动在目标位置重新建立基线</td></tr>
+                  <tr><td>工作位置</td><td>不变</td><td>目标位置</td></tr>
+                  <tr><td>产物目录与文件</td><td>不变</td><td>不复制，使用目标位置的目录；默认空间分配新的私有目录</td></tr>
+                  <tr><td>约定 / 记忆</td><td>不变</td><td>按目标目录加载它自己的约定与记忆（P0 不做空间级共享记忆）</td></tr>
+                  <tr><td>旧工具卡</td><td>不变</td><td>仍指向旧文件，按执行时的根解析</td></tr>
+                  <tr><td>标题与创建时间</td><td>不变</td><td>标题加「（续）」，创建时间为现在</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </dd></div>
+
+          <div class="field"><dt>示例</dt><dd>
+            <p style="margin-bottom:6px">「排查登录超时」在默认空间聊了 6 轮，agent 写了一份 <code>notes.md</code>。用户选择「在新位置继续…」并选中工作目录「colt」后：</p>
+            <ul>
+              <li>新建「排查登录超时（续）」，位于左栏 colt 之下，对话与改动记录复制到第 6 轮；</li>
+              <li>新会话里读写、审批范围都在 colt；原会话仍在默认空间，<code>notes.md</code> 也还在它自己的产物目录，并在产物清单里可见；</li>
+              <li>复制过去的工具卡仍按<strong>执行时的根</strong>解析旧路径，旧文件可打开；文件本身不复制；需要把文件带过来时，由用户或 agent 显式复制。</li>
+            </ul>
+          </dd></div>
+
+          <div class="field"><dt>确认框必须包含</dt><dd>
+            <blockquote>
+              <span class="q-label">在新位置继续的确认文案</span>
+              <p>「会新建一条会话，把当前对话与改动记录复制到「<em>目录名</em>」继续；原会话保持原样。文件不会复制，旧文件仍在原位置，旧工具卡仍可打开。复制期间原会话暂时只读，完成后可以继续。新会话按目标目录加载它自己的约定与记忆。」</p>
+              <p style="margin-top:6px">目标为默认空间时，首句改为「把当前对话与改动记录复制到默认空间继续」，并说明会为新会话分配一个独立的产物目录与 manifest。</p>
+            </blockquote>
+          </dd></div>
+
+          <div class="field"><dt>结果与状态</dt><dd>源会话数据不变；复制期间源会话只读，完成后可继续。新会话出现在目标位置，对话与改动记录完整，位置固定。左栏同时保留两条会话；重启后保持。</dd></div>
+          <div class="field"><dt>异常</dt><dd>
+            <ul>
+              <li>目标目录不可用：不能确认，提示先重新定位或换一个目录。</li>
+              <li>目标是一个文件而不是文件夹：拒绝并说明「请选择一个文件夹」。</li>
+              <li>复制过程中目标目录被移除或磁盘断开：不创建新会话，源会话保持不变，说明原因。</li>
+              <li>复制失败或空间不足：清理未完成的新会话，源会话不受影响。</li>
+              <li>源会话已归档或所在目录已移除：只要历史可读就允许复制；源位置不可用时明确提示旧文件可能打不开。</li>
+              <li>改动记录复制失败：对话仍复制，新会话标记「旧改动记录未复制」，不阻断创建。</li>
+              <li>历史里引用的旧文件已不存在：工具卡按原位置显示并如实报告失败，不静默跳过。</li>
+              <li>输入框里有未发送的内容或附件：不复制，并在确认框里说明。</li>
+            </ul>
+          </dd></div>
+        </dl>
+
+        <div class="callout">
+          <span class="ct">为什么是复制，不是原地切换</span>
+          <p>原地切换要在一个已经运行的会话上换掉根：worker 要重启，审批、记忆、技能都要重新注册，界面显示新位置而运行时还在旧位置的风险始终存在。复制则让新会话<strong>从第一条消息起就长在目标位置</strong>，没有半途状态；源会话也保留了当时的工作现场，事后可对照。</p>
+        </div>
+      </div>
+
+      <!-- FR-04 -->
+      <div class="card" id="fr-04">
+        <div class="fr-head"><span class="fr-id">FR-04</span><h3 class="fr-title">工作目录的登记与识别</h3></div>
+        <p class="purpose">让用户自己选择的目录成为一等公民：可识别、可纠正、不可用时有出路。</p>
+
+        <dl>
+          <div class="field"><dt>打开工作目录</dt><dd>
+            <ul>
+              <li>选择任意已存在的文件夹。</li>
+              <li>已登记过的目录直接选中，不产生重复行；若它处于「已移除」，打开同一路径即恢复。</li>
+              <li>不要求是 Git 仓库；不是仓库时不显示分支，也不提示错误。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>产物目录</dt><dd>工作目录下的会话<strong>不另建子目录</strong>：该目录本身就是共享目录与产物目录。同一目录下的多条会话共享目录级约定，也共享同一批文件。</dd></div>
+          <div class="field"><dt>产物清单</dt><dd>会话里的「查看产物」按目录内容列出文件（改动记录标注哪些由该会话记录过），可打开文件或「在文件夹中打开」；<strong>不另设目录级产物清单</strong>。删除会话后文件仍在目录里，但产品不再提供「这条会话碰过哪些文件」的线索。</dd></div>
+          <div class="field"><dt>命名与区分</dt><dd>
+            <ul>
+              <li>左栏行以文件夹名为显示名。</li>
+              <li>展开目录行或悬停显示完整路径。</li>
+              <li>两个目录同名时，在名字旁显示父目录名以区分。</li>
+              <li>允许登记子目录；同样用完整路径区分层级。<span class="pill">Assumption, TBD</span></li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>可用性检查</dt><dd>在应用启动、打开会话、发送消息前各检查一次。检查结果决定目录行与会话是否可运行。检查<strong>异步执行、带超时、不阻塞界面</strong>：网络盘或已断开的移动盘超时后按「不可用」处理，并允许用户点「重试」；启动时先显示上次已知状态，检查完成后再更新。处于「已移除」的目录不参与检查，也不检查其下会话。</dd></div>
+          <div class="field"><dt>不可用时</dt><dd>
+            <ul>
+              <li>目录行标记「位置不可用」。</li>
+              <li>其下会话可以打开并查看历史，但不能发送。</li>
+              <li>会话头显示横幅，给出两个动作：「重新定位…」「在新位置继续…」。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>已移除时</dt><dd>
+            <ul>
+              <li>目录行从左栏「工作目录」区收进底部「已移除」区，其下会话一并收起。</li>
+              <li>不删除登记、不删除磁盘文件夹、不删除会话记录。</li>
+              <li>恢复到「工作目录」区时，重新做一次可用性检查：可用则正常显示，不可用则标「位置不可用」。</li>
+              <li>若同一路径此前已被重新打开，恢复时合并到那一行，不产生重复行。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>重新定位</dt><dd>这是修复<strong>同一个工作目录</strong>的登记，不是给单条会话换位置：选择新文件夹后确认（历史保留、文件不搬移），更新目录登记；其下所有会话（含归档与已移除）按登记自动跟随，不逐条改路径。若新目录已有登记，提示将合并到已存在的目录行。运行中的会话需先停止，再重新定位。</dd></div>
+          <div class="field"><dt>重命名显示名</dt><dd><span class="pill">P1</span> 只修改左栏显示名，不修改磁盘文件夹名。</dd></div>
+          <div class="field"><dt>结果</dt><dd>目录行状态与真实可用性一致；任何失败都能被用户看见并恢复。</dd></div>
+        </dl>
+      </div>
+
+      <!-- FR-05 -->
+      <div class="card" id="fr-05">
+        <div class="fr-head"><span class="fr-id">FR-05</span><h3 class="fr-title">左栏组织与查找</h3></div>
+        <p class="purpose">用户能在两秒内回答两个问题：我有哪几件事在跑？它们分别在哪？</p>
+
+        <h4>结构</h4>
+        <div class="wire">
+          <div class="wire-inner">
+            <div class="mock sidebar">
+              <div class="mk-btn">＋ 新建会话</div>
+              <div class="mk-search">搜索会话 / 工作目录 / 产物</div>
+              <div class="mk-sec"><span>默认空间</span><span class="act">产物 · ＋ 新建</span></div>
+              <div class="mk-row"><span class="dot"></span><span class="t">排查登录超时</span><span class="tag">运行中</span></div>
+              <div class="mk-row"><span class="dot idle"></span><span class="t">整理发布说明</span></div>
+              <div class="mk-sec"><span>工作目录</span><span class="act">打开…</span></div>
+              <div class="mk-dir"><span class="caret">▾</span><span>colt</span></div>
+              <div class="mk-sub">E:\code\opensource\colt</div>
+              <div class="mk-nest">
+                <div class="mk-row active"><span class="dot"></span><span class="t">修复侧栏排序</span></div>
+                <div class="mk-row"><span class="dot idle"></span><span class="t">补充会话搜索</span></div>
+              </div>
+              <div class="mk-dir"><span class="caret">▸</span><span>docs-site</span></div>
+              <div class="mk-dir" style="color:var(--red)"><span class="caret">▸</span><span>old-notes</span><span class="tag" style="color:var(--red)">位置不可用</span></div>
+              <div class="mk-sec" style="border-top:1px solid var(--line);margin-top:6px"><span>已移除 1</span><span class="caret">▸</span></div>
+              <div class="mk-sec"><span>已归档 2</span><span class="caret">▸</span></div>
+            </div>
+          </div>
+        </div>
+
+        <dl>
+          <div class="field"><dt>分区顺序</dt><dd>新建会话 → 搜索 → 默认空间 → 工作目录 → 已移除 → 已归档。顺序固定，不随当前会话变化。</dd></div>
+          <div class="field"><dt>默认空间</dt><dd>
+            <ul>
+              <li>分区头显示「默认空间」，带「产物」与「＋ 新建」两个动作；「产物」打开跨会话产物清单（含已删除会话），不是直接进文件夹。</li>
+              <li>会话平铺、不显示路径、按最近活动排序；高度受限，可滚动，不挤压下方目录区。</li>
+              <li>默认空间不提供「移除」入口。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>工作目录</dt><dd>按最近打开排序；展开显示完整路径与会话；折叠只显示目录名。不可用的目录仍留在此区，并明确标记。</dd></div>
+          <div class="field"><dt>会话菜单</dt><dd>「查看产物」「打开此会话的位置」「在新位置继续…」「归档」「删除」。已保存的会话不提供「切换工作位置」或「移到默认空间」。</dd></div>
+          <div class="field"><dt>已移除</dt><dd>默认收起，标题带数量；展开只列目录名与「恢复」，并注明「恢复后其下会话一起回来」。已移除目录不参与运行；搜索命中时仍显示其会话，并标记「已移除」。</dd></div>
+          <div class="field"><dt>高亮</dt><dd>当前会话所属的目录行与会话行高亮；切换会话时高亮跟随；默认空间分区在其中的会话被选中时同样有标记。</dd></div>
+          <div class="field"><dt>搜索</dt><dd>匹配会话标题、位置名称（默认空间 / 工作目录名）、完整路径与<strong>产物文件名</strong>；归档与已移除的会话也参与搜索，并在结果里标出状态。<strong>不搜索对话正文</strong>——这是已明确的限制，见开放问题。</dd></div>
+          <div class="field"><dt>空态</dt><dd>
+            <ul>
+              <li>没有默认空间会话：「不指定目录的会话会出现在这里，每条都有自己的产物目录」。</li>
+              <li>没有工作目录：「还没有工作目录，打开一个文件夹开始」。</li>
+              <li>没有已移除目录：整个分区不显示。</li>
+              <li>搜索无结果：如实显示没有匹配，不展示空白区。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>已归档</dt><dd>跨位置汇总，默认收起；每行标出它所属的工作位置；可恢复。</dd></div>
+          <div class="field"><dt>窄屏</dt><dd>位置 chip 与状态标签换行显示，不截断、不隐藏；宁可占两行，也不让用户看不到自己在哪儿。</dd></div>
+        </dl>
+      </div>
+
+      <!-- FR-06 -->
+      <div class="card" id="fr-06">
+        <div class="fr-head"><span class="fr-id">FR-06</span><h3 class="fr-title">位置信息呈现规则</h3></div>
+        <p class="purpose">只展示用户做过的选择；系统代管的路径不进入主界面，但必须随时可查。</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>界面位置</th><th>默认空间</th><th>工作目录</th></tr></thead>
+            <tbody>
+              <tr><td>左栏会话行</td><td>标题 + 状态，无路径</td><td>标题 + 状态，无路径</td></tr>
+              <tr><td>左栏分区 / 目录行</td><td>「默认空间」+「产物」/「＋ 新建」</td><td>目录名；展开显示完整路径</td></tr>
+              <tr><td>会话头</td><td><span class="pill">默认空间</span></td><td><span class="pill blue">工作目录 · colt</span> + 分支；悬停显示完整路径</td></tr>
+              <tr><td>起手区（草稿）</td><td><span class="pill">默认空间</span> +「选择工作位置…」</td><td><span class="pill blue">工作目录 · colt</span> +「选择工作位置…」</td></tr>
+              <tr><td>会话菜单（已保存）</td><td>「查看产物」「打开此会话的位置」「在新位置继续…」</td><td>「查看产物」「打开此会话的位置」「在新位置继续…」</td></tr>
+              <tr><td>审批卡</td><td>「范围：默认空间 · 本会话」+「查看位置」；展开显示这条会话的产物目录</td><td>「范围：colt」+「查看位置」；展开显示完整路径</td></tr>
+              <tr><td>产物清单</td><td>跨会话清单，按会话分组，含正常、归档与已删除会话；可打开文件或位置，可按文件名搜索</td><td>会话内「查看产物」按目录内容列出文件；可打开文件或「在文件夹中打开」</td></tr>
+              <tr><td>工具卡 / 改动清单</td><td>相对路径；按执行时的根解析；复制后旧路径仍指向旧目录</td><td>相对路径；按执行时的根解析；复制后旧路径仍指向旧目录</td></tr>
+              <tr><td>删除会话后</td><td>产物清单仍列出该目录（manifest 冻结）</td><td>文件仍在目录中；会话记录消失，不再提供按会话的产物线索</td></tr>
+              <tr><td>错误提示</td><td>用「默认空间」指代，可展开路径</td><td>用目录名指代，需要时附完整路径</td></tr>
+              <tr><td>复制路径</td><td>经「查看位置」展开后提供</td><td>提供</td></tr>
+              <tr><td>窄屏</td><td>chip 换行，不截断</td><td>chip 换行，不截断</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>工具卡与改动清单里的相对路径必须按<strong>执行时的根</strong>解析；「在新位置继续」之后，历史里的旧路径仍指向旧产物目录，不能按新根重新解释。</p>
+        <p><strong>同一个相对路径可能对应两个根</strong>（复制前的旧目录、复制后的新目录）。改动清单与净值按根分组显示，<strong>不跨根合并</strong>：同一文件在两个根下是两条独立记录，分组标题用位置名（「colt」/「默认空间 · 本会话」）。副本里只显示当前根下的净值，旧根记录明确标注为历史。</p>
+
+        <h4>会话头与起手区线框</h4>
+        <div class="wire">
+          <div class="wire-inner">
+            <div class="mock main" style="min-width:100%">
+              <div class="mk-top">
+                <span class="title">修复侧栏排序</span>
+                <span class="mk-chip">工作目录 · colt</span>
+                <span class="mk-chip">main</span>
+                <span class="mk-chip">空闲</span>
+              </div>
+              <div class="mk-body">
+                <div class="mk-hint">今天要处理什么？</div>
+                <div class="mk-big">描述你想做的事，Colt 会在这个目录里动手</div>
+                <div class="mk-input">把这个列表按最近活动排序……</div>
+                <div class="mk-foot"><span>工作目录 · colt · 查看产物&nbsp;&nbsp;|&nbsp;&nbsp;选择工作位置…</span><span>发送</span></div>
+              </div>
+            </div>
+            <div class="mock main" style="min-width:100%">
+              <div class="mk-top">
+                <span class="title">排查登录超时</span>
+                <span class="mk-chip">默认空间</span>
+                <span class="mk-chip">空闲</span>
+              </div>
+              <div class="mk-body">
+                <div class="mk-hint">今天要处理什么？</div>
+                <div class="mk-big">描述你想做的事，Colt 会在默认空间里动手</div>
+                <div class="mk-input">帮我看一下这个超时报错……</div>
+                <div class="mk-foot"><span>默认空间 · 查看产物&nbsp;&nbsp;|&nbsp;&nbsp;选择工作位置…</span><span>发送</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout never">
+          <span class="ct">三条不出现</span>
+          <p>默认空间的绝对路径不作为任何主界面的标题、副标题或正文，只在「默认空间产物」「打开此会话的位置」与「查看位置」里展开；工作目录的完整路径不作为标题；不出现「任务 / 项目 / 工作区」这类需要解释才能理解的词。</p>
+        </div>
+      </div>
+
+      <!-- FR-07 -->
+      <div class="card" id="fr-07">
+        <div class="fr-head"><span class="fr-id">FR-07</span><h3 class="fr-title">移除、删除与归档</h3></div>
+        <p class="purpose">让「收拾」不产生意外损失：对话与文件各有各的边界；「不想看到」与「想销毁」是两件事。</p>
+
+        <dl>
+          <div class="field"><dt>归档会话</dt><dd>从常规列表收进底部「已归档」区，数据完整保留，可恢复。运行中不能归档。</dd></div>
+          <div class="field"><dt>删除会话</dt><dd>
+            <ul>
+              <li>确认框写明：「只删除对话与记录，不删除磁盘上的文件。默认空间的目录留有 manifest 可再找回；工作目录的文件仍在原目录。」</li>
+              <li>同时显示它的工作位置，并提供「查看产物」「打开此会话的位置」；默认空间的会话打开它自己的产物目录。</li>
+              <li>删除时在 manifest 补写文件列表并冻结；产物目录与文件保留，产物清单继续列出它。</li>
+              <li>运行中不能删除，入口置灰并说明原因。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>删除后的产物</dt><dd>会话记录消失，产物目录与文件保留。默认空间的目录继续出现在「产物」清单里，按 manifest 显示标题、时间与文件；旧版本没有 manifest 的目录显示为「未关联目录」。工作目录下的文件同样不受影响，但文件混在共享目录里，产品<strong>不再提供「这条会话碰过哪些文件」的线索</strong>——这是两类位置的不对称，如实保留。</dd></div>
+          <div class="field"><dt>从列表移除工作目录</dt><dd>
+            <p>只有一个动作：<strong>仅从列表移除</strong>。目录行与其下会话收进左栏「已移除」区；磁盘不动；随时可「恢复」，重新打开同一文件夹也会自动恢复。P0 不提供「同时删除这里的会话记录」——删除会话是单条会话的动作，避免一次误操作销毁一批对话。</p>
+            <p>任一相关会话在运行中（含等待授权 / 等待回答）时，整次移除被拒绝，并说明是哪条会话。</p>
+          </dd></div>
+          <div class="field"><dt>恢复被移除的目录</dt><dd>
+            <ul>
+              <li>在「已移除」区点「恢复」，目录与其下会话一起回到「工作目录」区。</li>
+              <li>恢复时重新检查可用性；不可用则标记「位置不可用」，会话只读，直到重新定位。</li>
+              <li>若同一路径已被重新打开，直接合并到那一行，不产生重复行。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>默认空间</dt><dd>不可移除，界面不提供「移除」；也没有「已移除」状态。它承担所有未指定目录会话的落点，不能留空。</dd></div>
+          <div class="field"><dt>删除文件夹</dt><dd>产品不执行。用户在系统里操作后，目录行变为「位置不可用」，会话可查看、不可发送。</dd></div>
+          <div class="field"><dt>与「清空重来」的区别</dt><dd>首启的「清空重来」是唯一会删除全部数据与目录的入口；本节的移除只针对单个目录，且默认保留会话。</dd></div>
+        </dl>
+
+        <blockquote>
+          <span class="q-label">移除目录的确认文案</span>
+          <p>「将把「colt」从列表移除，并收进「已移除」。磁盘上的文件夹与其中的文件不会被删除。这里的 12 条会话会一并收起，随时可以恢复；不会删除任何会话记录。」</p>
+        </blockquote>
+      </div>
+
+      <!-- FR-08 -->
+      <div class="card" id="fr-08">
+        <div class="fr-head"><span class="fr-id">FR-08</span><h3 class="fr-title">安全与边界</h3></div>
+        <p class="purpose">用户不需要懂实现，也能在每一次操作前判断「它现在能碰什么」。</p>
+
+        <dl>
+          <div class="field"><dt>审批范围</dt><dd>每张审批卡必须写明本次操作的工作位置：默认空间的会话写「范围：默认空间 · 本会话」，工作目录里的会话写「范围：<em>目录名</em>」。两者都提供「查看位置」；默认空间展开后显示<strong>这条会话的产物目录</strong>，工作目录展开后显示该目录。</dd></div>
+          <div class="field"><dt>共享范围</dt><dd>
+            <ul>
+              <li>同一工作目录下的会话共享：目录级说明文件、目录级技能、项目记忆；它们也共享同一个产物目录。</li>
+              <li><strong>默认空间在 P0 不共享空间级记忆</strong>：每条会话按自己的产物目录加载说明文件与记忆；用户级偏好对所有会话生效。空间级共享记忆放 P1。</li>
+              <li><strong>产物不共享</strong>：每条默认空间会话有自己的产物目录，默认读不到另一条会话的文件；要读取需显式路径并走越界审批。</li>
+              <li>默认空间不加载任何工作目录的目录级约定；工作目录也不加载其他目录的约定。</li>
+              <li><strong>默认空间的约定查找截止于容器根</strong>：会话按自己的产物目录加载，向上查找不越过容器根；容器根及其上层目录里的目录级约定文件（如 <code>AGENTS.md</code>）不参与加载，容器内也不放置这类文件。否则「不共享」会被父目录里的一份约定悄悄破坏。</li>
+            </ul>
+          </dd></div>
+          <div class="field"><dt>空间级记忆（P1）</dt><dd>P0 不提供空间级共享记忆，也不提供「记住到默认空间」这类写入动作。P1 开放时必须同时给出写入审批、写入内容预览与撤销入口，避免单条会话污染整个空间。</dd></div>
+          <div class="field"><dt>复制会话后的边界</dt><dd>「在新位置继续」生成的新会话按目标目录加载约定与记忆；复制过来的历史保留旧工具卡的执行时根，界面可以打开旧文件，但这只是历史查看，不授予新会话 agent 读取旧位置的权限。agent 要读旧文件，仍按越界操作审批。</dd></div>
+          <div class="field"><dt>越界操作</dt><dd>任何跨出当前产物目录的文件操作，按高风险处理，需要用户明确授权；不存在「因为以前放行过就默认可以」的跨位置规则。用户在产物清单里打开、定位文件是<strong>用户自己的动作</strong>，不受越界审批限制；这也不会让 agent 获得读取该文件的权限。</dd></div>
+          <div class="field"><dt>不可用即停</dt><dd>工作位置不可用时禁止发送。不允许 agent 在一个不存在、已移除或未知的目录里继续执行。</dd></div>
+          <div class="field"><dt>移除登记后的会话</dt><dd>不能运行；在「已移除」区点「恢复」后，按可用性检查决定是否可发送。</dd></div>
+          <div class="field"><dt>删除会话后的产物</dt><dd>产物目录与文件仍在，产物清单可打开；但已删除会话不再有 agent 运行时，不存在「从已删除会话继续执行」的入口。</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section id="rules">
+      <h2><span class="num">05</span>共享规则</h2>
+
+      <h3>5.1 六条硬规则</h3>
+      <div class="callout never">
+        <span class="ct">路径不是身份，但随时可查</span>
+        <p>默认空间的绝对路径只出现在「默认空间产物」「打开此会话的位置」「查看位置」与系统对话框里，不作为主界面的标题、副标题或正文；工作目录展开或悬停时显示完整路径。</p>
+      </div>
+      <div class="callout never">
+        <span class="ct">不替用户删文件</span>
+        <p>删除会话、移除目录、删除登记，都不删除磁盘上的文件；默认空间的产物目录也不随会话删除而删除。默认空间不可移除。唯一会删除目录的操作是首启的「清空重来」，且它必须在独立确认中出现。</p>
+      </div>
+      <div class="callout never">
+        <span class="ct">不在不可用的位置里运行</span>
+        <p>目录不存在、无权限、磁盘断开或已被移除时，会话只读。用户必须显式重新定位、恢复目录，或在别处继续，才能继续发送。</p>
+      </div>
+      <div class="callout never">
+        <span class="ct">位置落库后只读</span>
+        <p>已保存会话的工作位置不由「原地切换」改变；要换位置，用「在新位置继续」复制一条新会话。这样界面显示的位置与 agent 实际执行的根不会分叉。</p>
+      </div>
+      <div class="callout never">
+        <span class="ct">产物隔离，但必须可查</span>
+        <p>默认空间每条会话都有自己的产物目录，工作目录内的会话共享同一个目录；两类位置之间不共享文件。清单<strong>以目录里的实际文件为准</strong>，改动记录负责标注归属。默认空间提供每会话清单与跨会话清单（含已删除会话），删除时冻结 manifest 保住线索；工作目录删除会话后不保留按会话的线索，文件仍按路径可浏览。旧路径一律按执行时根解析。</p>
+      </div>
+      <div class="callout never">
+        <span class="ct">P0 不做空间级共享记忆</span>
+        <p>默认空间只共享容器与左栏分区；说明文件与记忆按每条会话自己的产物目录加载，用户级偏好对所有会话生效。空间级共享记忆与「记住到默认空间」放 P1，避免在 P0 引入写入权限与污染问题。</p>
+      </div>
+
+      <h3>5.2 状态迁移</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>当前位置</th><th>动作</th><th>结果</th></tr></thead>
+          <tbody>
+            <tr><td>草稿</td><td>选择工作位置</td><td>位置在首条消息落库时固定；不产生新会话。</td></tr>
+            <tr><td>默认空间</td><td>在新位置继续（选工作目录）</td><td>新建一条工作目录下的会话；源会话与产物目录不变。</td></tr>
+            <tr><td>目录 A</td><td>在新位置继续（选目录 B）</td><td>新建一条 B 下的会话；源会话不变。</td></tr>
+            <tr><td>目录</td><td>在新位置继续（选默认空间）</td><td>新建一条默认空间会话，并分配自己的产物目录；源会话不变。</td></tr>
+            <tr><td>目录</td><td>目录不可用</td><td>只读；可重新定位，或在别处继续。</td></tr>
+            <tr><td>目录</td><td>重新定位</td><td>修复同一个工作目录的登记；其下所有会话按登记自动跟随。历史保留，文件不搬移。</td></tr>
+            <tr><td>目录</td><td>仅从列表移除</td><td>收进「已移除」区；会话保留。</td></tr>
+            <tr><td>已移除</td><td>恢复</td><td>回到工作目录区；重新检查可用性。</td></tr>
+            <tr><td>默认空间</td><td>移除</td><td>不允许；界面不提供该动作。</td></tr>
+            <tr><td>任意</td><td>归档 / 恢复</td><td>在常规列表与归档区之间移动；数据不变。</td></tr>
+            <tr><td>任意</td><td>删除会话</td><td>对话与记录移除；产物目录与文件保留；默认空间冻结 manifest 并继续列出，工作目录只保留文件、不保留按会话的线索。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>5.3 文案词表</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>概念</th><th>统一用词</th><th>不要使用</th></tr></thead>
+          <tbody>
+            <tr><td>不指定目录时的落点</td><td>默认空间</td><td>临时空间、会话空间、任务目录、任务工作区</td></tr>
+            <tr><td>用户打开并登记的文件夹</td><td>工作目录</td><td>项目、空间、工作区</td></tr>
+            <tr><td>草稿期决定在哪儿做</td><td>选择工作位置</td><td>绑定工作目录、归属项目、加入空间</td></tr>
+            <tr><td>已保存会话换地方</td><td>在新位置继续（复制会话）</td><td>切换工作位置、移动会话、解除绑定、移到默认空间</td></tr>
+            <tr><td>打开当前会话的产物目录</td><td>打开此会话的位置</td><td>打开目录、在文件夹中打开、定位文件</td></tr>
+            <tr><td>查看当前会话目录里的产物</td><td>查看产物</td><td>文件列表、改动清单</td></tr>
+            <tr><td>查看默认空间的跨会话产物</td><td>产物（分区头）；完整说法「默认空间产物」</td><td>打开默认空间、打开目录</td></tr>
+            <tr><td>查看某个工作目录里的产物</td><td>在文件夹中打开</td><td>打开目录、定位文件</td></tr>
+            <tr><td>删除登记但保留会话</td><td>从列表移除</td><td>删除项目、删除目录</td></tr>
+            <tr><td>被移除的目录所在区域</td><td>已移除</td><td>回收站、已删除</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>5.4 草稿与首条消息</h3>
+      <ul>
+        <li>未发送首条消息的会话是草稿：只在当前窗口可见，不进左栏。</li>
+        <li>草稿期可以自由选择工作位置，不产生确认负担；因为还没有历史，不需要复制会话。</li>
+        <li>发出首条消息后，会话立即进入左栏，位置固定；默认空间的会话同时获得产物目录与 manifest，产物清单从此刻起可查；此后换位置按 FR-03 复制到新位置。</li>
+        <li>「是否有历史」不影响能否查看位置；任何状态下位置 chip 都可见，产物清单随会话存在。</li>
+      </ul>
+    </section>
+
+    <section id="exceptions">
+      <h2><span class="num">06</span>边界与异常</h2>
+      <p class="sec-lead">每一条都给出用户能看到的反馈与可执行的动作；不允许静默失败。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>场景</th><th>期望行为</th><th>用户看到</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>首次启动，没有任何工作目录</td>
+              <td>不阻塞；顶部新建会话直接落在默认空间；中间区可立即输入。</td>
+              <td>「默认空间」位置 chip；左栏只有默认空间分区。</td>
+            </tr>
+            <tr>
+              <td>从旧版本升级（旧「任务」项目）</td>
+              <td>旧任务项目及其会话归入默认空间，历史保留；旧文件留在原时间戳目录；旧会话的说明文件与记忆继续按原目录加载，不迁移为空间记忆。</td>
+              <td>一次性非阻塞说明，不弹必须处理的对话框。</td>
+            </tr>
+            <tr>
+              <td>文件夹被移动或改名</td>
+              <td>目录行与会话标记不可用；禁止发送；提供重新定位与在新位置继续。</td>
+              <td>「位置不可用」+ 两个动作。</td>
+            </tr>
+            <tr>
+              <td>目录在已断开的移动硬盘上</td>
+              <td>同上；重新连接后，用户可点「重试」恢复为可用。</td>
+              <td>原因写明「所在磁盘不可访问」。</td>
+            </tr>
+            <tr>
+              <td>目录存在但无读取权限</td>
+              <td>标记不可用；不尝试执行任何工具；给出系统级原因。</td>
+              <td>「没有访问这个文件夹的权限」。</td>
+            </tr>
+            <tr>
+              <td>选择已登记的工作目录</td>
+              <td>直接使用该目录，不新增重复行。</td>
+              <td>新会话出现在该目录下。</td>
+            </tr>
+            <tr>
+              <td>目标位置是文件而非文件夹</td>
+              <td>拒绝，不创建新会话。</td>
+              <td>「请选择一个文件夹」。</td>
+            </tr>
+            <tr>
+              <td>运行中尝试复制到新位置或删除</td>
+              <td>入口置灰，主进程再次拒绝。</td>
+              <td>「运行中的会话不能复制到新位置」/「请先停止」。</td>
+            </tr>
+            <tr>
+              <td>会话正在等待授权或等待回答</td>
+              <td>视为运行中，同样不能复制、归档、删除或移除其目录。</td>
+              <td>与上一条相同的说明。</td>
+            </tr>
+            <tr>
+              <td>移除目录时其下有会话在运行</td>
+              <td>整次移除被拒绝，不做部分删除。</td>
+              <td>指出是哪一条会话在运行。</td>
+            </tr>
+            <tr>
+              <td>已移除目录下的会话被直接打开（例如从历史链接）</td>
+              <td>只读显示；提供「恢复目录」与「在新位置继续…」。</td>
+              <td>会话头横幅「这个工作目录已从列表移除」+ 两个动作。</td>
+            </tr>
+            <tr>
+              <td>默认空间初始化失败（磁盘满 / 无权限）</td>
+              <td>不创建会话；提供重试与选择工作目录。这是唯一要求用户选择工作目录的例外。</td>
+              <td>「默认空间暂时不可用，请选择一个工作目录开始」+ 真实原因。</td>
+            </tr>
+            <tr>
+              <td>默认空间容器被外部删除或不可访问</td>
+              <td>已存在会话只读；提供「重建默认空间」与「选择工作位置…」。重建只补缺失的目录，不恢复已删除会话的目录；清单标记目录缺失。</td>
+              <td>「默认空间不可用」+ 两个动作。</td>
+            </tr>
+            <tr>
+              <td>两个目录同名</td>
+              <td>显示父目录名以区分；搜索命中时显示完整路径。</td>
+              <td>「colt — opensource」/「colt — archive」。</td>
+            </tr>
+            <tr>
+              <td>登记的目录是另一个已登记目录的子目录</td>
+              <td>允许登记；用完整路径区分层级；不自动合并。 <span class="pill">Assumption, TBD</span></td>
+              <td>两个独立的目录行。</td>
+            </tr>
+            <tr>
+              <td>复制到新位置后历史里引用了旧目录的文件</td>
+              <td>工具卡按执行时的位置解析；旧文件仍可打开；不存在时如实报告失败。</td>
+              <td>工具卡里明确的失败原因，不静默跳过。</td>
+            </tr>
+            <tr>
+              <td>复制会话失败（空间不足 / 目标断开）</td>
+              <td>不创建新会话，源会话保持不变；清理未完成的记录。</td>
+              <td>真实原因 +「重试」；源会话可继续使用。</td>
+            </tr>
+            <tr>
+              <td>复制历史很大，耗时较长</td>
+              <td>显示不确定进度；不阻塞其他会话；完成后自动打开新会话。</td>
+              <td>「正在复制对话…」；不承诺百分比，大历史需要等待。</td>
+            </tr>
+            <tr>
+              <td>默认空间里某条会话的产物目录被外部删除</td>
+              <td>会话只读；提供「重建此会话的产物目录（保留对话）」与「在新位置继续…」。</td>
+              <td>「这条会话的产物目录不存在」+ 两个动作。</td>
+            </tr>
+            <tr>
+              <td>删除默认空间会话后想找产物</td>
+              <td>产物目录与文件保留；在「产物」清单里按 manifest 的标题与时间定位；旧版本无 manifest 的目录显示为「未关联目录」。</td>
+              <td>目录仍存在，标题、创建时间与文件列表可识别。</td>
+            </tr>
+            <tr>
+              <td>删除工作目录下的会话后想找它碰过的文件</td>
+              <td>文件不动；产品不保留按会话的线索，需按文件路径在目录里找。</td>
+              <td>会话记录消失，目录里的文件仍在。</td>
+            </tr>
+            <tr>
+              <td>复制过程中源会话要发消息</td>
+              <td>复制期间源会话只读；发送入口置灰并说明「复制完成后可继续」，不做排队。</td>
+              <td>「正在复制对话，完成后可以继续」。</td>
+            </tr>
+            <tr>
+              <td>归档会话所在目录被移除或不可用</td>
+              <td>归档区仍能看到；打开时提示「已移除」或「位置不可用」，并提供对应恢复动作。</td>
+              <td>归档行标出所属位置与当前状态。</td>
+            </tr>
+            <tr>
+              <td>系统拒绝「在文件夹中打开」</td>
+              <td>如实提示失败，不假装已打开。</td>
+              <td>「无法打开文件夹」+ 原因。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="decisions">
+      <h2><span class="num">07</span>设计取舍记录</h2>
+      <p class="sec-lead">记录被否掉的备选，避免评审时重复讨论。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>备选方案</th><th>结论</th><th>理由</th></tr></thead>
+          <tbody>
+            <tr><td>新建时让用户选「工作模式 / 代码模式」</td><td>不做</td><td>把可变的归属做成开局开关；见 3.1。</td></tr>
+            <tr><td>每条不指定目录的会话一个独立隐藏空间（v0.3 方案）</td><td>不采用</td><td>产物不可见、删除会话后难找回；改为「容器 + 每会话产物目录 + 产物清单」。</td></tr>
+            <tr><td>默认空间完全共享，文件也共享（v0.4 方案）</td><td>不采用</td><td>不相关的工作会互相覆盖；改为「容器 + 隔离产物」。</td></tr>
+            <tr><td>默认空间共享空间级记忆（v0.5 方案）</td><td>P0 不做，放 P1</td><td>共享记忆要解决写入权限、污染与可见性，成本高于产物隔离；P0 先把产物做扎实，见 3.2 与 FR-08。</td></tr>
+            <tr><td>默认空间也显示绝对路径</td><td>不做</td><td>系统代管的路径没有决策价值，只会制造「需要管理它」的误解；但保留「默认空间产物」「打开此会话的位置」与「查看位置」。</td></tr>
+            <tr><td>默认空间允许移除</td><td>不做</td><td>它承担所有未指定目录会话的落点，移除后没有保底位置。</td></tr>
+            <tr><td>落库后原地切换工作位置</td><td>不做（P0）</td><td>切换要换掉运行时的根：worker 重启、审批与说明重注册，容易出现「界面已切、运行时没切」；改为复制会话，见 FR-03。</td></tr>
+            <tr><td>复用现有分叉实现「在新位置继续」</td><td>采用</td><td>已有「库快照 + 新对话 + 新会话行」的能力；只需让新会话落在目标位置，并把改动记录连同执行时根复制过去。</td></tr>
+            <tr><td>复制只带对话，不带改动记录</td><td>不采用</td><td>用户明确要求产物不打折；副本必须保留旧改动记录与旧工具卡路径，否则「在新位置继续」会丢掉产物线索。</td></tr>
+            <tr><td>复制后的旧工具卡只读、不能打开旧文件</td><td>不采用</td><td>产物不打折；旧工具卡按执行时的根解析，旧文件仍可打开；不存在时如实报错。</td></tr>
+            <tr><td>目录名用「时间 + 标题」</td><td>不采用</td><td>落库时标题还不存在；改为内部「时间 + 短 id」，产品用 manifest 展示标题，不随标题改名。</td></tr>
+            <tr><td>默认空间产物清单放 P1</td><td>不采用</td><td>「产物找得到」是原始痛点；P0 必须提供每会话清单与跨会话清单（含已删除会话）。</td></tr>
+            <tr><td>产物清单只以改动记录为来源</td><td>不采用</td><td>命令行写入、外部程序产出、用户自己放进去的文件会漏，出现「磁盘里有、清单里没有」；改为以目录内容为准，改动记录只标注归属。</td></tr>
+            <tr><td>工作目录下删除会话后保留按会话的线索</td><td>不采用</td><td>需要额外的快照存储与目录级清单入口，超出 P0；只保留文件，删除后不再提供按会话的线索，并如实写明。</td></tr>
+            <tr><td>默认空间不可用时再提供一个兜底落点（临时工作区）</td><td>不采用</td><td>会多一个用户无法感知的根，并带出产物归属、可发现性与清理问题；P0 直接如实报错并要求选目录，作为唯一例外。</td></tr>
+            <tr><td>移除目录时提供「同时删除全部会话」</td><td>P0 不提供</td><td>避免一次误操作销毁一批对话；删除会话是单条动作，移除目录只隐藏。</td></tr>
+            <tr><td>移除的目录直接消失</td><td>改为进入「已移除」区</td><td>用户可能只是清理左栏；需要一条可见的回头路，而不是靠「重新打开同一文件夹」猜。</td></tr>
+            <tr><td>用「项目 / 空间」命名目录</td><td>改为「工作目录」</td><td>用户需要先解释的词不适合做主导航；「工作目录」是字面意思。</td></tr>
+            <tr><td>打开目录时自动初始化仓库或文件</td><td>不做</td><td>产品不为用户写代码目录；没有需求支撑的副作用。</td></tr>
+            <tr><td>复制会话时自动把旧文件搬到新位置</td><td>不做</td><td>会产生两份真相或不可逆的移动；需要时由用户或 agent 显式复制。</td></tr>
+            <tr><td>复制时显示精确进度条</td><td>不做（P0）</td><td>实现需要额外的事件通道；P0 只显示不确定进度，不承诺百分比。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="open">
+      <h2><span class="num">08</span>开放问题</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>问题</th><th>影响</th><th>当前处理</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>默认空间产物的清理与占用</td>
+              <td>每条默认空间会话都有自己的产物目录，删除会话也不删目录，长期会累积；用户可能不知道它有多大。</td>
+              <td><span class="pill">TBD</span> 默认长期保留，不做自动清理。P0 已提供跨会话产物清单；P1 再做占用展示与用户主动清理。</td>
+            </tr>
+            <tr>
+              <td>产物清单的筛选、排序与占用</td>
+              <td>会话与文件多了以后，按标题、时间、文件名查找还不够；需要按目录、状态与大小筛选。</td>
+              <td><span class="pill">P0</span> 提供按会话分组、标题/时间/文件名查找，含已删除会话。<span class="pill">P1</span> 增加筛选、排序与占用。</td>
+            </tr>
+            <tr>
+              <td>是否需要空间级共享记忆</td>
+              <td>P0 默认空间不共享记忆，某条会话的约定无法自动带到下一条；用户可能希望「记住到默认空间」。</td>
+              <td><span class="pill">P1</span> 开放空间级共享记忆，同时提供写入审批、内容预览与撤销；P0 不增加「记在哪一层」的选择成本。</td>
+            </tr>
+            <tr>
+              <td>默认空间是否需要「命名空间 / 分组」</td>
+              <td>产物已经按会话隔离，剩下的问题是左栏列表的组织；不相关的非代码任务仍会挤在同一分区。</td>
+              <td><span class="pill">P1</span> 提供「新建命名空间」，为某个项目单独开一个默认空间；P0 只保留「在新位置继续」到工作目录这一个隔离出口。</td>
+            </tr>
+            <tr>
+              <td>未来是否提供原位切换工作位置</td>
+              <td>复制会产生第二条会话；有些用户可能只想让原会话换地方。</td>
+              <td><span class="pill">P1 评估</span> 需要先解决 worker 重启、审批重注册与「界面已切、运行时没切」的一致性；P0 一律复制。</td>
+            </tr>
+            <tr>
+              <td>搜索是否覆盖对话正文</td>
+              <td>用户常按「我记得聊过……」来找会话，仅搜标题与位置名会漏。</td>
+              <td><span class="pill">TBD</span> 已明确为当前限制；若要做，需先解决正文索引的体积与隐私边界。</td>
+            </tr>
+            <tr>
+              <td>工作目录显示名是否允许重命名</td>
+              <td>名字过长或同名时难区分。</td>
+              <td><span class="pill">P1</span> 只改显示名，不改磁盘。</td>
+            </tr>
+            <tr>
+              <td>是否允许登记网络盘、可移动盘</td>
+              <td>可用性检查与错误文案。</td>
+              <td><span class="pill">Assumption</span> 允许，只要能访问；不可访问时按「位置不可用」处理。</td>
+            </tr>
+            <tr>
+              <td>子目录是否应与父目录合并为一个工作目录</td>
+              <td>同一仓库下多个入口可能产生多行。</td>
+              <td><span class="pill">Assumption</span> 不自动合并，用完整路径区分；待用户反馈。</td>
+            </tr>
+            <tr>
+              <td>是否需要「最近使用的工作目录」快捷入口</td>
+              <td>打开多个目录后，新建会话时定位成本上升。</td>
+              <td><span class="pill">TBD</span> 可能进入 P1；当前依赖顶部入口跟随上下文。</td>
+            </tr>
+            <tr>
+              <td>旧时间戳目录里的文件是否收进默认空间</td>
+              <td>升级后旧会话的产物仍分散在各时间戳目录，用户可能希望统一到默认空间下。</td>
+              <td><span class="pill">Assumption</span> 不自动搬移（避免大范围移动用户文件）；是否提供「用户主动收集」待评审。</td>
+            </tr>
+            <tr>
+              <td>大历史复制是否需要更便宜的替代</td>
+              <td>「在新位置继续」要复制整个对话库与改动记录，长会话会慢且占磁盘。</td>
+              <td><span class="pill">P1</span> 评估「摘要交接」：只把压缩摘要带到新位置，成本低但会丢细节，与完整复制并存。</td>
+            </tr>
+            <tr>
+              <td>manifest 的格式与保留时长</td>
+              <td>删除会话后目录要能被产物清单识别；长期保留会累积，清理又会丢识别信息。</td>
+              <td><span class="pill">TBD</span> P0 在目录内写 JSON manifest（生命周期见 FR-02）；保留时长与清理入口待定。</td>
+            </tr>
+            <tr>
+              <td>旧版本无 manifest 的目录如何识别</td>
+              <td>升级前删除的会话没有 manifest，只能按目录名与修改时间猜测。</td>
+              <td><span class="pill">Assumption</span> 产物清单显示为「未关联目录」，按目录名中的时间与短 id 排序；不自动删除。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="glossary">
+      <h2><span class="num">09</span>术语表</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>术语</th><th>定义</th></tr></thead>
+          <tbody>
+            <tr><td><strong>会话</strong></td><td>一次协作的完整记录，包含对话、工具动作、审批与历史。</td></tr>
+            <tr><td><strong>工作位置</strong></td><td>会话在哪儿动手，落库时确定，之后只读；只有默认空间或某个工作目录两种。</td></tr>
+            <tr><td><strong>默认空间</strong></td><td>应用自带的容器：所有不指定目录的会话都落在这里；每条会话有自己的产物目录。P0 不共享空间级记忆，不可移除。</td></tr>
+            <tr><td><strong>产物目录</strong></td><td>agent 读写文件的地方。默认空间的会话各自一个子目录；工作目录的会话就是该目录。</td></tr>
+            <tr><td><strong>产物清单</strong></td><td>按会话列出产物文件的产品内视图。以目录里的实际文件为准，改动记录标注归属；默认空间的清单跨会话，含正常、归档与已删除会话，旧版本无 manifest 的目录显示为「未关联目录」。</td></tr>
+            <tr><td><strong>执行时根</strong></td><td>一条工具调用或改动记录发生时的产物目录。复制会话后，旧记录仍按执行时根解析，不按新位置重新解释。</td></tr>
+            <tr><td><strong>manifest</strong></td><td>产物目录内的 JSON 清单：落库时创建，标题随会话更新，删除时补写文件列表并冻结（生命周期见 FR-02）；目录不可读时作清单兜底。</td></tr>
+            <tr><td><strong>空间级共享记忆（P1）</strong></td><td>默认空间内跨会话共享的记忆。P0 不做；P1 开放时需同时提供写入审批、内容预览与撤销。</td></tr>
+            <tr><td><strong>工作目录</strong></td><td>用户自己打开并登记在左栏的文件夹；它既是其下会话的共享目录，也是它们的产物目录。</td></tr>
+            <tr><td><strong>位置不可用</strong></td><td>工作目录或产物目录在磁盘上被移动、改名、删除，或所在磁盘断开。会话只读，直到重新定位或在别处继续。</td></tr>
+            <tr><td><strong>已移除</strong></td><td>工作目录被「仅从列表移除」后的状态：左栏底部可见，会话保留，可恢复；不参与运行，搜索命中时仍显示并标记状态。</td></tr>
+            <tr><td><strong>在新位置继续</strong></td><td>把当前对话与改动记录复制到目标位置，新建一条会话；源会话不变，文件不复制；旧工具卡按执行时根打开旧文件。用于替代原地切换。</td></tr>
+            <tr><td><strong>重新定位</strong></td><td>工作目录在磁盘上被移动后，把它重新指向新位置的恢复动作；作用于整个目录及其下会话，不是给单条会话换位置。</td></tr>
+            <tr><td><strong>草稿</strong></td><td>已创建但尚未发出第一条消息的会话；只在当前窗口可见，不进左栏，位置仍可改。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <p>本文只描述产品行为与业务规则，不涉及实现方式。文中标注 <span class="pill">TBD</span> 与 <span class="pill">Assumption</span> 的条目在实现与后续迭代中确认；其余条目为定稿决策。</p>
+      <p>v0.9 修订：<strong>收敛</strong>。统一 manifest 生命周期（落库创建 → 标题跟随 → 删除冻结），字段清单只保留 FR-02 一处；「重建默认空间」写明两个边界（只补缺失目录、不恢复已删除会话目录）；删除确认文案按位置区分。三处修正均为改写，正文净减。</p>
+    </footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  var listEl = document.getElementById('demo-list');
+  if (!listEl) return;
+
+  var dirs = [];
+  var sessions = [];
+  var activeId = null;
+  var seq = 0;
+  var noteEl = document.getElementById('demo-note');
+  var chipEl = document.getElementById('demo-chip');
+  var artifactEl = document.getElementById('demo-artifacts');
+  var artifactSessionId = null;
+
+  function note(text) { if (noteEl) noteEl.textContent = text; }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function findDir(id) {
+    for (var i = 0; i < dirs.length; i++) if (dirs[i].id === id) return dirs[i];
+    return null;
+  }
+
+  function activeSession() {
+    for (var i = 0; i < sessions.length; i++) if (sessions[i].id === activeId) return sessions[i];
+    return null;
+  }
+
+  function findSession(id) {
+    for (var i = 0; i < sessions.length; i++) if (sessions[i].id === id) return sessions[i];
+    return null;
+  }
+
+  function section(title, actionText, onAction) {
+    var row = el('div', 'mk-sec');
+    row.appendChild(el('span', null, title));
+    if (actionText) {
+      var act = el('span', 'act', actionText);
+      act.style.cursor = 'pointer';
+      act.addEventListener('click', onAction);
+      row.appendChild(act);
+    }
+    return row;
+  }
+
+  function continueIn(session, targetDirId) {
+    seq += 1;
+    var copy = {
+      id: 's' + seq,
+      title: session.title + '（续）',
+      dirId: targetDirId,
+      files: [],
+      copiedFrom: session.id
+    };
+    sessions.push(copy);
+    activeId = copy.id;
+    artifactSessionId = copy.id;
+    render();
+    var where = targetDirId ? ('工作目录「' + findDir(targetDirId).name + '」') : '默认空间';
+    note('已复制到' + where + '：新会话带着对话与改动记录过去；旧文件仍在原会话的产物清单里，副本不带文件。');
+  }
+
+  function sessionRow(session) {
+    var row = el('div', 'mk-row' + (session.id === activeId ? ' active' : ''));
+    var dot = el('span', 'dot' + (session.id === activeId ? '' : ' idle'));
+    row.appendChild(dot);
+    row.appendChild(el('span', 't', session.title));
+    row.addEventListener('click', function () {
+      activeId = session.id;
+      artifactSessionId = session.id;
+      render();
+      var loc = session.dirId ? ('已在「' + findDir(session.dirId).name + '」下') : '这条会话在默认空间';
+      note(loc + '。位置落库后只读；换地方用「在新位置继续」。');
+    });
+
+    var prod = el('button', null, '产物');
+    prod.title = '查看这条会话目录里的文件';
+    prod.addEventListener('click', function (event) {
+      event.stopPropagation();
+      showArtifacts(session);
+    });
+    row.appendChild(prod);
+
+    if (!session.dirId && dirs.length > 0) {
+      var toDir = el('button', null, '继续到 ' + dirs[0].name);
+      toDir.title = '把对话复制到工作目录，新建一条会话；原会话不变';
+      toDir.addEventListener('click', function (event) {
+        event.stopPropagation();
+        continueIn(session, dirs[0].id);
+      });
+      row.appendChild(toDir);
+    }
+    if (session.dirId) {
+      var toScratch = el('button', null, '继续到默认');
+      toScratch.title = '把对话复制到默认空间，新建一条会话；原会话不变';
+      toScratch.addEventListener('click', function (event) {
+        event.stopPropagation();
+        continueIn(session, null);
+      });
+      row.appendChild(toScratch);
+    }
+    return row;
+  }
+
+  function render() {
+    listEl.innerHTML = '';
+
+    var scratch = sessions.filter(function (s) { return !s.dirId; });
+    listEl.appendChild(section('默认空间', '＋ 新建', addSession));
+    if (scratch.length === 0) {
+      var emptyA = el('div', 'mk-row');
+      emptyA.style.color = 'var(--ink-3)';
+      emptyA.textContent = '不指定目录的会话会出现在这里，各有产物目录';
+      listEl.appendChild(emptyA);
+    } else {
+      scratch.forEach(function (s) { listEl.appendChild(sessionRow(s)); });
+    }
+
+    listEl.appendChild(section('工作目录', '打开…', addDir));
+    if (dirs.length === 0) {
+      var emptyB = el('div', 'mk-row');
+      emptyB.style.color = 'var(--ink-3)';
+      emptyB.textContent = '还没有工作目录';
+      listEl.appendChild(emptyB);
+    } else {
+      dirs.forEach(function (dir) {
+        var dirRow = el('div', 'mk-dir');
+        dirRow.appendChild(el('span', 'caret', '▾'));
+        dirRow.appendChild(el('span', null, dir.name));
+        listEl.appendChild(dirRow);
+        listEl.appendChild(el('div', 'mk-sub', dir.path));
+        var nested = sessions.filter(function (s) { return s.dirId === dir.id; });
+        if (nested.length === 0) {
+          var empty = el('div', 'mk-row');
+          empty.style.color = 'var(--ink-3)';
+          empty.textContent = '还没有会话';
+          listEl.appendChild(empty);
+        } else {
+          nested.forEach(function (s) {
+            var wrap = el('div', 'mk-nest');
+            wrap.appendChild(sessionRow(s));
+            listEl.appendChild(wrap);
+          });
+        }
+      });
+    }
+
+    var current = activeSession();
+    if (chipEl) {
+      if (!current) {
+        chipEl.textContent = '未选择会话';
+      } else if (current.dirId) {
+        chipEl.textContent = '工作目录 · ' + findDir(current.dirId).name;
+      } else {
+        chipEl.textContent = '默认空间';
+      }
+    }
+
+    renderArtifacts();
+  }
+
+  function addSession() {
+    seq += 1;
+    var contextDir = null;
+    var current = activeSession();
+    if (current && current.dirId) contextDir = current.dirId;
+    var session = { id: 's' + seq, title: '新会话 ' + seq, dirId: contextDir, files: [], copiedFrom: null };
+    sessions.push(session);
+    activeId = session.id;
+    artifactSessionId = session.id;
+    render();
+    note(contextDir
+      ? '顶部入口跟随当前上下文：新会话加入了「' + findDir(contextDir).name + '」；产物清单里可以查看它目录里的文件。'
+      : '新建的会话落在默认空间：它有自己的产物目录；点「写入示例产物」再点「产物清单」看看。');
+  }
+
+  function addDir() {
+    if (dirs.length > 0) {
+      note('「colt」已经登记过了：重复打开同一目录不会新增一行。');
+      return;
+    }
+    seq += 1;
+    dirs.push({ id: 'd' + seq, name: 'colt', path: 'E:\\code\\opensource\\colt' });
+    render();
+    note('已打开工作目录「colt」。默认空间的会话可以「继续到 colt」，原会话与旧文件保留。');
+  }
+
+  function reset() {
+    dirs = [];
+    sessions = [];
+    activeId = null;
+    artifactSessionId = null;
+    seq = 0;
+    render();
+    note('已重置。点「新建会话」开始：不指定目录时，会话落在默认空间，并拥有自己的产物目录。');
+  }
+
+  function writeArtifact() {
+    var session = activeSession();
+    if (!session) {
+      note('先新建或选择一条会话，再写入示例产物。');
+      return;
+    }
+    if (!session.files) session.files = [];
+    var name = session.files.length === 0 ? 'notes.md' : 'report-' + (session.files.length + 1) + '.md';
+    session.files.push(name);
+    artifactSessionId = session.id;
+    render();
+    note('已写入示例产物「' + name + '」。产物清单会列出这条会话目录里的文件。');
+  }
+
+  function showArtifacts(session) {
+    if (!session) {
+      note('先新建或选择一条会话，再看产物清单。');
+      return;
+    }
+    artifactSessionId = session.id;
+    renderArtifacts();
+    note('产物清单按会话列出目录里的文件；默认空间的「产物」入口可以看到所有会话，包括已删除会话（示例未模拟删除）。');
+  }
+
+  function renderArtifacts() {
+    if (!artifactEl) return;
+    if (!artifactSessionId) {
+      artifactEl.style.display = 'none';
+      artifactEl.innerHTML = '';
+      return;
+    }
+    var session = findSession(artifactSessionId);
+    if (!session) {
+      artifactEl.style.display = 'none';
+      artifactEl.innerHTML = '';
+      return;
+    }
+    artifactEl.style.display = 'block';
+    artifactEl.innerHTML = '';
+
+    var head = el('div', null, '产物清单 · ' + session.title);
+    head.style.fontWeight = '600';
+    artifactEl.appendChild(head);
+
+    var where = session.dirId ? ('工作目录 · ' + findDir(session.dirId).name) : '默认空间';
+    var count = session.files && session.files.length ? session.files.length + ' 个文件' : '还没有产物';
+    artifactEl.appendChild(el('div', null, where + ' · ' + count));
+
+    if (session.copiedFrom) {
+      var source = findSession(session.copiedFrom);
+      artifactEl.appendChild(el('div', null, '副本不带文件；旧文件在原会话「' + (source ? source.title : '原会话') + '」的产物清单里。'));
+    }
+
+    (session.files || []).forEach(function (file) {
+      artifactEl.appendChild(el('div', null, '· ' + file));
+    });
+  }
+
+  document.getElementById('demo-new').addEventListener('click', addSession);
+  document.getElementById('demo-open').addEventListener('click', addDir);
+  document.getElementById('demo-write').addEventListener('click', writeArtifact);
+  document.getElementById('demo-artifacts').addEventListener('click', function () {
+    showArtifacts(activeSession());
+  });
+  document.getElementById('demo-reset').addEventListener('click', reset);
+
+  render();
+})();
+</script>
+</body>
+</html>

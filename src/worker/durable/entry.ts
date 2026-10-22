@@ -369,6 +369,9 @@ async function afterTool(
         timestamp: Date.now(),
         netAddedLines: null,
         netRemovedLines: null,
+        // 执行时根：主进程落库时存进 file_changes.exec_root。「在新位置继续」后旧改动
+        // 仍按它解析（不按新会话的根），见 PRD FR-06「旧工具卡仍按执行时的根解析旧路径」。
+        execRoot: current.cwd,
       };
       const baseline = current.pendingBaselines.get(call.id);
       current.pendingBaselines.delete(call.id);
@@ -661,7 +664,7 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
     send({ type: "notice", message: agentsNotice, kind: warn ? "security" : undefined });
   }
 
-  const agentsMd = await loadAgentsMd(cwd);
+  const agentsMd = await loadAgentsMd(cwd, command.instructionsStopAt);
   const agentsMdNotice = describeAgentsMd(agentsMd);
   if (agentsMdNotice !== null) {
     // 同上的口径：成功注入不告警，读取失败才告警
@@ -671,8 +674,10 @@ async function init(command: Extract<WorkerCommand, { type: "init" }>): Promise<
       kind: agentsMd.errors.length > 0 ? "security" : undefined,
     });
   }
-  const agentsMdInjector = createAgentsMdInjector(cwd, (message) =>
-    send({ type: "notice", message, kind: "security" }),
+  const agentsMdInjector = createAgentsMdInjector(
+    cwd,
+    (message) => send({ type: "notice", message, kind: "security" }),
+    command.instructionsStopAt,
   );
   // wiki 地图只有读坏时才发通知（其余静默），所以这条恒为告警
   const wiki = createWikiMapInjector(cwd, (message) =>

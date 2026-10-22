@@ -19,8 +19,9 @@
  *    **不含归属标记**的靶子把那条路故意走一遍，断言「open 直接失败 + 靶子一字未动」。
  *
  * 3. **界面链路**（这一段与假 worker 无关，**永远跑**）：点侧栏那个入口 → 原生确认框 →
- *    后端 → 侧栏跟着变。前两段都走 IPC，验不到渲染层那 60 行状态收尾（列表 / 展开态 /
- *    选中项目切换 / 草稿丢弃），而「点了到底有没有反应」正是最容易出错的地方。
+ *    后端 → 侧栏跟着变。PRD-session-workspace v0.9 起这个入口是「**仅从列表移除**」
+ *    （`project.remove`）：登记 / 会话 / 磁盘全留，行从「工作目录」区消失并进「已移除」，
+ *    可恢复。因此这一段验「消失 + 登记仍在且标记已移除 + 恢复后回来」，而不是删库。
  *    原生确认框会阻塞自动化，故把 `dialog.showMessageBox` 打桩成「点了确认」。
  *
  * 前提自己建立（AGENTS §五⑬）：靶子项目都用**本模式自己的目录**（归属标记在路径里）、
@@ -201,8 +202,10 @@ export async function runRmWorkspace(
   }
 
   // ---- 第 3 段：界面链路（不依赖假 worker）----
-  // 靶子项目故意**零会话**：渲染层切到它只会建草稿（草稿不 fork worker），
-  // 于是它自己那一行的入口不会因为「有会话在跑」而变灰，也不会有 worker 卷进来。
+  // PRD-session-workspace v0.9（FR-07）起，工作目录行那个「×」是**仅从列表移除**：
+  // 走 `project.remove` 把登记收进「已移除」区，**不删会话、不删磁盘**。所以这一段验的是
+  // 「点了之后那一行从工作目录区消失、登记仍在且标记已移除」，以及「恢复后回到列表」。
+  // 靶子项目故意**零会话**：渲染层切到它只会建草稿（草稿不 fork worker）。
   const clean = makeWorkspace(`${OWNED}-clean`);
   log(`界面靶子项目：${clean.id}`);
 
@@ -237,17 +240,39 @@ export async function runRmWorkspace(
       push("界面入口在可视区且命中测试通过（按它自己的 data-project-remove 认，不靠层级猜）", clicked);
 
       const gone = await waitFor(() => rowExists(clean.id), false, "点完之后侧栏那一行消失");
-      push("点了确实有变化：侧栏那一行消失（不是点了没反应）", gone);
+      push("点了确实有变化：侧栏「工作目录」区那一行消失（不是点了没反应）", gone);
+
+      // 新的语义：登记**还在**，只是被标记为已移除——这与 ③-D 的「断开登记」是两件事
+      const record = await run<{ found: boolean; removed: boolean }>(
+        `window.colt.invoke("project.list", undefined).then((list) => {
+           const row = list.find((item) => item.id === ${JSON.stringify(clean.id)});
+           return { found: row !== undefined, removed: row ? row.removedAt !== null : false };
+         })`,
+      );
+      push("仅从列表移除：登记还在，且已标记为「已移除」（不是断开登记）", record.found && record.removed);
 
       const ids = await run<string[]>(
         'window.colt.invoke("project.list", undefined).then((list) => list.map((item) => item.id))',
       );
-      push("断开登记：库里也没有它了", !ids.includes(clean.id));
-      push("只断开这一个：本模式的主角项目没被牵连", ids.includes(projectId));
+      push("只动这一个：本模式的主角项目没被牵连", ids.includes(projectId));
+
+      // 恢复：从「已移除」回到「工作目录」（FR-04）
+      await run(
+        `window.colt.invoke("project.restore", ${JSON.stringify({ projectId: clean.id })})`,
+      );
+      const restored = await run<boolean>(
+        `window.colt.invoke("project.list", undefined)
+           .then((list) => list.some((item) => item.id === ${JSON.stringify(clean.id)} && item.removedAt === null))`,
+      );
+      push("恢复后登记回到正常在列状态（removedAt 清空）", restored);
     } finally {
       dialog.showMessageBox = realShowMessageBox;
     }
   } finally {
+    // 收尾：断开干净地删除这条登记（界面不再提供，IPC 仍保留；这是本用例自己造的数据）
+    await run(
+      `window.colt.invoke("project.delete", ${JSON.stringify({ projectId: clean.id })}).catch(() => undefined)`,
+    );
     rmSync(clean.root, { recursive: true, force: true });
     const failed = checks.filter(([, ok]) => !ok).length;
     log(`通过 ${checks.length - failed}/${checks.length}`);

@@ -10,6 +10,7 @@ import { ICON } from "@/lib/icon";
 import type { ProjectFileChange } from "@shared/protocol";
 import { DiffView } from "../components/DiffView";
 import { cn } from "../lib/utils";
+import { rootLabel } from "../lib/change-list";
 import { ErrorNotice } from "../components/ErrorNotice";
 
 export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.Element {
@@ -40,12 +41,20 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
     void load();
   }, [load]);
 
-  // 按文件聚合，便于看出哪些文件被反复改动
+  // 按「根 + 文件」聚合，便于看出哪些文件被反复改动。
+  // 同一条相对路径在不同执行时根下是**两个文件**（FR-06）——「在新位置继续」之后
+  // 两边的改动不能加在一起，否则汇总数会把两个位置的事读成同一个文件的反复修改。
   const byFile = useMemo(() => {
-    const map = new Map<string, { added: number; removed: number; count: number }>();
+    const map = new Map<
+      string,
+      { path: string; root: string | null; added: number; removed: number; count: number }
+    >();
     for (const change of changes) {
-      const current = map.get(change.path) ?? { added: 0, removed: 0, count: 0 };
-      map.set(change.path, {
+      const root = change.execRoot ?? null;
+      const key = `${root ?? ""}\u0000${change.path}`;
+      const current = map.get(key) ?? { path: change.path, root, added: 0, removed: 0, count: 0 };
+      map.set(key, {
+        ...current,
         added: current.added + change.addedLines,
         removed: current.removed + change.removedLines,
         count: current.count + 1,
@@ -53,6 +62,12 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
     }
     return [...map.entries()].sort((a, b) => b[1].count - a[1].count);
   }, [changes]);
+
+  /** 汇总里出现几个不同的根——>1 才需要在每一行标出来，否则根就是项目自己 */
+  const rootCount = useMemo(
+    () => new Set(changes.map((change) => change.execRoot ?? "")).size,
+    [changes],
+  );
 
   const current = changes.find((item) => item.id === selected);
 
@@ -86,12 +101,17 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
         <div className="flex min-h-0 flex-1">
           <div className="w-[380px] shrink-0 overflow-y-auto border-r border-line p-2">
             <div className="mb-2 px-2 py-1 text-xs text-text-muted">按文件聚合</div>
-            {byFile.map(([path, stat]) => (
+            {byFile.map(([key, stat]) => (
               <div
-                key={path}
+                key={key}
                 className="mb-1 rounded-md bg-surface-raised px-2 py-1.5"
               >
-                <div className="truncate font-mono text-xs">{path}</div>
+                <div className="truncate font-mono text-xs">
+                  {rootCount > 1 && stat.root !== null && (
+                    <span className="text-text-muted">{rootLabel(stat.root)} · </span>
+                  )}
+                  {stat.path}
+                </div>
                 <div className="flex items-center gap-2 text-xs text-text-muted">
                   <span>{stat.count} 次</span>
                   {stat.added > 0 && <span className="text-success-fg">+{stat.added}</span>}
@@ -113,7 +133,12 @@ export function ProjectChanges({ projectId }: { projectId: string }): React.JSX.
                     : "hover:bg-surface-overlay/60",
                 )}
               >
-                <div className="truncate font-mono text-xs">{change.path}</div>
+                <div className="truncate font-mono text-xs">
+                  {rootCount > 1 && change.execRoot !== null && (
+                    <span className="text-text-muted">{rootLabel(change.execRoot)} · </span>
+                  )}
+                  {change.path}
+                </div>
                 <div className="flex items-center gap-2 text-xs text-text-muted">
                   <span className="truncate">{change.sessionTitle}</span>
                   <span className="shrink-0">

@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS projects (
   /** 项目身份：workspace = 普通空间；task = 任务工作区（任务栏的落点），见 ProjectKind */
   kind TEXT NOT NULL DEFAULT 'workspace',
   created_at INTEGER NOT NULL,
-  last_opened_at INTEGER NOT NULL
+  last_opened_at INTEGER NOT NULL,
+  /** 「已移除」时刻；NULL = 正常在列。移除只收进左栏「已移除」区，登记与会话都保留（FR-07） */
+  removed_at INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_root_key ON projects(root_key);
 
@@ -98,6 +100,9 @@ CREATE TABLE IF NOT EXISTS file_changes (
   /** 净变化（基线 → 当前）；NULL = 没有基线，算不出，界面据此不下结论 */
   net_added_lines INTEGER,
   net_removed_lines INTEGER,
+  /** 改动发生时的会话根（执行时根）。file_path 是相对路径，解析按它而不是当前根：
+      「在新位置继续」复制过去的旧改动仍指向旧位置（FR-06）。NULL = 旧行，按会话当前根回落 */
+  exec_root TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, created_at DESC);
@@ -148,6 +153,9 @@ CREATE TABLE IF NOT EXISTS file_baselines (
   existed INTEGER NOT NULL,
   /** 改动前的内容；NULL = 未留存（过大 / 二进制 / 读取失败） */
   content TEXT,
+  /** 抓基线时所在的根（执行时根）。同一条会话里同一相对路径在别的根下是另一个文件，
+      不能拿这份基线去算（FR-06）。NULL = v14 之前的旧基线，按会话当前根算 */
+  exec_root TEXT,
   captured_at INTEGER NOT NULL,
   PRIMARY KEY (session_id, file_path)
 );
@@ -196,7 +204,7 @@ CREATE TABLE IF NOT EXISTS settings (
  * 迁移版本号，存储于 PRAGMA user_version。
  * 每次改 schema 递增，并在 MIGRATIONS 里补一条对应迁移。
  */
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 14;
 
 /** 判断某表是否存在：迁移要兼容「早期形态」的旧库，某些表可能还没建 */
 function hasTable(instance: DatabaseSync, table: string): boolean {
@@ -326,6 +334,29 @@ const MIGRATIONS: { version: number; up: (db: DatabaseSync) => void }[] = [
     up: (instance) => {
       if (!hasTable(instance, "sessions")) return;
       addColumnIfMissing(instance, "sessions", "cwd", "TEXT");
+    },
+  },
+  {
+    // v13：会话与工作位置（PRD-session-workspace v0.9）。两列都是「旧行 NULL = 正确语义」，
+    // 无需回填：旧改动按会话当前根解析（那时还没有「复制到新位置」），旧项目都还没被移除过。
+    // 表不存在（早期形态的旧库）时跳过，交给后面的 SCHEMA 建到最新形态（v11/v12 同款）。
+    version: 13,
+    up: (instance) => {
+      if (hasTable(instance, "file_changes")) {
+        addColumnIfMissing(instance, "file_changes", "exec_root", "TEXT");
+      }
+      if (hasTable(instance, "projects")) {
+        addColumnIfMissing(instance, "projects", "removed_at", "INTEGER");
+      }
+    },
+  },
+  {
+    // v14：基线记下「它是在哪个根上抓的」。旧基线 NULL = 那时会话只会有一个根，按当前根算即可。
+    // 主键仍是 (session, path)——一条会话不会同时活在两个根上，「复制到新位置」是**新会话**。
+    version: 14,
+    up: (instance) => {
+      if (!hasTable(instance, "file_baselines")) return;
+      addColumnIfMissing(instance, "file_baselines", "exec_root", "TEXT");
     },
   },
 ];

@@ -94,6 +94,35 @@ export interface Project {
   kind: ProjectKind;
   createdAt: number;
   lastOpenedAt: number;
+  /** 「已移除」时刻（FR-07：仅从列表收进「已移除」区，登记与会话保留）；null = 正常在列 */
+  removedAt: number | null;
+}
+
+/** 产物目录里的一个文件（默认空间跨会话清单，FR-02） */
+export interface ArtifactFileEntry {
+  /** 相对产物目录的路径（子目录文件带 `a/b.ts`） */
+  path: string;
+  size: number;
+  mtime: number;
+}
+
+/**
+ * 默认空间的一条产物目录（清单按它分组）。
+ *
+ * 一条正常会话一组；会话被删除后目录与 manifest 保留，`deletedAt` 非空、标题冻结；
+ * 旧版本没有 manifest 的目录 `title` 为「未关联目录」。`readable=false` 表示目录不可读，
+ * 此时 `files` 取 manifest 冻结的文件列表兜底。
+ */
+export interface ArtifactGroup {
+  /** 目录名（容器下的单层名字；「打开位置」按它定位） */
+  dirName: string;
+  title: string;
+  createdAt: number;
+  /** 会话被删除的时刻；null = 仍在册 */
+  deletedAt: number | null;
+  /** 目录当前是否可读 */
+  readable: boolean;
+  files: ArtifactFileEntry[];
 }
 
 /** 会话工作目录的 git 状态 */
@@ -316,12 +345,18 @@ export const IPC_CHANNELS = [
   "project.createScratch",
   "project.ensureTask",
   "project.delete",
+  "project.remove",
+  "project.restore",
+  "project.availability",
   "session.create",
   "session.list",
   "session.open",
   "session.prompt",
   "session.abort",
   "session.close",
+  "session.reveal",
+  "session.rebuildArtifactDir",
+  "session.continueAtNewLocation",
   "session.delete",
   "session.discardDraft",
   "session.view",
@@ -393,6 +428,8 @@ export const IPC_CHANNELS = [
   "file.read",
   "file.netDiff",
   "file.list",
+  "artifact.listDefaultSpace",
+  "artifact.reveal",
   "terminal.open",
   "terminal.input",
   "terminal.resize",
@@ -621,6 +658,29 @@ export interface IpcInvokeMap {
     response: { ok: true };
   };
   /**
+   * 移除工作目录（FR-07）：只标记 `removed_at` 收进左栏「已移除」区——登记、
+   * 会话记录与磁盘目录全都不动。与 `project.delete`（断开登记、连会话一起清）是两个动作。
+   */
+  "project.remove": {
+    request: { projectId: string };
+    response: { ok: true };
+  };
+  /** 从「已移除」区恢复工作目录；恢复后由渲染层重新做可用性检查（FR-04） */
+  "project.restore": {
+    request: { projectId: string };
+    response: { ok: true };
+  };
+  /**
+   * 工作位置可用性检查（FR-04）：应用启动、打开会话、发送消息前各查一次。
+   *
+   * 只返回**不可用**的项目 id——「可用」是常态，不必为它付一份清单。检查异步、带超时
+   * （网络盘 / 已断开的移动盘超时即按不可用处理），不阻塞界面；已移除的目录不参与检查。
+   */
+  "project.availability": {
+    request: undefined;
+    response: { unavailable: string[]; unavailableSessions: string[] };
+  };
+  /**
    * 新建会话：**只分配 id，不落库**（草稿）。
    *
    * 首次发消息（`session.prompt`）时才写入 sessions 表，届时才 fork worker、才由内核
@@ -675,6 +735,26 @@ export interface IpcInvokeMap {
   "session.close": {
     request: { sessionId: string };
     response: { ok: true; closed: boolean };
+  };
+  /**
+   * 在系统文件管理器里打开**这条会话的工作位置**（PRD FR-02 / FR-06）。
+   *
+   * 根由主进程按 sessionId 反查（默认空间会话 → 它自己的产物目录；工作目录会话 → 目录根），
+   * 渲染层只说「哪条会话」——不传路径。草稿还没有位置，如实报错。
+   */
+  "session.reveal": {
+    request: { sessionId: string };
+    response: { ok: true };
+  };
+  /**
+   * 重建这条默认空间会话的**产物目录**（FR-02 异常路径：目录被外部删除）。
+   *
+   * 只补目录与 manifest，**保留对话**；不搬移、不恢复任何文件——文件如果还在别处，
+   * 由用户或 agent 显式复制。工作目录的会话没有私有产物目录，调用会被拒绝。
+   */
+  "session.rebuildArtifactDir": {
+    request: { sessionId: string };
+    response: { ok: true };
   };
   /** 永久删除会话：清 DB 记录、关联用量/工具/改动与 JSONL 历史；运行中的会话会被拒绝 */
   "session.delete": {
@@ -1052,6 +1132,18 @@ export interface IpcInvokeMap {
     response: { session: SessionInfo };
   };
   /**
+   * 「在新位置继续」（PRD FR-03）：把当前对话与改动记录**复制**成一条新会话，落在目标
+   * 工作位置；源会话保持原样（复制期间只读，完成后可继续）。
+   *
+   * 目标可以是已登记的工作目录，也可以是默认空间（`projectId` 指向默认空间项目行）。
+   * 目标为默认空间时主进程先分配新的产物目录与 manifest，再以它为运行时根建会话。
+   * 新标题 = 源标题 + 「（续）」。文件不复制，旧工具卡仍按执行时的根解析。
+   */
+  "session.continueAtNewLocation": {
+    request: { sessionId: string; projectId: string };
+    response: { session: SessionInfo };
+  };
+  /**
    * 中止**单个**子代理（`ViewSubagent.id`）。与 `session.abort` 分开：那个中断整个会话，
    * 这个只收掉跑偏的某一个子代理。worker 已回收时是空操作（子代理随 worker 同寿命）。
    */
@@ -1183,7 +1275,7 @@ export interface IpcInvokeMap {
    * 越界在**任何 fs 访问之前**即被拒。校验与上限见 `src/main/file-read.ts`。
    */
   "file.read": {
-    request: { sessionId: string; path: string };
+    request: { sessionId: string; path: string; root?: string | null };
     response: FileReadResult;
   };
   /**
@@ -1195,7 +1287,7 @@ export interface IpcInvokeMap {
    * 与 `file.read` 同一套边界：根由主进程按 sessionId → 项目推出，路径必须落在项目内。
    */
   "file.netDiff": {
-    request: { sessionId: string; path: string };
+    request: { sessionId: string; path: string; root?: string | null };
     response: NetChangeResult;
   };
   /**
@@ -1211,6 +1303,27 @@ export interface IpcInvokeMap {
   "file.list": {
     request: { sessionId: string; path: string };
     response: { entries: FsEntry[]; truncated: boolean; hidden: string[] };
+  };
+  /**
+   * 默认空间的**跨会话产物清单**（PRD FR-02 / FR-06）。
+   *
+   * 清单口径以目录内容为准：每个产物目录列出磁盘上**实际存在的文件**；manifest 只用来
+   * 拿标题与创建时间，目录不可读时才拿冻结的文件列表兜底。含已删除会话的目录（manifest
+   * 有 `deletedAt`），旧版本没有 manifest 的目录标题显示「未关联目录」。
+   */
+  "artifact.listDefaultSpace": {
+    request: undefined;
+    response: { groups: ArtifactGroup[] };
+  };
+  /**
+   * 在系统文件管理器里打开产物（FR-02：清单只做查看，不搬文件）。
+   *
+   * 只收目录名与相对文件路径，**根由主进程按容器推出**——渲染层不能指哪开哪；
+   * 越界（`..` / 绝对路径）在任何 fs / shell 调用之前即被拒。
+   */
+  "artifact.reveal": {
+    request: { dirName: string; file?: string };
+    response: { ok: true };
   };
   /**
    * 仓库文档（`docs/wiki/`）的现状。
@@ -1403,6 +1516,11 @@ export interface ProjectFileChange {
   sessionId: string;
   sessionTitle: string;
   path: string;
+  /**
+   * 改动发生时的根（FR-06）；null = 旧行（按会话当前根）。
+   * 「在新位置继续」后同一相对路径在两个根下是两个文件，聚合时不能跨根合并。
+   */
+  execRoot: string | null;
   kind: string;
   patch: string | null;
   addedLines: number;

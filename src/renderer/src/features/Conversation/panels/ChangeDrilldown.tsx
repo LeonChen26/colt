@@ -29,7 +29,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, ChevronLeft, ChevronRight, FileDiff, FileText, Folder, Undo2 } from "lucide-react";
 import { ICON } from "@/lib/icon";
-import { buildChangeList, type ChangeFile } from "@/lib/change-list";
+import { buildChangeList, rootLabel, type ChangeFile } from "@/lib/change-list";
 import { formatAgo, samePath } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { errorSummary } from "../../../lib/error-text";
@@ -65,6 +65,11 @@ export interface DrillRequest {
   readonly layer: DrillLayer;
   /** 仅 `content` 层有意义 */
   readonly path: string | null;
+  /**
+   * 仅 `content` 层有意义：点击来源那次改动的**执行时根**（`ViewFileChange.execRoot`）。
+   * 「在新位置继续」后同一相对路径在两个根下各有一份文件，没有它就分不清点的是哪一份。
+   */
+  readonly root?: string | null;
   /** 仅 `content` / `subagent` 层有意义：重读同一目标（文件内容 / 子代理流）靠它自增 */
   readonly token: number;
   /** 仅 `subagent` 层有意义：要展开的那个子代理（`ViewSubagent.id`） */
@@ -170,10 +175,13 @@ function BackRow({
 function NetDiff({
   sessionId,
   path,
+  root,
   net,
 }: {
   sessionId: string;
   path: string;
+  /** 执行时根（FR-06）：旧改动的净值要在它自己的根上算 */
+  root: string | null;
   net: { added: number; removed: number } | null;
 }): React.JSX.Element {
   const [result, setResult] = useState<NetChangeResult | null>(null);
@@ -186,7 +194,7 @@ function NetDiff({
     setResult(null);
     setError(null);
     void window.colt
-      .invoke("file.netDiff", { sessionId, path })
+      .invoke("file.netDiff", { sessionId, path, root })
       .then((next) => {
         if (!disposed) setResult(next);
       })
@@ -197,7 +205,7 @@ function NetDiff({
     return () => {
       disposed = true;
     };
-  }, [sessionId, path, reverted]);
+  }, [sessionId, path, root, reverted]);
 
   if (reverted) {
     return (
@@ -264,16 +272,43 @@ export function ChangeDrilldown({
     () => list.groups.flatMap((group) => group.files),
     [list],
   );
-  const fileOf = (path: string | null): ChangeFile | undefined =>
-    path === null ? undefined : files.find((item) => item.path === path);
+  /**
+   * 按路径找文件。带 `root` 时**只**认那个根下的那条改动——「在新位置继续」后同一相对路径
+   * 在两个根下是两个文件，找到别处的那条会让清单高亮错行（FR-06）。不带根时取最新一条
+   * （工具卡读的是没记录过改动的文件、旧数据等情形，这是最不坏的猜测）。
+   */
+  const fileOfPath = (target: string | null, root?: string | null): ChangeFile | undefined => {
+    if (target === null) return undefined;
+    const candidates = files.filter((item) => item.path === target);
+    if (root !== undefined && root !== null) {
+      return candidates.find((item) => item.root === root);
+    }
+    return [...candidates].sort((a, b) => b.latestAt - a.latestAt)[0];
+  };
 
   const [layer, setLayer] = useState<DrillLayer>(entry.layer);
-  const [path, setPath] = useState<string | null>(entry.layer === "content" ? entry.path : null);
+  /** 选中的改动文件（`ChangeFile.key` = 根 + 路径，同一路径在不同根下是两条） */
+  const [selectedKey, setSelectedKey] = useState<string | null>(() =>
+    entry.layer === "content" ? (fileOfPath(entry.path, entry.root)?.key ?? null) : null,
+  );
+  /**
+   * 内容层的目标。与 `selectedKey` 分开：工具卡可能点一个**没被记录为改动**的文件，
+   * 那也需要预览（此时按当前根读），只是清单里没有它的行。
+   */
+  const [content, setContent] = useState<{ path: string; root: string | null } | null>(() =>
+    entry.layer === "content" && entry.path !== null
+      ? {
+          path: entry.path,
+          // 请求里带的根优先（那是「点的是哪一份」的确切答案）；没带才按改动记录推断
+          root: entry.root ?? fileOfPath(entry.path, entry.root)?.root ?? null,
+        }
+      : null,
+  );
   const [subagentId, setSubagentId] = useState<string | null>(
     entry.layer === "subagent" ? entry.subagentId : null,
   );
   const [revisionId, setRevisionId] = useState<string | null>(null);
-  /** `×N` 展开了历史的那几个文件 */
+  /** `×N` 展开了历史的那几个文件（按 `ChangeFile.key`） */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   /** 内容层的重读令牌：换文件时靠 `path` 变，重读同一文件靠它自增 */
   const [token, setToken] = useState(entry.layer === "content" ? entry.token : 0);
@@ -293,7 +328,13 @@ export function ChangeDrilldown({
     setLayer(entry.layer);
     setRevisionId(null);
     if (entry.layer === "content") {
-      setPath(entry.path);
+      const matched = fileOfPath(entry.path, entry.root);
+      setSelectedKey(matched?.key ?? null);
+      setContent(
+        entry.path === null
+          ? null
+          : { path: entry.path, root: entry.root ?? matched?.root ?? null },
+      );
       setToken(entry.token);
     }
     if (entry.layer === "subagent") {
@@ -328,7 +369,10 @@ export function ChangeDrilldown({
     };
   }, [sessionId, layer, committedPathsKey]);
 
-  const current = fileOf(path);
+  const current =
+    selectedKey === null ? undefined : files.find((item) => item.key === selectedKey);
+  /** 面包屑 / 标题上显示的路径：内容层优先（它可能是清单里没有的文件），否则是当前改动 */
+  const displayPath = content?.path ?? current?.path ?? null;
   const revision: ViewFileChange | null =
     (revisionId === null
       ? current?.history[0]
@@ -345,13 +389,15 @@ export function ChangeDrilldown({
     setLayer("list");
     setRevisionId(null);
   };
-  const goDiff = (target: string, revision?: string): void => {
-    setPath(target);
+  const goDiff = (file: ChangeFile, revision?: string): void => {
+    setSelectedKey(file.key);
+    setContent({ path: file.path, root: file.root });
     setRevisionId(revision ?? null);
     setLayer("diff");
   };
-  const goContent = (target: string): void => {
-    setPath(target);
+  const goContent = (file: ChangeFile): void => {
+    setSelectedKey(file.key);
+    setContent({ path: file.path, root: file.root });
     setLayer("content");
   };
   /**
@@ -365,7 +411,7 @@ export function ChangeDrilldown({
       return;
     }
     if (layer === "content" && current !== undefined && current.history.length > 0) {
-      goDiff(current.path, current.history[0]?.id);
+      goDiff(current, current.history[0]?.id);
       return;
     }
     if (layer === "list") {
@@ -447,15 +493,15 @@ export function ChangeDrilldown({
             )}
           </>
         )}
-        {!inList && !inSubagent && path !== null && (
+        {!inList && !inSubagent && displayPath !== null && (
           <>
             <ChevronRight {...ICON.xs} className="shrink-0 text-text-muted" />
             <span
               data-drill-crumb="current"
               className="min-w-0 truncate px-1 font-mono text-xs text-text-primary"
-              title={path}
+              title={displayPath}
             >
-              {path}
+              {displayPath}
             </span>
           </>
         )}
@@ -485,14 +531,25 @@ export function ChangeDrilldown({
             </p>
           ) : (
             list.groups.map((group) => (
-              <div key={group.dir} className="mb-2">
-                {/* 目录只是一行**弱标签**：保留归属，但不额外消耗一次点击 */}
+              <div key={group.key} className="mb-2">
+                {/* 目录只是一行**弱标签**：保留归属，但不额外消耗一次点击。
+                    清单里出现多个执行时根时（「在新位置继续」之后），根也要标出来——
+                    同一相对路径在两个根下是两个文件，只写目录会让人以为是同一个。 */}
                 <div
                   data-clist-dir={group.dir}
+                  data-clist-root={group.root ?? ""}
                   className="flex items-baseline gap-2 px-1.5 py-1 text-2xs text-text-muted"
                 >
                   <Folder {...ICON.xs} className="shrink-0 self-center" />
-                  <span className="truncate font-mono" title={group.dir}>
+                  <span
+                    className="truncate font-mono"
+                    title={group.root === null ? group.dir : `${group.root}/${group.dir}`}
+                  >
+                    {list.rootCount > 1 && group.root !== null && (
+                      <span className="text-text-secondary">
+                        {rootLabel(group.root)} ·{" "}
+                      </span>
+                    )}
                     {group.dir === "" ? "（项目根）" : `${group.dir}/`}
                   </span>
                   <span className="flex-1" />
@@ -500,10 +557,10 @@ export function ChangeDrilldown({
                 </div>
 
                 {group.files.map((file) => {
-                  const isExpanded = expanded.has(file.path);
+                  const isExpanded = expanded.has(file.key);
                   const many = file.history.length > 1;
                   return (
-                    <div key={file.path}>
+                    <div key={file.key}>
                       <button
                         type="button"
                         data-clist-file={file.path}
@@ -511,11 +568,11 @@ export function ChangeDrilldown({
                           many
                             ? setExpanded((prev) => {
                                 const next = new Set(prev);
-                                if (next.has(file.path)) next.delete(file.path);
-                                else next.add(file.path);
+                                if (next.has(file.key)) next.delete(file.key);
+                                else next.add(file.key);
                                 return next;
                               })
-                            : goDiff(file.path)
+                            : goDiff(file)
                         }
                         title={many ? `展开 / 收起 ${file.path} 的历史` : `查看 ${file.path} 的 diff`}
                         className={cn(
@@ -577,7 +634,7 @@ export function ChangeDrilldown({
                           <button
                             type="button"
                             data-clist-net={file.path}
-                            onClick={() => goDiff(file.path, NET_REVISION)}
+                            onClick={() => goDiff(file, NET_REVISION)}
                             title="本次会话的累计改动（改动前 → 现在）"
                             className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay"
                           >
@@ -608,7 +665,7 @@ export function ChangeDrilldown({
                               key={rev.id}
                               type="button"
                               data-clist-rev={rev.id}
-                              onClick={() => goDiff(file.path, rev.id)}
+                              onClick={() => goDiff(file, rev.id)}
                               className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition hover:bg-surface-overlay"
                             >
                               <span className="shrink-0 font-mono text-2xs text-text-secondary">
@@ -674,8 +731,14 @@ export function ChangeDrilldown({
       ) : layer === "diff" ? (
         <div className="flex min-h-0 flex-1 flex-col" data-drill-diff="">
           <div className="flex h-[var(--h-panel-head)] shrink-0 items-center gap-2 border-b border-line px-2.5">
-            <span className="truncate font-mono text-xs text-text-secondary" title={path ?? ""}>
-              {path}
+            <span
+              className="truncate font-mono text-xs text-text-secondary"
+              title={current ? `${current.path}${current.root ? `（${rootLabel(current.root)}）` : ""}` : ""}
+            >
+              {current?.path ?? ""}
+              {current?.root && list.rootCount > 1 && (
+                <span className="ml-1 text-text-muted">· {rootLabel(current.root)}</span>
+              )}
             </span>
             {/* 同一文件改过多次时给历史切换；只有一次就不给（一个选项的开关是噪声）。
                 「累计」与 `#N` 并列：前者说「加起来的结果」，后者说「第几次」。 */}
@@ -718,7 +781,7 @@ export function ChangeDrilldown({
             <button
               type="button"
               data-drill-content=""
-              onClick={() => path !== null && goContent(path)}
+              onClick={() => current !== undefined && goContent(current)}
               className={cn(
                 "flex shrink-0 items-center gap-1 rounded-sm border border-line px-1.5 py-1 text-2xs text-text-muted transition hover:bg-surface-overlay hover:text-text-primary",
                 !(current !== undefined && current.history.length > 1) && "ml-auto",
@@ -736,7 +799,12 @@ export function ChangeDrilldown({
             data-drill-diff-body=""
           >
             {netSelected ? (
-              <NetDiff sessionId={sessionId} path={path ?? ""} net={netOfCurrent} />
+              <NetDiff
+                sessionId={sessionId}
+                path={current?.path ?? ""}
+                root={current?.root ?? null}
+                net={netOfCurrent}
+              />
             ) : revision?.patch ? (
               <DiffView patch={revision.patch} fill />
             ) : (
@@ -748,7 +816,7 @@ export function ChangeDrilldown({
             )}
           </div>
         </div>
-      ) : path === null ? (
+      ) : content === null ? (
         // 进到内容层却没有目标：只可能是状态被清空，给一句说明而不是白屏
         <p className="px-3 py-6 text-center text-xs text-text-muted">
           没有选中的文件。
@@ -756,7 +824,8 @@ export function ChangeDrilldown({
       ) : (
         <FilePreview
           sessionId={sessionId}
-          path={path}
+          path={content.path}
+          root={content.root}
           reloadToken={token}
           onReload={() => setToken((value) => value + 1)}
         />

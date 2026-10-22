@@ -176,6 +176,29 @@ export function stashUsableProviders(): () => void {
 }
 
 /**
+ * 读模型下拉的文案，**等它不再是占位符**（最多约 10s）。
+ *
+ * 为什么不能读一次：文案来自会话视图（模型由主进程解析后随视图下发），而本模式的用例只
+ * `sleep(4000)` 等 worker 起来——机器忙时 worker 起得慢，读数就落在占位符「—」上，
+ * 报出来的红字看着像「模型没解析对」，其实是用例把「4 秒内一定就绪」当成了前提
+ * （AGENTS §五⑬：前提要显式建立）。断言的判据不变：视图到了以后，下拉必须显示该模型。
+ */
+async function waitForModelLabel(
+  run: <T>(expression: string) => Promise<T>,
+): Promise<string | null> {
+  let label: string | null = null;
+  for (let i = 0; i < 20; i += 1) {
+    label = await run<string | null>(`(() => {
+      const el = document.querySelector("button.model .lbl");
+      return el ? el.textContent.trim() : null;
+    })()`);
+    if (label !== null && label !== "—") break;
+    await sleep(500);
+  }
+  return label;
+}
+
+/**
  * 未配内置 DeepSeek、只配了自定义服务时的**默认模型解析**。
  *
  * 回归背景（用户实测）：没有 DeepSeek 密钥、配好了自定义 provider，会话又从未选过模型时，
@@ -244,16 +267,19 @@ export async function runModelFallback(
     log(`界面提示：${banner || "（无）"}`);
     checks.push(["界面没有「尚未配置 DeepSeek」的报错/提示", !banner.includes("DeepSeek")]);
 
-    // 会话确实开了（视图存在 = worker 真的起来了，而非被密钥检查挡在门外）
-    const view = await run<{ model?: string } | null>(
-      `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
-    );
+    // 会话确实开了（视图存在 = worker 真的起来了，而非被密钥检查挡在门外）。
+    // 有界等待而非读一次：worker 冷启动的耗时由机器状态决定，不是用例能定的前提
+    // （与 keyless 段同一口径，见那里的 10s 轮询）。
+    let view: { model?: string } | null = null;
+    for (let i = 0; i < 20 && view === null; i += 1) {
+      view = await run<{ model?: string } | null>(
+        `window.colt.invoke("session.view", ${JSON.stringify({ sessionId: session.id })})`,
+      );
+      if (view === null) await sleep(500);
+    }
     checks.push(["会话已用自定义服务打开（worker 已就绪）", view !== null]);
 
-    const label = await run<string | null>(`(() => {
-      const el = document.querySelector("button.model .lbl");
-      return el ? el.textContent.trim() : null;
-    })()`);
+    const label = await waitForModelLabel(run);
     log(`下拉文案：${label}`);
     checks.push(["下拉显示的是自定义模型", label === MODEL_NAME]);
 
@@ -449,10 +475,7 @@ export async function runModelKeyless(
     log(`界面提示：${complained ? "含「尚未配置」" : "（无）"}`);
     checks.push(["界面没有「尚未配置 API Key」的黄条/红错", !complained]);
 
-    const label = await run<string | null>(`(() => {
-      const el = document.querySelector("button.model .lbl");
-      return el ? el.textContent.trim() : null;
-    })()`);
+    const label = await waitForModelLabel(run);
     log(`下拉文案：${label}`);
     checks.push(["模型下拉不带「（未配置密钥）」后缀", label === MODEL_NAME]);
 
@@ -667,7 +690,11 @@ export async function runSessionDraft(
       start: box(document.querySelector("[data-conv-start]")),
       card: box(card),
       root: box(root),
+      // 位置 chip（FR-06）：正文是「默认空间」/「工作目录 · 目录名」，完整路径在 title 上，
+      // 默认空间不暴露系统代管路径——所以「界面显示的是哪个目录」要读 title，不能读正文。
       workdir: dir ? dir.textContent : null,
+      workdirTitle: dir ? dir.getAttribute("title") : null,
+      location: dir ? dir.getAttribute("data-conv-location") : null,
     };
   })()`;
   interface StartProbe {
@@ -675,6 +702,8 @@ export async function runSessionDraft(
     card: { top: number; bottom: number } | null;
     root: { top: number; bottom: number } | null;
     workdir: string | null;
+    workdirTitle: string | null;
+    location: string | null;
   }
 
   /**
@@ -1043,7 +1072,7 @@ export async function runSessionDraft(
       );
       checks.push(["新工作目录真的建在磁盘上", existsSync(scratchRoot)]);
       checks.push(["它已登记成项目（下次不必重造）", registered]);
-      checks.push(["界面上的工作目录换成了新目录", switched?.workdir === scratchRoot]);
+      checks.push(["界面上的工作目录换成了新目录", switched?.workdirTitle === scratchRoot]);
       checks.push([
         "换目录后仍是起手态（新项目也没有会话，输入卡片留在中间）",
         Boolean(switched?.start),
@@ -1053,18 +1082,28 @@ export async function runSessionDraft(
     }
 
     // 全局「新建会话」（v1.84）：常驻在侧栏上方、不靠 hover 显形，但它照样要做命中测试——
-    // 「在 DOM 里」不等于「点得到」。v1.93 起它**不指定空间**：会话建到任务栏，起手区目录
-    // 应换成任务基目录（`<COLT_WORKSPACE_ROOT>/tasks`），而不再是当前选中的空间。
-    // （目录是**每会话一个**的时间子目录，落库才建——见本模式末尾的 v1.94 用例；
-    //   草稿态 cwd 还是 null，显示的就是这个基目录。）
-    const globalHit = await run<{ found: boolean; top: boolean }>(`(() => {
+    // 「在 DOM 里」不等于「点得到」。PRD-session-workspace v0.9（FR-01）起它**跟随当前上下文**：
+    // 当前会话属于某工作目录 → 新会话也建在该目录；当前在默认空间 / 没有会话 → 建到默认空间。
+    // 本段此刻的当前草稿属于刚切过去的 scratch 工作目录（未设 COLT_WORKSPACE_ROOT 时是空夹具），
+    // 所以「建在哪」按当前上下文现算，不写死。
+    const expectedRoot = scratchRoot ?? emptyDir;
+    const globalHit = await run<{ found: boolean; top: boolean; text: string }>(`(() => {
       const btn = document.querySelector("[data-sidebar-new-session]");
-      if (!btn || btn.disabled) return { found: false, top: false };
+      if (!btn || btn.disabled) return { found: false, top: false, text: "" };
       const r = btn.getBoundingClientRect();
       const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      return { found: true, top: Boolean(at && (at === btn || btn.contains(at))) };
+      return {
+        found: true,
+        top: Boolean(at && (at === btn || btn.contains(at))),
+        text: (btn.textContent ?? "").trim(),
+      };
     })()`);
     checks.push(["[v1.84] 侧栏顶部「新建会话」按钮在可视区且可点", globalHit.found && globalHit.top]);
+    // FR-01：按钮**必须显示将要落到的目标**，用户不必猜
+    checks.push([
+      "顶部按钮写出将要落到的目标（工作目录名）",
+      globalHit.text.includes("新建会话") && globalHit.text.includes(basename(expectedRoot)),
+    ]);
 
     const before = await run<{ session: string | null; hasInput: boolean; rows: number }>(probeCard);
     await run(`(() => { document.querySelector("[data-sidebar-new-session]")?.click(); return null; })()`);
@@ -1090,8 +1129,8 @@ export async function runSessionDraft(
       viaGlobal.session !== null && getSession(viaGlobal.session) === undefined,
     ]);
     checks.push([
-      "顶部按钮建到任务栏（起手区目录换成任务工作目录）",
-      globalStart.workdir !== null && globalStart.workdir === taskRoot,
+      "顶部按钮跟随当前上下文：新草稿仍落在当前工作目录",
+      globalStart.workdirTitle === expectedRoot && globalStart.location === "workspace",
     ]);
     draftId = viaGlobal.session;
 
@@ -1231,16 +1270,16 @@ export async function runSessionDraft(
         Boolean(taskRow?.cwd),
       ]);
       checks.push([
-        "任务会话目录是任务基目录下的时间子目录，且已在磁盘上建好",
+        "默认空间会话目录是容器下的「时间-短id」子目录，且已在磁盘上建好",
         Boolean(
           taskRow?.cwd &&
             dirname(taskRow.cwd) === taskRoot &&
-            /^\d{8}-\d{6}$/.test(taskDirName) &&
+            /^\d{8}-\d{6}-[0-9a-f]{4}$/.test(taskDirName) &&
             existsSync(taskRow.cwd),
         ),
       ]);
       checks.push([
-        "任务会话不共用基目录（cwd 不是任务基目录本身）",
+        "默认空间会话不共用容器目录（cwd 不是容器根）",
         Boolean(taskRow?.cwd && taskRow.cwd !== taskRoot),
       ]);
 

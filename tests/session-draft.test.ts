@@ -248,18 +248,26 @@ describe("任务目录的路径算术（taskBaseRoot / taskSessionRoot）", () =
     assert.equal(taskBaseRoot("/home/u", "   "), expected);
   });
 
-  test("taskSessionRoot：基目录下的时间子目录，精确到秒（与 scratchDirName 同源）", () => {
+  test("taskSessionRoot：基目录下的「时间-短id」子目录（与 scratchDirName 同源）", () => {
     // 月份从 0 起：9 = 十月
     const at = new Date(2026, 9, 1, 9, 5, 3);
     assert.equal(
-      taskSessionRoot(join("/home", "u", ".colt", "tasks"), at),
-      join("/home", "u", ".colt", "tasks", "20261001-090503"),
+      taskSessionRoot(join("/home", "u", ".colt", "tasks"), at, "a3f9"),
+      join("/home", "u", ".colt", "tasks", "20261001-090503-a3f9"),
     );
   });
 
-  test("taskSessionRoot 不带 workspace 叶子：一个时间戳就是一个会话的全部", () => {
+  test("taskSessionRoot 不带 workspace 叶子：一个目录就是一条会话的全部", () => {
     const at = new Date(2026, 9, 1, 9, 5, 3);
-    const dir = taskSessionRoot("/base", at);
-    assert.equal(basename(dir), "20261001-090503");
+    const dir = taskSessionRoot("/base", at, "b7c2");
+    assert.equal(basename(dir), "20261001-090503-b7c2");
+  });
+
+  test("taskSessionRoot 不传短 id 时自动生成（同秒两次落库不撞名）", () => {
+    const at = new Date(2026, 9, 1, 9, 5, 3);
+    const first = basename(taskSessionRoot("/base", at));
+    const second = basename(taskSessionRoot("/base", at));
+    assert.match(first, /^20261001-090503-[0-9a-f]{4}$/, "目录名 = 时间 + 4 位短 id");
+    assert.notEqual(first, second, "同一秒两次分配必须得到不同目录");
   });
 });

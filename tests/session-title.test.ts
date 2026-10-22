@@ -13,7 +13,13 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { SESSION_TITLE_MAX_CHARS, deriveSessionTitle } from "../src/shared/session-title.ts";
+import {
+  CONTINUED_SUFFIX,
+  SESSION_TITLE_MAX_CHARS,
+  continuedTitle,
+  deriveSessionTitle,
+  keepContinuationSuffix,
+} from "../src/shared/session-title.ts";
 import { skillInvocationLabel } from "../src/shared/skill-invocation.ts";
 import type { ViewMessage } from "../src/shared/worker-protocol.ts";
 
@@ -107,6 +113,42 @@ describe("技能调用：标题要说人话，不能是内核的原始标记", (
       skillInvocationMessage("pdf", "再看这个"),
     ]);
     assert.equal(title, "先问个问题");
+  });
+});
+
+describe("「在新位置继续」的标题后缀（FR-03）", () => {
+  test("continuedTitle 只加一次，重复调用不叠加", () => {
+    assert.equal(continuedTitle("排查登录超时"), `排查登录超时${CONTINUED_SUFFIX}`);
+    assert.equal(
+      continuedTitle(`排查登录超时${CONTINUED_SUFFIX}`),
+      `排查登录超时${CONTINUED_SUFFIX}`,
+    );
+  });
+
+  test("派生标题沿用后缀：复制会话下一次视图重算后仍带「（续）」", () => {
+    // 复制出来的会话首条消息与原会话相同，派生结果永远不带后缀——
+    // 没有这条规则，用户下一次发言后两个会话在左栏就同名了
+    const derived = deriveSessionTitle([message("user", "排查登录超时")]);
+    assert.equal(keepContinuationSuffix(derived, `排查登录超时${CONTINUED_SUFFIX}`), `排查登录超时${CONTINUED_SUFFIX}`);
+  });
+
+  test("当前标题没有后缀时不擅自添加（普通会话不受影响）", () => {
+    assert.equal(keepContinuationSuffix("排查登录超时", "旧标题"), "排查登录超时");
+  });
+
+  test("派生为空（还没有 user 消息）时返回 undefined——不凭空造标题", () => {
+    assert.equal(keepContinuationSuffix(undefined, `x${CONTINUED_SUFFIX}`), undefined);
+  });
+
+  test("两个用家都调用 keepContinuationSuffix（只修一边 = 库里带后缀、左栏没有）", () => {
+    for (const path of ["src/main/session-manager.ts", "src/renderer/src/App.tsx"]) {
+      const text = codeOnly(readFileSync(new URL(`../${path}`, import.meta.url), "utf8"));
+      assert.match(
+        text,
+        /keepContinuationSuffix/,
+        `${path} 没有沿用「（续）」后缀：下一次视图推送会把复制会话的标题冲回原名`,
+      );
+    }
   });
 });
 

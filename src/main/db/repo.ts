@@ -21,6 +21,7 @@ interface ProjectRow {
   kind: string;
   created_at: number;
   last_opened_at: number;
+  removed_at: number | null;
 }
 
 interface SessionRow {
@@ -47,6 +48,7 @@ function toProject(row: ProjectRow): Project {
     kind: row.kind === "task" ? "task" : "workspace",
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
+    removedAt: row.removed_at ?? null,
   };
 }
 
@@ -87,6 +89,12 @@ export function upsertProject(rootPath: string, kind: ProjectKind = "workspace")
       db.prepare("UPDATE projects SET kind = ? WHERE id = ?").run("task", existing.id);
       existing.kind = "task";
     }
+    // 重新打开一个处于「已移除」的目录 = 恢复它（FR-04）：root_key 命中说明是同一个文件夹，
+    // 用户重新选它的意图就是让它回到「工作目录」区；合并去重由 root_key 唯一索引保证。
+    if (existing.removed_at !== null) {
+      db.prepare("UPDATE projects SET removed_at = NULL WHERE id = ?").run(existing.id);
+      existing.removed_at = null;
+    }
     return toProject({ ...existing, last_opened_at: now });
   }
 
@@ -98,6 +106,7 @@ export function upsertProject(rootPath: string, kind: ProjectKind = "workspace")
     kind,
     created_at: now,
     last_opened_at: now,
+    removed_at: null,
   };
   db.prepare(
     "INSERT INTO projects (id, name, root_path, root_key, kind, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -136,12 +145,18 @@ export function ensureTaskProject(rootPath: string): Project {
       byKind.root_path = rootPath;
       byKind.root_key = normalizeRootKey(rootPath);
     }
+    // 名字随 PRD-session-workspace v0.9 收敛为「默认空间」（原「任务」）：界面上它不再是一条
+    // 分组名，而是「没有指定目录时的落点」。这里幂等改一次，存量行也跟着对齐。
+    if (byKind.name !== "默认空间") {
+      db.prepare("UPDATE projects SET name = ? WHERE id = ?").run("默认空间", byKind.id);
+      byKind.name = "默认空间";
+    }
     return toProject(byKind);
   }
 
   const row = upsertProject(rootPath, "task");
-  db.prepare("UPDATE projects SET name = ? WHERE id = ?").run("任务", row.id);
-  return { ...row, name: "任务" };
+  db.prepare("UPDATE projects SET name = ? WHERE id = ?").run("默认空间", row.id);
+  return { ...row, name: "默认空间" };
 }
 
 export function listProjects(): Project[] {
@@ -150,6 +165,22 @@ export function listProjects(): Project[] {
     .prepare("SELECT * FROM projects ORDER BY last_opened_at DESC")
     .all() as unknown as ProjectRow[];
   return rows.map(toProject);
+}
+
+/**
+ * 把一个工作目录收进「已移除」区（removed = true）或恢复（false）。
+ *
+ * 移除只是标记：登记、会话与磁盘都不动（FR-07「仅从列表移除」）。任务工作区（默认空间）
+ * 不可移除，由调用方把关——这里只管数据。不存在的项目原样返回 false，调用方据此报错。
+ */
+export function setProjectRemoved(projectId: string, removed: boolean): boolean {
+  const db = getDatabase();
+  if (!getProject(projectId)) return false;
+  db.prepare("UPDATE projects SET removed_at = ? WHERE id = ?").run(
+    removed ? Date.now() : null,
+    projectId,
+  );
+  return true;
 }
 
 /**
@@ -258,12 +289,14 @@ export function recordFileChange(
     addedLines: number;
     removedLines: number;
     timestamp: number;
+    /** 执行时根（ViewFileChange.execRoot）；缺省 null = 旧行口径，按会话当前根解析 */
+    execRoot?: string | null;
   },
 ): number {
   const result = getDatabase()
     .prepare(
-      `INSERT INTO file_changes (session_id, client_change_id, file_path, change_kind, diff_text, added_lines, removed_lines, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO file_changes (session_id, client_change_id, file_path, change_kind, diff_text, added_lines, removed_lines, exec_root, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       sessionId,
@@ -273,6 +306,7 @@ export function recordFileChange(
       change.patch,
       change.addedLines,
       change.removedLines,
+      change.execRoot ?? null,
       change.timestamp,
     );
   return Number(result.lastInsertRowid);
@@ -294,30 +328,54 @@ export function setChangeNet(changeId: number, net: { added: number; removed: nu
  *
  * **只认最早的一份**：worker 被回收重启后不记得发过基线，会把「当时已经改过」的内容
  * 再报一次——若允许覆盖，净值就会从那一刻重新起算，把会话前段的变化吃掉。
+ *
+ * `execRoot` 记下这份基线是在哪个根上抓的：同一相对路径在别的根下是另一个文件，
+ * 读的时候要能拒掉（见 `getFileBaseline`）。缺省 null = 旧口径（会话只有一个根）。
  */
 export function recordFileBaseline(
   sessionId: string,
   path: string,
   baseline: { existed: boolean; text: string | null },
+  execRoot?: string | null,
 ): void {
   getDatabase()
     .prepare(
-      `INSERT INTO file_baselines (session_id, file_path, existed, content, captured_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO file_baselines (session_id, file_path, existed, content, exec_root, captured_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id, file_path) DO NOTHING`,
     )
-    .run(sessionId, path, baseline.existed ? 1 : 0, baseline.text, Date.now());
+    .run(
+      sessionId,
+      path,
+      baseline.existed ? 1 : 0,
+      baseline.text,
+      execRoot ?? null,
+      Date.now(),
+    );
 }
 
-/** 取某文件的基线；undefined = 本次会话还没抓过（净值算不出） */
+/**
+ * 取某文件的基线；undefined = 本次会话还没抓过（净值算不出）。
+ *
+ * 带了 `root` 时只接受**同一个根**上抓的基线：复制会话里旧根改动的「累计」档不能拿新根
+ * 抓的基线去比（FR-06）。旧基线（NULL）按会话当前根算——v14 之前一条会话只会有一个根。
+ */
 export function getFileBaseline(
   sessionId: string,
   path: string,
+  root?: string | null,
 ): { existed: boolean; text: string | null } | undefined {
   const row = getDatabase()
-    .prepare("SELECT existed, content FROM file_baselines WHERE session_id = ? AND file_path = ?")
-    .get(sessionId, path) as unknown as { existed: number; content: string | null } | undefined;
+    .prepare(
+      "SELECT existed, content, exec_root FROM file_baselines WHERE session_id = ? AND file_path = ?",
+    )
+    .get(sessionId, path) as unknown as
+    | { existed: number; content: string | null; exec_root: string | null }
+    | undefined;
   if (row === undefined) return undefined;
+  if (row.exec_root !== null && root != null && normalizeRootKey(row.exec_root) !== normalizeRootKey(root)) {
+    return undefined;
+  }
   return { existed: row.existed === 1, text: row.content };
 }
 
@@ -385,15 +443,23 @@ export function listSessionToolCalls(sessionId: string): ToolCallRecord[] {
 /**
  * 会话级改动列表，按时间升序，供 ConversationView 投影。
  * 改动的真源是数据库而非 worker 内存，这样 worker 被回收后重启仍能完整重建。
+ *
+ * `exec_root` 为 NULL 的旧行**在读出时**按会话当前根解析（`sessions.cwd`，工作目录会话回落到
+ * 项目根）：那时还没有「复制到新位置」，NULL 的语义就是「当时会话所在的根」。不在这里解析，
+ * 渲染层就会把同一条会话里的同一个文件按「NULL 根 + 当前根」拆成两个（FR-06 不跨根合并只
+ * 针对**真的不同根**）。`LEFT JOIN` 是兜底：万一某条改动没有对应的会话行，仍原样返回 NULL。
  */
 export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
   const rows = getDatabase()
     .prepare(
-      `SELECT client_change_id, file_path, change_kind, diff_text, added_lines, removed_lines,
-              net_added_lines, net_removed_lines, created_at
-       FROM file_changes
-       WHERE session_id = ?
-       ORDER BY created_at ASC, id ASC`,
+      `SELECT c.client_change_id, c.file_path, c.change_kind, c.diff_text, c.added_lines,
+              c.removed_lines, c.net_added_lines, c.net_removed_lines,
+              COALESCE(c.exec_root, s.cwd, p.root_path) AS exec_root, c.created_at
+       FROM file_changes c
+       LEFT JOIN sessions s ON s.id = c.session_id
+       LEFT JOIN projects p ON p.id = s.project_id
+       WHERE c.session_id = ?
+       ORDER BY c.created_at ASC, c.id ASC`,
     )
     .all(sessionId) as unknown as {
     client_change_id: string | null;
@@ -404,6 +470,7 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
     removed_lines: number;
     net_added_lines: number | null;
     net_removed_lines: number | null;
+    exec_root: string | null;
     created_at: number;
   }[];
 
@@ -416,6 +483,8 @@ export function listSessionFileChanges(sessionId: string): ViewFileChange[] {
     addedLines: row.added_lines,
     removedLines: row.removed_lines,
     timestamp: row.created_at,
+    // 已在 SQL 里把 NULL 解析成会话当前根；仍为 NULL 只说明没有对应的会话行（见该函数注释）
+    execRoot: row.exec_root,
     // NULL 原样带出（= 算不出）。**不要**在这里折成 0：那会把「不知道」说成「没改」。
     netAddedLines: row.net_added_lines,
     netRemovedLines: row.net_removed_lines,
@@ -618,14 +687,22 @@ export function latestContextUsed(sessionId: string): number {
   });
 }
 
-/** 项目级改动汇总：跨会话，按时间倒序 */
+/**
+ * 项目级改动汇总：跨会话，按时间倒序。
+ *
+ * 与 `listSessionFileChanges` 同一口径：`exec_root` 为 NULL 的旧行按**它所属会话**的当前根
+ * 解析（不是按项目根——默认空间会话各自的产物目录不同），这样项目汇总里同一个文件不会因为
+ * 「升级前 / 升级后」而裂成两行。
+ */
 export function listProjectChanges(projectId: string): ProjectFileChange[] {
   const rows = getDatabase()
     .prepare(
       `SELECT c.id, c.session_id, s.title, c.file_path, c.change_kind,
-              c.diff_text, c.added_lines, c.removed_lines, c.created_at
+              c.diff_text, c.added_lines, c.removed_lines,
+              COALESCE(c.exec_root, s.cwd, p.root_path) AS exec_root, c.created_at
        FROM file_changes c
        JOIN sessions s ON s.id = c.session_id
+       LEFT JOIN projects p ON p.id = s.project_id
        WHERE s.project_id = ?
        ORDER BY c.created_at DESC`,
     )
@@ -638,6 +715,7 @@ export function listProjectChanges(projectId: string): ProjectFileChange[] {
     diff_text: string | null;
     added_lines: number;
     removed_lines: number;
+    exec_root: string | null;
     created_at: number;
   }[];
 
@@ -646,6 +724,7 @@ export function listProjectChanges(projectId: string): ProjectFileChange[] {
     sessionId: row.session_id,
     sessionTitle: row.title,
     path: row.file_path,
+    execRoot: row.exec_root,
     kind: row.change_kind,
     patch: row.diff_text,
     addedLines: row.added_lines,
@@ -788,6 +867,54 @@ export function setSetting(key: string, value: string): void {
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .run(key, value);
+}
+
+/**
+ * 这条会话的改动**用过的执行时根**（去重、非空）。
+ *
+ * 用途：`file.read` / `file.netDiff` 收到渲染层传来的根时，只允许「当前根」或这张表里的
+ * 根——否则渲染层就能借一次改动的名义去读任意目录。清单按根分组后，旧工具卡与旧改动
+ * 需要按当时的根解析（FR-06），这是唯一合法的来源。
+ */
+export function listSessionChangeRoots(sessionId: string): string[] {
+  const rows = getDatabase()
+    .prepare(
+      "SELECT DISTINCT exec_root FROM file_changes WHERE session_id = ? AND exec_root IS NOT NULL",
+    )
+    .all(sessionId) as unknown as { exec_root: string }[];
+  return rows.map((row) => row.exec_root);
+}
+
+/**
+ * 把源会话的改动记录复制到新会话（PRD FR-03「在新位置继续」）。
+ *
+ * 两条边界：
+ * - **保留执行时根与当时算出的净值**：复制过去的旧改动仍指向旧位置，按旧根解析；
+ *   没有 `exec_root` 的旧行在此刻补成源会话的执行根——否则它们会在新位置被重新解释。
+ * - **不复制文件基线**：基线属于「这条会话在这个根上第一次见到这个文件」，新会话的新改动
+ *   在目标位置重新建立基线（基线在 `file_baselines` 表，本函数完全不碰它）。
+ *
+ * 返回复制的行数，调用方据此在失败/为空时如实交代。
+ */
+export function copyFileChanges(
+  fromSessionId: string,
+  toSessionId: string,
+  sourceRoot: string,
+): number {
+  const result = getDatabase()
+    .prepare(
+      `INSERT INTO file_changes
+         (session_id, client_change_id, file_path, change_kind, diff_text,
+          added_lines, removed_lines, net_added_lines, net_removed_lines, exec_root, created_at)
+       SELECT ?, client_change_id, file_path, change_kind, diff_text,
+              added_lines, removed_lines, net_added_lines, net_removed_lines,
+              COALESCE(exec_root, ?), created_at
+       FROM file_changes
+       WHERE session_id = ?
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .run(toSessionId, sourceRoot, fromSessionId);
+  return Number(result.changes);
 }
 
 /**

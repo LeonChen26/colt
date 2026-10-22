@@ -317,7 +317,7 @@ export function WorkspaceDock({
    * 「要看某个文件」的请求（A3-2：点消息流工具卡上的路径）——`seq` 变化即重读。
    * ⑦-G 之后它不再切「文件」页签，而是**让「任务摘要」落到下钻的内容层**。
    */
-  fileRequest: { path: string; seq: number } | null;
+  fileRequest: { path: string; root?: string | null; seq: number } | null;
   /**
    * 「要看某个子代理的完整过程」的请求（点 ④ 子代理卡的按钮）——`seq` 变化即重下钻。
    * 与 `fileRequest` 同形：都让「任务摘要」落到**下钻的某一层**，只是目标从文件内容
@@ -367,6 +367,8 @@ export function WorkspaceDock({
     (target: {
       layer: DrillLayer;
       path?: string;
+      /** 执行时根（FR-06）：点工具卡预览旧改动时带过来，null = 会话当前根 */
+      root?: string | null;
       token?: number;
       subagentId?: string;
     }): void => {
@@ -375,6 +377,7 @@ export function WorkspaceDock({
         nonce: drillNonce.current,
         layer: target.layer,
         path: target.path ?? null,
+        root: target.root ?? null,
         // 没显式给令牌的层（子代理流）用 `nonce` 顶：它同样是单调递增的，于是「同一个
         // 子代理再点一次」也必然换出一个新令牌，面板据此重拉——这一条不能省，否则
         // 同 id 重进时 `layer` / `subagentId` 都不变，面板不重挂、也就读不到新产出。
@@ -388,7 +391,12 @@ export function WorkspaceDock({
   // 「要看某个文件」→ 进下钻的**内容层**（原 A3-2 的入口，行为等价，只是不再切页签）
   useEffect(() => {
     if (fileRequest === null) return;
-    sendDrill({ layer: "content", path: fileRequest.path, token: fileRequest.seq });
+    sendDrill({
+      layer: "content",
+      path: fileRequest.path,
+      root: fileRequest.root ?? null,
+      token: fileRequest.seq,
+    });
   }, [fileRequest, sendDrill]);
 
   // 「要看某个子代理的完整过程」→ 进下钻的**子代理流层**（④ 卡上的按钮）

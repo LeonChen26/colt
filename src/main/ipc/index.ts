@@ -6,9 +6,17 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import type { IpcChannel, IpcInvokeMap, SessionInfo, WikiGenerateEvent } from "@shared/protocol";
+import { continuedTitle } from "@shared/session-title";
+import { dirname, join, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import type {
+  ArtifactGroup,
+  IpcChannel,
+  IpcInvokeMap,
+  SessionInfo,
+  WikiGenerateEvent,
+} from "@shared/protocol";
 import type { McpServerView } from "@shared/worker-protocol";
 import { loadMcpConfig, mcpUserHome, targetOf, transportOf, userMcpConfigPath } from "@shared/mcp-config";
 import {
@@ -33,9 +41,17 @@ import { isSkillFilePath } from "@shared/skill-path";
 import { runEnvCheck } from "../env-check";
 import { NOT_A_REPO_STATUS, readCommittedFiles, readGitStatus } from "../git";
 import { defaultScratchBase, scratchRootPath, taskBaseRoot, taskSessionRoot } from "../lib/scratch-dir";
+import {
+  createManifest,
+  freezeManifest,
+  listArtifactFiles,
+  readManifest,
+  updateManifestTitle,
+} from "../lib/artifact-manifest";
 import { applyFirstRunChoice, inspectUserData } from "../first-run";
 import type { FirstRunReport } from "@shared/protocol";
 import {
+  copyFileChanges,
   createSession,
   deleteProject,
   deleteSession,
@@ -45,11 +61,14 @@ import {
   getSession,
   listProjectChanges,
   listProjects,
+  listSessionChangeRoots,
   listSessionEvents,
   listSessionToolCalls,
   listSessionUsage,
   listSessions,
+  recordSessionEvent,
   setKernelSessionId,
+  setProjectRemoved,
   setSessionModel,
   setSessionThinkingLevel,
   setSessionStatus,
@@ -79,7 +98,7 @@ import {
   startWikiGeneration,
 } from "../wiki/runner";
 import { computeNetChange } from "../net-change";
-import { closeDatabase, openDatabase } from "../db";
+import { closeDatabase, normalizeRootKey, openDatabase } from "../db";
 import { closeMemoryDatabase, openMemoryDatabase } from "../db/memory-index";
 import { deleteSecret, hasSecret, setSecret } from "../secrets";
 import {
@@ -144,6 +163,49 @@ function resolveSessionRootOrDraft(sessionId: string): string | null {
   if (getSession(sessionId) !== undefined) return resolveSessionRoot(sessionId);
   const draft = drafts.get(sessionId);
   return draft === undefined ? null : (getProject(draft.projectId)?.rootPath ?? null);
+}
+
+/**
+ * 带超时的「是不是一个存在的目录」。
+ *
+ * 超时按不可用处理：网络盘或已断开的移动盘上 `stat` 会挂很久，界面不能因此卡住；
+ * 可用性检查与「在新位置继续」的目标校验共用这一套判断，避免两处说法不一致。
+ */
+async function isUsableDir(path: string, timeoutMs = 1500): Promise<boolean> {
+  return new Promise<boolean>((resolveStat) => {
+    let settled = false;
+    const done = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveStat(value);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    void stat(path).then(
+      (info) => done(info.isDirectory()),
+      () => done(false),
+    );
+  });
+}
+
+/**
+ * 读文件 / 算净值时要用的根（PRD FR-06）。
+ *
+ * 缺省是会话**当前**根。清单与旧工具卡可以带一个「执行时根」：只接受「等于当前根」或
+ * 「这条会话的某条改动确实用过这个根」——否则渲染层就能借一次改动的名义读任意目录。
+ * 这就是 `exec_root` 的唯一消费者入口，也是为什么它必须落库。
+ */
+function resolveChangeRoot(sessionId: string, requested?: string | null): string {
+  const current = resolveSessionRoot(sessionId);
+  if (!requested) return current;
+  // 归一规则与项目的 root_key 同一口径（仅 Windows 忽略大小写）：在大小写敏感的文件系统上，
+  // 只差大小写的两个目录是**两个目录**，不能拿它当同一个根放行。
+  const wanted = normalizeRootKey(requested);
+  if (normalizeRootKey(current) === wanted) return current;
+  if (listSessionChangeRoots(sessionId).some((item) => normalizeRootKey(item) === wanted)) {
+    return requested;
+  }
+  throw new Error("这个位置不属于这条会话的改动记录");
 }
 
 /**
@@ -286,6 +348,111 @@ async function forkSessionIntoNewSession(sourceId: string, targetId: string): Pr
 }
 
 /**
+ * 「在新位置继续」（PRD FR-03）：把对话与改动记录**复制**成一条新会话，落在目标位置。
+ *
+ * 与 `forkSessionIntoNewSession`（从某一轮分叉）的区别：那个在新位置之外还「截断对话」，
+ * 这个复制到**当前尖端**、并换一个运行时根。两者共用同一条存储链路：
+ *
+ *   冻结源会话 → 关源 worker（等它退出）→ `VACUUM INTO` 复制库快照 → 建新会话行
+ *   → 复制改动记录（含执行时根，不含文件基线）→ 新 worker 打开副本。
+ *
+ * 目标为默认空间时**先分配产物目录再建会话**：新会话从第一条消息起就有自己的根，
+ * 不存在「没有根」的中间态。任何一步失败都清掉新会话与它的库，源会话不受影响。
+ */
+async function continueSessionAtNewLocation(
+  sourceId: string,
+  projectId: string,
+): Promise<SessionInfo> {
+  const source = getSession(sourceId);
+  if (!source) {
+    throw new Error(
+      drafts.has(sourceId) ? "这个会话还没有消息，无法复制。" : "会话不存在，无法复制。",
+    );
+  }
+  if (!source.kernelSessionId) throw new Error("会话历史尚未就绪，请稍后再试。");
+  if (sessionManager.isRunning(sourceId)) {
+    throw new Error("运行中的会话不能复制到新位置，请先停止。");
+  }
+  const target = getProject(projectId);
+  if (!target) throw new Error("目标工作位置不存在");
+  if (target.removedAt !== null) throw new Error("目标工作位置已被移除，请先恢复它");
+  if (target.id === source.projectId) throw new Error("已经在这个位置");
+  // 目标必须**现在就能用**：登记还在不代表盘上还在（FR-03 异常路径）。
+  // 默认空间稍后会自己建产物目录；工作目录则必须已存在且确实是目录。
+  if (target.kind !== "task" && !(await isUsableDir(target.rootPath))) {
+    throw new Error(`目标工作目录不可用：${target.rootPath}。请先重新定位或换一个目录。`);
+  }
+
+  const sessionsRoot = join(app.getPath("userData"), "sessions");
+  const sourceDb = join(sessionsRoot, `durable-${sourceId}.db`);
+  if (!existsSync(sourceDb)) throw new Error("找不到会话历史文件，无法复制。");
+
+  const newId = randomUUID();
+  const title = continuedTitle(source.title);
+  // 目标为默认空间：先分配产物目录（与落库同一套算法），再以它为运行时根
+  let cwd: string | null = null;
+  if (target.kind === "task") {
+    cwd = taskSessionRoot(
+      taskBaseRoot(app.getPath("home"), process.env.COLT_WORKSPACE_ROOT),
+      new Date(),
+    );
+    mkdirSync(cwd, { recursive: true });
+  }
+
+  sessionManager.beginFork(sourceId);
+  let created = false;
+  try {
+    // 冻结与关闭之间可能刚好有一轮开始：再判一次，别把正在写的库复制走
+    if (sessionManager.isRunning(sourceId)) {
+      throw new Error("运行中的会话不能复制到新位置，请先停止。");
+    }
+    await sessionManager.closeAndWait(sourceId);
+    copySessionDatabase(sourceDb, join(sessionsRoot, `durable-${newId}.db`));
+
+    createSession(target.id, jsonlPathFor(target.id), newId, cwd);
+    created = true;
+    // 打开副本：内核在里面找到父对话，从尖端继续；ready 会把这一列改写成新的对话 id
+    setKernelSessionId(newId, source.kernelSessionId);
+    if (source.modelRef) setSessionModel(newId, source.modelRef);
+    if (source.thinkingLevel) setSessionThinkingLevel(newId, source.thinkingLevel);
+    touchSession(newId, source.messageCount, title);
+    if (cwd) createManifest(cwd, newId, title, Date.now());
+
+    // 改动记录一起复制：保留执行时根与净值，不复制文件基线（FR-03 的对照表）。
+    // 失败不阻断创建——对话已经复制成功，如实记一条可回查的提示。
+    try {
+      copyFileChanges(sourceId, newId, resolveSessionRoot(sourceId));
+    } catch (error) {
+      recordSessionEvent(
+        newId,
+        `旧改动记录未复制：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    await openSessionWorker({ sessionId: newId });
+    await sessionManager.waitForView(newId);
+
+    // 第一份视图会用「首条用户消息」重算标题——这里把「（续）」补回去（FR-03：标题沿用并加后缀）。
+    // manifest 的标题也一并纠正：视图那一步已经同步过不带后缀的版本。
+    const landed = getSession(newId);
+    if (!landed) throw new Error("复制会话创建失败。");
+    if (landed.title !== title) touchSession(newId, landed.messageCount, title);
+    if (cwd) updateManifestTitle(cwd, title, newId);
+
+    return getSession(newId) ?? landed;
+  } catch (error) {
+    await sessionManager.closeAndWait(newId).catch(() => undefined);
+    if (created) deleteSession(newId);
+    removeSessionHistory(newId);
+    // 目录是我们刚建的：清掉它，别留一个没人认领的空壳（产物目录只属于这条没建成的会话）
+    if (cwd) rmSync(cwd, { recursive: true, force: true });
+    throw error;
+  } finally {
+    sessionManager.endFork(sourceId);
+  }
+}
+
+/**
  * 删除会话的持久化历史（durable 的 SQLite 单文件库）。
  * 只删库行会让 `durable-<id>.db` 永久留在 sessions 目录里
  * （删掉会话后它再也没有入口，成了不可见的磁盘泄漏）。
@@ -361,7 +528,10 @@ function materializeDraft(sessionId: string): void {
     );
     mkdirSync(cwd, { recursive: true });
   }
-  createSession(draft.projectId, jsonlPathFor(draft.projectId), sessionId, cwd);
+  const session = createSession(draft.projectId, jsonlPathFor(draft.projectId), sessionId, cwd);
+  // 产物目录的 manifest 在**落库时刻**创建（PRD FR-02 生命周期）：标题、创建时间从这一刻起
+  // 有据可查；删除会话时补写文件列表并冻结。写失败不阻断——清单平时以目录内容为准。
+  if (cwd) createManifest(cwd, session.id, session.title, session.createdAt);
   // 落库前在草稿上选过的模型要跟着走：不然用户「先选模型再发消息」的那一步会被丢掉
   if (draft.modelRef) setSessionModel(sessionId, draft.modelRef);
   if (draft.thinkingLevel) setSessionThinkingLevel(sessionId, draft.thinkingLevel);
@@ -571,6 +741,63 @@ export function registerIpcHandlers(): void {
     return { ok: true } as const;
   });
 
+  /**
+   * 移除工作目录（FR-07：只收进左栏「已移除」区）。
+   *
+   * 与 `project.delete` 的断开登记不同：登记、会话记录与磁盘目录**全都不动**，
+   * 只标记 `removed_at`。恢复有两条路：「已移除」区里的「恢复」，或重新打开同一路径
+   * （`upsertProject` 按 root_key 命中即清掉 removed_at）。默认空间（task 工作区）
+   * 不可移除——它是会话落点的兜底容器。
+   */
+  handle("project.remove", (request) => {
+    const project = getProject(request.projectId);
+    if (!project) throw new Error("项目不存在或已被移除");
+    if (project.kind === "task") throw new Error("默认空间不可移除");
+    // 任一相关会话在运行中（含等待授权 / 等待回答）时整次拒绝，并指出是哪条（FR-07）
+    const busy = listSessions(request.projectId).find((session) =>
+      sessionManager.isRunning(session.id),
+    );
+    if (busy) throw new Error(`会话「${busy.title}」正在运行，请先中止后再移除目录`);
+    setProjectRemoved(request.projectId, true);
+    return { ok: true } as const;
+  });
+
+  /** 从「已移除」区恢复一个工作目录（FR-04）。恢复后由渲染层重新做可用性检查。 */
+  handle("project.restore", (request) => {
+    const project = getProject(request.projectId);
+    if (!project) throw new Error("项目不存在或已被移除");
+    setProjectRemoved(request.projectId, false);
+    return { ok: true } as const;
+  });
+
+  /**
+   * 工作位置可用性检查（FR-04）：异步、带超时、不阻塞界面。
+   *
+   * 超时按「不可用」处理——网络盘或已断开的移动盘上 `stat` 会挂很久，界面不能因此卡住；
+   * 已移除的目录不参与检查（它们本来就不在运行范围里）。
+   */
+  handle("project.availability", async () => {
+    const projects = listProjects().filter((item) => item.kind !== "task" && item.removedAt === null);
+    const projectResults = await Promise.all(
+      projects.map(async (project) =>
+        (await isUsableDir(project.rootPath)) ? null : project.id,
+      ),
+    );
+    // 默认空间会话的产物目录可能被外部删除（FR-02 异常路径）：逐条检查，供会话头给横幅
+    const sessions = listSessions().filter(
+      (session) => session.cwd !== null && session.status !== "archived",
+    );
+    const sessionResults = await Promise.all(
+      sessions.map(async (session) =>
+        (await isUsableDir(session.cwd as string)) ? null : session.id,
+      ),
+    );
+    return {
+      unavailable: projectResults.filter((id): id is string => id !== null),
+      unavailableSessions: sessionResults.filter((id): id is string => id !== null),
+    };
+  });
+
   handle("session.create", (request) => {
     const now = Date.now();
     const id = randomUUID();
@@ -612,6 +839,36 @@ export function registerIpcHandlers(): void {
   });
 
   handle("session.prompt", async (request) => {
+    // 不可用的位置里不运行（FR-04 / FR-08「不可用即停」）：目录不存在、盘断开时如实拒绝，
+    // 让用户去「重建此会话的产物目录」「重新定位」或「在新位置继续」，而不是让 agent 在一个
+    // 不存在的地方动手。检查在**发送前**，界面上看到的失败就是这一次发送的原因。
+    //
+    // 位置检查必须在 `materializeDraft` **之前**：草稿一旦落库就被消费掉了，先落库再拒绝会在
+    // 侧栏留下一条 `message_count=0` 的空会话（正是草稿机制要避免的形态）。草稿的位置从
+    // `drafts` 里取，不必先成为真实会话。
+    const draft = drafts.get(request.sessionId);
+    const session = draft === undefined ? getSession(request.sessionId) : undefined;
+    const project = getProject(draft?.projectId ?? session?.projectId ?? "");
+    if (!project) throw new Error("会话所属的工作位置不存在，无法继续运行。");
+    // 已移除的目录也不运行（FR-08）：移除只从列表收走，不代表用户同意让 agent 继续在
+    // 那个地方动手。恢复目录或「在新位置继续」之后才能再用。
+    if (project.removedAt !== null) {
+      throw new Error(
+        `工作目录「${project.name}」已从列表移除，不能继续运行。请先恢复它，或在新位置继续。`,
+      );
+    }
+    // 草稿还没有自己的产物目录：默认空间会在落库时创建（容器由产品代管，缺了就建），
+    // 工作目录则要求目录现在就在。
+    if (draft === undefined || project.kind !== "task") {
+      const root = draft === undefined ? resolveSessionRoot(request.sessionId) : project.rootPath;
+      if (!existsSync(root)) {
+        throw new Error(
+          project.kind === "task"
+            ? "默认空间的产物目录不可用（可能已被外部删除）。请重建此会话的产物目录，或在新位置继续。"
+            : `工作目录「${project.name}」不可用：${root}`,
+        );
+      }
+    }
     // 首次发消息：草稿在此刻落库（此后才是「真实会话」，会出现在 session.list 里）
     materializeDraft(request.sessionId);
     // 给已归档会话发消息 = 用户要继续用它：先取消归档，别让它带隐藏身份跑起来
@@ -626,6 +883,32 @@ export function registerIpcHandlers(): void {
 
   handle("session.abort", (request) => {
     sessionManager.abort(request.sessionId);
+    return { ok: true } as const;
+  });
+
+  handle("session.reveal", async (request) => {
+    // 草稿还没有落库、也就还没有位置：如实报错，不猜一个目录打开
+    if (drafts.has(request.sessionId)) throw new Error("会话还没有开始，暂时没有可打开的位置");
+    const failure = await shell.openPath(resolveSessionRoot(request.sessionId));
+    if (failure) throw new Error(failure);
+    return { ok: true } as const;
+  });
+
+  /**
+   * 重建这条默认空间会话的产物目录（FR-02 异常路径）：只补目录与 manifest，保留对话。
+   * 不恢复文件——它们如果还在别处，需要用户或 agent 显式复制。
+   */
+  handle("session.rebuildArtifactDir", (request) => {
+    const session = getSession(request.sessionId);
+    if (!session) throw new Error("会话不存在或已被删除");
+    if (getProject(session.projectId)?.kind !== "task") {
+      throw new Error("只有默认空间的会话有自己的产物目录");
+    }
+    if (!session.cwd) throw new Error("这条会话没有产物目录记录");
+    mkdirSync(session.cwd, { recursive: true });
+    if (!readManifest(session.cwd)) {
+      createManifest(session.cwd, session.id, session.title, session.createdAt);
+    }
     return { ok: true } as const;
   });
 
@@ -649,6 +932,17 @@ export function registerIpcHandlers(): void {
     }
     // 先关 worker（若已加载），释放文件句柄，再删数据与文件
     sessionManager.close(request.sessionId);
+    // 默认空间会话：删之前把目录里的文件列表补写进 manifest 并冻结（PRD FR-02/FR-07）。
+    // 产物目录与文件**不删**，清单继续按 manifest 列出它；写失败也不阻断删除。
+    // 工作目录里的会话没有自己的目录（cwd 为 null），文件混在共享目录里，不冻结任何东西。
+    if (session.cwd && getProject(session.projectId)?.kind === "task") {
+      // 旧目录（manifest 引入之前建好的 / 当时写盘失败的）没有 manifest：先按会话信息补建
+      // 一份再冻结。否则它永远显示「未关联目录」，也永远看不出这条会话已被删除。
+      if (!freezeManifest(session.cwd)) {
+        createManifest(session.cwd, session.id, session.title, session.createdAt);
+        freezeManifest(session.cwd);
+      }
+    }
     deleteSession(request.sessionId);
     removeSessionHistory(session.id);
     // 会话已永久删除：清掉审批状态，否则会话级模式/记忆规则会滞留在内存
@@ -1087,6 +1381,10 @@ export function registerIpcHandlers(): void {
     session: await sessionManager.fork(request.sessionId, request.targetId),
   }));
 
+  handle("session.continueAtNewLocation", async (request) => ({
+    session: await continueSessionAtNewLocation(request.sessionId, request.projectId),
+  }));
+
   handle("session.subagentAbort", (request) => {
     sessionManager.subagentAbort(request.sessionId, request.id);
     return { ok: true } as const;
@@ -1147,9 +1445,10 @@ export function registerIpcHandlers(): void {
   // 所以那条「视图 == 页面区域」的硬约束不受影响）。比例由主进程算，用户只表达意图。
   handle("browser.zoom", (request) => hostBridge.browserSetZoom(request.sessionId, request.fit));
 
-  // 根**只由主进程推导**：渲染层给 sessionId 与相对路径，绝不给根
+  // 根**只由主进程**裁决：渲染层给 sessionId、相对路径，以及（可选的）「执行时根」；
+  // 那个根必须等于当前根或这条会话确实用过的根，见 `resolveChangeRoot`。
   handle("file.read", (request) => {
-    return readFileWithin(resolveSessionRoot(request.sessionId), request.path);
+    return readFileWithin(resolveChangeRoot(request.sessionId, request.root), request.path);
   });
 
   /**
@@ -1157,16 +1456,89 @@ export function registerIpcHandlers(): void {
    * 基线与根同样**只由主进程**取（前者来自库、后者由 sessionId → 项目推出）。
    */
   handle("file.netDiff", (request) => {
+    const root = resolveChangeRoot(request.sessionId, request.root);
     return computeNetChange(
-      resolveSessionRoot(request.sessionId),
+      root,
       request.path,
-      getFileBaseline(request.sessionId, request.path),
+      // 基线也按同一个根取：复制会话里旧根改动的「累计」不能拿新根抓的基线去比（FR-06）
+      getFileBaseline(request.sessionId, request.path, root),
     );
   });
 
   /** 「文件」页签的懒加载树：列项目内某目录的一层。边界与 file.read 同一套（根只由主进程推导） */
   handle("file.list", (request) => {
     return listDirWithin(resolveSessionRoot(request.sessionId), request.path);
+  });
+
+  // ---- 默认空间的产物清单（PRD FR-02 / FR-06）----
+  //
+  // 容器根**只由主进程推**（home 或 COLT_WORKSPACE_ROOT），渲染层只给目录名与相对文件路径。
+  // 清单口径以目录内容为准：manifest 只提供标题与创建时间，目录不可读时才拿冻结的文件
+  // 列表兜底——这样 agent 用命令行写的、外部程序产出的文件都能出现，不会「磁盘里有、清单里没有」。
+
+  /** 默认空间容器（= 默认空间项目行的 rootPath），与 `materializeDraft` 用的是同一个算法 */
+  function defaultSpaceContainer(): string {
+    return taskBaseRoot(app.getPath("home"), process.env.COLT_WORKSPACE_ROOT);
+  }
+
+  handle("artifact.listDefaultSpace", () => {
+    const container = defaultSpaceContainer();
+    const groups: ArtifactGroup[] = [];
+    let names: string[];
+    try {
+      names = readdirSync(container, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch {
+      // 容器还不存在（一条默认空间会话都没落过库）：空清单是正常状态，不是错误
+      return { groups };
+    }
+    for (const dirName of names) {
+      const dir = join(container, dirName);
+      const manifest = readManifest(dir);
+      let readable = true;
+      try {
+        readable = statSync(dir).isDirectory();
+      } catch {
+        readable = false;
+      }
+      const files = readable
+        ? listArtifactFiles(dir)
+        : // 目录不可读：退回 manifest 冻结的文件列表（只有删除过的目录才有）；大小/时间未知
+          (manifest?.files ?? []).map((path) => ({ path, size: 0, mtime: 0 }));
+      groups.push({
+        dirName,
+        title: manifest?.title || "未关联目录",
+        createdAt: manifest?.createdAt ?? 0,
+        deletedAt: manifest?.deletedAt ?? null,
+        readable,
+        files,
+      });
+    }
+    // 新的在前；没有 manifest 的旧目录（createdAt=0）排在最后，按目录名稳定排序
+    groups.sort((a, b) => b.createdAt - a.createdAt || a.dirName.localeCompare(b.dirName));
+    return { groups };
+  });
+
+  handle("artifact.reveal", async (request) => {
+    const container = resolve(defaultSpaceContainer());
+    const dir = resolve(container, request.dirName);
+    // 目录必须是容器的**直接子目录**：`..` / 绝对路径 / 多级路径在任何 fs 访问之前被拒
+    if (dirname(dir).toLowerCase() !== container.toLowerCase()) {
+      throw new Error("产物目录不合法");
+    }
+    if (request.file) {
+      const target = resolve(dir, request.file);
+      if (target !== dir && !target.startsWith(dir + sep)) {
+        throw new Error("产物路径不合法");
+      }
+      // 在文件夹中打开（不直接执行文件）：清单是查看入口，不是启动器
+      shell.showItemInFolder(target);
+      return { ok: true } as const;
+    }
+    const failure = await shell.openPath(dir);
+    if (failure) throw new Error(failure);
+    return { ok: true } as const;
   });
 
   // ---- 「Wiki」页签：读 CodeWiki 的产物（docs/wiki），以及用户显式发起的生成/更新 ----

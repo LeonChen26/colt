@@ -11,7 +11,7 @@ import { makeTempDir, removeTempDir } from "./helpers/temp";
 import { openDatabase, closeDatabase, getDatabase } from "../src/main/db/index.ts";
 
 /** 当前目标版本，与 db/index.ts 的 SCHEMA_VERSION 保持一致 */
-const LATEST = 12;
+const LATEST = 14;
 
 let root: string;
 
@@ -71,6 +71,7 @@ describe("openDatabase 迁移", () => {
     assert.ok(columns(db, "sessions").includes("model_ref"));
     assert.ok(columns(db, "file_changes").includes("client_change_id"));
     assert.ok(columns(db, "usage_records").includes("kernel_usage_id"));
+    assert.ok(columns(db, "file_baselines").includes("exec_root"));
   });
 
   test("重开同一库版本号不变", () => {
@@ -312,6 +313,71 @@ describe("openDatabase 迁移", () => {
       cwd: string | null;
     };
     assert.equal(row.cwd, null, "旧行没有自己的目录，NULL 即正确语义，不用回填");
+  });
+
+  test("v13 为旧库补执行时根与已移除列，存量行一律 NULL（按当前根解析 / 未移除过）", () => {
+    seedLegacy(
+      root,
+      [
+        `CREATE TABLE projects (
+           id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL, root_key TEXT NOT NULL,
+           kind TEXT NOT NULL DEFAULT 'workspace',
+           created_at INTEGER NOT NULL, last_opened_at INTEGER NOT NULL)`,
+        `CREATE TABLE sessions (
+           id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, jsonl_path TEXT NOT NULL,
+           kernel_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+           message_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active')`,
+        `CREATE TABLE file_changes (
+           id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, client_change_id TEXT,
+           file_path TEXT NOT NULL, change_kind TEXT NOT NULL, diff_text TEXT,
+           added_lines INTEGER NOT NULL DEFAULT 0, removed_lines INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL)`,
+        `INSERT INTO projects (id, name, root_path, root_key, created_at, last_opened_at) VALUES ('p1','colt','E:/code/colt','e:/code/colt',100,100)`,
+        `INSERT INTO file_changes (session_id, file_path, change_kind, created_at) VALUES ('s1','a.ts','edit',1)`,
+      ],
+      12,
+    );
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    assert.ok(columns(db, "file_changes").includes("exec_root"));
+    assert.ok(columns(db, "projects").includes("removed_at"));
+    const change = db
+      .prepare("SELECT exec_root FROM file_changes")
+      .get() as { exec_root: string | null };
+    assert.equal(change.exec_root, null, "旧改动按会话当前根解析，不回填");
+    const project = db
+      .prepare("SELECT removed_at FROM projects WHERE id = 'p1'")
+      .get() as { removed_at: number | null };
+    assert.equal(project.removed_at, null, "旧项目没有被移除过，NULL 即正常在列");
+  });
+
+  test("v14 给旧基线补「抓基线的根」，存量行 NULL（按会话当前根算）", () => {
+    seedLegacy(
+      root,
+      [
+        `CREATE TABLE sessions (
+           id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, jsonl_path TEXT NOT NULL,
+           kernel_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+           message_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active')`,
+        `CREATE TABLE file_baselines (
+           session_id TEXT NOT NULL, file_path TEXT NOT NULL, existed INTEGER NOT NULL,
+           content TEXT, captured_at INTEGER NOT NULL, PRIMARY KEY (session_id, file_path))`,
+        `INSERT INTO file_baselines (session_id, file_path, existed, content, captured_at)
+           VALUES ('s1','a.ts',1,'旧内容',1)`,
+      ],
+      13,
+    );
+    const db = openDatabase(root);
+    assert.equal(userVersion(db), LATEST);
+    assert.ok(columns(db, "file_baselines").includes("exec_root"));
+    const baseline = db
+      .prepare("SELECT exec_root FROM file_baselines WHERE session_id = 's1'")
+      .get() as { exec_root: string | null };
+    assert.equal(
+      baseline.exec_root,
+      null,
+      "旧基线没有记过根：那时一条会话只会有一个根，按当前根算",
+    );
   });
 
   test("新库 projects 含 root_key 且唯一索引生效", () => {

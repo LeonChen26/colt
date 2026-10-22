@@ -23,6 +23,7 @@
  *   （以后要放日志、产物都在同一层），项目根的名字固定，脚本/提示词引用它不必跟着时间戳变。
  */
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 /** 项目根那一层的固定目录名（见文件头：时间戳那层留给同一次用到的其它东西） */
 export const WORKSPACE_LEAF = "workspace";
@@ -72,13 +73,15 @@ export function taskBaseRoot(home: string, override?: string): string {
 }
 
 /**
- * 单个任务会话的工作目录：`<base>/<年月日-时分秒>`。
+ * 单个默认空间会话的产物目录：`<base>/<年月日-时分秒>-<短id>`。
  *
  * 在会话**落库时刻**算一次、存进 `sessions.cwd`，之后不再变——worker 的 cwd、审批边界、
- * 记忆隔离全从它读。复用 `scratchDirName`（精确到秒）：同一秒内落库两个任务会话才会撞名，
- * 那需要两条草稿在同一秒各自发出首条消息，人手做不到；撞了也只是共享目录，不丢数据。
- * 刻意**不带** `workspace/` 叶子：任务目录里每个时间戳就是一个会话的全部，平铺最好找。
+ * 记忆隔离全从它读。时间戳精确到秒，同一秒内落库两条会话靠**短 id**区分（PRD FR-02：
+ * 目录名是内部标识「时间 + 短 id」，展示标题以 manifest 为准）。旧格式（纯时间戳）目录
+ * 依然按本函数的解析规则识别，不必迁移。刻意**不带** `workspace/` 叶子：产物目录里
+ * 每个目录就是一条会话的全部，平铺最好找。
  */
-export function taskSessionRoot(base: string, at: Date): string {
-  return join(base, scratchDirName(at));
+export function taskSessionRoot(base: string, at: Date, shortId?: string): string {
+  const id = shortId ?? randomUUID().replace(/-/g, "").slice(0, 4);
+  return join(base, `${scratchDirName(at)}-${id}`);
 }
