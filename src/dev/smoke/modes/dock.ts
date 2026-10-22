@@ -6,15 +6,23 @@
  *
  * 由 scripts/split-smoke.mjs 从 src/dev/smoke/index.ts 逐字切出，内容与拆分前一致。
  */
-import { BrowserWindow, clipboard, WebContentsView } from "electron";
+import { app, BrowserWindow, clipboard, dialog, WebContentsView } from "electron";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   createSession,
+  ensureTaskProject,
   getProject,
+  getSession,
   recordFileBaseline,
+  recordFileChange,
+  setProjectRemoved,
+  setSessionStatus,
+  touchSession,
   upsertProject,
 } from "../../../main/db/repo";
+import { readManifest } from "../../../main/lib/artifact-manifest";
+import { taskBaseRoot } from "../../../main/lib/scratch-dir";
 import { hostBridge } from "../../../main/host";
 import { sessionManager } from "../../../main/session-manager";
 import { toolOutputDir } from "../../../main/tool-output";
@@ -3858,6 +3866,510 @@ export async function runDock(
 
     window.webContents.send("session.view", smokeView({}));
     await sleep(300);
+
+    // ---- PRD v0.9（会话与工作位置）：会话菜单 / 搜索状态标 / 会话产物面板 / 重建默认空间 ----
+    // 前面各段的镜头一直对着右栏（⑦）与中栏（④⑥）；这一段转向**左栏（① 侧栏）**。
+    // 数据前提在主进程里现造，全部是一次性夹具（out/ 下，收尾 removeFixtureProjects 自动带走）：
+    //   工作目录夹具（smoke-sidebar-ws，含产物文件与一条改动记录）、已移除目录夹具
+    //   （smoke-sidebar-removed）、一条 cwd 指向不存在目录的会话（面板「不可读」空态的靶子）、
+    //   默认空间里一条带产物目录的会话（manifest 指回它 → 搜索「按产物文件名命中」）。
+    // 新建的项目/会话对已挂载的渲染层不可见（projects 只在挂载时拉），所以段首 reload 一次——
+    // 此后受控视图已无用（前文各段已验完，reload 抹掉它零代价）。reload 前把仓库项目顶回
+    // projects[0]（memory 模式同款做法）：挂载后 activeProject / 自动打开的仍是仓库项目名下
+    // 的会话（= 开头那条），渲染层不会去碰夹具。
+    const repoRoot = process.env.COLT_SMOKE_CWD ?? process.cwd();
+    const wsRoot = join(repoRoot, "out", "smoke-sidebar-ws");
+    const removedRoot = join(repoRoot, "out", "smoke-sidebar-removed");
+    // 刻意不建目录：会话的 cwd 指向它 → 产物面板的「工作目录当前不可读」空态
+    const goneRoot = join(repoRoot, "out", "smoke-sidebar-gone");
+    rmSync(wsRoot, { recursive: true, force: true });
+    rmSync(removedRoot, { recursive: true, force: true });
+    mkdirSync(join(wsRoot, "src"), { recursive: true });
+    mkdirSync(removedRoot, { recursive: true });
+    writeFileSync(join(wsRoot, "report.md"), "# 冒烟夹具产物\n", "utf8");
+    writeFileSync(join(wsRoot, "src", "inner.txt"), "内层文件\n", "utf8");
+    // 会话的 jsonl_path 沿用本模式开头的口径（传目录，不 open worker 就不会被读）
+    const sessionsBase = dirname(sessionsDir);
+    const mkFixtureSession = (projectId: string, cwd: string | null, title: string) => {
+      const created = createSession(projectId, join(sessionsBase, projectId), undefined, cwd);
+      touchSession(created.id, 1, title);
+      return created;
+    };
+    const wsProject = upsertProject(wsRoot);
+    const removedProject = upsertProject(removedRoot);
+    setProjectRemoved(removedProject.id, true);
+    const sWs = mkFixtureSession(wsProject.id, wsRoot, "冒烟侧栏夹具甲");
+    // 改动记录只记 report.md：产物面板上它带「本会话记录」、inner.txt 不带
+    recordFileChange(sWs.id, {
+      id: "smoke-sidebar-rec",
+      path: "report.md",
+      kind: "write",
+      patch: null,
+      addedLines: 1,
+      removedLines: 0,
+      timestamp: Date.now(),
+    });
+    const sRemoved = mkFixtureSession(removedProject.id, removedRoot, "冒烟已移除夹具");
+    const sArchived = mkFixtureSession(wsProject.id, wsRoot, "冒烟归档夹具");
+    setSessionStatus(sArchived.id, "archived");
+    const sGone = mkFixtureSession(wsProject.id, goneRoot, "冒烟缺失目录夹具");
+    // 默认空间会话 + 产物目录 + manifest 指回它：搜索「按产物文件名命中会话」的靶子。
+    // 容器路径与 ipc 侧同一公式（COLT_WORKSPACE_ROOT 还要拼 tasks 后缀），ensureTaskProject
+    // 幂等：已有 task 项目就复用那一行，不会另建。
+    const taskProject = ensureTaskProject(
+      taskBaseRoot(app.getPath("home"), process.env.COLT_WORKSPACE_ROOT),
+    );
+    const artifactDir = join(taskProject.rootPath, "smoke-artifact-hit");
+    mkdirSync(artifactDir, { recursive: true });
+    const sTask = mkFixtureSession(taskProject.id, artifactDir, "冒烟产物会话");
+    writeFileSync(join(artifactDir, "产物-命中.txt"), "内容\n", "utf8");
+    writeFileSync(
+      join(artifactDir, ".colt-manifest.json"),
+      JSON.stringify({
+        version: 1,
+        sessionId: sTask.id,
+        title: "冒烟产物会话",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        deletedAt: null,
+        files: null,
+      }),
+      "utf8",
+    );
+    upsertProject(repoRoot); // 顶回 projects[0]（last_opened_at DESC）
+    window.reload();
+    await sleep(4000);
+
+    // 导航探针：本段出现过两次「读数 run 无端被取消」（Script failed to execute，
+    // 无 console 痕迹、vite 无 reload 事件）——唯一还没排除的解释是页面被谁重载/跳转了。
+    // beforeunload 里打 console.error 会被冒烟的 console-message 转发捞回来，拿铁证。
+    await run(`(() => {
+      window.addEventListener("beforeunload", () => {
+        console.error("[NAV-PROBE] 页面即将卸载（beforeunload）");
+      });
+      return true;
+    })()`);
+
+    /** 侧栏搜索输入（React 受控组件：原生 value setter + input 事件，直接赋 value 不触发 onChange）。
+     *  表达式体内 try/catch：任何同步抛错（含「页面重载中 input 不在」）都转成可打点的状态串，
+     *  别让它裸奔成一条看不出位置的「Script failed to execute」。 */
+    const setSearch = async (text: string): Promise<void> => {
+      const state = await run<string>(
+        `(() => { try {
+          const input = document.querySelector("[data-sidebar-search]");
+          if (!input) return "input-null";
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(
+            input,
+            ${JSON.stringify(text)},
+          );
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          return "ok";
+        } catch (e) { return "throw:" + (e && e.message ? e.message : String(e)); } })()`,
+      );
+      if (state !== "ok") log(`[侧栏] setSearch 异常（${state}）：${JSON.stringify(text)}`);
+      await sleep(700); // 等 session.list 全量回来 + 渲染
+    };
+    /** 开某条会话行上的会话菜单（返回菜单里五个 marker 的数组）。防御式：行不在 / 找不到
+     *  触发器时不 throw（后续断言自然红），并把当时的搜索词打出来供归因——「行去哪了」
+     *  用读数说话，不靠猜。 */
+    const openSessionMenu = async (sessionId: string): Promise<string[]> => {
+      const clicked = await run<string>(`(() => { try {
+        const row = document.querySelector('[data-session-row="${sessionId}"]');
+        if (!row) return "row-null";
+        const trigger = row.querySelector("[data-session-menu]");
+        if (!trigger) return "trigger-null";
+        trigger.click();
+        return "clicked";
+      } catch (e) { return "throw:" + (e && e.message ? e.message : String(e)); } })()`);
+      if (clicked !== "clicked") {
+        log(
+          `[侧栏菜单] 打不开（${clicked}）：搜索词=${await run<string>(
+            `document.querySelector("[data-sidebar-search]")?.value ?? "无输入框"`,
+          )} 行数=${await run<number>(`document.querySelectorAll("[data-session-row]").length`)}`,
+        );
+      }
+      await sleep(300);
+      return run<string[]>(
+        `[...document.querySelectorAll("[data-session-menu-item]")].map((el) => el.getAttribute("data-session-menu-item"))`,
+      );
+    };
+
+    /** 防御式点击：目标不在时不 throw（返回状态让断言自然红并打点归因）。表达式体内
+     *  同样 try/catch——el.click() 会**同步**跑 React 的 onClick，处理器抛的错会沿原生
+     *  事件派发冒出来，把 executeJavaScript 打成一条无 console 痕迹的「Script failed
+     *  to execute」；在页内转成状态串，才能看出「点了哪一下死的」。 */
+    const clickSel = async (selector: string): Promise<string> => {
+      const state = await run<string>(
+        `(() => { try { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return "null"; el.click(); return "clicked"; } catch (e) { return "throw:" + (e && e.message ? e.message : String(e)); } })()`,
+      );
+      if (state !== "clicked") log(`[侧栏] 点击异常/落空（${state}）：${selector}`);
+      return state;
+    };
+
+    // ---- 常规视图（未搜索）：无状态小标、无已移除分组；默认空间挂着 sTask（挂载即拉）----
+    const regular = await run<{
+      projectRow: boolean;
+      taskRow: boolean;
+      tags: number;
+      removedSearch: number;
+      relocateDisabled: boolean;
+    }>(`(() => ({
+      projectRow: document.querySelector('[data-project-row="${projectId}"]') !== null,
+      taskRow: document.querySelector('[data-session-row="${sTask.id}"]') !== null,
+      tags: document.querySelectorAll("[data-session-tag]").length,
+      removedSearch: document.querySelectorAll("[data-removed-search]").length,
+      relocateDisabled: document
+        .querySelector('[data-project-row="${wsProject.id}"] [data-project-relocate]')
+        ?.hasAttribute("disabled") ?? false,
+    }))()`);
+    checks.push(["常规视图：仓库项目行与默认空间会话行都在", regular.projectRow && regular.taskRow]);
+    checks.push([
+      "常规视图：无状态小标、无已移除分组、夹具目录的「重新定位」可点",
+      regular.tags === 0 && regular.removedSearch === 0 && regular.relocateDisabled === false,
+    ]);
+
+    // ---- 搜索：归档 / 已移除 / 产物命中都参与并**标出状态**（PRD FR-05）----
+    await setSearch("冒烟");
+    const searchAll = await run<{
+      ws: boolean;
+      archivedTag: boolean;
+      removedGroup: boolean;
+      removedTag: boolean;
+      artifactTag: boolean;
+    }>(`(() => ({
+      ws: document.querySelector('[data-session-row="${sWs.id}"]') !== null,
+      archivedTag:
+        document.querySelector('[data-session-row="${sArchived.id}"]')
+          ?.querySelector('[data-session-tag="已归档"]') != null,
+      removedGroup: document.querySelector('[data-removed-search="${removedProject.id}"]') !== null,
+      removedTag:
+        document.querySelector('[data-session-row="${sRemoved.id}"]')
+          ?.querySelector('[data-session-tag="已移除"]') != null,
+      artifactTag:
+        document.querySelector('[data-session-row="${sTask.id}"]')
+          ?.querySelector('[data-session-tag="产物 · 产物-命中.txt"]') != null,
+    }))()`);
+    checks.push([
+      "搜索：工作目录 / 归档 / 已移除的会话都参与并各带状态小标",
+      searchAll.ws && searchAll.archivedTag && searchAll.removedGroup && searchAll.removedTag,
+    ]);
+    // 产物文件名是**独立的命中途径**：只搜文件名也得回这条会话（默认空间区），
+    // 且状态小标给出「产物 · 文件名」（搜「冒烟」时不带产物标——文件名不含搜索词，
+    // 那是 title 命中；产物标只该在文件名命中时出现）
+    await setSearch("产物-命中");
+    const searchFile = await run<{ task: boolean; artifactTag: boolean; others: number }>(`(() => ({
+      task: document.querySelector('[data-session-row="${sTask.id}"]') !== null,
+      artifactTag:
+        document.querySelector('[data-session-row="${sTask.id}"]')
+          ?.querySelector('[data-session-tag="产物 · 产物-命中.txt"]') != null,
+      others: [...document.querySelectorAll("[data-session-row]")]
+        .filter((el) => el.getAttribute("data-session-row") !== "${sTask.id}").length,
+    }))()`);
+    checks.push([
+      "搜索：产物文件名单独命中并带「产物 · 文件名」状态标（别的会话都不混进来）",
+      searchFile.task && searchFile.artifactTag && searchFile.others === 0,
+    ]);
+    // 无命中：两个区各自的空态都要出现。判据不含「全文档无会话行」——底部「已归档」区
+    // 不参与搜索过滤，用户自己的归档行还在那儿是**合法状态**，把它数进「无命中」会假红。
+    // 互斥用「搜索中…已消失」：空态出现的那一刻不该还挂着搜索中间态。
+    await setSearch("冒烟绝不存在的词xyz");
+    const searchNone = await run<{
+      empty: boolean;
+      taskEmpty: boolean;
+      searching: boolean;
+    }>(`(() => ({
+      empty: document.body.innerText.includes("没有匹配"),
+      taskEmpty: document.body.innerText.includes("没有匹配的默认空间会话"),
+      searching: document.body.innerText.includes("搜索中…"),
+    }))()`);
+    checks.push([
+      "搜索无命中：工作目录与默认空间各自的空态都出现、搜索中间态已退场",
+      searchNone.empty && searchNone.taskEmpty && searchNone.searching === false,
+    ]);
+    await setSearch("");
+
+    // ---- 会话菜单（FR-05 完整集合）：五项都在，「在新位置继续…」的目标选择框能出能收 ----
+    await setSearch("冒烟侧栏夹具甲");
+    const sessionMenuItems = await openSessionMenu(sWs.id);
+    checks.push([
+      "会话菜单：五项齐全（artifacts/reveal/continue/archive/delete）",
+      ["artifacts", "reveal", "continue", "archive", "delete"].every((kind) =>
+        sessionMenuItems.includes(kind),
+      ),
+    ]);
+    // 点菜单外即收（rows.tsx 的 mousedown 外点守卫）
+    await run(
+      `document.body?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`,
+    );
+    await sleep(250);
+    checks.push([
+      "点菜单外即收起会话菜单",
+      (await run<number>(`document.querySelectorAll("[data-session-menu-item]").length`)) === 0,
+    ]);
+    // 「在新位置继续…」：目标选择框出现、当前位置不可选、取消能关（不真复制——那会往
+    // 夹具项目里再建一条会话，链路由 session.continueAtNewLocation 的单测覆盖）
+    await openSessionMenu(sWs.id);
+    await clickSel('[data-session-menu-item="continue"]');
+    await sleep(400);
+    const continueDialog = await run<{
+      open: boolean;
+      targets: number;
+      currentDisabled: boolean;
+    }>(`(() => {
+      const dlg = document.querySelector("[data-continue-dialog]");
+      if (!dlg) return { open: false, targets: 0, currentDisabled: false };
+      const current = dlg.querySelector('[data-continue-target="${wsProject.id}"]');
+      return {
+        open: true,
+        targets: dlg.querySelectorAll("[data-continue-target]").length,
+        currentDisabled: current?.hasAttribute("disabled") ?? false,
+      };
+    })()`);
+    checks.push([
+      "「在新位置继续…」：目标选择框出现、含多个目标、当前位置不可选",
+      continueDialog.open && continueDialog.targets >= 2 && continueDialog.currentDisabled,
+    ]);
+    const cancelState = await run<string>(
+      `(() => { const dlg = document.querySelector("[data-continue-dialog]"); if (!dlg) return "dlg-null"; const b = [...dlg.querySelectorAll("button")].find((x) => x.textContent.trim() === "取消"); if (!b) return "btn-null"; b.click(); return "clicked"; })()`,
+    );
+    if (cancelState !== "clicked") log(`[侧栏] 取消按钮异常/落空（${cancelState}）`);
+    await sleep(300);
+    checks.push([
+      "「在新位置继续…」：取消后选择框收起",
+      (await run<boolean>(`document.querySelector("[data-continue-dialog]") === null`)),
+    ]);
+
+    // ---- 运行中置灰（FR-03/FR-07 同一条纪律）：continue/archive/delete 不可点 ----
+    // running 的真源在 worker（sessionManager.isRunning），主进程侧那条由 rm-workspace 模式
+    // 挂假 worker 覆盖；这里推受控视图驱动**渲染层**那份 runningSessions 验界面置灰。
+    window.webContents.send("session.view", smokeView({ sessionId: sWs.id, running: true }));
+    await sleep(400);
+    await openSessionMenu(sWs.id);
+    const greyed = await run<Record<string, boolean>>(`(() => {
+      const out = {};
+      for (const kind of ["artifacts", "reveal", "continue", "archive", "delete"]) {
+        out[kind] = document
+          .querySelector('[data-session-menu-item="' + kind + '"]')
+          ?.hasAttribute("disabled") ?? false;
+      }
+      // 侧栏目录行的「重新定位」也要跟着 busy（该目录下有会话在跑）
+      out.relocateDisabled = document
+        .querySelector('[data-project-row="${wsProject.id}"] [data-project-relocate]')
+        ?.hasAttribute("disabled") ?? false;
+      return out;
+    })()`);
+    checks.push([
+      "运行中：菜单的 continue/archive/delete 置灰、artifacts/reveal 不受影响、目录行「重新定位」busy",
+      greyed.continue === true && greyed.archive === true && greyed.delete === true &&
+        greyed.artifacts === false && greyed.reveal === false && greyed.relocateDisabled === true,
+    ]);
+    window.webContents.send("session.view", smokeView({ sessionId: sWs.id, running: false }));
+    await sleep(400);
+    checks.push([
+      "运行结束后置灰解除",
+      await run<boolean>(`document
+        .querySelector('[data-project-row="${wsProject.id}"] [data-project-relocate]')
+        ?.hasAttribute("disabled") === false`),
+    ]);
+
+    // ---- 归档 → 底部「已归档」区 → 恢复（菜单驱动，走真实 session.setArchived IPC）----
+    log("[侧栏] 归档链路开始");
+    await openSessionMenu(sWs.id);
+    log("[侧栏] 菜单已开（归档点击前）");
+    await clickSel('[data-session-menu-item="archive"]');
+    log("[侧栏] archive 已点");
+    await sleep(700);
+    await setSearch("");
+    log("[侧栏] 搜索已清空");
+    await clickSel("[data-archived-toggle]");
+    log("[侧栏] 归档区 toggle 已点");
+    await sleep(300);
+    const archivedArea = await run<{
+      row: boolean;
+      context: boolean;
+      toggleCount: number;
+      err?: string;
+    }>(`(() => { try {
+      return {
+        row: document.querySelector('[data-session-row="${sWs.id}"]') !== null,
+        context: (document.body?.innerText ?? "").includes("smoke-sidebar-ws ·"),
+        toggleCount: document.querySelectorAll("[data-archived-toggle]").length,
+      };
+    } catch (e) { return { row: false, context: false, toggleCount: -1, err: String(e && e.message ? e.message : e) }; } })()`);
+    if (archivedArea.err !== undefined) log(`[侧栏] 归档区读数抛错：${archivedArea.err}`);
+    log(`[侧栏] 归档区读数完成：row=${archivedArea.row} context=${archivedArea.context} toggles=${archivedArea.toggleCount}`);
+    checks.push([
+      "归档后：底部「已归档」区出现该行且带项目名上下文（常规列表只收 active 会话）",
+      archivedArea.row && archivedArea.context && archivedArea.toggleCount === 1,
+    ]);
+    // 归档行的菜单第 4 项改口「恢复」；点它回到工作目录区
+    const archivedMenu = await openSessionMenu(sWs.id);
+    checks.push([
+      "归档行的菜单第 4 项文案改为「恢复」",
+      (await run<string>(
+        `document.querySelector('[data-session-menu-item="archive"]')?.textContent.trim() ?? ""`,
+      )) === "恢复" && archivedMenu.includes("archive"),
+    ]);
+    await clickSel('[data-session-menu-item="archive"]');
+    await sleep(700);
+    // 恢复后重新搜索断言：常规态 A 行收着（展开态是内存值，reload 后空）不渲染会话行，
+    // 搜索态一律展开、走全量——「行回来了且状态标干净」都从这一份读数里出。
+    await setSearch("冒烟侧栏夹具甲");
+    const restoredProbe = await run<{ count: number; archivedTag: boolean }>(`(() => ({
+      count: document.querySelectorAll('[data-session-row="${sWs.id}"]').length,
+      archivedTag:
+        document.querySelector('[data-session-row="${sWs.id}"]')
+          ?.querySelector('[data-session-tag="已归档"]') != null,
+    }))()`);
+    checks.push([
+      "恢复后：行回到搜索结果且不再带「已归档」状态标",
+      restoredProbe.count === 1 && restoredProbe.archivedTag === false,
+    ]);
+
+    // ---- 会话产物面板（FR-06）：目录内容清单 + 「本会话记录」标注 + 手动刷新 ----
+    await setSearch("冒烟侧栏夹具甲");
+    await openSessionMenu(sWs.id);
+    await clickSel('[data-session-menu-item="artifacts"]');
+    await sleep(700);
+    const artifactsPanel = await run<{
+      header: boolean;
+      report: boolean;
+      reportRecorded: boolean;
+      inner: boolean;
+      innerRecorded: boolean;
+    }>(`(() => ({
+      header: document.body.innerText.includes("smoke-sidebar-ws ·"),
+      report: document.querySelector('[data-session-artifact-file="report.md"]') !== null,
+      reportRecorded:
+        document.querySelector('[data-session-artifact-file="report.md"]')
+          ?.innerText.includes("本会话记录") ?? false,
+      inner: document.querySelector('[data-session-artifact-file="src/inner.txt"]') !== null,
+      innerRecorded:
+        document.querySelector('[data-session-artifact-file="src/inner.txt"]')
+          ?.innerText.includes("本会话记录") ?? false,
+    }))()`);
+    checks.push([
+      "产物面板：按目录内容列出（含子目录一层）、头部给位置名",
+      artifactsPanel.header && artifactsPanel.report && artifactsPanel.inner,
+    ]);
+    checks.push([
+      "产物面板：只有记录过改动的文件带「本会话记录」",
+      artifactsPanel.reportRecorded === true && artifactsPanel.innerRecorded === false,
+    ]);
+    // 手动刷新：面板开着时目录里新落一个文件，刷新后出现
+    writeFileSync(join(wsRoot, "late-file.md"), "后来写的\n", "utf8");
+    await clickSel("[data-session-artifacts-refresh]");
+    await sleep(500);
+    checks.push([
+      "产物面板：手动刷新能带出目录里的新文件",
+      (await run<boolean>(
+        `document.querySelector('[data-session-artifact-file="late-file.md"]') !== null`,
+      )),
+    ]);
+    const backState = await run<string>(
+      `(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "返回会话"); if (!b) return "null"; b.click(); return "clicked"; })()`,
+    );
+    if (backState !== "clicked") log("[侧栏] 点击落空：返回会话按钮");
+    await sleep(300);
+    checks.push([
+      "产物面板：「返回会话」关掉面板回到对话",
+      (await run<boolean>(`document.querySelector("[data-session-artifacts-refresh]") === null`)),
+    ]);
+    // 越界拒绝（IPC 边界，不点界面——界面上只传列出的路径）：../ 在任何 fs / shell 访问之前被拒
+    const revealEscape = await run<string>(
+      `window.colt.invoke("artifact.revealSession", { sessionId: ${JSON.stringify(sWs.id)}, file: "../escape.txt" })
+        .then(() => "ok", (e) => String(e instanceof Error ? e.message : e))`,
+    );
+    checks.push(["产物面板：越界路径在打开前被主进程拒绝", revealEscape.includes("产物路径不合法")]);
+
+    // ---- 产物面板的两条空态：目录不可读 / 目录里没有文件 ----
+    await setSearch("冒烟缺失目录夹具");
+    await openSessionMenu(sGone.id);
+    await clickSel('[data-session-menu-item="artifacts"]');
+    await sleep(600);
+    const gonePanel = await run<string>(
+      `document.querySelector("[data-session-artifacts-empty]")?.textContent.trim() ?? ""`,
+    );
+    checks.push([
+      "产物面板：工作目录不可读时如实说（不是白屏）",
+      gonePanel.includes("工作目录当前不可读"),
+    ]);
+    await setSearch("冒烟已移除夹具");
+    await openSessionMenu(sRemoved.id);
+    await clickSel('[data-session-menu-item="artifacts"]');
+    await sleep(600);
+    const emptyPanel = await run<string>(
+      `document.querySelector("[data-session-artifacts-empty]")?.textContent.trim() ?? ""`,
+    );
+    checks.push(["产物面板：空目录给「还没有文件」空态", emptyPanel.includes("目录里还没有文件")]);
+
+    // ---- 重新定位（FR-04）IPC 的拒绝路径：默认空间不可重定位 / 项目不存在 ----
+    // 「选文件夹 + 确认」的成功链路涉及原生 dialog，由 repo 的 updateProjectRoot / mergeProjects
+    // 单测覆盖；「运行中拒绝」需要 worker 侧 isRunning 为真，由 rm-workspace 模式的假 worker 覆盖。
+    const relocateTask = await run<string>(
+      `window.colt.invoke("project.relocate", { projectId: ${JSON.stringify(taskProject.id)} })
+        .then(() => "ok", (e) => String(e instanceof Error ? e.message : e))`,
+    );
+    checks.push([
+      "重新定位：默认空间被拒（它承担所有未指定目录会话的落点）",
+      relocateTask.includes("默认空间不可重新定位"),
+    ]);
+    const relocateGone = await run<string>(
+      `window.colt.invoke("project.relocate", { projectId: "smoke-不存在" })
+        .then(() => "ok", (e) => String(e instanceof Error ? e.message : e))`,
+    );
+    checks.push(["重新定位：不存在的项目被拒", relocateGone.includes("项目不存在")]);
+
+    // ---- 删除（FR-07）：原生确认框打桩成「确认」，行消失且库里真没了 ----
+    // 打桩只在点击前后这一小段（同 rm-workspace 模式：dialog.confirm 走的就是 showMessageBox）。
+    await setSearch("冒烟缺失目录夹具");
+    const realShowMessageBox = dialog.showMessageBox;
+    dialog.showMessageBox = (async () => ({
+      response: 0,
+      checkboxChecked: false,
+    })) as unknown as typeof dialog.showMessageBox;
+    try {
+      await openSessionMenu(sGone.id);
+      await clickSel('[data-session-menu-item="delete"]');
+      await sleep(800);
+      // searchSessions 是搜索那一刻的快照：重新输词触发重拉，才看得出「行真的没了」
+      await setSearch("冒烟");
+      await setSearch("冒烟缺失目录夹具");
+      checks.push([
+        "删除：确认后行消失（重拉后仍无此行）且库里查无此会话",
+        (await run<boolean>(
+          `document.querySelector('[data-session-row="${sGone.id}"]') === null`,
+        )) && getSession(sGone.id) === undefined,
+      ]);
+    } finally {
+      dialog.showMessageBox = realShowMessageBox;
+    }
+
+    // ---- 重建默认空间（FR-02 异常路径）：容器被删 → 警示条 → 重建补目录与 manifest ----
+    // 删的是 COLT_WORKSPACE_ROOT 指定的 out/ 下容器（冒烟专用，本就被夹具收尾管理）。
+    rmSync(taskProject.rootPath, { recursive: true, force: true });
+    // availability 在 window focus 时重查：真实用户点回窗口必经之路，冒烟里派同一个事件
+    await run(`window.dispatchEvent(new Event("focus")); true`);
+    await sleep(1000);
+    checks.push([
+      "容器被删后侧栏出现「默认空间不可用」警示条",
+      (await run<boolean>(
+        `document.querySelector("[data-default-space-unavailable]") !== null`,
+      )),
+    ]);
+    await clickSel("[data-rebuild-default-space]");
+    await sleep(1000);
+    checks.push([
+      "「重建默认空间」：警示条消失、容器与在册会话的产物目录回来了",
+      (await run<boolean>(
+        `document.querySelector("[data-default-space-unavailable]") === null`,
+      )) &&
+        existsSync(taskProject.rootPath) &&
+        existsSync(sTask.cwd!) &&
+        readManifest(sTask.cwd!)?.sessionId === sTask.id,
+    ]);
+    // 收尾：清空搜索，别把搜索态留给下一轮
+    await setSearch("");
 
     checks.push(["全程未抛未捕获异常", uncaughtErrors.length === 0]);
   } finally {
